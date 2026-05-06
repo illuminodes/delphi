@@ -1,0 +1,6 @@
+[package]
+name = "mantle-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
