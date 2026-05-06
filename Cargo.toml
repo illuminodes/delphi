@@ -8,3 +8,5 @@ edition = "2024"
 
 [workspace.dependencies]
 sha2 = { version = "0.11", default-features = false }
+ququmatz = { path = "/home/cuarentaydos/Code/tooling/ququmatz" }
+quetzalcoatl = { path = "/home/cuarentaydos/Code/tooling/quetzalcoatl" }

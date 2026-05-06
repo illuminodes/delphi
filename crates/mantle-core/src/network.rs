@@ -39,7 +39,7 @@ impl Magic {
 
 /// 12-byte null-padded ASCII command name.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct CommandName([u8; 12]);
+pub struct CommandName(pub [u8; 12]);
 
 impl CommandName {
     pub fn new(s: &str) -> Self {
