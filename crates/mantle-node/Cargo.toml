@@ -7,6 +7,9 @@ edition.workspace = true
 name = "mantle-node"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 mantle-core = { path = "../mantle-core" }
 quetzalcoatl.workspace = true

@@ -6,6 +6,12 @@ members = ["crates/mantle-core", "crates/consensus", "crates/mantle-node"]
 version = "0.1.0"
 edition = "2024"
 
+[workspace.lints.clippy]
+all = "warn"
+perf = "warn"
+pedantic = "warn"
+style = "warn"
+
 [workspace.dependencies]
 sha2 = { version = "0.11", default-features = false }
 ququmatz = { path = "/home/cuarentaydos/Code/tooling/ququmatz" }

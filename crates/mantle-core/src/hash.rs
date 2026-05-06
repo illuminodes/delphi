@@ -1,14 +1,16 @@
 use sha2::{Digest, Sha256};
 
-/// SHA256d: double-SHA256, used for block/tx hashes and message checksums.
+/// `SHA256d`: double-SHA256, used for block/tx hashes and message checksums.
 #[inline]
+#[must_use]
 pub fn sha256d(data: &[u8]) -> [u8; 32] {
     let first = Sha256::digest(data);
     Sha256::digest(first).into()
 }
 
-/// First 4 bytes of SHA256d — used as the P2P message checksum.
+/// First 4 bytes of `SHA256d` — used as the P2P message checksum.
 #[inline]
+#[must_use]
 pub fn checksum(data: &[u8]) -> [u8; 4] {
     let hash = sha256d(data);
     [hash[0], hash[1], hash[2], hash[3]]

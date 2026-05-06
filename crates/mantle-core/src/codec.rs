@@ -1,16 +1,22 @@
 use std::io::{self, Read, Write};
 
 pub trait Encode {
+    /// # Errors
+    /// Returns an error if writing to `w` fails.
     fn encode(&self, w: &mut impl Write) -> io::Result<()>;
 }
 
 pub trait Decode: Sized {
+    /// # Errors
+    /// Returns an error if reading from `r` fails or the data is malformed.
     fn decode(r: &mut impl Read) -> io::Result<Self>;
 }
 
 /// Zero-copy decoding from a borrowed byte slice.
 /// Returns the decoded value and the remaining unconsumed bytes.
 pub trait DecodeRef<'a>: Sized {
+    /// # Errors
+    /// Returns an error if `buf` is too short or the data is malformed.
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])>;
 }
 
@@ -66,6 +72,7 @@ pub struct VarInt(pub u64);
 
 impl VarInt {
     #[inline]
+    #[must_use]
     pub fn encoded_len(self) -> usize {
         match self.0 {
             0..=0xfc => 1,
@@ -79,14 +86,14 @@ impl VarInt {
 impl Encode for VarInt {
     fn encode(&self, w: &mut impl Write) -> io::Result<()> {
         match self.0 {
-            n @ 0..=0xfc => w.write_all(&[n as u8]),
+            n @ 0..=0xfc => w.write_all(&[u8::try_from(n).unwrap()]),
             n @ 0xfd..=0xffff => {
                 w.write_all(&[0xfd])?;
-                w.write_all(&(n as u16).to_le_bytes())
+                w.write_all(&u16::try_from(n).unwrap().to_le_bytes())
             }
             n @ 0x10000..=0xffff_ffff => {
                 w.write_all(&[0xfe])?;
-                w.write_all(&(n as u32).to_le_bytes())
+                w.write_all(&u32::try_from(n).unwrap().to_le_bytes())
             }
             n => {
                 w.write_all(&[0xff])?;
@@ -109,14 +116,14 @@ impl Decode for VarInt {
             0xfe => {
                 let mut buf = [0u8; 4];
                 r.read_exact(&mut buf)?;
-                u32::from_le_bytes(buf) as u64
+                u64::from(u32::from_le_bytes(buf))
             }
             0xfd => {
                 let mut buf = [0u8; 2];
                 r.read_exact(&mut buf)?;
-                u16::from_le_bytes(buf) as u64
+                u64::from(u16::from_le_bytes(buf))
             }
-            n => n as u64,
+            n => u64::from(n),
         };
         Ok(VarInt(value))
     }
@@ -134,13 +141,13 @@ impl<'a> DecodeRef<'a> for VarInt {
             }
             0xfe => {
                 let (v, tail) = u32::decode_ref(rest)?;
-                (v as u64, tail)
+                (u64::from(v), tail)
             }
             0xfd => {
                 let (v, tail) = u16::decode_ref(rest)?;
-                (v as u64, tail)
+                (u64::from(v), tail)
             }
-            n => (n as u64, rest),
+            n => (u64::from(n), rest),
         };
         Ok((VarInt(value), tail))
     }
@@ -184,7 +191,8 @@ impl<'a, const N: usize> DecodeRef<'a> for [u8; N] {
 impl<'a> DecodeRef<'a> for &'a [u8] {
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
         let (VarInt(len), rest) = VarInt::decode_ref(buf)?;
-        let len = len as usize;
+        let len =
+            usize::try_from(len).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if rest.len() < len {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -223,7 +231,8 @@ impl Encode for String {
 
 impl Decode for String {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let len = VarInt::decode(r)?.0 as usize;
+        let len = usize::try_from(VarInt::decode(r)?.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut buf = vec![0u8; len];
         r.read_exact(&mut buf)?;
         String::from_utf8(buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -239,7 +248,8 @@ impl Encode for Vec<u8> {
 
 impl Decode for Vec<u8> {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let len = VarInt::decode(r)?.0 as usize;
+        let len = usize::try_from(VarInt::decode(r)?.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut buf = vec![0u8; len];
         r.read_exact(&mut buf)?;
         Ok(buf)

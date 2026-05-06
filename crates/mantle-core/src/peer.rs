@@ -3,12 +3,12 @@ use std::collections::HashMap;
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::RingBuffer as MpscRing;
 use quetzalcoatl::spmc::RingBuffer as SpmcRing;
-use ququmatz::types::{AF_INET, MsgFlags, SockAddrIn, SOCK_NONBLOCK, SOCK_STREAM};
+use ququmatz::types::{AF_INET, MsgFlags, SOCK_NONBLOCK, SOCK_STREAM, SockAddrIn};
 use ququmatz::{IoUring, Socket, Sqe};
 
+use crate::codec::{Decode, Encode};
 use crate::hash::checksum;
 use crate::network::{Command, Magic, MessageHeader, VersionMsg};
-use crate::codec::{Decode, Encode};
 
 // ── PeerId ────────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ const OP_RECV: u32 = 2;
 
 #[inline]
 fn make_tag(peer: PeerId, op: u32) -> u64 {
-    ((peer.0 as u64) << 32) | (op as u64)
+    (u64::from(peer.0) << 32) | u64::from(op)
 }
 
 #[inline]
@@ -91,7 +91,7 @@ pub struct InboundMsg {
 /// Channel capacity for the outbound and inbound queues.
 const CHANNEL_CAP: usize = 256;
 
-/// Receive chunk size per io_uring recv SQE.
+/// Receive chunk size per `io_uring` recv SQE.
 const RECV_CHUNK: usize = 4096;
 
 pub struct Node {
@@ -115,10 +115,11 @@ pub struct Node {
 }
 
 impl Node {
+    /// # Errors
+    /// Returns an error if the `io_uring` instance cannot be created.
     pub fn new(magic: Magic, ring_size: u32, our_version: VersionMsg) -> std::io::Result<Self> {
-        let ring = IoUring::new(ring_size).map_err(|e| {
-            std::io::Error::other(format!("io_uring: {e:?}"))
-        })?;
+        let ring = IoUring::new(ring_size)
+            .map_err(|e| std::io::Error::other(format!("io_uring: {e:?}")))?;
 
         let (outbound_tx, outbound_rx) = MpscRing::new(Capacity::exact(CHANNEL_CAP)).split();
         let (inbound_tx, inbound_rx) = SpmcRing::new(Capacity::exact(CHANNEL_CAP)).split();
@@ -139,17 +140,22 @@ impl Node {
 
     /// Dial a peer. Submits the connect SQE; the handshake completes on the
     /// next call(s) to [`Node::poll`].
+    ///
+    /// # Errors
+    /// Returns an error if the socket or ring submission fails.
+    ///
+    /// # Panics
+    /// Never in practice — `AF_INET` always fits in `u16`.
     pub fn connect(&mut self, addr: std::net::SocketAddrV4) -> std::io::Result<PeerId> {
         let id = PeerId(self.next_id);
         self.next_id += 1;
 
-        let sock = Socket::new(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0).map_err(|e| {
-            std::io::Error::other(format!("socket: {e:?}"))
-        })?;
+        let sock = Socket::new(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
+            .map_err(|e| std::io::Error::other(format!("socket: {e:?}")))?;
         let fd = sock.into_fd();
 
         let sockaddr = SockAddrIn {
-            sin_family: AF_INET as u16,
+            sin_family: u16::try_from(AF_INET).expect("AF_INET fits in u16"),
             sin_port: addr.port().to_be(),
             sin_addr: u32::from_ne_bytes(addr.ip().octets()),
             sin_zero: [0; 8],
@@ -165,13 +171,12 @@ impl Node {
             .push(Sqe::connect(fd, addr_bytes).user_data(make_tag(id, OP_CONNECT)))
             .map_err(|e| std::io::Error::other(format!("push: {e:?}")))?;
 
-        self.ring.submit().map_err(|e| {
-            std::io::Error::other(format!("submit: {e:?}"))
-        })?;
+        self.ring
+            .submit()
+            .map_err(|e| std::io::Error::other(format!("submit: {e:?}")))?;
 
         let state = PeerState::new(id, fd);
-        self.recv_chunks
-            .insert(id, Box::new([0u8; RECV_CHUNK]));
+        self.recv_chunks.insert(id, Box::new([0u8; RECV_CHUNK]));
         self.peers.insert(id, state);
 
         Ok(id)
@@ -187,28 +192,42 @@ impl Node {
 
     /// Send a framed message directly via the ring, bypassing the outbound
     /// channel. Use when ordering relative to the current poll tick matters.
-    pub fn send_direct(&mut self, peer: PeerId, command: Command, payload: &[u8]) -> std::io::Result<()> {
-        let fd = self.peers.get(&peer)
+    ///
+    /// # Errors
+    /// Returns an error if the peer is not found or the ring submission fails.
+    pub fn send_direct(
+        &mut self,
+        peer: PeerId,
+        command: Command,
+        payload: &[u8],
+    ) -> std::io::Result<()> {
+        let fd = self
+            .peers
+            .get(&peer)
             .map(|p| p.fd)
             .ok_or_else(|| std::io::Error::other("peer not found"))?;
 
         let mut framed = Vec::new();
-        crate::network::encode_message(self.magic, command, payload, &mut framed).unwrap();
+        crate::network::encode_message(self.magic, command, payload, &mut framed)?;
 
-        let sqe = Sqe::send(fd, framed.leak(), MsgFlags::default())
-            .user_data(make_tag(peer, OP_SEND));
-        self.ring.push(sqe)
+        let sqe =
+            Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(make_tag(peer, OP_SEND));
+        self.ring
+            .push(sqe)
             .map_err(|e| std::io::Error::other(format!("push: {e:?}")))?;
-        self.ring.submit()
+        self.ring
+            .submit()
             .map_err(|e| std::io::Error::other(format!("submit: {e:?}")))?;
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if ring submission or message handling fails.
     pub fn poll(&mut self) -> std::io::Result<()> {
-        self.flush_outbound()?;
-        self.ring.submit().map_err(|e| {
-            std::io::Error::other(format!("submit: {e:?}"))
-        })?;
+        self.flush_outbound();
+        self.ring
+            .submit()
+            .map_err(|e| std::io::Error::other(format!("submit: {e:?}")))?;
 
         while let Some(cqe) = self.ring.complete() {
             if cqe.result < 0 {
@@ -221,8 +240,11 @@ impl Node {
             let (peer_id, op) = decode_tag(cqe.user_data);
             match op {
                 OP_CONNECT => self.on_connected(peer_id)?,
-                OP_SEND => {} // nothing to do — buffer was borrowed from Vec
-                OP_RECV => self.on_recv(peer_id, cqe.result as usize)?,
+                OP_RECV => self.on_recv(
+                    peer_id,
+                    usize::try_from(cqe.result)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
+                )?,
                 _ => {}
             }
         }
@@ -232,7 +254,7 @@ impl Node {
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
-    fn flush_outbound(&mut self) -> std::io::Result<()> {
+    fn flush_outbound(&mut self) {
         while let Some(msg) = self.outbound_rx.pop() {
             if let Some(peer) = self.peers.get(&msg.peer) {
                 let fd = peer.fd;
@@ -245,7 +267,6 @@ impl Node {
                 let _ = self.ring.push(sqe);
             }
         }
-        Ok(())
     }
 
     fn on_connected(&mut self, id: PeerId) -> std::io::Result<()> {
@@ -258,10 +279,11 @@ impl Node {
         let mut payload = Vec::new();
         self.our_version.encode(&mut payload).unwrap();
         let mut framed = Vec::new();
-        crate::network::encode_message(self.magic, Command::Version, &payload, &mut framed).unwrap();
+        crate::network::encode_message(self.magic, Command::Version, &payload, &mut framed)
+            .unwrap();
 
-        let sqe = Sqe::send(fd, framed.leak(), MsgFlags::default())
-            .user_data(make_tag(id, OP_SEND));
+        let sqe =
+            Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(make_tag(id, OP_SEND));
         let _ = self.ring.push(sqe);
 
         // submit_recv takes &mut self — safe now, peers borrow is released.
@@ -274,9 +296,8 @@ impl Node {
     }
 
     fn submit_recv(&mut self, id: PeerId) -> std::io::Result<()> {
-        let peer = match self.peers.get(&id) {
-            Some(p) => p,
-            None => return Ok(()),
+        let Some(peer) = self.peers.get(&id) else {
+            return Ok(());
         };
         let fd = peer.fd;
         let chunk = self.recv_chunks.get_mut(&id).unwrap();
@@ -297,9 +318,8 @@ impl Node {
 
         // Append received bytes to the reassembly buffer.
         let chunk = self.recv_chunks[&id][..n].to_vec();
-        let peer = match self.peers.get_mut(&id) {
-            Some(p) => p,
-            None => return Ok(()),
+        let Some(peer) = self.peers.get_mut(&id) else {
+            return Ok(());
         };
         peer.recv_buf.extend_from_slice(&chunk);
 
@@ -308,11 +328,10 @@ impl Node {
             if peer.recv_buf.len() < PeerState::HEADER_SIZE {
                 break;
             }
-            let header = match MessageHeader::decode(
-                &mut std::io::Cursor::new(&peer.recv_buf[..PeerState::HEADER_SIZE]),
-            ) {
-                Ok(h) => h,
-                Err(_) => break,
+            let Ok(header) = MessageHeader::decode(&mut std::io::Cursor::new(
+                &peer.recv_buf[..PeerState::HEADER_SIZE],
+            )) else {
+                break;
             };
             let total = PeerState::HEADER_SIZE + header.length as usize;
             if peer.recv_buf.len() < total {
@@ -324,7 +343,7 @@ impl Node {
             // Validate checksum.
             let expected = checksum(&payload);
             if expected != header.checksum {
-                eprintln!("peer {:?} checksum mismatch — dropping", id);
+                eprintln!("peer {id:?} checksum mismatch — dropping");
                 self.peers.remove(&id);
                 return Ok(());
             }
@@ -338,22 +357,27 @@ impl Node {
                 (HandshakeState::VersionSent, "version") => {
                     // Send verack.
                     let mut framed = Vec::new();
-                    crate::network::encode_message(self.magic, Command::Verack, &[], &mut framed).unwrap();
+                    crate::network::encode_message(self.magic, Command::Verack, &[], &mut framed)
+                        .unwrap();
                     let sqe = Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
                         .user_data(make_tag(id, OP_SEND));
                     let _ = self.ring.push(sqe);
                     peer.handshake = HandshakeState::VerackSent;
                 }
-                (HandshakeState::VerackSent, "verack")
-                | (HandshakeState::VersionSent, "verack") => {
+                (HandshakeState::VerackSent | HandshakeState::VersionSent, "verack") => {
                     peer.handshake = HandshakeState::Ready;
                 }
                 (HandshakeState::Ready, "ping") => {
                     // Reflect the nonce back as a pong — handled transparently,
                     // never forwarded to the app layer.
                     let mut framed = Vec::new();
-                    crate::network::encode_message(self.magic, Command::Pong, &payload, &mut framed)
-                        .unwrap();
+                    crate::network::encode_message(
+                        self.magic,
+                        Command::Pong,
+                        &payload,
+                        &mut framed,
+                    )
+                    .unwrap();
                     let sqe = Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
                         .user_data(make_tag(id, OP_SEND));
                     let _ = self.ring.push(sqe);

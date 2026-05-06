@@ -3,6 +3,9 @@ name = "mantle-core"
 version.workspace = true
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 sha2.workspace = true
 ququmatz.workspace = true

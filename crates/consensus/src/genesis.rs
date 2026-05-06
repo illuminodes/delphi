@@ -1,5 +1,5 @@
 /// Raw bytes of the Bitcoin mainnet genesis block (block 0).
-/// Source: Bitcoin Core src/chainparams.cpp, CreateGenesisBlock()
+/// Source: Bitcoin Core src/chainparams.cpp, `CreateGenesisBlock()`
 pub const GENESIS_BLOCK_HEX: &str = concat!(
     "0100000000000000000000000000000000000000000000000000000000000000",
     "000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa",
@@ -17,8 +17,7 @@ pub const GENESIS_BLOCK_HASH: &str =
     "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
 
 /// The known genesis coinbase txid (displayed in reversed byte order).
-pub const GENESIS_TXID: &str =
-    "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b";
+pub const GENESIS_TXID: &str = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b";
 
 #[cfg(test)]
 mod tests {

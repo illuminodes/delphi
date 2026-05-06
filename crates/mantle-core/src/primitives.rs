@@ -188,7 +188,7 @@ impl Decode for TxIn {
     }
 }
 
-/// Borrowed view of a `TxIn` — script_sig is a slice into the source buffer.
+/// Borrowed view of a `TxIn` — `script_sig` is a slice into the source buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TxInRef<'a> {
     pub previous_output: OutPoint,
@@ -237,7 +237,7 @@ impl Decode for TxOut {
     }
 }
 
-/// Borrowed view of a `TxOut` — script_pubkey is a slice into the source buffer.
+/// Borrowed view of a `TxOut` — `script_pubkey` is a slice into the source buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TxOutRef<'a> {
     pub value: u64,
@@ -286,12 +286,14 @@ impl Encode for Transaction {
 impl Decode for Transaction {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
         let version = i32::decode(r)?;
-        let input_count = VarInt::decode(r)?.0 as usize;
+        let input_count = usize::try_from(VarInt::decode(r)?.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut inputs = Vec::with_capacity(input_count);
         for _ in 0..input_count {
             inputs.push(TxIn::decode(r)?);
         }
-        let output_count = VarInt::decode(r)?.0 as usize;
+        let output_count = usize::try_from(VarInt::decode(r)?.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut outputs = Vec::with_capacity(output_count);
         for _ in 0..output_count {
             outputs.push(TxOut::decode(r)?);
@@ -328,7 +330,8 @@ impl Encode for Block {
 impl Decode for Block {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
         let header = BlockHeader::decode(r)?;
-        let tx_count = VarInt::decode(r)?.0 as usize;
+        let tx_count = usize::try_from(VarInt::decode(r)?.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut transactions = Vec::with_capacity(tx_count);
         for _ in 0..tx_count {
             transactions.push(Transaction::decode(r)?);

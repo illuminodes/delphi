@@ -15,6 +15,7 @@ pub enum Magic {
 }
 
 impl Magic {
+    #[must_use]
     pub fn bytes(self) -> [u8; 4] {
         match self {
             Self::Mainnet => [0xf9, 0xbe, 0xb4, 0xd9],
@@ -24,6 +25,7 @@ impl Magic {
         }
     }
 
+    #[must_use]
     pub fn from_bytes(b: [u8; 4]) -> Option<Self> {
         match b {
             [0xf9, 0xbe, 0xb4, 0xd9] => Some(Self::Mainnet),
@@ -42,6 +44,7 @@ impl Magic {
 pub struct CommandName(pub [u8; 12]);
 
 impl CommandName {
+    #[must_use]
     pub fn new(s: &str) -> Self {
         let mut buf = [0u8; 12];
         let bytes = s.as_bytes();
@@ -50,6 +53,7 @@ impl CommandName {
         Self(buf)
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         let end = self.0.iter().position(|&b| b == 0).unwrap_or(12);
         std::str::from_utf8(&self.0[..end]).unwrap_or("")
@@ -100,6 +104,7 @@ pub enum Command {
 }
 
 impl Command {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Version => "version",
@@ -130,6 +135,7 @@ impl Command {
     }
 
     /// Parse from a `CommandName`. Returns `None` if the command is unknown.
+    #[must_use]
     pub fn from_command_name(name: CommandName) -> Option<Self> {
         name.as_str().parse().ok()
     }
@@ -239,6 +245,9 @@ impl<'a> DecodeRef<'a> for MessageHeader {
 }
 
 /// Encodes a payload into a framed message (header + payload).
+///
+/// # Errors
+/// Returns an error if writing to `w` fails.
 pub fn encode_message(
     magic: Magic,
     command: Command,
@@ -248,7 +257,8 @@ pub fn encode_message(
     let header = MessageHeader {
         magic: magic.bytes(),
         command: CommandName::from(command),
-        length: payload.len() as u32,
+        length: u32::try_from(payload.len())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
         checksum: checksum(payload),
     };
     header.encode(w)?;
@@ -271,7 +281,7 @@ pub mod services {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetworkAddr {
     pub services: u64,
-    /// IPv6 address (IPv4 mapped as ::ffff:0:0/96).
+    /// IPv6 address (IPv4 mapped as `::ffff:0:0/96`).
     pub ip: [u8; 16],
     pub port: u16,
 }
@@ -341,7 +351,7 @@ impl Encode for VersionMsg {
         self.nonce.encode(w)?;
         self.user_agent.encode(w)?;
         self.start_height.encode(w)?;
-        (self.relay as u8).encode(w)
+        u8::from(self.relay).encode(w)
     }
 }
 
@@ -403,8 +413,8 @@ impl InvType {
             Self::Block => 2,
             Self::FilteredBlock => 3,
             Self::CmpctBlock => 4,
-            Self::WitnessTx => 0x40000001,
-            Self::WitnessBlock => 0x40000002,
+            Self::WitnessTx => 0x4000_0001,
+            Self::WitnessBlock => 0x4000_0002,
             Self::Unknown(n) => n,
         }
     }
@@ -415,8 +425,8 @@ impl InvType {
             2 => Self::Block,
             3 => Self::FilteredBlock,
             4 => Self::CmpctBlock,
-            0x40000001 => Self::WitnessTx,
-            0x40000002 => Self::WitnessBlock,
+            0x4000_0001 => Self::WitnessTx,
+            0x4000_0002 => Self::WitnessBlock,
             n => Self::Unknown(n),
         }
     }
@@ -475,7 +485,8 @@ impl Encode for InvMsg {
 
 impl Decode for InvMsg {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let count = VarInt::decode(r)?.0 as usize;
+        let count = usize::try_from(VarInt::decode(r)?.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut entries = Vec::with_capacity(count);
         for _ in 0..count {
             entries.push(InvEntry::decode(r)?);
@@ -509,7 +520,8 @@ impl Encode for GetHeadersMsg {
 impl Decode for GetHeadersMsg {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
         let version = u32::decode(r)?;
-        let count = VarInt::decode(r)?.0 as usize;
+        let count = usize::try_from(VarInt::decode(r)?.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut locator_hashes = Vec::with_capacity(count);
         for _ in 0..count {
             locator_hashes.push(Hash256::decode(r)?);
@@ -524,7 +536,7 @@ impl Decode for GetHeadersMsg {
 }
 
 /// `headers` — response with up to 2000 block headers.
-/// Each header is followed by a tx_count VarInt (always 0x00 in this message).
+/// Each header is followed by a `tx_count` `VarInt` (always 0x00 in this message).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadersMsg(pub Vec<BlockHeader>);
 
@@ -541,7 +553,8 @@ impl Encode for HeadersMsg {
 
 impl Decode for HeadersMsg {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let count = VarInt::decode(r)?.0 as usize;
+        let count = usize::try_from(VarInt::decode(r)?.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut headers = Vec::with_capacity(count);
         for _ in 0..count {
             headers.push(BlockHeader::decode(r)?);
@@ -575,24 +588,47 @@ mod tests {
     #[test]
     fn command_roundtrip() {
         let all = [
-            Command::Version, Command::Verack, Command::Ping, Command::Pong,
-            Command::GetAddr, Command::Addr, Command::GetHeaders, Command::Headers,
-            Command::GetBlocks, Command::Inv, Command::GetData, Command::Block,
-            Command::Tx, Command::NotFound, Command::MemPool, Command::SendHeaders,
-            Command::SendCmpct, Command::CmpctBlock, Command::GetBlockTxn,
-            Command::BlockTxn, Command::FeeFilter, Command::WtxidRelay,
-            Command::SendAddrV2, Command::AddrV2,
+            Command::Version,
+            Command::Verack,
+            Command::Ping,
+            Command::Pong,
+            Command::GetAddr,
+            Command::Addr,
+            Command::GetHeaders,
+            Command::Headers,
+            Command::GetBlocks,
+            Command::Inv,
+            Command::GetData,
+            Command::Block,
+            Command::Tx,
+            Command::NotFound,
+            Command::MemPool,
+            Command::SendHeaders,
+            Command::SendCmpct,
+            Command::CmpctBlock,
+            Command::GetBlockTxn,
+            Command::BlockTxn,
+            Command::FeeFilter,
+            Command::WtxidRelay,
+            Command::SendAddrV2,
+            Command::AddrV2,
         ];
         for cmd in all {
             assert_eq!(cmd.as_str().parse::<Command>(), Ok(cmd));
-            assert_eq!(Command::from_command_name(CommandName::from(cmd)), Some(cmd));
+            assert_eq!(
+                Command::from_command_name(CommandName::from(cmd)),
+                Some(cmd)
+            );
         }
     }
 
     #[test]
     fn command_unknown() {
         assert_eq!("notacommand".parse::<Command>(), Err(()));
-        assert_eq!(Command::from_command_name(CommandName::new("notacommand")), None);
+        assert_eq!(
+            Command::from_command_name(CommandName::new("notacommand")),
+            None
+        );
     }
 
     #[test]

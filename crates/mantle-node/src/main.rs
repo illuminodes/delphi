@@ -2,7 +2,9 @@ use std::net::SocketAddrV4;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mantle_core::codec::{Decode, Encode};
-use mantle_core::network::{Command, GetHeadersMsg, HeadersMsg, Magic, NetworkAddr, VersionMsg, services};
+use mantle_core::network::{
+    Command, GetHeadersMsg, HeadersMsg, Magic, NetworkAddr, VersionMsg, services,
+};
 use mantle_core::peer::{HandshakeState, InboundMsg, Node};
 use mantle_core::primitives::Hash256;
 
@@ -16,12 +18,19 @@ const SEED_PEERS: &[&str] = &[
 ];
 
 fn our_version() -> VersionMsg {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs() as i64;
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX);
 
-    let empty_addr = NetworkAddr { services: 0, ip: [0u8; 16], port: 0 };
+    let empty_addr = NetworkAddr {
+        services: 0,
+        ip: [0u8; 16],
+        port: 0,
+    };
 
     VersionMsg {
         version: 70015,
@@ -29,7 +38,7 @@ fn our_version() -> VersionMsg {
         timestamp: now,
         receiver: empty_addr,
         sender: empty_addr,
-        nonce: 0xdeadbeefcafe1234,
+        nonce: 0xdead_beef_cafe_1234,
         user_agent: "/mantle:0.1.0/".to_string(),
         start_height: 0,
         relay: false,
@@ -51,7 +60,7 @@ fn getheaders_payload() -> Vec<u8> {
     payload
 }
 
-fn main() -> std::io::Result<()> {
+fn main() {
     println!("mantle-node starting");
 
     for seed in SEED_PEERS {
@@ -59,7 +68,7 @@ fn main() -> std::io::Result<()> {
         println!("\ntrying {addr} ...");
 
         match try_peer(addr) {
-            Ok(true) => return Ok(()),   // got headers — done
+            Ok(true) => return, // got headers — done
             Ok(false) => {
                 println!("  no headers received, trying next peer");
             }
@@ -68,7 +77,6 @@ fn main() -> std::io::Result<()> {
     }
 
     eprintln!("all seed peers exhausted");
-    Ok(())
 }
 
 fn try_peer(addr: SocketAddrV4) -> std::io::Result<bool> {
@@ -106,7 +114,7 @@ fn try_peer(addr: SocketAddrV4) -> std::io::Result<bool> {
         }
 
         while let Some(msg) = inbound.pop() {
-            if handle_message(msg) {
+            if handle_message(&msg) {
                 return Ok(true);
             }
         }
@@ -116,10 +124,14 @@ fn try_peer(addr: SocketAddrV4) -> std::io::Result<bool> {
 }
 
 /// Returns true if we received a `headers` message.
-fn handle_message(msg: InboundMsg) -> bool {
+fn handle_message(msg: &InboundMsg) -> bool {
     let cmd = Command::from_command_name(mantle_core::network::CommandName(msg.command));
 
-    println!("  <- {} ({} bytes)", cmd.map_or("unknown", |c| c.as_str()), msg.payload.len());
+    println!(
+        "  <- {} ({} bytes)",
+        cmd.map_or("unknown", |c| c.as_str()),
+        msg.payload.len()
+    );
 
     if cmd == Some(Command::Headers) {
         match HeadersMsg::decode(&mut std::io::Cursor::new(&msg.payload)) {
@@ -131,9 +143,15 @@ fn handle_message(msg: InboundMsg) -> bool {
                     let hash = mantle_core::hash::sha256d(&raw);
                     let mut rev = hash;
                     rev.reverse();
-                    let hex: String = rev.iter().map(|b| format!("{b:02x}")).collect();
-                    println!("  [{i}] hash={hex}  version={}  time={}  nonce={}",
-                        h.version, h.time, h.nonce);
+                    let hex: String = rev.iter().fold(String::new(), |mut s, b| {
+                        use std::fmt::Write;
+                        write!(s, "{b:02x}").unwrap();
+                        s
+                    });
+                    println!(
+                        "  [{i}] hash={hex}  version={}  time={}  nonce={}",
+                        h.version, h.time, h.nonce
+                    );
                 }
                 if headers.0.len() > 5 {
                     println!("  ... and {} more", headers.0.len() - 5);
