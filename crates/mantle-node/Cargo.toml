@@ -1,0 +1,12 @@
+[package]
+name = "mantle-node"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "mantle-node"
+path = "src/main.rs"
+
+[dependencies]
+mantle-core = { path = "../mantle-core" }
+quetzalcoatl.workspace = true

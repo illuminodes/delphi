@@ -1,0 +1,160 @@
+use std::net::SocketAddrV4;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use mantle_core::codec::{Decode, Encode};
+use mantle_core::network::{GetHeadersMsg, HeadersMsg, Magic, NetworkAddr, VersionMsg, services};
+use mantle_core::peer::{HandshakeState, InboundMsg, Node};
+use mantle_core::primitives::Hash256;
+
+// Resolved from multiple DNS seeds — tried in order until one responds.
+const SEED_PEERS: &[&str] = &[
+    "61.68.41.135:8333",   // dnsseed.bluematt.me
+    "62.93.65.111:8333",   // dnsseed.bluematt.me
+    "5.161.244.95:8333",   // seed.btc.petertodd.net
+    "172.105.64.213:8333", // seed.bitcoin.sipa.be
+    "43.154.28.63:8333",   // seed.bitcoin.sipa.be
+];
+
+fn our_version() -> VersionMsg {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs() as i64;
+
+    let empty_addr = NetworkAddr { services: 0, ip: [0u8; 16], port: 0 };
+
+    VersionMsg {
+        version: 70015,
+        services: services::NODE_NETWORK,
+        timestamp: now,
+        receiver: empty_addr,
+        sender: empty_addr,
+        nonce: 0xdeadbeefcafe1234,
+        user_agent: "/mantle:0.1.0/".to_string(),
+        start_height: 0,
+        relay: false,
+    }
+}
+
+fn getheaders_payload() -> Vec<u8> {
+    // Locator: genesis hash → asks for everything from block 1 onward.
+    let genesis = Hash256(hex_to_bytes32(
+        "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+    ));
+    let msg = GetHeadersMsg {
+        version: 70015,
+        locator_hashes: vec![genesis],
+        stop_hash: Hash256::ZERO,
+    };
+    let mut payload = Vec::new();
+    msg.encode(&mut payload).unwrap();
+    payload
+}
+
+fn main() -> std::io::Result<()> {
+    println!("mantle-node starting");
+
+    for seed in SEED_PEERS {
+        let addr: SocketAddrV4 = seed.parse().expect("valid addr");
+        println!("\ntrying {addr} ...");
+
+        match try_peer(addr) {
+            Ok(true) => return Ok(()),   // got headers — done
+            Ok(false) => {
+                println!("  no headers received, trying next peer");
+            }
+            Err(e) => eprintln!("  error: {e}"),
+        }
+    }
+
+    eprintln!("all seed peers exhausted");
+    Ok(())
+}
+
+fn try_peer(addr: SocketAddrV4) -> std::io::Result<bool> {
+    let mut node = Node::new(Magic::Mainnet, 64, our_version())?;
+    let peer_id = node.connect(addr)?;
+    let inbound = node.inbound_rx.clone();
+
+    let mut headers_requested = false;
+    // Give up after ~20s per peer.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+
+    loop {
+        if std::time::Instant::now() > deadline {
+            println!("  timed out");
+            return Ok(false);
+        }
+
+        node.poll()?;
+
+        // Send getheaders immediately via send_direct the moment handshake
+        // completes — bypasses the outbound channel so it goes out this tick.
+        if !headers_requested {
+            match node.peer_handshake(peer_id) {
+                Some(HandshakeState::Ready) => {
+                    println!("  handshake complete — sending getheaders");
+                    node.send_direct(peer_id, "getheaders", &getheaders_payload())?;
+                    headers_requested = true;
+                }
+                None => {
+                    println!("  peer disconnected during handshake");
+                    return Ok(false);
+                }
+                _ => {}
+            }
+        }
+
+        while let Some(msg) = inbound.pop() {
+            if handle_message(msg) {
+                return Ok(true);
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Returns true if we received a `headers` message.
+fn handle_message(msg: InboundMsg) -> bool {
+    let cmd = std::str::from_utf8(&msg.command)
+        .unwrap_or("?")
+        .trim_end_matches('\0');
+
+    println!("  <- {cmd} ({} bytes)", msg.payload.len());
+
+    if cmd == "headers" {
+        match HeadersMsg::decode(&mut std::io::Cursor::new(&msg.payload)) {
+            Ok(headers) => {
+                println!("  received {} header(s)", headers.0.len());
+                for (i, h) in headers.0.iter().enumerate().take(5) {
+                    let mut raw = Vec::new();
+                    h.encode(&mut raw).unwrap();
+                    let hash = mantle_core::hash::sha256d(&raw);
+                    let mut rev = hash;
+                    rev.reverse();
+                    let hex: String = rev.iter().map(|b| format!("{b:02x}")).collect();
+                    println!("  [{i}] hash={hex}  version={}  time={}  nonce={}",
+                        h.version, h.time, h.nonce);
+                }
+                if headers.0.len() > 5 {
+                    println!("  ... and {} more", headers.0.len() - 5);
+                }
+                return true;
+            }
+            Err(e) => eprintln!("  failed to decode headers: {e}"),
+        }
+    }
+
+    false
+}
+
+/// Parse a display-order (reversed) hex block hash into raw internal bytes.
+fn hex_to_bytes32(s: &str) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    for i in 0..32 {
+        bytes[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
+    }
+    bytes.reverse();
+    bytes
+}

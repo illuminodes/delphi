@@ -180,6 +180,30 @@ impl Node {
     /// Drive the event loop once — submit pending sends, drain CQEs, advance
     /// handshakes, dispatch inbound messages. Call in a loop from the I/O
     /// thread.
+    /// Returns the handshake state for a peer, or `None` if it has disconnected.
+    pub fn peer_handshake(&self, id: PeerId) -> Option<HandshakeState> {
+        self.peers.get(&id).map(|p| p.handshake)
+    }
+
+    /// Send a framed message directly via the ring, bypassing the outbound
+    /// channel. Use when ordering relative to the current poll tick matters.
+    pub fn send_direct(&mut self, peer: PeerId, command: &str, payload: &[u8]) -> std::io::Result<()> {
+        let fd = self.peers.get(&peer)
+            .map(|p| p.fd)
+            .ok_or_else(|| std::io::Error::other("peer not found"))?;
+
+        let mut framed = Vec::new();
+        crate::network::encode_message(self.magic, command, payload, &mut framed).unwrap();
+
+        let sqe = Sqe::send(fd, framed.leak(), MsgFlags::default())
+            .user_data(make_tag(peer, OP_SEND));
+        self.ring.push(sqe)
+            .map_err(|e| std::io::Error::other(format!("push: {e:?}")))?;
+        self.ring.submit()
+            .map_err(|e| std::io::Error::other(format!("submit: {e:?}")))?;
+        Ok(())
+    }
+
     pub fn poll(&mut self) -> std::io::Result<()> {
         self.flush_outbound()?;
         self.ring.submit().map_err(|e| {
@@ -323,6 +347,16 @@ impl Node {
                 (HandshakeState::VerackSent, "verack")
                 | (HandshakeState::VersionSent, "verack") => {
                     peer.handshake = HandshakeState::Ready;
+                }
+                (HandshakeState::Ready, "ping") => {
+                    // Reflect the nonce back as a pong — handled transparently,
+                    // never forwarded to the app layer.
+                    let mut framed = Vec::new();
+                    crate::network::encode_message(self.magic, "pong", &payload, &mut framed)
+                        .unwrap();
+                    let sqe = Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
+                        .user_data(make_tag(id, OP_SEND));
+                    let _ = self.ring.push(sqe);
                 }
                 (HandshakeState::Ready, _) => {
                     let _ = self.inbound_tx.push(InboundMsg {

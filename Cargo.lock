@@ -77,6 +77,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mantle-node"
+version = "0.1.0"
+dependencies = [
+ "mantle-core",
+ "quetzalcoatl",
+]
+
+[[package]]
 name = "quetzalcoatl"
 version = "0.10.0"
 
