@@ -1,0 +1,87 @@
+/// Raw bytes of the Bitcoin mainnet genesis block (block 0).
+/// Source: Bitcoin Core src/chainparams.cpp, CreateGenesisBlock()
+pub const GENESIS_BLOCK_HEX: &str = concat!(
+    "0100000000000000000000000000000000000000000000000000000000000000",
+    "000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa",
+    "4b1e5e4a29ab5f49ffff001d1dac2b7c01010000000100000000000000000000",
+    "00000000000000000000000000000000000000000000ffffffff4d04ffff001d",
+    "0104455468652054696d65732030332f4a616e2f32303039204368616e63656c",
+    "6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f75742066",
+    "6f722062616e6b73ffffffff0100f2052a01000000434104678afdb0fe554827",
+    "1967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4",
+    "f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac00000000"
+);
+
+/// The known genesis block header hash (displayed in reversed byte order).
+pub const GENESIS_BLOCK_HASH: &str =
+    "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+
+/// The known genesis coinbase txid (displayed in reversed byte order).
+pub const GENESIS_TXID: &str =
+    "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mantle_core::codec::{Decode, DecodeRef};
+    use mantle_core::hash::sha256d;
+    use mantle_core::primitives::{Block, BlockHeader};
+    use std::io::Cursor;
+
+    fn decode_hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn hash_to_hex(hash: [u8; 32]) -> String {
+        let mut rev = hash;
+        rev.reverse();
+        rev.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn genesis_header_fields() {
+        let bytes = decode_hex(GENESIS_BLOCK_HEX);
+        let (header, _) = BlockHeader::decode_ref(&bytes).unwrap();
+
+        assert_eq!(header.version, 1);
+        assert_eq!(header.time, 1231006505);
+        assert_eq!(header.bits, 0x1d00ffff);
+        assert_eq!(header.nonce, 2083236893);
+        assert_eq!(header.prev_block, mantle_core::primitives::Hash256::ZERO);
+    }
+
+    #[test]
+    fn genesis_header_hash() {
+        let bytes = decode_hex(GENESIS_BLOCK_HEX);
+        let hash = sha256d(&bytes[..BlockHeader::ENCODED_LEN]);
+        assert_eq!(hash_to_hex(hash), GENESIS_BLOCK_HASH);
+    }
+
+    #[test]
+    fn genesis_block_decode() {
+        let bytes = decode_hex(GENESIS_BLOCK_HEX);
+        let block = Block::decode(&mut Cursor::new(&bytes)).unwrap();
+
+        assert_eq!(block.transactions.len(), 1);
+        let tx = &block.transactions[0];
+        assert_eq!(tx.version, 1);
+        assert_eq!(tx.inputs.len(), 1);
+        assert_eq!(tx.outputs.len(), 1);
+        assert_eq!(tx.outputs[0].value, 50_0000_0000); // 50 BTC in satoshis
+    }
+
+    #[test]
+    fn genesis_txid() {
+        let bytes = decode_hex(GENESIS_BLOCK_HEX);
+        let block = Block::decode(&mut Cursor::new(&bytes)).unwrap();
+
+        let mut tx_bytes = Vec::new();
+        use mantle_core::codec::Encode;
+        block.transactions[0].encode(&mut tx_bytes).unwrap();
+        let txid = sha256d(&tx_bytes);
+        assert_eq!(hash_to_hex(txid), GENESIS_TXID);
+    }
+}

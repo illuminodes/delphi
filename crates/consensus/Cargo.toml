@@ -1,0 +1,7 @@
+[package]
+name = "consensus"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mantle-core = { path = "../mantle-core" }
