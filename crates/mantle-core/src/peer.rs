@@ -7,7 +7,7 @@ use ququmatz::types::{AF_INET, MsgFlags, SockAddrIn, SOCK_NONBLOCK, SOCK_STREAM}
 use ququmatz::{IoUring, Socket, Sqe};
 
 use crate::hash::checksum;
-use crate::network::{Magic, MessageHeader, VersionMsg};
+use crate::network::{Command, Magic, MessageHeader, VersionMsg};
 use crate::codec::{Decode, Encode};
 
 // ── PeerId ────────────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ impl Node {
 
     /// Send a framed message directly via the ring, bypassing the outbound
     /// channel. Use when ordering relative to the current poll tick matters.
-    pub fn send_direct(&mut self, peer: PeerId, command: &str, payload: &[u8]) -> std::io::Result<()> {
+    pub fn send_direct(&mut self, peer: PeerId, command: Command, payload: &[u8]) -> std::io::Result<()> {
         let fd = self.peers.get(&peer)
             .map(|p| p.fd)
             .ok_or_else(|| std::io::Error::other("peer not found"))?;
@@ -258,7 +258,7 @@ impl Node {
         let mut payload = Vec::new();
         self.our_version.encode(&mut payload).unwrap();
         let mut framed = Vec::new();
-        crate::network::encode_message(self.magic, "version", &payload, &mut framed).unwrap();
+        crate::network::encode_message(self.magic, Command::Version, &payload, &mut framed).unwrap();
 
         let sqe = Sqe::send(fd, framed.leak(), MsgFlags::default())
             .user_data(make_tag(id, OP_SEND));
@@ -338,7 +338,7 @@ impl Node {
                 (HandshakeState::VersionSent, "version") => {
                     // Send verack.
                     let mut framed = Vec::new();
-                    crate::network::encode_message(self.magic, "verack", &[], &mut framed).unwrap();
+                    crate::network::encode_message(self.magic, Command::Verack, &[], &mut framed).unwrap();
                     let sqe = Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
                         .user_data(make_tag(id, OP_SEND));
                     let _ = self.ring.push(sqe);
@@ -352,7 +352,7 @@ impl Node {
                     // Reflect the nonce back as a pong — handled transparently,
                     // never forwarded to the app layer.
                     let mut framed = Vec::new();
-                    crate::network::encode_message(self.magic, "pong", &payload, &mut framed)
+                    crate::network::encode_message(self.magic, Command::Pong, &payload, &mut framed)
                         .unwrap();
                     let sqe = Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
                         .user_data(make_tag(id, OP_SEND));

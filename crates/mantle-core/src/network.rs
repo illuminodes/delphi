@@ -62,6 +62,125 @@ impl std::fmt::Debug for CommandName {
     }
 }
 
+impl From<Command> for CommandName {
+    fn from(cmd: Command) -> Self {
+        Self::new(cmd.as_str())
+    }
+}
+
+// ── Command ───────────────────────────────────────────────────────────────────
+
+/// All known Bitcoin P2P command names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Command {
+    Version,
+    Verack,
+    Ping,
+    Pong,
+    GetAddr,
+    Addr,
+    GetHeaders,
+    Headers,
+    GetBlocks,
+    Inv,
+    GetData,
+    Block,
+    Tx,
+    NotFound,
+    MemPool,
+    SendHeaders,
+    SendCmpct,
+    CmpctBlock,
+    GetBlockTxn,
+    BlockTxn,
+    FeeFilter,
+    WtxidRelay,
+    SendAddrV2,
+    AddrV2,
+}
+
+impl Command {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Version => "version",
+            Self::Verack => "verack",
+            Self::Ping => "ping",
+            Self::Pong => "pong",
+            Self::GetAddr => "getaddr",
+            Self::Addr => "addr",
+            Self::GetHeaders => "getheaders",
+            Self::Headers => "headers",
+            Self::GetBlocks => "getblocks",
+            Self::Inv => "inv",
+            Self::GetData => "getdata",
+            Self::Block => "block",
+            Self::Tx => "tx",
+            Self::NotFound => "notfound",
+            Self::MemPool => "mempool",
+            Self::SendHeaders => "sendheaders",
+            Self::SendCmpct => "sendcmpct",
+            Self::CmpctBlock => "cmpctblock",
+            Self::GetBlockTxn => "getblocktxn",
+            Self::BlockTxn => "blocktxn",
+            Self::FeeFilter => "feefilter",
+            Self::WtxidRelay => "wtxidrelay",
+            Self::SendAddrV2 => "sendaddrv2",
+            Self::AddrV2 => "addrv2",
+        }
+    }
+
+    /// Parse from a `CommandName`. Returns `None` if the command is unknown.
+    pub fn from_command_name(name: CommandName) -> Option<Self> {
+        name.as_str().parse().ok()
+    }
+}
+
+impl std::str::FromStr for Command {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "version" => Ok(Self::Version),
+            "verack" => Ok(Self::Verack),
+            "ping" => Ok(Self::Ping),
+            "pong" => Ok(Self::Pong),
+            "getaddr" => Ok(Self::GetAddr),
+            "addr" => Ok(Self::Addr),
+            "getheaders" => Ok(Self::GetHeaders),
+            "headers" => Ok(Self::Headers),
+            "getblocks" => Ok(Self::GetBlocks),
+            "inv" => Ok(Self::Inv),
+            "getdata" => Ok(Self::GetData),
+            "block" => Ok(Self::Block),
+            "tx" => Ok(Self::Tx),
+            "notfound" => Ok(Self::NotFound),
+            "mempool" => Ok(Self::MemPool),
+            "sendheaders" => Ok(Self::SendHeaders),
+            "sendcmpct" => Ok(Self::SendCmpct),
+            "cmpctblock" => Ok(Self::CmpctBlock),
+            "getblocktxn" => Ok(Self::GetBlockTxn),
+            "blocktxn" => Ok(Self::BlockTxn),
+            "feefilter" => Ok(Self::FeeFilter),
+            "wtxidrelay" => Ok(Self::WtxidRelay),
+            "sendaddrv2" => Ok(Self::SendAddrV2),
+            "addrv2" => Ok(Self::AddrV2),
+            _ => Err(()),
+        }
+    }
+}
+
+impl AsRef<str> for Command {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 // ── Message envelope ──────────────────────────────────────────────────────────
 
 /// 24-byte message header that wraps every Bitcoin P2P message.
@@ -122,13 +241,13 @@ impl<'a> DecodeRef<'a> for MessageHeader {
 /// Encodes a payload into a framed message (header + payload).
 pub fn encode_message(
     magic: Magic,
-    command: &str,
+    command: Command,
     payload: &[u8],
     w: &mut impl Write,
 ) -> io::Result<()> {
     let header = MessageHeader {
         magic: magic.bytes(),
-        command: CommandName::new(command),
+        command: CommandName::from(command),
         length: payload.len() as u32,
         checksum: checksum(payload),
     };
@@ -454,6 +573,29 @@ mod tests {
     }
 
     #[test]
+    fn command_roundtrip() {
+        let all = [
+            Command::Version, Command::Verack, Command::Ping, Command::Pong,
+            Command::GetAddr, Command::Addr, Command::GetHeaders, Command::Headers,
+            Command::GetBlocks, Command::Inv, Command::GetData, Command::Block,
+            Command::Tx, Command::NotFound, Command::MemPool, Command::SendHeaders,
+            Command::SendCmpct, Command::CmpctBlock, Command::GetBlockTxn,
+            Command::BlockTxn, Command::FeeFilter, Command::WtxidRelay,
+            Command::SendAddrV2, Command::AddrV2,
+        ];
+        for cmd in all {
+            assert_eq!(cmd.as_str().parse::<Command>(), Ok(cmd));
+            assert_eq!(Command::from_command_name(CommandName::from(cmd)), Some(cmd));
+        }
+    }
+
+    #[test]
+    fn command_unknown() {
+        assert_eq!("notacommand".parse::<Command>(), Err(()));
+        assert_eq!(Command::from_command_name(CommandName::new("notacommand")), None);
+    }
+
+    #[test]
     fn magic_roundtrip() {
         for m in [
             Magic::Mainnet,
@@ -509,7 +651,7 @@ mod tests {
     fn encode_message_checksum() {
         let payload = b"payload";
         let mut buf = Vec::new();
-        encode_message(Magic::Mainnet, "ping", payload, &mut buf).unwrap();
+        encode_message(Magic::Mainnet, Command::Ping, payload, &mut buf).unwrap();
         let header = decode::<MessageHeader>(&buf[..24]);
         assert_eq!(header.checksum, checksum(payload));
         assert_eq!(&buf[24..], payload);

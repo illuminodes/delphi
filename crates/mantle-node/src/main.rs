@@ -2,7 +2,7 @@ use std::net::SocketAddrV4;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mantle_core::codec::{Decode, Encode};
-use mantle_core::network::{GetHeadersMsg, HeadersMsg, Magic, NetworkAddr, VersionMsg, services};
+use mantle_core::network::{Command, GetHeadersMsg, HeadersMsg, Magic, NetworkAddr, VersionMsg, services};
 use mantle_core::peer::{HandshakeState, InboundMsg, Node};
 use mantle_core::primitives::Hash256;
 
@@ -94,7 +94,7 @@ fn try_peer(addr: SocketAddrV4) -> std::io::Result<bool> {
             match node.peer_handshake(peer_id) {
                 Some(HandshakeState::Ready) => {
                     println!("  handshake complete — sending getheaders");
-                    node.send_direct(peer_id, "getheaders", &getheaders_payload())?;
+                    node.send_direct(peer_id, Command::GetHeaders, &getheaders_payload())?;
                     headers_requested = true;
                 }
                 None => {
@@ -117,13 +117,11 @@ fn try_peer(addr: SocketAddrV4) -> std::io::Result<bool> {
 
 /// Returns true if we received a `headers` message.
 fn handle_message(msg: InboundMsg) -> bool {
-    let cmd = std::str::from_utf8(&msg.command)
-        .unwrap_or("?")
-        .trim_end_matches('\0');
+    let cmd = Command::from_command_name(mantle_core::network::CommandName(msg.command));
 
-    println!("  <- {cmd} ({} bytes)", msg.payload.len());
+    println!("  <- {} ({} bytes)", cmd.map_or("unknown", |c| c.as_str()), msg.payload.len());
 
-    if cmd == "headers" {
+    if cmd == Some(Command::Headers) {
         match HeadersMsg::decode(&mut std::io::Cursor::new(&msg.payload)) {
             Ok(headers) => {
                 println!("  received {} header(s)", headers.0.len());
