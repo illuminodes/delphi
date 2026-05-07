@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(ScriptNum::from_i64(255).as_bytes(), &[0xff, 0x00]);
         assert_eq!(ScriptNum::from_i64(-255).as_bytes(), &[0xff, 0x80]);
         assert_eq!(ScriptNum::from_i64(256).as_bytes(), &[0x00, 0x01]);
-        assert_eq!(ScriptNum::from_i64(0xffff_ff).as_bytes(), &[0xff, 0xff, 0xff, 0x00]);
+        assert_eq!(ScriptNum::from_i64(0x00ff_ffff).as_bytes(), &[0xff, 0xff, 0xff, 0x00]);
     }
 
     #[test]
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn five_byte_cltv_range() {
         // CLTV accepts 5 bytes — used to encode timestamps past 2106.
-        let v = 0x7fff_ffff_ffi64;
+        let v = 0x007f_ffff_ffff_i64;
         let n = ScriptNum::from_i64(v);
         assert_eq!(n.len(), 5);
         assert_eq!(n.to_i64(), v);

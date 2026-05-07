@@ -559,7 +559,7 @@ mod tests {
     fn pop_num_respects_size_limit() {
         let mut s = TestStack::new();
         // Five-byte encoding pushed.
-        s.push_num(0x7fff_ffff_ffi64, 0).expect("ok");
+        s.push_num(0x007f_ffff_ffff_i64, 0).expect("ok");
         // Arithmetic limit (4) rejects it.
         assert!(matches!(
             s.pop_num(4, false),

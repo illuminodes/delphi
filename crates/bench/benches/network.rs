@@ -90,20 +90,20 @@ fn ping_decode(bencher: divan::Bencher) {
 
 #[divan::bench(args = [1usize, 16, 256, 2000])]
 fn inv_msg_encode(bencher: divan::Bencher, n: usize) {
-    let msg = InvMsg((0..n).map(|i| InvEntry { kind: InvType::Block, hash: Hash256([(i & 0xff) as u8; 32]) }).collect());
+    let msg = InvMsg((0..n).map(|i| InvEntry { kind: InvType::Block, hash: Hash256([u8::try_from(i & 0xff).unwrap(); 32]) }).collect());
     bencher.bench(|| encode_bytes(&msg));
 }
 
 #[divan::bench(args = [1usize, 16, 256, 2000])]
 fn inv_msg_decode(bencher: divan::Bencher, n: usize) {
-    let msg = InvMsg((0..n).map(|i| InvEntry { kind: InvType::Block, hash: Hash256([(i & 0xff) as u8; 32]) }).collect());
+    let msg = InvMsg((0..n).map(|i| InvEntry { kind: InvType::Block, hash: Hash256([u8::try_from(i & 0xff).unwrap(); 32]) }).collect());
     let bytes = encode_bytes(&msg);
     bencher.bench(|| InvMsg::decode(&mut Cursor::new(bytes.as_slice())).expect("InvMsg decode cannot fail on valid bytes"));
 }
 
 #[divan::bench(args = [1usize, 16, 256, 2000])]
 fn inv_msg_iter(bencher: divan::Bencher, n: usize) {
-    let msg = InvMsg((0..n).map(|i| InvEntry { kind: InvType::Block, hash: Hash256([(i & 0xff) as u8; 32]) }).collect());
+    let msg = InvMsg((0..n).map(|i| InvEntry { kind: InvType::Block, hash: Hash256([u8::try_from(i & 0xff).unwrap(); 32]) }).collect());
     let bytes = encode_bytes(&msg);
     bencher.bench(|| {
         let mut count = 0usize;
@@ -117,7 +117,7 @@ fn inv_msg_iter(bencher: divan::Bencher, n: usize) {
 
 #[divan::bench(args = [1usize, 16, 256, 2000])]
 fn inv_msg_decode_into(bencher: divan::Bencher, n: usize) {
-    let msg = InvMsg((0..n).map(|i| InvEntry { kind: InvType::Block, hash: Hash256([(i & 0xff) as u8; 32]) }).collect());
+    let msg = InvMsg((0..n).map(|i| InvEntry { kind: InvType::Block, hash: Hash256([u8::try_from(i & 0xff).unwrap(); 32]) }).collect());
     let bytes = encode_bytes(&msg);
     let mut buf = Vec::new();
     bencher.bench_local(|| {
@@ -131,7 +131,7 @@ fn inv_msg_decode_into(bencher: divan::Bencher, n: usize) {
 fn make_header(i: usize) -> BlockHeader {
     BlockHeader {
         version: 1,
-        prev_block: Hash256([(i & 0xff) as u8; 32]),
+        prev_block: Hash256([u8::try_from(i & 0xff).unwrap(); 32]),
         merkle_root: Hash256::ZERO,
         time: u32::try_from(i).expect("bench index fits u32"),
         bits: mantle::primitives::CompactBits(0x1d00_ffff),

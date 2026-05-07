@@ -34,7 +34,7 @@ fn empty_script() {
     eval_legacy(&[]);
 }
 
-/// Single OP_NOP — measures the minimal "decode one op + dispatch" cost.
+/// Single `OP_NOP` — measures the minimal "decode one op + dispatch" cost.
 #[divan::bench]
 fn single_nop() {
     eval_legacy(&[0x61]);
@@ -46,7 +46,7 @@ fn single_push_1() {
     eval_legacy(&[0x51]); // OP_1
 }
 
-/// 100 OP_NOPs back-to-back — amortises decode + dispatch.
+/// 100 `OP_NOPs` back-to-back — amortises decode + dispatch.
 #[divan::bench(args = [10usize, 100, 200])]
 fn n_nops(bencher: divan::Bencher, n: usize) {
     let script = vec![0x61u8; n];
@@ -92,13 +92,13 @@ fn p2pkh_shape_through_equalverify(bencher: divan::Bencher) {
 }
 
 /// Heavy arithmetic mix: 50 ADD/SUB pairs over small operands. Stresses the
-/// pop_num/push_num path.
+/// `pop_num`/`push_num` path.
 #[divan::bench]
 fn arithmetic_mix(bencher: divan::Bencher) {
     let mut script = vec![0x51u8]; // OP_1 — initial value
     for i in 0..50 {
         // Push a small constant 1..16, alternating ADD and SUB.
-        script.push(0x51 + (i % 16) as u8); // OP_1..OP_16
+        script.push(0x51 + u8::try_from(i % 16).unwrap()); // OP_1..OP_16
         script.push(if i % 2 == 0 { 0x93 } else { 0x94 }); // OP_ADD / OP_SUB
     }
     bencher.bench(|| eval_legacy(black_box(&script)));
@@ -157,7 +157,7 @@ fn at_op_count_limit() {
 }
 
 /// Deep IF nesting — `K` nested IFs, all true, then `K` ENDIFs. Confirms the
-/// O(1) executing() query stays flat under nesting.
+/// O(1) `executing()` query stays flat under nesting.
 #[divan::bench(args = [1usize, 10, 50, 100])]
 fn deep_if_nesting(bencher: divan::Bencher, depth: usize) {
     let mut script = Vec::with_capacity(depth * 2 + 1);
@@ -165,9 +165,7 @@ fn deep_if_nesting(bencher: divan::Bencher, depth: usize) {
         script.push(0x51); // OP_1
         script.push(0x63); // OP_IF
     }
-    for _ in 0..depth {
-        script.push(0x68); // OP_ENDIF
-    }
+    script.extend(std::iter::repeat_n(0x68u8, depth)); // OP_ENDIF
     bencher.bench(|| eval_legacy(black_box(&script)));
 }
 
@@ -183,7 +181,7 @@ fn max_size_push(bencher: divan::Bencher) {
     bencher.bench(|| eval_legacy(black_box(&script)));
 }
 
-/// Maximum-script-size NOP wall — 10000 OP_NOPs would exceed the op-count
+/// Maximum-script-size NOP wall — 10000 `OP_NOPs` would exceed the op-count
 /// cap, so we use 200 NOPs padded with pushes. Tests the parser's tolerance
 /// for long scripts.
 #[divan::bench]
@@ -212,9 +210,7 @@ fn near_max_script_size(bencher: divan::Bencher) {
     // ops = 200 NOPs (only those count). Stays under both caps.
     // Final form below:
     let mut script = Vec::new();
-    for _ in 0..999 {
-        script.push(0x51); // OP_1 — fills stack to 999
-    }
+    script.extend(std::iter::repeat_n(0x51u8, 999)); // OP_1 — fills stack to 999
     script.extend(std::iter::repeat_n(0x61u8, 200)); // 200 NOPs (under 201)
     // Currently 1199 bytes. Pad with extra OP_DROP+OP_1 *not* viable since
     // OP_DROP counts. We'll measure at 1199 bytes — the size-cap stress is

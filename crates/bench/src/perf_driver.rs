@@ -23,7 +23,7 @@ fn coinbase(script: Vec<u8>, value: u64) -> Transaction {
             script_sig: script.into(),
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }].into(),
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }],
         locktime: 0,
     }
 }
@@ -36,7 +36,7 @@ fn regular(prev: Hash256, vout: u32, value: u64) -> Transaction {
             script_sig: vec![0x51; 20].into(),
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }].into(),
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }],
         locktime: 0,
     }
 }
@@ -96,7 +96,7 @@ fn main() {
                 script_sig: vec![0x51; 20].into(),
                 sequence: u32::MAX,
             }).collect(),
-            outputs: vec![TxOut { value: Satoshi::new(1000), script_pubkey: vec![0x51].into() }].into(),
+            outputs: vec![TxOut { value: Satoshi::new(1000), script_pubkey: vec![0x51].into() }],
             locktime: 0,
         };
         let n = run_for(secs, || {

@@ -274,7 +274,7 @@ fn stage1_output_value_over_max_money_rejected() {
     let coinbase = Transaction {
         version: 1,
         inputs: vec![coinbase_input(vec![0x51, 0x52])],
-        outputs: vec![TxOut { value: too_much, script_pubkey: vec![0x51].into() }].into(),
+        outputs: vec![TxOut { value: too_much, script_pubkey: vec![0x51].into() }],
         locktime: 0,
     };
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
@@ -847,7 +847,7 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
             let coinbase = Transaction {
                 version: 1,
                 inputs: vec![coinbase_input(vec![0x03, 0x01, 0x00, 0x00])],
-                outputs: vec![TxOut { value: mantle::primitives::Satoshi::new(u64::MAX), script_pubkey: vec![0x51].into() }].into(),
+                outputs: vec![TxOut { value: mantle::primitives::Satoshi::new(u64::MAX), script_pubkey: vec![0x51].into() }],
                 locktime: 0,
             };
             let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];

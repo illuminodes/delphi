@@ -22,7 +22,7 @@ fn coinbase_tx(value: u64) -> Transaction {
             script_sig: vec![0x03, 0x01, 0x00, 0x00].into(), // BIP34 height=1
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }].into(),
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }],
         locktime: 0,
     }
 }
@@ -35,7 +35,7 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
             script_sig: vec![0x51].into(),
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }].into(),
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }],
         locktime: 0,
     }
 }
@@ -117,13 +117,13 @@ fn txid_regular(bencher: divan::Bencher, n_inputs: usize) {
 
 #[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
 fn merkle_root(bencher: divan::Bencher, n: usize) {
-    let txids: Vec<Hash256> = (0..n).map(|i| Hash256([(i & 0xff) as u8; 32])).collect();
+    let txids: Vec<Hash256> = (0..n).map(|i| Hash256([u8::try_from(i & 0xff).unwrap(); 32])).collect();
     bencher.bench(|| compute_merkle_root(black_box(&txids)));
 }
 
 #[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
 fn merkle_root_reusing(bencher: divan::Bencher, n: usize) {
-    let txids: Vec<Hash256> = (0..n).map(|i| Hash256([(i & 0xff) as u8; 32])).collect();
+    let txids: Vec<Hash256> = (0..n).map(|i| Hash256([u8::try_from(i & 0xff).unwrap(); 32])).collect();
     let mut buf: Vec<Hash256> = Vec::with_capacity(n);
     bencher.bench_local(|| compute_merkle_root_reusing(black_box(&txids), &mut buf));
 }
@@ -140,7 +140,7 @@ fn validate_structure_single_coinbase(bencher: divan::Bencher) {
 fn validate_structure_n_txs(bencher: divan::Bencher, n: usize) {
     let mut txs = vec![coinbase_tx(5_000_000_000)];
     for i in 1..n {
-        txs.push(regular_tx(Hash256([(i & 0xff) as u8; 32]), 0, 1000));
+        txs.push(regular_tx(Hash256([u8::try_from(i & 0xff).unwrap(); 32]), 0, 1000));
     }
     let block = make_valid_block(txs);
     bencher.bench(|| validate_block_structure(black_box(&block)).expect("valid block must pass structure validation"));
@@ -166,7 +166,7 @@ fn validate_wire_single_coinbase(bencher: divan::Bencher) {
 fn validate_wire_n_txs(bencher: divan::Bencher, n: usize) {
     let mut txs = vec![coinbase_tx(5_000_000_000)];
     for i in 1..n {
-        txs.push(regular_tx(Hash256([(i & 0xff) as u8; 32]), 0, 1000));
+        txs.push(regular_tx(Hash256([u8::try_from(i & 0xff).unwrap(); 32]), 0, 1000));
     }
     let block = make_valid_block(txs);
     let mut wire = Vec::new();
@@ -199,7 +199,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
             script_sig: vec![0x03, 0x0d, 0x00, 0x00].into(), // height=13
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x51].into() }].into(),
+        outputs: vec![TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x51].into() }],
         locktime: 0,
     };
     let merkle_root = compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")]).expect("single-tx merkle root must exist");

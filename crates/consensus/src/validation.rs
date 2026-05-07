@@ -1951,7 +1951,7 @@ mod tests {
         let (view, _, _) = connect_setup(1);
         // Each OP_CHECKMULTISIG in a scriptPubKey counts as 20.
         // 1001 × OP_CHECKMULTISIG = 20,020 sigops > 20,000 limit.
-        let many_sigops: Vec<u8> = std::iter::repeat(0xae_u8).take(1001).collect();
+        let many_sigops: Vec<u8> = std::iter::repeat_n(0xae_u8, 1001).collect();
         let cb = Transaction {
             version: 1,
             inputs: vec![TxIn {
