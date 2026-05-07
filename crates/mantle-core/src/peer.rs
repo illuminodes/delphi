@@ -378,12 +378,13 @@ impl Node {
             return Ok(());
         }
 
-        // Append received bytes to the reassembly buffer.
-        let chunk = self.recv_chunks[&id][..n].to_vec();
+        // Append received bytes to the reassembly buffer directly from the
+        // kernel chunk — no intermediate Vec.
         let Some(peer) = self.peers.get_mut(&id) else {
             return Ok(());
         };
-        peer.recv_buf.extend_from_slice(&chunk);
+        let chunk_bytes = &self.recv_chunks[&id][..n];
+        peer.recv_buf.extend_from_slice(chunk_bytes);
 
         // Consume as many complete messages as possible.
         loop {
@@ -400,22 +401,20 @@ impl Node {
                 break;
             }
 
-            let payload = peer.recv_buf[PeerState::HEADER_SIZE..total].to_vec();
-
-            // Validate checksum.
-            if checksum(&payload) != header.checksum {
+            // Validate checksum directly against recv_buf — no copy needed.
+            let payload_slice = &peer.recv_buf[PeerState::HEADER_SIZE..total];
+            if checksum(payload_slice) != header.checksum {
                 eprintln!("{}", Error::ChecksumMismatch { peer: id });
                 self.peers.remove(&id);
                 return Ok(());
             }
 
-            peer.recv_buf.drain(..total);
-
             // Advance handshake or dispatch to app.
-            let cmd = header.command.as_str().to_owned();
             let handshake = peer.handshake;
-            match (handshake, cmd.as_str()) {
+            let cmd = header.command.as_str();
+            match (handshake, cmd) {
                 (HandshakeState::VersionSent, "version") => {
+                    peer.recv_buf.drain(..total);
                     // Send verack.
                     let mut framed = Vec::new();
                     crate::network::encode_message(self.magic, Command::Verack, &[], &mut framed)
@@ -427,27 +426,40 @@ impl Node {
                     peer.handshake = HandshakeState::VerackSent;
                 }
                 (HandshakeState::VerackSent | HandshakeState::VersionSent, "verack") => {
+                    peer.recv_buf.drain(..total);
                     peer.handshake = HandshakeState::Ready;
                 }
                 (HandshakeState::Ready, "ping") => {
-                    // Reflect the nonce back as a pong — handled transparently,
-                    // never forwarded to the app layer.
+                    // Reflect the nonce back as a pong — borrow payload_slice
+                    // before draining so we don't need to copy it.
                     let mut framed = Vec::new();
-                    crate::network::encode_message(self.magic, Command::Pong, &payload, &mut framed)
+                    crate::network::encode_message(self.magic, Command::Pong, payload_slice, &mut framed)
                         .map_err(Error::Codec)?;
+                    peer.recv_buf.drain(..total);
                     let _ = self.ring.push(
                         Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
                             .user_data(make_tag(id, OP_SEND)),
                     );
                 }
                 (HandshakeState::Ready, _) => {
-                    let _ = self.inbound_tx.push(InboundMsg {
-                        peer: id,
-                        command: header.command.0,
-                        payload,
-                    });
+                    // Reserve a slot in the ring and write the InboundMsg
+                    // directly in place — avoids a stack construction + move.
+                    if let Some(slot) = self.inbound_tx.reserve() {
+                        let payload = peer.recv_buf[PeerState::HEADER_SIZE..total].to_vec();
+                        peer.recv_buf.drain(..total);
+                        slot.write(InboundMsg {
+                            peer: id,
+                            command: header.command.0,
+                            payload,
+                        }).commit();
+                    } else {
+                        // Ring full — drop the message.
+                        peer.recv_buf.drain(..total);
+                    }
                 }
-                _ => {}
+                _ => {
+                    peer.recv_buf.drain(..total);
+                }
             }
         }
 

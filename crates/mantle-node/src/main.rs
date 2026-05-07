@@ -1,7 +1,7 @@
 use std::net::SocketAddrV4;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mantle_core::codec::{Decode, Encode};
+use mantle_core::codec::Encode;
 use mantle_core::network::{
     Command, GetHeadersMsg, HeadersMsg, Magic, NetworkAddr, VersionMsg, services,
 };
@@ -134,12 +134,16 @@ fn handle_message(msg: &InboundMsg) -> bool {
     );
 
     if cmd == Some(Command::Headers) {
-        match HeadersMsg::decode(&mut std::io::Cursor::new(&msg.payload)) {
-            Ok(headers) => {
-                println!("  received {} header(s)", headers.0.len());
-                for (i, h) in headers.0.iter().enumerate().take(5) {
-                    let mut raw = Vec::new();
-                    h.encode(&mut raw).unwrap();
+        match HeadersMsg::iter_entries::<2_000>(&msg.payload) {
+            Ok(iter) => {
+                let total = iter.len();
+                println!("  received {total} header(s)");
+                for (i, result) in HeadersMsg::iter_entries::<2_000>(&msg.payload).unwrap().enumerate().take(5) {
+                    let h = match result {
+                        Ok(h) => h,
+                        Err(e) => { eprintln!("  failed to decode header: {e}"); break; }
+                    };
+                    let raw = h.to_bytes();
                     let hash = mantle_core::hash::sha256d(&raw);
                     let mut rev = hash;
                     rev.reverse();
@@ -153,8 +157,8 @@ fn handle_message(msg: &InboundMsg) -> bool {
                         h.version, h.time, h.nonce
                     );
                 }
-                if headers.0.len() > 5 {
-                    println!("  ... and {} more", headers.0.len() - 5);
+                if total > 5 {
+                    println!("  ... and {} more", total - 5);
                 }
                 return true;
             }
