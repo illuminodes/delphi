@@ -1,0 +1,14 @@
+[package]
+name = "mantle-conformance"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# This crate is test-infrastructure only. It must never appear as a
+# [dependency] of mantle-node or mantle-core — only as a [dev-dependency]
+# of test/fuzz crates.
+[dependencies]
+bitcoinconsensus = "0.106.0"

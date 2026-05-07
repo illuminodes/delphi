@@ -1,2 +1,5 @@
 /target
 fuzz/target/
+fuzz/corpus/
+dhat-heap.json
+crates/consensus/proptest-regressions/

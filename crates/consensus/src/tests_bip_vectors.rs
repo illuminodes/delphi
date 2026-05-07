@@ -1,0 +1,744 @@
+/// Layer 4: BIP test vectors and static regression fixtures.
+///
+/// These are static, hand-encoded constants derived from known-good Bitcoin
+/// data. No runtime file I/O; everything compiles into the test binary.
+use mantle_core::codec::{Decode, Encode};
+use mantle_core::hash::sha256d;
+use mantle_core::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
+use std::io::Cursor;
+
+use crate::chain_view::{ChainView, Coin, MemoryChainView};
+use crate::error::ValidationError;
+use crate::genesis::{GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEX};
+use crate::merkle::compute_merkle_root;
+use crate::validation::{
+    txid, validate_block_context, validate_block_structure, BIP34_HEIGHT,
+    MAX_COINBASE_SCRIPTSIG_LEN, MAX_MONEY, MIN_COINBASE_SCRIPTSIG_LEN,
+};
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+fn decode_hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+fn hash_to_hex_display(hash: Hash256) -> String {
+    let mut rev = hash.0;
+    rev.reverse();
+    rev.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Build the minimal null-outpoint input (coinbase marker).
+fn coinbase_input(script_sig: Vec<u8>) -> TxIn {
+    TxIn {
+        previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+        script_sig,
+        sequence: u32::MAX,
+    }
+}
+
+/// Encode BIP34 height the same way the validator does (mirrors internal fn).
+fn bip34_script(height: u32) -> Vec<u8> {
+    if height == 0 {
+        return vec![0x00];
+    }
+    let mut le = height.to_le_bytes().to_vec();
+    while le.last() == Some(&0) {
+        le.pop();
+    }
+    if le.last().is_some_and(|&b| b & 0x80 != 0) {
+        le.push(0x00);
+    }
+    let len = u8::try_from(le.len()).unwrap();
+    let mut out = vec![len];
+    out.extend_from_slice(&le);
+    out
+}
+
+fn make_output(value: u64) -> TxOut {
+    TxOut { value, script_pubkey: vec![0x51] } // OP_1 (trivial P2PK stand-in)
+}
+
+/// Build a minimal valid block whose Stage 1 checks pass.
+///
+/// The caller supplies the coinbase scriptSig. nBits is set to the easiest
+/// possible target (0x207fffff) so proof-of-work is trivially satisfied.
+fn minimal_block(coinbase_script_sig: Vec<u8>, transactions: Vec<Transaction>) -> Block {
+    let coinbase = Transaction {
+        version: 1,
+        inputs: vec![coinbase_input(coinbase_script_sig)],
+        outputs: vec![make_output(50_0000_0000)],
+        locktime: 0,
+    };
+
+    let mut txs = vec![coinbase];
+    txs.extend(transactions);
+
+    let txids: Vec<Hash256> = txs.iter().map(txid).collect();
+    let merkle_root = compute_merkle_root(&txids).unwrap();
+
+    Block {
+        header: BlockHeader {
+            version: 4,
+            prev_block: Hash256::ZERO,
+            merkle_root,
+            time: 1_231_006_505,
+            bits: 0x207f_ffff, // regtest easiest target
+            nonce: 0,
+        },
+        transactions: txs,
+    }
+}
+
+// ── Build a MemoryChainView with N sequential headers ─────────────────────────
+
+fn build_chain(n: u32, bits: u32, base_time: u32) -> MemoryChainView {
+    let mut view = MemoryChainView::new();
+    let mut prev = Hash256::ZERO;
+    for i in 0..n {
+        let h = BlockHeader {
+            version: 4,
+            prev_block: prev,
+            merkle_root: Hash256::ZERO,
+            time: base_time + i * 600,
+            bits,
+            nonce: 0,
+        };
+        prev = Hash256(sha256d(&h.to_bytes()));
+        view.push_header(h);
+    }
+    view
+}
+
+// ── Genesis block BIP vectors ─────────────────────────────────────────────────
+
+#[test]
+fn genesis_decode_and_stage1_pass() {
+    let bytes = decode_hex(GENESIS_BLOCK_HEX);
+    let block = Block::decode(&mut Cursor::new(&bytes)).unwrap();
+
+    // The genesis block predates BIP34, so validate_block_structure should pass.
+    // The nBits is 0x1d00ffff; genesis hash is known to satisfy that target.
+    validate_block_structure(&block).expect("genesis block must pass Stage 1");
+}
+
+#[test]
+fn genesis_hash_matches_known_constant() {
+    let bytes = decode_hex(GENESIS_BLOCK_HEX);
+    let raw = sha256d(&bytes[..BlockHeader::ENCODED_LEN]);
+    assert_eq!(hash_to_hex_display(Hash256(raw)), GENESIS_BLOCK_HASH);
+}
+
+#[test]
+fn genesis_txid_matches_merkle_root() {
+    let bytes = decode_hex(GENESIS_BLOCK_HEX);
+    let block = Block::decode(&mut Cursor::new(&bytes)).unwrap();
+
+    let mut tx_bytes = Vec::new();
+    block.transactions[0].encode(&mut tx_bytes).unwrap();
+    let computed_txid = Hash256(sha256d(&tx_bytes));
+
+    // Genesis has one tx — merkle root equals the txid (no pair hashing).
+    assert_eq!(block.header.merkle_root, computed_txid);
+}
+
+// ── Stage 1: structural validation vectors ────────────────────────────────────
+
+#[test]
+fn stage1_empty_block_rejected() {
+    let block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block: Hash256::ZERO,
+            merkle_root: Hash256::ZERO,
+            time: 0,
+            bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![],
+    };
+    assert_eq!(validate_block_structure(&block), Err(ValidationError::EmptyBlock));
+}
+
+#[test]
+fn stage1_first_tx_not_coinbase_rejected() {
+    let non_cb = Transaction {
+        version: 1,
+        inputs: vec![TxIn {
+            previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
+            script_sig: vec![],
+            sequence: u32::MAX,
+        }],
+        outputs: vec![make_output(1000)],
+        locktime: 0,
+    };
+    let txids = vec![txid(&non_cb)];
+    let merkle_root = compute_merkle_root(&txids).unwrap();
+    let block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block: Hash256::ZERO,
+            merkle_root,
+            time: 0,
+            bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![non_cb],
+    };
+    assert_eq!(validate_block_structure(&block), Err(ValidationError::FirstTxNotCoinbase));
+}
+
+#[test]
+fn stage1_non_coinbase_with_null_outpoint_rejected() {
+    // Second tx uses the coinbase null outpoint — must be rejected.
+    let cb_script = {
+        let mut s = bip34_script(0);
+        s.extend_from_slice(&[0x00]); // pad to meet min length
+        s
+    };
+    let fake_cb = Transaction {
+        version: 1,
+        inputs: vec![coinbase_input(vec![0x51, 0x52])], // valid coinbase
+        outputs: vec![make_output(50_0000_0000)],
+        locktime: 0,
+    };
+    let imposter = Transaction {
+        version: 1,
+        inputs: vec![coinbase_input(vec![0x00, 0x00])], // null outpoint in tx[1]
+        outputs: vec![make_output(1000)],
+        locktime: 0,
+    };
+    let _ = cb_script;
+    let txids = vec![txid(&fake_cb), txid(&imposter)];
+    let merkle_root = compute_merkle_root(&txids).unwrap();
+    let block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block: Hash256::ZERO,
+            merkle_root,
+            time: 0,
+            bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![fake_cb, imposter],
+    };
+    assert_eq!(
+        validate_block_structure(&block),
+        Err(ValidationError::UnexpectedCoinbaseInput { tx_index: 1 }),
+    );
+}
+
+#[test]
+fn stage1_coinbase_script_too_short() {
+    let block = minimal_block(vec![0x00], vec![]); // 1 byte — below minimum of 2
+    assert_eq!(
+        validate_block_structure(&block),
+        Err(ValidationError::CoinbaseScriptSigLength { len: 1 }),
+    );
+}
+
+#[test]
+fn stage1_coinbase_script_too_long() {
+    let long_script = vec![0x00; MAX_COINBASE_SCRIPTSIG_LEN + 1];
+    let block = minimal_block(long_script, vec![]);
+    assert_eq!(
+        validate_block_structure(&block),
+        Err(ValidationError::CoinbaseScriptSigLength { len: MAX_COINBASE_SCRIPTSIG_LEN + 1 }),
+    );
+}
+
+#[test]
+fn stage1_coinbase_script_boundary_values_accepted() {
+    // We only care that the coinbase script-length check doesn't reject these.
+    // PoW with nonce=0 may or may not pass (hash is ~uniform), so we accept
+    // any error that is NOT CoinbaseScriptSigLength.
+    for &len in &[MIN_COINBASE_SCRIPTSIG_LEN, MAX_COINBASE_SCRIPTSIG_LEN] {
+        let script = vec![0x51; len];
+        match validate_block_structure(&minimal_block(script, vec![])) {
+            Ok(()) => {}
+            Err(ValidationError::CoinbaseScriptSigLength { len: actual }) => {
+                panic!("coinbase script of {len} bytes was rejected as bad length (got {actual})");
+            }
+            Err(_other) => {} // PoW or other structural error — script length was accepted
+        }
+    }
+}
+
+#[test]
+fn stage1_output_value_over_max_money_rejected() {
+    let too_much = MAX_MONEY + 1;
+    let coinbase = Transaction {
+        version: 1,
+        inputs: vec![coinbase_input(vec![0x51, 0x52])],
+        outputs: vec![TxOut { value: too_much, script_pubkey: vec![0x51] }],
+        locktime: 0,
+    };
+    let txids = vec![txid(&coinbase)];
+    let merkle_root = compute_merkle_root(&txids).unwrap();
+    let block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block: Hash256::ZERO,
+            merkle_root,
+            time: 0,
+            bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![coinbase],
+    };
+    assert_eq!(
+        validate_block_structure(&block),
+        Err(ValidationError::OutputValueOutOfRange { tx_index: 0, output_index: 0 }),
+    );
+}
+
+#[test]
+fn stage1_duplicate_inputs_rejected() {
+    let outpoint = OutPoint { txid: Hash256([0xab; 32]), vout: 1 };
+    let tx = Transaction {
+        version: 1,
+        inputs: vec![
+            TxIn { previous_output: outpoint, script_sig: vec![], sequence: u32::MAX },
+            TxIn { previous_output: outpoint, script_sig: vec![], sequence: u32::MAX }, // dup
+        ],
+        outputs: vec![make_output(1000)],
+        locktime: 0,
+    };
+    let coinbase = Transaction {
+        version: 1,
+        inputs: vec![coinbase_input(vec![0x51, 0x52])],
+        outputs: vec![make_output(50_0000_0000)],
+        locktime: 0,
+    };
+    let txids = vec![txid(&coinbase), txid(&tx)];
+    let merkle_root = compute_merkle_root(&txids).unwrap();
+    let block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block: Hash256::ZERO,
+            merkle_root,
+            time: 0,
+            bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![coinbase, tx],
+    };
+    assert_eq!(
+        validate_block_structure(&block),
+        Err(ValidationError::DuplicateInput { tx_index: 1 }),
+    );
+}
+
+#[test]
+fn stage1_merkle_mismatch_rejected() {
+    let mut block = minimal_block(vec![0x51, 0x52], vec![]);
+    // Corrupt the merkle root.
+    block.header.merkle_root = Hash256([0xff; 32]);
+    assert_eq!(validate_block_structure(&block), Err(ValidationError::MerkleRootMismatch));
+}
+
+#[test]
+fn stage1_invalid_bits_rejected() {
+    let mut block = minimal_block(vec![0x51, 0x52], vec![]);
+    block.header.bits = 0; // zero nBits is always invalid
+    // Also recompute merkle (header bits don't affect merkle root — this is fine).
+    assert_eq!(validate_block_structure(&block), Err(ValidationError::InvalidBits));
+}
+
+#[test]
+fn stage1_insufficient_pow_rejected() {
+    // Use a very hard target (0x03000001 ≈ 0x000001 × 2^(3-3)*8 — basically
+    // requires the hash to be almost zero). The block header nonce is 0 so
+    // the hash is effectively random and almost certainly fails this target.
+    let mut block = minimal_block(vec![0x51, 0x52], vec![]);
+    block.header.bits = 0x1900_0001; // very hard target
+    // Recompute the hash check — the actual hash won't satisfy target 0x0001…
+    // Note: we don't update merkle root for the bits field (it only appears in
+    // the header, not in tx data). So we need to rebuild:
+    let txids: Vec<Hash256> = block.transactions.iter().map(txid).collect();
+    let merkle_root = compute_merkle_root(&txids).unwrap();
+    block.header.merkle_root = merkle_root;
+    assert_eq!(
+        validate_block_structure(&block),
+        Err(ValidationError::InsufficientProofOfWork),
+    );
+}
+
+// ── Stage 2: contextual validation vectors ────────────────────────────────────
+
+/// Build a structurally valid block whose coinbase scriptSig starts with the
+/// BIP34 height encoding for `this_height`.
+fn stage2_block_for_height(
+    view: &MemoryChainView,
+    this_height: u32,
+    version: i32,
+) -> Block {
+    let tip = view.tip();
+    let parent_bits = view.get_header_at(tip.height).unwrap().unwrap().bits;
+    let script_sig = {
+        let mut s = bip34_script(this_height);
+        // Ensure minimum length of 2 even if bip34_script produced 1 byte.
+        if s.len() < MIN_COINBASE_SCRIPTSIG_LEN {
+            s.push(0x00);
+        }
+        s
+    };
+    let coinbase = Transaction {
+        version: 1,
+        inputs: vec![coinbase_input(script_sig)],
+        outputs: vec![make_output(50_0000_0000)],
+        locktime: 0,
+    };
+    let txids = vec![txid(&coinbase)];
+    let merkle_root = compute_merkle_root(&txids).unwrap();
+
+    // MTP = median of up to 11 preceding blocks. We need time > MTP.
+    // We pick a timestamp 600 seconds after the tip's timestamp.
+    let parent_time = view.get_header_at(tip.height).unwrap().unwrap().time;
+    let time = parent_time + 600;
+
+    Block {
+        header: BlockHeader {
+            version,
+            prev_block: tip.hash,
+            merkle_root,
+            time,
+            bits: parent_bits, // same difficulty (non-retarget height)
+            nonce: 0,
+        },
+        transactions: vec![coinbase],
+    }
+}
+
+#[test]
+fn stage2_unknown_parent_rejected() {
+    let view = build_chain(10, 0x207f_ffff, 1_000_000);
+    let mut block = stage2_block_for_height(&view, 10, 4);
+    // Point to an unknown parent.
+    block.header.prev_block = Hash256([0xde; 32]);
+    assert_eq!(
+        validate_block_context(&block, &view),
+        Err(ValidationError::UnknownParent),
+    );
+}
+
+#[test]
+fn stage2_unexpected_difficulty_rejected() {
+    let view = build_chain(10, 0x207f_ffff, 1_000_000);
+    let mut block = stage2_block_for_height(&view, 10, 4);
+    // Change the nBits to something different from the parent (non-retarget block).
+    block.header.bits = 0x1d00_ffff;
+    assert_eq!(
+        validate_block_context(&block, &view),
+        Err(ValidationError::UnexpectedDifficulty),
+    );
+}
+
+#[test]
+fn stage2_timestamp_not_greater_than_mtp_rejected() {
+    let view = build_chain(12, 0x207f_ffff, 1_000_000);
+    let tip = view.tip();
+    let parent_bits = view.get_header_at(tip.height).unwrap().unwrap().bits;
+    let this_height = tip.height + 1;
+    let script_sig = {
+        let mut s = bip34_script(this_height);
+        if s.len() < MIN_COINBASE_SCRIPTSIG_LEN {
+            s.push(0x00);
+        }
+        s
+    };
+    let coinbase = Transaction {
+        version: 1,
+        inputs: vec![coinbase_input(script_sig)],
+        outputs: vec![make_output(50_0000_0000)],
+        locktime: 0,
+    };
+    let txids = vec![txid(&coinbase)];
+    let merkle_root = compute_merkle_root(&txids).unwrap();
+
+    // MTP for 12 blocks at times [1_000_000, 1_000_600, …, 1_006_600].
+    // The 11 preceding blocks span heights 1..=11 (times 1_000_600..1_006_600).
+    // Median of 11 = the 6th = 1_003_600. We set time = 1_003_600 (not strictly greater).
+    let mtp = 1_003_600_u32; // median of heights 1..=11
+    Block {
+        header: BlockHeader {
+            version: 4,
+            prev_block: tip.hash,
+            merkle_root,
+            time: mtp, // equal to MTP — must be *greater*
+            bits: parent_bits,
+            nonce: 0,
+        },
+        transactions: vec![coinbase],
+    };
+
+    // Build a block with time == MTP (not strictly greater).
+    let bad_block = {
+        let script_sig2 = {
+            let mut s = bip34_script(this_height);
+            if s.len() < MIN_COINBASE_SCRIPTSIG_LEN {
+                s.push(0x00);
+            }
+            s
+        };
+        let coinbase2 = Transaction {
+            version: 1,
+            inputs: vec![coinbase_input(script_sig2)],
+            outputs: vec![make_output(50_0000_0000)],
+            locktime: 0,
+        };
+        let txids2 = vec![txid(&coinbase2)];
+        let mr2 = compute_merkle_root(&txids2).unwrap();
+        Block {
+            header: BlockHeader {
+                version: 4,
+                prev_block: tip.hash,
+                merkle_root: mr2,
+                time: mtp,
+                bits: parent_bits,
+                nonce: 0,
+            },
+            transactions: vec![coinbase2],
+        }
+    };
+    assert_eq!(
+        validate_block_context(&bad_block, &view),
+        Err(ValidationError::TimestampTooEarly),
+    );
+}
+
+#[test]
+fn stage2_bip34_height_missing_rejected() {
+    // Build a chain deep enough that BIP34 is required (height >= 227_931).
+    // We shortcut by building a chain of just 1 block (height 0) and requesting
+    // block at height 227_931, but that would need 227_931 headers. Instead,
+    // we build a 2-block chain and pretend the validator is checking at a BIP34
+    // height by patching. However, since MemoryChainView must have the actual
+    // headers, we take a simpler approach: build a chain with exactly BIP34_HEIGHT
+    // headers (index 0..BIP34_HEIGHT-1) so that the next block is at BIP34_HEIGHT.
+    //
+    // That requires BIP34_HEIGHT = 227_931 headers — impractical in a unit test.
+    // Instead we test with a small chain and verify the BIP34 path is taken for
+    // heights ≥ BIP34_HEIGHT by directly validating the coinbase content check.
+    //
+    // We build a chain with 5 blocks and test the sub-BIP34 path (no height
+    // requirement) — then we test the BIP34 check indirectly via the script
+    // prefix: since validate_bip34_height is called at BIP34_HEIGHT, we verify
+    // that a malformed prefix fails at that boundary using a chain that has
+    // exactly BIP34_HEIGHT ancestors. We keep this test tractable by using a
+    // fake view that has the tip at height BIP34_HEIGHT - 1.
+
+    // Build a chain with BIP34_HEIGHT blocks (each header is cheap: 80 bytes).
+    let view = build_chain(BIP34_HEIGHT, 0x207f_ffff, 1_000_000);
+    let tip = view.tip();
+    assert_eq!(tip.height, BIP34_HEIGHT - 1);
+
+    let parent_bits = view.get_header_at(tip.height).unwrap().unwrap().bits;
+    let parent_time = view.get_header_at(tip.height).unwrap().unwrap().time;
+
+    // coinbase with NO height encoding — just padding bytes.
+    let bad_script = vec![0x51, 0x52]; // does not start with encoded height
+    let coinbase = Transaction {
+        version: 1,
+        inputs: vec![coinbase_input(bad_script)],
+        outputs: vec![make_output(50_0000_0000)],
+        locktime: 0,
+    };
+    let txids = vec![txid(&coinbase)];
+    let merkle_root = compute_merkle_root(&txids).unwrap();
+    let block = Block {
+        header: BlockHeader {
+            version: 4,
+            prev_block: tip.hash,
+            merkle_root,
+            time: parent_time + 600,
+            bits: parent_bits,
+            nonce: 0,
+        },
+        transactions: vec![coinbase],
+    };
+    assert_eq!(
+        validate_block_context(&block, &view),
+        Err(ValidationError::Bip34HeightMissing),
+    );
+}
+
+#[test]
+fn stage2_bip34_correct_encoding_accepted() {
+    let view = build_chain(BIP34_HEIGHT, 0x207f_ffff, 1_000_000);
+    let block = stage2_block_for_height(&view, BIP34_HEIGHT, 4);
+    // Stage 1 uses easiest PoW so it passes; Stage 2 should also pass.
+    validate_block_context(&block, &view)
+        .expect("block with correct BIP34 height encoding must pass Stage 2");
+}
+
+#[test]
+fn stage2_block_version_too_low_rejected() {
+    // Build a chain at BIP65 activation height (388_381). Version must be ≥ 4.
+    let view = build_chain(388_381, 0x207f_ffff, 1_000_000);
+    let block = stage2_block_for_height(&view, 388_381, 3); // version 3 < required 4
+    assert_eq!(
+        validate_block_context(&block, &view),
+        Err(ValidationError::BlockVersionTooLow { version: 3, required: 4 }),
+    );
+}
+
+#[test]
+fn stage2_valid_block_accepted() {
+    // Small chain, pre-BIP34: no height encoding required, version 1 is fine.
+    let view = build_chain(5, 0x207f_ffff, 1_000_000);
+    let tip = view.tip();
+    let parent_bits = view.get_header_at(tip.height).unwrap().unwrap().bits;
+    let parent_time = view.get_header_at(tip.height).unwrap().unwrap().time;
+    let coinbase = Transaction {
+        version: 1,
+        inputs: vec![coinbase_input(vec![0x51, 0x52])],
+        outputs: vec![make_output(50_0000_0000)],
+        locktime: 0,
+    };
+    let txids = vec![txid(&coinbase)];
+    let merkle_root = compute_merkle_root(&txids).unwrap();
+    let block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block: tip.hash,
+            merkle_root,
+            time: parent_time + 600,
+            bits: parent_bits,
+            nonce: 0,
+        },
+        transactions: vec![coinbase],
+    };
+    validate_block_context(&block, &view).expect("minimal valid block must pass Stage 2");
+}
+
+// ── Known transaction fixtures ────────────────────────────────────────────────
+//
+// These are hand-encoded from Bitcoin Core's tx_valid / tx_invalid test data.
+// Only a curated subset is included to keep the file self-contained and fast.
+
+/// The genesis coinbase transaction (raw hex), confirmed in block 0.
+const GENESIS_COINBASE_RAW: &str = concat!(
+    "01000000", // version = 1
+    "01",       // input count = 1
+    // prevout hash (null, 32 bytes)
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "ffffffff", // prevout index = 0xffffffff (coinbase)
+    // scriptSig length + bytes: "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks"
+    "4d04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73",
+    "ffffffff", // sequence
+    "01",       // output count = 1
+    "00f2052a01000000", // value = 5_000_000_000 (50 BTC)
+    // scriptPubKey (65-byte uncompressed pubkey + OP_CHECKSIG)
+    "434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac",
+    "00000000"  // locktime = 0
+);
+
+/// Known txid of the genesis coinbase (display / reversed byte order).
+const GENESIS_COINBASE_TXID_DISPLAY: &str =
+    "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b";
+
+#[test]
+fn genesis_coinbase_decode_roundtrip() {
+    let bytes = decode_hex(GENESIS_COINBASE_RAW);
+    let tx = Transaction::decode(&mut Cursor::new(&bytes)).expect("genesis coinbase must decode");
+
+    // Basic structure checks.
+    assert_eq!(tx.version, 1);
+    assert_eq!(tx.inputs.len(), 1);
+    assert_eq!(tx.outputs.len(), 1);
+    assert_eq!(tx.outputs[0].value, 50_0000_0000);
+    assert_eq!(tx.locktime, 0);
+
+    // Re-encode must produce identical bytes.
+    let mut reencoded = Vec::new();
+    tx.encode(&mut reencoded).unwrap();
+    assert_eq!(reencoded, bytes, "encode(decode(x)) != x for genesis coinbase");
+}
+
+#[test]
+fn genesis_coinbase_txid_matches() {
+    let bytes = decode_hex(GENESIS_COINBASE_RAW);
+    let tx = Transaction::decode(&mut Cursor::new(&bytes)).unwrap();
+    let computed = txid(&tx);
+    assert_eq!(
+        hash_to_hex_display(computed),
+        GENESIS_COINBASE_TXID_DISPLAY,
+        "genesis coinbase txid mismatch",
+    );
+}
+
+#[test]
+fn genesis_coinbase_is_valid_null_outpoint() {
+    let bytes = decode_hex(GENESIS_COINBASE_RAW);
+    let tx = Transaction::decode(&mut Cursor::new(&bytes)).unwrap();
+    // Input must reference the null outpoint (coinbase marker).
+    assert_eq!(tx.inputs[0].previous_output.txid, Hash256::ZERO);
+    assert_eq!(tx.inputs[0].previous_output.vout, u32::MAX);
+}
+
+// ── BIP68 / sequence numbers (fixture regression) ────────────────────────────
+//
+// Sequence number 0xffffffff means "final" (no relative lock-time). We verify
+// the codec preserves arbitrary sequence values.
+
+#[test]
+fn sequence_field_roundtrip() {
+    for &seq in &[0u32, 1, 0xffff_fffe, 0xffff_ffff] {
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
+                script_sig: vec![],
+                sequence: seq,
+            }],
+            outputs: vec![make_output(1000)],
+            locktime: 0,
+        };
+        let mut buf = Vec::new();
+        tx.encode(&mut buf).unwrap();
+        let decoded = Transaction::decode(&mut Cursor::new(&buf)).unwrap();
+        assert_eq!(decoded.inputs[0].sequence, seq, "sequence {seq:#010x} not preserved");
+    }
+}
+
+// ── ChainView UTXO fixtures ───────────────────────────────────────────────────
+
+#[test]
+fn memory_chain_view_utxo_insert_lookup_spend() {
+    let mut view = MemoryChainView::new();
+    let op = OutPoint { txid: Hash256([0x12; 32]), vout: 3 };
+    let coin = Coin {
+        value: 100_000,
+        script_pubkey: vec![0x76, 0xa9, 0x14], // OP_DUP OP_HASH160 OP_DATA14
+        height: 500_000,
+        coinbase: false,
+    };
+
+    assert!(view.get_coin(&op).unwrap().is_none(), "UTXO must not exist before insert");
+    view.insert_coin(op, coin.clone());
+    assert_eq!(view.get_coin(&op).unwrap(), Some(coin), "UTXO must be retrievable after insert");
+
+    view.spend_coin(&op);
+    assert!(view.get_coin(&op).unwrap().is_none(), "UTXO must be gone after spend");
+}
+
+#[test]
+fn memory_chain_view_coinbase_flag_preserved() {
+    let mut view = MemoryChainView::new();
+    let op = OutPoint { txid: Hash256([0x99; 32]), vout: 0 };
+    let coin = Coin {
+        value: 50_0000_0000,
+        script_pubkey: vec![0x51],
+        height: 0,
+        coinbase: true,
+    };
+    view.insert_coin(op, coin.clone());
+    let retrieved = view.get_coin(&op).unwrap().unwrap();
+    assert!(retrieved.coinbase, "coinbase flag must survive round-trip through MemoryChainView");
+    assert_eq!(retrieved.height, 0);
+    assert_eq!(retrieved.value, 50_0000_0000);
+}
