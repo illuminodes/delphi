@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::RingBuffer as MpscRing;
 use quetzalcoatl::spmc::RingBuffer as SpmcRing;
-use ququmatz::types::{AF_INET, MsgFlags, SOCK_NONBLOCK, SOCK_STREAM, SockAddrIn};
+use ququmatz::types::{AF_INET, MsgFlags, SOCK_NONBLOCK, SOCK_STREAM, SockAddrIn, TimeoutFlags, Timespec};
 use ququmatz::{IoUring, Socket, Sqe};
 
 use crate::codec::{Decode, Encode};
@@ -82,6 +82,9 @@ pub struct PeerId(pub u32);
 const OP_CONNECT: u32 = 0;
 const OP_SEND: u32 = 1;
 const OP_RECV: u32 = 2;
+
+// Sentinel user_data for timeout SQEs — no valid peer tag can equal this.
+const TAG_TIMEOUT: u64 = u64::MAX;
 
 #[inline]
 fn make_tag(peer: PeerId, op: u32) -> u64 {
@@ -293,28 +296,71 @@ impl Node {
             .map_err(|e| Error::RingSubmit(format!("{e:?}")))?;
 
         while let Some(cqe) = self.ring.complete() {
-            let (peer_id, op) = decode_tag(cqe.user_data);
-            if cqe.result < 0 {
-                eprintln!("{}", Error::CqeError { peer: peer_id, op, code: cqe.result });
-                self.peers.remove(&peer_id);
-                continue;
-            }
-
-            match op {
-                OP_CONNECT => self.on_connected(peer_id)?,
-                OP_RECV => {
-                    // cqe.result is non-negative here (checked above).
-                    #[allow(clippy::cast_sign_loss)]
-                    self.on_recv(peer_id, cqe.result as usize)?;
-                }
-                _ => {}
-            }
+            self.dispatch_cqe(cqe)?;
         }
 
         Ok(())
     }
 
+    /// Block until at least one I/O event arrives or `timeout_ms` elapses,
+    /// then drain all pending CQEs.
+    ///
+    /// Uses a `Sqe::timeout(count=1)` submitted alongside any pending SQEs so
+    /// the kernel wakes us on whichever comes first — no `thread::sleep`, no
+    /// `Instant::now` poll loop.
+    ///
+    /// Returns `true` if at least one real I/O CQE was processed, `false` if
+    /// the call returned solely due to the timeout expiring.
+    ///
+    /// # Errors
+    /// Returns [`Error::RingPush`] or [`Error::RingSubmit`] on ring failures,
+    /// or propagates errors from CQE dispatch.
+    pub fn poll_or_timeout(&mut self, timeout_ms: u64) -> Result<bool, Error> {
+        self.flush_outbound();
+
+        let ts = Timespec::from_millis(timeout_ms);
+        self.ring
+            .push(Sqe::timeout(&ts, 1, TimeoutFlags::default()).user_data(TAG_TIMEOUT))
+            .map_err(|e| Error::RingPush(format!("{e:?}")))?;
+
+        // Block until ≥1 CQE (the timeout itself counts as one).
+        self.ring
+            .submit_and_wait(1)
+            .map_err(|e| Error::RingSubmit(format!("{e:?}")))?;
+
+        let mut io_work = false;
+        while let Some(cqe) = self.ring.complete() {
+            if cqe.user_data == TAG_TIMEOUT {
+                // -ETIME on normal expiry, 0 if count was satisfied first.
+                // Either way just skip — not an I/O error.
+                continue;
+            }
+            io_work = true;
+            self.dispatch_cqe(cqe)?;
+        }
+
+        Ok(io_work)
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
+
+    fn dispatch_cqe(&mut self, cqe: ququmatz::Completion) -> Result<(), Error> {
+        let (peer_id, op) = decode_tag(cqe.user_data);
+        if cqe.result < 0 {
+            eprintln!("{}", Error::CqeError { peer: peer_id, op, code: cqe.result });
+            self.peers.remove(&peer_id);
+            return Ok(());
+        }
+        match op {
+            OP_CONNECT => self.on_connected(peer_id)?,
+            OP_RECV => {
+                #[allow(clippy::cast_sign_loss)]
+                self.on_recv(peer_id, cqe.result as usize)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 
     fn flush_outbound(&mut self) {
         while let Some(msg) = self.outbound_rx.pop() {

@@ -1,3 +1,7 @@
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 use std::net::SocketAddrV4;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -61,6 +65,9 @@ fn getheaders_payload() -> Vec<u8> {
 }
 
 fn main() {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+
     println!("mantle-node starting");
 
     for seed in SEED_PEERS {
@@ -85,19 +92,14 @@ fn try_peer(addr: SocketAddrV4) -> Result<bool, mantle_core::Error> {
     let inbound = node.inbound_rx.clone();
 
     let mut headers_requested = false;
-    // Give up after ~20s per peer.
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
 
     loop {
-        if std::time::Instant::now() > deadline {
+        // Block until I/O arrives or 20 s elapses — no sleep, no Instant::now.
+        if !node.poll_or_timeout(20_000)? {
             println!("  timed out");
             return Ok(false);
         }
 
-        node.poll()?;
-
-        // Send getheaders immediately via send_direct the moment handshake
-        // completes — bypasses the outbound channel so it goes out this tick.
         if !headers_requested {
             match node.peer_handshake(peer_id) {
                 Some(HandshakeState::Ready) => {
@@ -118,8 +120,6 @@ fn try_peer(addr: SocketAddrV4) -> Result<bool, mantle_core::Error> {
                 return Ok(true);
             }
         }
-
-        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
