@@ -1,6 +1,6 @@
 use std::io::{self, Read, Write};
 
-use crate::codec::{Decode, DecodeRef, Encode, VarInt};
+use crate::codec::{Decode, DecodeRef, Encode, VarInt, decode_string_limited};
 use crate::hash::checksum;
 use crate::primitives::{BlockHeader, Hash256};
 
@@ -364,7 +364,7 @@ impl Decode for VersionMsg {
             receiver: NetworkAddr::decode(r)?,
             sender: NetworkAddr::decode(r)?,
             nonce: u64::decode(r)?,
-            user_agent: String::decode(r)?,
+            user_agent: decode_string_limited::<256>(r)?,
             start_height: i32::decode(r)?,
             relay: u8::decode(r)? != 0,
         })

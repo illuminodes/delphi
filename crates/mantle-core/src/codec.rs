@@ -292,11 +292,7 @@ impl Encode for String {
 
 impl Decode for String {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let VarInt(len) = VarInt::decode(r)?;
-        let len = usize::try_from(len).map_err(|_| io::Error::from(Error::LengthOverflow(len)))?;
-        let mut buf = vec![0u8; len];
-        r.read_exact(&mut buf)?;
-        String::from_utf8(buf).map_err(|e| io::Error::from(Error::InvalidUtf8(e.utf8_error())))
+        decode_string_limited::<{ 4 * 1024 * 1024 }>(r)
     }
 }
 
@@ -309,12 +305,34 @@ impl Encode for Vec<u8> {
 
 impl Decode for Vec<u8> {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let VarInt(len) = VarInt::decode(r)?;
-        let len = usize::try_from(len).map_err(|_| io::Error::from(Error::LengthOverflow(len)))?;
-        let mut buf = vec![0u8; len];
-        r.read_exact(&mut buf)?;
-        Ok(buf)
+        decode_bytes_limited::<{ 4 * 1024 * 1024 }>(r)
     }
+}
+
+// ── Length-limited byte/string helpers ───────────────────────────────────────
+
+/// Decode a `VarInt`-prefixed byte blob, rejecting lengths above `MAX_BYTES`.
+///
+/// # Errors
+/// Returns `InvalidData` if the length field exceeds `MAX_BYTES`, or on any I/O error.
+pub fn decode_bytes_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> io::Result<Vec<u8>> {
+    let VarInt(len) = VarInt::decode(r)?;
+    let len = usize::try_from(len).map_err(|_| io::Error::from(Error::LengthOverflow(len)))?;
+    if len > MAX_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "byte blob exceeds length limit"));
+    }
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf)?;
+    Ok(buf)
+}
+
+/// Decode a `VarInt`-prefixed UTF-8 string, rejecting lengths above `MAX_BYTES`.
+///
+/// # Errors
+/// Returns `InvalidData` if the length field exceeds `MAX_BYTES`, or on any I/O error.
+pub fn decode_string_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> io::Result<String> {
+    let buf = decode_bytes_limited::<MAX_BYTES>(r)?;
+    String::from_utf8(buf).map_err(|e| io::Error::from(Error::InvalidUtf8(e.utf8_error())))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

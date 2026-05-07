@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 
-use crate::codec::{Decode, DecodeRef, Encode, VarInt};
+use crate::codec::{Decode, DecodeRef, Encode, VarInt, decode_bytes_limited};
 
 // ── Hash256 ───────────────────────────────────────────────────────────────────
 
@@ -182,7 +182,7 @@ impl Decode for TxIn {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
         Ok(Self {
             previous_output: OutPoint::decode(r)?,
-            script_sig: Vec::<u8>::decode(r)?,
+            script_sig: decode_bytes_limited::<10_000>(r)?,
             sequence: u32::decode(r)?,
         })
     }
@@ -232,7 +232,7 @@ impl Decode for TxOut {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
         Ok(Self {
             value: u64::decode(r)?,
-            script_pubkey: Vec::<u8>::decode(r)?,
+            script_pubkey: decode_bytes_limited::<10_000>(r)?,
         })
     }
 }
