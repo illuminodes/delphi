@@ -16,7 +16,7 @@ use mantle_consensus::script::{
     Interpreter, InterpStackElement, NopSigChecker, ScriptFlags, SigVersion,
 };
 use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, signature_hash_bip143};
-use mantle_consensus::script::verify::{verify_script, verify_script_with_bufs};
+use mantle_consensus::script::verify::{ScriptVerifier, verify_script};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 use std::hint::black_box;
@@ -372,12 +372,10 @@ fn verify_p2wpkh_with_bufs(bencher: divan::Bencher) {
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
 
+    let verifier = ScriptVerifier::new(&tx, 0, amount, segwit_flags());
     let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
     bencher.bench_local(|| {
-        let (r, b) = verify_script_with_bufs(
-            black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, segwit_flags(),
-            std::mem::take(&mut bufs),
-        );
+        let (r, b) = verifier.verify_with_bufs(black_box(&[]), black_box(&spk), std::mem::take(&mut bufs));
         r.expect("p2wpkh must verify");
         bufs = b;
     });
@@ -407,12 +405,10 @@ fn verify_p2wsh_with_bufs(bencher: divan::Bencher) {
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice(), witness_script.as_slice()]);
 
+    let verifier = ScriptVerifier::new(&tx, 0, amount, segwit_flags());
     let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
     bencher.bench_local(|| {
-        let (r, b) = verify_script_with_bufs(
-            black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, segwit_flags(),
-            std::mem::take(&mut bufs),
-        );
+        let (r, b) = verifier.verify_with_bufs(black_box(&[]), black_box(&spk), std::mem::take(&mut bufs));
         r.expect("p2wsh must verify");
         bufs = b;
     });

@@ -8,7 +8,7 @@ use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Satoshi, Transac
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::{Interpreter, InterpStackElement, NopSigChecker, ScriptFlags, SigVersion};
 use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, signature_hash_bip143};
-use mantle_consensus::script::verify::{verify_script, verify_script_with_bufs};
+use mantle_consensus::script::verify::{ScriptVerifier, verify_script};
 use mantle_consensus::validation::{validate_block_structure, validate_block_wire};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
@@ -274,15 +274,16 @@ fn main() {
 
         let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
         // warm up the bufs outside the timed loop
-        let (r, b) = verify_script_with_bufs(&[], &spk, &tx, 0, amount, flags, bufs);
+        let verifier = ScriptVerifier::new(&tx, 0, amount, flags);
+        let (r, b) = verifier.verify_with_bufs(&[], &spk, bufs);
         r.expect("p2wpkh must verify");
         bufs = b;
 
         let mut n = 0u64;
         let deadline = std::time::Instant::now() + secs;
         while std::time::Instant::now() < deadline {
-            let (r, b) = verify_script_with_bufs(
-                black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, flags, bufs,
+            let (r, b) = verifier.verify_with_bufs(
+                black_box(&[]), black_box(&spk), bufs,
             );
             r.expect("p2wpkh must verify");
             bufs = b;
@@ -412,15 +413,16 @@ fn main() {
         };
 
         let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
-        let (r, b) = verify_script_with_bufs(&[], &spk, &tx, 0, amount, flags, bufs);
+        let verifier = ScriptVerifier::new(&tx, 0, amount, flags);
+        let (r, b) = verifier.verify_with_bufs(&[], &spk, bufs);
         r.expect("p2wsh must verify");
         bufs = b;
 
         let mut n = 0u64;
         let deadline = std::time::Instant::now() + secs;
         while std::time::Instant::now() < deadline {
-            let (r, b) = verify_script_with_bufs(
-                black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, flags, bufs,
+            let (r, b) = verifier.verify_with_bufs(
+                black_box(&[]), black_box(&spk), bufs,
             );
             r.expect("p2wsh must verify");
             bufs = b;

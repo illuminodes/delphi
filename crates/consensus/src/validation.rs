@@ -12,7 +12,7 @@ use crate::chain_view::{ConnectResult, NewCoin};
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
 use crate::merkle::compute_merkle_root_reusing;
-use crate::script::{ScriptFlags, verify_script_with_cache};
+use crate::script::{ScriptFlags, ScriptVerifier};
 use crate::script::sighash::Bip143Cache;
 
 
@@ -1032,15 +1032,8 @@ pub fn connect_block<V: ChainView>(
             // the fourth per-input check, run after the coin lookup and
             // before fee math. A failure rejects the tx regardless of
             // whether the value math would have passed.
-            verify_script_with_cache(
-                input.script_sig.as_slice(),
-                coin.script_pubkey.as_slice(),
-                tx,
-                input_index,
-                coin.value,
-                script_flags,
-                &bip143_cache,
-            )
+            ScriptVerifier::with_cache(tx, input_index, coin.value, script_flags, bip143_cache.clone())
+                .verify(input.script_sig.as_slice(), coin.script_pubkey.as_slice())
             .map_err(|kind| ValidationError::ScriptVerifyFailed {
                 tx_index,
                 input_index,

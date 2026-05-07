@@ -25,15 +25,98 @@ use super::interpreter::{InterpStackElement, Interpreter};
 use super::sighash::Bip143Cache;
 use super::sig_version::SigVersion;
 
+/// Verifier for a single transaction input's script pair.
+///
+/// Build once per input (or share the `Bip143Cache` across inputs of the same
+/// transaction with [`ScriptVerifier::with_cache`]), then call [`verify`] or
+/// [`verify_with_bufs`].
+///
+/// [`verify`]: ScriptVerifier::verify
+/// [`verify_with_bufs`]: ScriptVerifier::verify_with_bufs
+pub struct ScriptVerifier<'a> {
+    tx: &'a Transaction,
+    n_in: usize,
+    amount: Satoshi,
+    flags: ScriptFlags,
+    cache: Bip143Cache,
+}
+
+impl<'a> ScriptVerifier<'a> {
+    /// Build a verifier for input `n_in` of `tx`. Computes the `Bip143Cache`
+    /// immediately; use [`with_cache`] when verifying multiple inputs of the
+    /// same transaction.
+    ///
+    /// [`with_cache`]: ScriptVerifier::with_cache
+    #[must_use]
+    pub fn new(tx: &'a Transaction, n_in: usize, amount: Satoshi, flags: ScriptFlags) -> Self {
+        Self { tx, n_in, amount, flags, cache: Bip143Cache::new(tx) }
+    }
+
+    /// Build a verifier reusing a pre-built [`Bip143Cache`].
+    ///
+    /// Build the cache once with [`Bip143Cache::new`] before verifying any
+    /// input, then pass it to this constructor for each input. This avoids
+    /// recomputing `hashPrevouts`, `hashSequence`, and `hashOutputs` for
+    /// every input of the same transaction.
+    #[must_use]
+    pub fn with_cache(
+        tx: &'a Transaction,
+        n_in: usize,
+        amount: Satoshi,
+        flags: ScriptFlags,
+        cache: Bip143Cache,
+    ) -> Self {
+        Self { tx, n_in, amount, flags, cache }
+    }
+
+    /// Verify the script pair. Returns `Ok(())` iff the input authorises
+    /// spending under the configured rules.
+    ///
+    /// # Errors
+    /// Any of the structured `ScriptError` variants — see that enum's docs.
+    pub fn verify(&self, script_sig: &[u8], script_pubkey: &[u8]) -> Result<(), ScriptError> {
+        let bufs = (Vec::new(), Vec::new());
+        let (result, _bufs) = verify_script_impl(
+            script_sig, script_pubkey, self.tx, self.n_in, self.amount, self.flags, &self.cache, bufs,
+        );
+        result
+    }
+
+    /// Zero-allocation variant of [`verify`].
+    ///
+    /// The caller passes two pre-allocated, empty `Vec` buffers (for the main
+    /// and alt stacks). On return — success *or* error — the same buffers are
+    /// returned cleared but with their capacity intact, ready to be reused for
+    /// the next input.
+    ///
+    /// # Errors
+    /// Same as [`verify`].
+    ///
+    /// [`verify`]: ScriptVerifier::verify
+    pub fn verify_with_bufs(
+        &self,
+        script_sig: &[u8],
+        script_pubkey: &[u8],
+        bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
+    ) -> (Result<(), ScriptError>, (Vec<InterpStackElement>, Vec<InterpStackElement>)) {
+        verify_script_impl(
+            script_sig, script_pubkey, self.tx, self.n_in, self.amount, self.flags, &self.cache, bufs,
+        )
+    }
+}
+
 /// Verify a single transaction input's script pair.
 ///
 /// `script_sig` is the input's scriptSig; `script_pubkey` is the spent
 /// output's scriptPubKey. `tx` is the transaction being validated and `n_in`
 /// is the index of the input within it. `amount` is the value of the spent
-/// output (unused in legacy regime; threaded through for the BIP143 path
-/// that lands in M2). `flags` selects which soft-fork rules apply.
+/// output (unused in legacy regime; threaded through for the BIP143 path).
+/// `flags` selects which soft-fork rules apply.
 ///
 /// Returns `Ok(())` iff the input authorises spending under those rules.
+///
+/// Mirrors the `bitcoinconsensus` C API for fuzzer differential parity — prefer
+/// [`ScriptVerifier`] for new callers.
 ///
 /// # Errors
 /// Any of the structured `ScriptError` variants — see that enum's docs.
@@ -45,78 +128,7 @@ pub fn verify_script(
     amount: Satoshi,
     flags: ScriptFlags,
 ) -> Result<(), ScriptError> {
-    let cache = Bip143Cache::new(tx);
-    let bufs = (Vec::new(), Vec::new());
-    let (result, _bufs) = verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, &cache, bufs);
-    result
-}
-
-/// Variant of [`verify_script`] that accepts a pre-built [`Bip143Cache`].
-///
-/// When verifying multiple inputs of the same transaction, build the cache
-/// once with [`Bip143Cache::new`] and pass it to every call. This avoids
-/// recomputing `hashPrevouts`, `hashSequence`, and `hashOutputs` per input.
-///
-/// # Errors
-/// Same as [`verify_script`].
-pub fn verify_script_with_cache(
-    script_sig: &[u8],
-    script_pubkey: &[u8],
-    tx: &Transaction,
-    n_in: usize,
-    amount: Satoshi,
-    flags: ScriptFlags,
-    cache: &Bip143Cache,
-) -> Result<(), ScriptError> {
-    let bufs = (Vec::new(), Vec::new());
-    let (result, _bufs) = verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, cache, bufs);
-    result
-}
-
-/// Zero-allocation variant of [`verify_script`].
-///
-/// The caller passes two pre-allocated, empty `Vec` buffers (for the main and
-/// alt stacks). On return — success *or* error — the same buffers are returned
-/// cleared but with their capacity intact, ready to be reused for the next
-/// input. A block validator can therefore allocate a single pair of bufs once
-/// and drive every input through this function with no per-input heap allocation
-/// once the buffers have grown to their working-set size.
-///
-/// # Errors
-/// Same as [`verify_script`].
-pub fn verify_script_with_bufs(
-    script_sig: &[u8],
-    script_pubkey: &[u8],
-    tx: &Transaction,
-    n_in: usize,
-    amount: Satoshi,
-    flags: ScriptFlags,
-    bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
-) -> (Result<(), ScriptError>, (Vec<InterpStackElement>, Vec<InterpStackElement>)) {
-    let cache = Bip143Cache::new(tx);
-    verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, &cache, bufs)
-}
-
-/// Full zero-allocation variant: pre-built cache *and* reused stack buffers.
-///
-/// Combine [`verify_script_with_cache`] and [`verify_script_with_bufs`]: build
-/// the [`Bip143Cache`] once per transaction, allocate the stack `Vec`s once per
-/// block, and pass both through every input verification.
-///
-/// # Errors
-/// Same as [`verify_script`].
-#[allow(clippy::too_many_arguments)]
-pub fn verify_script_with_cache_and_bufs(
-    script_sig: &[u8],
-    script_pubkey: &[u8],
-    tx: &Transaction,
-    n_in: usize,
-    amount: Satoshi,
-    flags: ScriptFlags,
-    cache: &Bip143Cache,
-    bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
-) -> (Result<(), ScriptError>, (Vec<InterpStackElement>, Vec<InterpStackElement>)) {
-    verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, cache, bufs)
+    ScriptVerifier::new(tx, n_in, amount, flags).verify(script_sig, script_pubkey)
 }
 
 #[allow(clippy::too_many_arguments)]
