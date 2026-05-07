@@ -11,11 +11,8 @@ mantle = { path = "../core" }
 sha2 = { workspace = true }
 sha1 = { workspace = true }
 ripemd = { workspace = true }
-k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+k256 = { workspace = true, features = ["ecdsa"] }
 
 [dev-dependencies]
 proptest = "1"
-# Tests use k256's signing API to construct real ECDSA signatures for the
-# script interpreter to verify. The library/runtime path only needs the
-# `ecdsa` feature; signing is test-only.
-k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
+k256 = { workspace = true, features = ["ecdsa", "arithmetic"] }

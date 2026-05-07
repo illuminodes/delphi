@@ -543,8 +543,11 @@ version = "0.1.0"
 dependencies = [
  "dhat",
  "divan",
+ "k256",
  "mantle",
  "mantle-consensus",
+ "ripemd",
+ "sha2 0.11.0",
 ]
 
 [[package]]

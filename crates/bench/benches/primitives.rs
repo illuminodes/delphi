@@ -1,5 +1,5 @@
 use mantle::codec::{Decode, DecodeRef, Encode};
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, TxHash, TxIn, TxInRef, TxOut, TxOutRef};
+use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, TxHash, TxIn, TxInRef, TxOut, TxOutRef, Witness};
 use std::hint::black_box;
 use std::io::Cursor;
 
@@ -32,6 +32,7 @@ fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
                 previous_output: OutPoint { txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), vout: u32::try_from(i).expect("bench index fits u32") },
                 script_sig: vec![0x51; 20].into(),
                 sequence: u32::MAX,
+                witness: Witness::empty(),
             })
             .collect(),
         outputs: (0..n_outputs)
@@ -118,6 +119,7 @@ fn txin_encode() -> Vec<u8> {
         previous_output: OutPoint { txid: Hash256([0xabu8; 32]), vout: 0 },
         script_sig: vec![0x76; 25].into(),
         sequence: u32::MAX,
+        witness: Witness::empty(),
     })
 }
 
@@ -127,6 +129,7 @@ fn txin_decode(bencher: divan::Bencher) {
         previous_output: OutPoint { txid: Hash256([0xabu8; 32]), vout: 0 },
         script_sig: vec![0x76; 25].into(),
         sequence: u32::MAX,
+        witness: Witness::empty(),
     };
     let bytes = encode_bytes(&txin);
     bencher.bench(|| TxIn::decode(&mut Cursor::new(bytes.as_slice())).expect("TxIn decode cannot fail on valid bytes"));
@@ -138,6 +141,7 @@ fn txin_decode_ref(bencher: divan::Bencher) {
         previous_output: OutPoint { txid: Hash256([0xabu8; 32]), vout: 0 },
         script_sig: vec![0x76; 25].into(),
         sequence: u32::MAX,
+        witness: Witness::empty(),
     };
     let bytes = encode_bytes(&txin);
     bencher.bench(|| {

@@ -1,10 +1,16 @@
+use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 use mantle::codec::Encode;
 use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut, Witness};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::{compute_merkle_root_reusing, merkle_root_owned};
 use mantle_consensus::script::{Interpreter, NopSigChecker, ScriptFlags, SigVersion};
+use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, signature_hash_bip143};
+use mantle_consensus::script::verify::verify_script;
 use mantle_consensus::validation::{validate_block_structure_reusing, validate_block_wire};
+use ripemd::Ripemd160;
+use sha2::{Digest, Sha256};
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -207,7 +213,130 @@ fn main() {
         }
     }
 
-    // --- scenario 8: script Interpreter::eval on a hash + arithmetic mix (5000 iters) ---
+    // --- scenario 8: verify_script P2WPKH end-to-end (2000 iters) ---
+    // Exercises the full segwit v0 path: Bip143Cache construction, BIP143
+    // sighash, ECDSA verify, synthetic P2PKH scriptCode dispatch.
+    // One TxSigChecker (and one Bip143Cache) is built per verify_script call,
+    // matching real per-input validation.
+    {
+        let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
+        let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+        let pkh: [u8; 20] = {
+            let mid = Sha256::digest(&pk);
+            Ripemd160::digest(mid).into()
+        };
+        let mut spk = vec![0x00u8, 0x14];
+        spk.extend_from_slice(&pkh);
+
+        let mut script_code = vec![0x76u8, 0xa9, 0x14];
+        script_code.extend_from_slice(&pkh);
+        script_code.extend_from_slice(&[0x88, 0xac]);
+
+        let amount = Satoshi::new(100_000);
+        let flags = ScriptFlags::P2SH
+            | ScriptFlags::DERSIG
+            | ScriptFlags::LOW_S
+            | ScriptFlags::STRICTENC
+            | ScriptFlags::NULLDUMMY
+            | ScriptFlags::WITNESS;
+
+        let tmp_tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+        let cache = Bip143Cache::new(&tmp_tx);
+        let digest = signature_hash_bip143(&tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache);
+        let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
+        let sig = sig.normalize_s().unwrap_or(sig);
+        let mut sig_bytes = sig.to_der().as_bytes().to_vec();
+        sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
+
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice()]),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+
+        for _ in 0..2_000 {
+            verify_script(&[], &spk, &tx, 0, amount, flags).expect("p2wpkh must verify");
+        }
+    }
+
+    // --- scenario 9: verify_script P2WSH end-to-end (1000 iters) ---
+    // Exercises the P2WSH path: SHA256 commitment check, witness script eval,
+    // clean-stack enforcement. The witness script is a P2PKH-inside-P2WSH.
+    {
+        let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
+        let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+        let pkh: [u8; 20] = {
+            let mid = Sha256::digest(&pk);
+            Ripemd160::digest(mid).into()
+        };
+        let mut witness_script = vec![0x76u8, 0xa9, 0x14];
+        witness_script.extend_from_slice(&pkh);
+        witness_script.extend_from_slice(&[0x88, 0xac]);
+
+        let script_hash: [u8; 32] = Sha256::digest(&witness_script).into();
+        let mut spk = vec![0x00u8, 0x20];
+        spk.extend_from_slice(&script_hash);
+
+        let amount = Satoshi::new(200_000);
+        let flags = ScriptFlags::P2SH
+            | ScriptFlags::DERSIG
+            | ScriptFlags::LOW_S
+            | ScriptFlags::STRICTENC
+            | ScriptFlags::NULLDUMMY
+            | ScriptFlags::WITNESS;
+
+        let tmp_tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+        let cache = Bip143Cache::new(&tmp_tx);
+        let digest = signature_hash_bip143(&tmp_tx, 0, &witness_script, amount, SigHashType::ALL, &cache);
+        let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
+        let sig = sig.normalize_s().unwrap_or(sig);
+        let mut sig_bytes = sig.to_der().as_bytes().to_vec();
+        sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
+
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice(), witness_script.as_slice()]),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+
+        for _ in 0..1_000 {
+            verify_script(&[], &spk, &tx, 0, amount, flags).expect("p2wsh must verify");
+        }
+    }
+
+    // --- scenario 10: script Interpreter::eval on a hash + arithmetic mix (5000 iters) ---
     // Real-shape script: P2PKH-ish (DUP HASH160 PUSHBYTES_20 <hash> EQUALVERIFY OP_1)
     // + a small arithmetic chain. Closest to typical mainnet pre-CHECKSIG work.
     // Allocation pressure here comes from each push (Vec::new() per stack

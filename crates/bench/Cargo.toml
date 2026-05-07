@@ -43,6 +43,9 @@ path = "src/perf_driver.rs"
 mantle = { path = "../core" }
 mantle-consensus = { path = "../consensus" }
 dhat = "0.3"
+k256 = { workspace = true, features = ["ecdsa", "arithmetic"] }
+sha2 = { workspace = true }
+ripemd = { workspace = true }
 
 [dev-dependencies]
 divan = "0.1"

@@ -1,19 +1,24 @@
 //! Script-interpreter benches.
 //!
-//! Three workload tiers:
+//! Four workload tiers:
 //! - Tiny scripts: per-step dispatch overhead.
 //! - Realistic legacy scripts: typical opcode mixes (P2PKH-shape sans
 //!   signature, arithmetic, IF/ELSE).
 //! - Pathological / limit cases: at the 201-op cap, deep IF nesting,
 //!   maximum push sizes.
-//!
-//! All benches run a fresh `Interpreter` per iteration (matches what real
-//! validation does — one interpreter per input). `NopSigChecker` is used
-//! everywhere; CHECKSIG-class opcodes are stubbed in M1.1 anyway.
+//! - Segwit v0 end-to-end: full `verify_script` with real ECDSA signing for
+//!   P2WPKH and P2WSH paths (BIP141/143).
 
+use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
+use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, Witness};
 use mantle_consensus::script::{
     Interpreter, NopSigChecker, ScriptFlags, SigVersion,
 };
+use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, signature_hash_bip143};
+use mantle_consensus::script::verify::verify_script;
+use ripemd::Ripemd160;
+use sha2::{Digest, Sha256};
 use std::hint::black_box;
 
 fn main() {
@@ -241,5 +246,101 @@ fn reader_walk_1000_ops(bencher: divan::Bencher) {
         while let Ok(Some(s)) = r.next_step() {
             black_box(s);
         }
+    });
+}
+
+// ── Tier 4: segwit v0 end-to-end ───────────────────────────────────────────
+
+fn segwit_flags() -> ScriptFlags {
+    ScriptFlags::P2SH
+        | ScriptFlags::DERSIG
+        | ScriptFlags::LOW_S
+        | ScriptFlags::STRICTENC
+        | ScriptFlags::NULLDUMMY
+        | ScriptFlags::WITNESS
+}
+
+fn make_witness_tx(witness_items: &[&[u8]]) -> Transaction {
+    Transaction {
+        version: 1,
+        inputs: vec![TxIn {
+            previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+            script_sig: vec![].into(),
+            sequence: 0xffff_ffff,
+            witness: Witness::from_slice(witness_items),
+        }],
+        outputs: vec![TxOut { value: Satoshi::new(100_000), script_pubkey: vec![0x6a].into() }],
+        locktime: 0,
+    }
+}
+
+fn hash160(data: &[u8]) -> [u8; 20] {
+    Ripemd160::digest(Sha256::digest(data)).into()
+}
+
+fn ecdsa_sign(sk: &SigningKey, digest: &[u8; 32], hash_type: SigHashType) -> Vec<u8> {
+    let sig: EcdsaSig = sk.sign_prehash(digest).expect("signing cannot fail");
+    let sig = sig.normalize_s().unwrap_or(sig);
+    let mut bytes = sig.to_der().as_bytes().to_vec();
+    bytes.push(u8::try_from(hash_type.0 & 0xff).expect("hashtype fits u8"));
+    bytes
+}
+
+/// Full `verify_script` call for a P2WPKH input. Exercises BIP143 sighash,
+/// `TxSigChecker` construction (including `Bip143Cache`), and ECDSA verify.
+#[divan::bench]
+fn verify_p2wpkh(bencher: divan::Bencher) {
+    let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
+    let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+    let pkh = hash160(&pk);
+
+    let mut spk = vec![0x00u8, 0x14];
+    spk.extend_from_slice(&pkh);
+
+    let mut script_code = vec![0x76u8, 0xa9, 0x14];
+    script_code.extend_from_slice(&pkh);
+    script_code.extend_from_slice(&[0x88, 0xac]);
+
+    let amount = Satoshi::new(100_000);
+    let tmp_tx = make_witness_tx(&[]);
+    let cache = Bip143Cache::new(&tmp_tx);
+    let digest = signature_hash_bip143(&tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache);
+    let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
+
+    let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
+
+    bencher.bench(|| {
+        verify_script(black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, segwit_flags())
+            .expect("p2wpkh must verify");
+    });
+}
+
+/// Full `verify_script` call for a P2WSH input (witness script = P2PKH).
+/// Adds SHA256 commitment check and witness-script eval on top of P2WPKH cost.
+#[divan::bench]
+fn verify_p2wsh(bencher: divan::Bencher) {
+    let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
+    let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+    let pkh = hash160(&pk);
+
+    let mut witness_script = vec![0x76u8, 0xa9, 0x14];
+    witness_script.extend_from_slice(&pkh);
+    witness_script.extend_from_slice(&[0x88, 0xac]);
+
+    let script_hash: [u8; 32] = Sha256::digest(&witness_script).into();
+    let mut spk = vec![0x00u8, 0x20];
+    spk.extend_from_slice(&script_hash);
+
+    let amount = Satoshi::new(200_000);
+    let tmp_tx = make_witness_tx(&[]);
+    let cache = Bip143Cache::new(&tmp_tx);
+    let digest = signature_hash_bip143(&tmp_tx, 0, &witness_script, amount, SigHashType::ALL, &cache);
+    let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
+
+    let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice(), witness_script.as_slice()]);
+
+    bencher.bench(|| {
+        verify_script(black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, segwit_flags())
+            .expect("p2wsh must verify");
     });
 }

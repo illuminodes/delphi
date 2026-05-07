@@ -631,6 +631,9 @@ pub type ScriptPubKey = ScriptBuf<36>;
 /// non-witness (txid) serialisation.
 #[derive(Clone)]
 pub enum WitnessBuf<const ITEMS: usize, const BYTES: usize> {
+    /// No stack items — the common case for legacy and non-segwit inputs.
+    /// Zero allocation; avoids the `Box<[u8; BYTES]>` that `Inline` requires.
+    Empty,
     Inline {
         count: u8,
         ends: [u16; ITEMS],
@@ -674,7 +677,7 @@ impl<const ITEMS: usize, const BYTES: usize> WitnessBuf<ITEMS, BYTES> {
     /// An empty witness (no stack items).
     #[must_use]
     pub fn empty() -> Self {
-        Self::Inline { count: 0, ends: [0u16; ITEMS], used: 0, data: Box::new([0u8; BYTES]) }
+        Self::Empty
     }
 
     /// Construct from a slice of byte-string items.
@@ -705,6 +708,7 @@ impl<const ITEMS: usize, const BYTES: usize> WitnessBuf<ITEMS, BYTES> {
     #[must_use]
     pub fn len(&self) -> usize {
         match self {
+            Self::Empty => 0,
             Self::Inline { count, .. } => *count as usize,
             Self::Heap(v) => v.len(),
         }
@@ -721,6 +725,7 @@ impl<const ITEMS: usize, const BYTES: usize> WitnessBuf<ITEMS, BYTES> {
     #[must_use]
     pub fn get(&self, i: usize) -> Option<&[u8]> {
         match self {
+            Self::Empty => None,
             Self::Inline { count, ends, data, .. } => {
                 if i >= *count as usize {
                     return None;
@@ -749,6 +754,7 @@ impl<const ITEMS: usize, const BYTES: usize> WitnessBuf<ITEMS, BYTES> {
     #[must_use]
     pub fn total_bytes(&self) -> usize {
         match self {
+            Self::Empty => 0,
             Self::Inline { used, .. } => *used as usize,
             Self::Heap(v) => v.iter().map(Vec::len).sum(),
         }

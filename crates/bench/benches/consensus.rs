@@ -1,5 +1,5 @@
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut, Witness};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::{compute_merkle_root, compute_merkle_root_reusing};
 use mantle::codec::Encode;
@@ -21,6 +21,7 @@ fn coinbase_tx(value: u64) -> Transaction {
             previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
             script_sig: vec![0x03, 0x01, 0x00, 0x00].into(), // BIP34 height=1
             sequence: u32::MAX,
+            witness: Witness::empty(),
         }],
         outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }],
         locktime: 0,
@@ -34,6 +35,7 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
             previous_output: OutPoint { txid: prev, vout },
             script_sig: vec![0x51].into(),
             sequence: u32::MAX,
+            witness: Witness::empty(),
         }],
         outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }],
         locktime: 0,
@@ -106,6 +108,7 @@ fn txid_regular(bencher: divan::Bencher, n_inputs: usize) {
                 previous_output: OutPoint { txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), vout: u32::try_from(i).expect("bench index fits u32") },
                 script_sig: vec![0x51; 20].into(),
                 sequence: u32::MAX,
+                witness: Witness::empty(),
             })
             .collect(),
         ..tx
@@ -198,6 +201,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
             previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
             script_sig: vec![0x03, 0x0d, 0x00, 0x00].into(), // height=13
             sequence: u32::MAX,
+            witness: Witness::empty(),
         }],
         outputs: vec![TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x51].into() }],
         locktime: 0,

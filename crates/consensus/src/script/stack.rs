@@ -210,12 +210,16 @@ impl<const N: usize> Default for Stack<N> {
     }
 }
 
+/// Initial `Vec` capacity for a new stack. Real scripts rarely exceed a handful
+/// of items; we grow on demand up to `MAX_STACK_SIZE`. Pre-allocating 1000
+/// slots (~33 KB each for `Stack<32>`) was the dominant allocation site in the
+/// dhat profile — two stacks per `Interpreter::new` × every input.
+const INITIAL_STACK_CAP: usize = 16;
+
 impl<const N: usize> Stack<N> {
-    /// Empty stack pre-sized to the consensus cap so opcode handlers don't
-    /// pay reallocation cost on growth.
     #[must_use]
     pub fn new() -> Self {
-        Self { items: Vec::with_capacity(MAX_STACK_SIZE) }
+        Self { items: Vec::with_capacity(INITIAL_STACK_CAP) }
     }
 
     /// Number of items.

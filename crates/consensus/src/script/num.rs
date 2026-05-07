@@ -49,6 +49,20 @@ impl ScriptNum {
             return Self::ZERO;
         }
 
+        // Fast path: the vast majority of script integers are OP_1..OP_16
+        // pushes (1–16) or small arithmetic results. Values in 1..=127 encode
+        // as a single byte with no sign bit manipulation needed.
+        // Both casts are safe: the range guards ensure the value fits in u8
+        // and that -value is positive before the cast.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        if (1..=127).contains(&value) {
+            return Self { buf: [value as u8, 0, 0, 0, 0], len: 1 };
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        if (-127..=-1).contains(&value) {
+            return Self { buf: [((-value) as u8) | 0x80, 0, 0, 0, 0], len: 1 };
+        }
+
         let negative = value < 0;
         // For i64::MIN, wrapping_neg returns i64::MIN; reading those bits as
         // u64 gives 0x8000_0000_0000_0000 — the correct unsigned magnitude.
