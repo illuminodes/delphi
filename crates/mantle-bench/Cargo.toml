@@ -1,0 +1,26 @@
+[package]
+name = "mantle-bench"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "codec"
+harness = false
+
+[[bench]]
+name = "hash"
+harness = false
+
+[[bench]]
+name = "network"
+harness = false
+
+[dependencies]
+mantle-core = { path = "../mantle-core" }
+
+[dev-dependencies]
+divan = "0.1"

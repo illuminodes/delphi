@@ -1,0 +1,33 @@
+[package]
+name = "mantle-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "fuzz_varint"
+path = "fuzz_targets/fuzz_varint.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_primitives"
+path = "fuzz_targets/fuzz_primitives.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_network"
+path = "fuzz_targets/fuzz_network.rs"
+test = false
+doc = false
+
+[dependencies]
+mantle-core = { path = "../crates/mantle-core" }
+libfuzzer-sys = "0.4"
+
+# Prevent this from being included in the workspace.
+[workspace]

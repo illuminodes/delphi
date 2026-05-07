@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/mantle-core", "crates/consensus", "crates/mantle-node"]
+members = [
+    "crates/mantle-core",
+    "crates/consensus",
+    "crates/mantle-node",
+    "crates/mantle-bench",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +16,10 @@ all = "warn"
 perf = "warn"
 pedantic = "warn"
 style = "warn"
+
+# cargo-fuzz requires debug info in release builds to get useful stack traces.
+[profile.release]
+debug = true
 
 [workspace.dependencies]
 sha2 = { version = "0.11", default-features = false }
