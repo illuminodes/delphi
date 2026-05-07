@@ -139,13 +139,13 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
     fn dispatch(&mut self, step: Step<'_>) -> Result<(), ScriptError> {
         match step.opcode {
             // ── Push opcodes ────────────────────────────────────────────────
-            Opcode::Op0 => self.stack.push_checked(Vec::new(), self.altstack.len()),
+            Opcode::Op0 => self.stack.push_checked(&[], self.altstack.len()),
             Opcode::PushBytes(_)
             | Opcode::PushData1
             | Opcode::PushData2
             | Opcode::PushData4 => self
                 .stack
-                .push_checked(step.data.to_vec(), self.altstack.len()),
+                .push_checked(step.data, self.altstack.len()),
             Opcode::Op1Negate => self.stack.push_num(-1, self.altstack.len()),
             Opcode::OpN(n) => self.stack.push_num(i64::from(n), self.altstack.len()),
 

@@ -22,10 +22,15 @@ use super::Interpreter;
 
 impl<C: SignatureChecker> Interpreter<'_, C> {
     /// Pop the top, hash it with `H`, push the digest.
+    ///
+    /// The digest goes through `push_checked(&[u8], …)` which copies into an
+    /// inline `StackElement` slot — no `Vec` allocation. SHA-256 / SHA-1 /
+    /// RIPEMD-160 outputs (32, 20, 20 bytes) all fit in the default 32-byte
+    /// inline cap.
     fn hash_top<H: Digest>(&mut self) -> Result<(), ScriptError> {
         let top = self.stack.pop()?;
-        let digest = H::digest(&top);
-        self.stack.push_checked(digest.to_vec(), self.altstack.len())
+        let digest = H::digest(top.as_slice());
+        self.stack.push_checked(digest.as_slice(), self.altstack.len())
     }
 
     pub(super) fn op_ripemd160(&mut self) -> Result<(), ScriptError> {
@@ -43,16 +48,16 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
     /// `OP_HASH160` = `RIPEMD160(SHA256(top))`.
     pub(super) fn op_hash160(&mut self) -> Result<(), ScriptError> {
         let top = self.stack.pop()?;
-        let inner = Sha256::digest(&top);
+        let inner = Sha256::digest(top.as_slice());
         let outer = Ripemd160::digest(inner);
-        self.stack.push_checked(outer.to_vec(), self.altstack.len())
+        self.stack.push_checked(outer.as_slice(), self.altstack.len())
     }
 
     /// `OP_HASH256` = `SHA256(SHA256(top))`. Reuses `mantle::hash::sha256d`.
     pub(super) fn op_hash256(&mut self) -> Result<(), ScriptError> {
         let top = self.stack.pop()?;
-        let digest = mantle::hash::sha256d(&top);
-        self.stack.push_checked(digest.to_vec(), self.altstack.len())
+        let digest = mantle::hash::sha256d(top.as_slice());
+        self.stack.push_checked(&digest, self.altstack.len())
     }
 
     // ── M1.2 stubs ──────────────────────────────────────────────────────────

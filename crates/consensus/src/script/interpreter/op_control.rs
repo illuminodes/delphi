@@ -8,7 +8,6 @@
 use crate::script::checker::SignatureChecker;
 use crate::script::error::ScriptError;
 use crate::script::flags::ScriptFlags;
-use crate::script::stack::Stack;
 
 use super::Interpreter;
 
@@ -25,7 +24,7 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
                     return Err(ScriptError::MinimalIf);
                 }
             }
-            let cond = Stack::cast_to_bool(top);
+            let cond = top.is_truthy();
             self.stack.pop()?; // discard the operand
             if negated { !cond } else { cond }
         } else {
