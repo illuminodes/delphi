@@ -60,7 +60,7 @@ fn getheaders_payload() -> Vec<u8> {
         stop_hash: Hash256::ZERO,
     };
     let mut payload = Vec::new();
-    msg.encode(&mut payload).unwrap();
+    msg.encode(&mut payload).expect("Vec<u8> write cannot fail");
     payload
 }
 
@@ -138,7 +138,11 @@ fn handle_message(msg: &InboundMsg) -> bool {
             Ok(iter) => {
                 let total = iter.len();
                 println!("  received {total} header(s)");
-                for (i, result) in HeadersMsg::iter_entries::<2_000>(&msg.payload).unwrap().enumerate().take(5) {
+                for (i, result) in HeadersMsg::iter_entries::<2_000>(&msg.payload)
+                    .expect("iter_entries succeeded moments ago on same bytes")
+                    .enumerate()
+                    .take(5)
+                {
                     let h = match result {
                         Ok(h) => h,
                         Err(e) => { eprintln!("  failed to decode header: {e}"); break; }
@@ -149,7 +153,7 @@ fn handle_message(msg: &InboundMsg) -> bool {
                     rev.reverse();
                     let hex: String = rev.iter().fold(String::new(), |mut s, b| {
                         use std::fmt::Write;
-                        write!(s, "{b:02x}").unwrap();
+                        write!(s, "{b:02x}").expect("fmt::Write on String cannot fail");
                         s
                     });
                     println!(
@@ -173,7 +177,8 @@ fn handle_message(msg: &InboundMsg) -> bool {
 fn hex_to_bytes32(s: &str) -> [u8; 32] {
     let mut bytes = [0u8; 32];
     for i in 0..32 {
-        bytes[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
+        bytes[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
+            .unwrap_or_else(|_| panic!("invalid hex at offset {}", i * 2));
     }
     bytes.reverse();
     bytes

@@ -259,7 +259,7 @@ pub fn encode_message(
         command: CommandName::from(command),
         length: u32::try_from(payload.len())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
-        checksum: checksum(payload),
+        checksum: checksum(payload)?,
     };
     header.encode(w)?;
     w.write_all(payload)
@@ -320,7 +320,7 @@ impl<'a> DecodeRef<'a> for NetworkAddr {
             ));
         }
         let (port_bytes, buf) = buf.split_at(2);
-        let port = u16::from_be_bytes(port_bytes.try_into().unwrap());
+        let port = u16::from_be_bytes(port_bytes.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?);
         Ok((Self { services, ip, port }, buf))
     }
 }
@@ -451,11 +451,11 @@ impl InvEntry {
     }
 
     #[must_use]
-    #[allow(clippy::missing_panics_doc)] // slices are exact — unwraps cannot panic
     pub fn from_bytes(b: &[u8; Self::ENCODED_LEN]) -> Self {
+        let [k0, k1, k2, k3, ref hash @ ..] = *b;
         Self {
-            kind: InvType::from_u32(u32::from_le_bytes(b[0..4].try_into().unwrap())),
-            hash: Hash256(b[4..36].try_into().unwrap()),
+            kind: InvType::from_u32(u32::from_le_bytes([k0, k1, k2, k3])),
+            hash: Hash256(*hash),
         }
     }
 }
@@ -483,7 +483,7 @@ impl<'a> DecodeRef<'a> for InvEntry {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "not enough bytes"));
         }
         let (head, tail) = buf.split_at(Self::ENCODED_LEN);
-        Ok((Self::from_bytes(head.try_into().unwrap()), tail))
+        Ok((Self::from_bytes(head.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?), tail))
     }
 }
 
@@ -527,7 +527,7 @@ impl Iterator for InvEntryIter<'_> {
         let (head, tail) = self.remaining.split_at(InvEntry::ENCODED_LEN);
         self.remaining = tail;
         self.left -= 1;
-        Some(Ok(InvEntry::from_bytes(head.try_into().unwrap())))
+        Some(head.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData)).map(InvEntry::from_bytes))
     }
 
     #[inline]
@@ -574,8 +574,8 @@ impl InvMsg {
         r.read_exact(&mut buf)?;
         let entries = buf
             .chunks_exact(InvEntry::ENCODED_LEN)
-            .map(|chunk| InvEntry::from_bytes(chunk.try_into().unwrap()))
-            .collect();
+            .map(|chunk| chunk.try_into().map(InvEntry::from_bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidData)))
+            .collect::<io::Result<Vec<_>>>()?;
         Ok(Self(entries))
     }
 
@@ -603,11 +603,12 @@ impl InvMsg {
         // engineer; just allocate the byte buf once and decode in-place.
         let mut buf = vec![0u8; byte_len];
         r.read_exact(&mut buf)?;
+        let entries = buf
+            .chunks_exact(InvEntry::ENCODED_LEN)
+            .map(|chunk| chunk.try_into().map(InvEntry::from_bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidData)))
+            .collect::<io::Result<Vec<_>>>()?;
         out.clear();
-        out.extend(
-            buf.chunks_exact(InvEntry::ENCODED_LEN)
-                .map(|chunk| InvEntry::from_bytes(chunk.try_into().unwrap())),
-        );
+        out.extend(entries);
         Ok(())
     }
 }
@@ -704,7 +705,14 @@ impl Iterator for BlockHeaderIter<'_> {
             return Some(Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated block header")));
         }
         let (head, tail) = self.remaining.split_at(BlockHeader::ENCODED_LEN);
-        let header = BlockHeader::from_bytes(head.try_into().unwrap());
+        let arr = match head.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData)) {
+            Ok(a) => a,
+            Err(e) => { self.left = 0; return Some(Err(e)); }
+        };
+        let header = match BlockHeader::from_bytes(arr) {
+            Ok(h) => h,
+            Err(e) => { self.left = 0; return Some(Err(e)); }
+        };
         // Consume the tx_count VarInt stub that follows every header.
         match VarInt::decode_ref(tail) {
             Ok((_tx_count, rest)) => {
@@ -804,16 +812,16 @@ mod tests {
 
     fn encode<T: Encode>(val: &T) -> Vec<u8> {
         let mut buf = Vec::new();
-        val.encode(&mut buf).unwrap();
+        val.encode(&mut buf).expect("Vec<u8> write cannot fail");
         buf
     }
 
     fn decode<T: Decode>(bytes: &[u8]) -> T {
-        T::decode(&mut Cursor::new(bytes)).unwrap()
+        T::decode(&mut Cursor::new(bytes)).expect("test data must decode")
     }
 
     fn decode_ref<'a, T: DecodeRef<'a>>(buf: &'a [u8]) -> (T, &'a [u8]) {
-        T::decode_ref(buf).unwrap()
+        T::decode_ref(buf).expect("test data must decode")
     }
 
     #[test]
@@ -882,13 +890,13 @@ mod tests {
     }
 
     #[test]
-    fn message_header_roundtrip() {
+    fn message_header_roundtrip() -> std::io::Result<()> {
         let payload = b"hello";
         let header = MessageHeader {
             magic: Magic::Mainnet.bytes(),
             command: CommandName::new("version"),
             length: payload.len() as u32,
-            checksum: checksum(payload),
+            checksum: checksum(payload)?,
         };
         let bytes = encode(&header);
         assert_eq!(bytes.len(), MessageHeader::ENCODED_LEN);
@@ -897,31 +905,34 @@ mod tests {
         assert_eq!(decoded.command, header.command);
         assert_eq!(decoded.length, header.length);
         assert_eq!(decoded.checksum, header.checksum);
+        Ok(())
     }
 
     #[test]
-    fn message_header_decode_ref() {
+    fn message_header_decode_ref() -> std::io::Result<()> {
         let payload = b"test";
         let mut bytes = encode(&MessageHeader {
             magic: Magic::Mainnet.bytes(),
             command: CommandName::new("ping"),
             length: payload.len() as u32,
-            checksum: checksum(payload),
+            checksum: checksum(payload)?,
         });
         bytes.push(0xab); // sentinel
         let (h, tail) = decode_ref::<MessageHeader>(&bytes);
         assert_eq!(h.command.as_str(), "ping");
         assert_eq!(tail, &[0xab]);
+        Ok(())
     }
 
     #[test]
-    fn encode_message_checksum() {
+    fn encode_message_checksum() -> std::io::Result<()> {
         let payload = b"payload";
         let mut buf = Vec::new();
-        encode_message(Magic::Mainnet, Command::Ping, payload, &mut buf).unwrap();
+        encode_message(Magic::Mainnet, Command::Ping, payload, &mut buf).expect("encode_message cannot fail writing to Vec");
         let header = decode::<MessageHeader>(&buf[..24]);
-        assert_eq!(header.checksum, checksum(payload));
+        assert_eq!(header.checksum, checksum(payload)?);
         assert_eq!(&buf[24..], payload);
+        Ok(())
     }
 
     #[test]
@@ -1049,7 +1060,7 @@ mod tests {
     fn message_header_exact_24_bytes() {
         let payload = b"";
         let mut buf = Vec::new();
-        encode_message(Magic::Mainnet, Command::Verack, payload, &mut buf).unwrap();
+        encode_message(Magic::Mainnet, Command::Verack, payload, &mut buf).expect("encode_message cannot fail writing to Vec");
         assert_eq!(buf.len(), MessageHeader::ENCODED_LEN); // verack has no payload
         decode::<MessageHeader>(&buf[..24]);
     }
@@ -1219,9 +1230,9 @@ mod tests {
         };
         // Manually encode with tx_count = 5 instead of 0.
         let mut buf = Vec::new();
-        crate::codec::VarInt(1).encode(&mut buf).unwrap(); // 1 header
-        header.encode(&mut buf).unwrap();
-        crate::codec::VarInt(5).encode(&mut buf).unwrap(); // non-zero tx_count
+        crate::codec::VarInt(1).encode(&mut buf).expect("Vec<u8> write cannot fail"); // 1 header
+        header.encode(&mut buf).expect("Vec<u8> write cannot fail");
+        crate::codec::VarInt(5).encode(&mut buf).expect("Vec<u8> write cannot fail"); // non-zero tx_count
         // Decoder reads and discards tx_count regardless of value.
         let decoded = decode::<HeadersMsg>(&buf);
         assert_eq!(decoded.0.len(), 1);
@@ -1321,8 +1332,8 @@ mod tests {
         ]);
         let bytes = encode(&inv);
         let iter_entries: Vec<InvEntry> = InvMsg::iter_entries::<50_000>(&bytes)
-            .unwrap()
-            .map(|r| r.unwrap())
+            .expect("iter_entries must succeed on valid bytes")
+            .map(|r| r.expect("each entry must decode"))
             .collect();
         assert_eq!(iter_entries, inv.0);
     }
@@ -1330,7 +1341,7 @@ mod tests {
     #[test]
     fn inv_iter_empty() {
         let bytes = encode(&InvMsg(vec![]));
-        let mut iter = InvMsg::iter_entries::<50_000>(&bytes).unwrap();
+        let mut iter = InvMsg::iter_entries::<50_000>(&bytes).expect("iter_entries must succeed on valid bytes");
         assert_eq!(iter.len(), 0);
         assert!(iter.next().is_none());
     }
@@ -1343,7 +1354,7 @@ mod tests {
             InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
         ]);
         let bytes = encode(&inv);
-        let iter = InvMsg::iter_entries::<50_000>(&bytes).unwrap();
+        let iter = InvMsg::iter_entries::<50_000>(&bytes).expect("iter_entries must succeed on valid bytes");
         assert_eq!(iter.len(), 3);
     }
 
@@ -1366,9 +1377,9 @@ mod tests {
         ]);
         let mut bytes = encode(&inv);
         bytes.truncate(1 + 36 + 10); // VarInt + full entry + partial second entry
-        let mut iter = InvMsg::iter_entries::<50_000>(&bytes).unwrap();
-        assert!(iter.next().unwrap().is_ok());
-        assert_eq!(iter.next().unwrap().unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        let mut iter = InvMsg::iter_entries::<50_000>(&bytes).expect("iter_entries must succeed on valid bytes");
+        assert!(iter.next().expect("first entry must be present").is_ok());
+        assert_eq!(iter.next().expect("second entry must be present").unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
         assert!(iter.next().is_none()); // stops after error
     }
 
@@ -1380,12 +1391,12 @@ mod tests {
         ]);
         let bytes = encode(&inv);
         let mut buf: Vec<InvEntry> = Vec::new();
-        InvMsg::decode_into_limited::<50_000>(&mut std::io::Cursor::new(&bytes), &mut buf).unwrap();
+        InvMsg::decode_into_limited::<50_000>(&mut std::io::Cursor::new(&bytes), &mut buf).expect("decode_into_limited must succeed on valid bytes");
         assert_eq!(buf, inv.0);
         let cap_after_first = buf.capacity();
 
         // Second call: no new allocation if same or smaller count.
-        InvMsg::decode_into_limited::<50_000>(&mut std::io::Cursor::new(&bytes), &mut buf).unwrap();
+        InvMsg::decode_into_limited::<50_000>(&mut std::io::Cursor::new(&bytes), &mut buf).expect("decode_into_limited must succeed on valid bytes");
         assert_eq!(buf, inv.0);
         assert!(buf.capacity() >= cap_after_first);
     }
@@ -1421,8 +1432,8 @@ mod tests {
         let msg = HeadersMsg(vec![sample_header(1), sample_header(2)]);
         let bytes = encode(&msg);
         let iter_headers: Vec<BlockHeader> = HeadersMsg::iter_entries::<2_000>(&bytes)
-            .unwrap()
-            .map(|r| r.unwrap())
+            .expect("iter_entries must succeed on valid bytes")
+            .map(|r| r.expect("each header must decode"))
             .collect();
         assert_eq!(iter_headers, msg.0);
     }
@@ -1430,7 +1441,7 @@ mod tests {
     #[test]
     fn headers_iter_empty() {
         let bytes = encode(&HeadersMsg(vec![]));
-        let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes).unwrap();
+        let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes).expect("iter_entries must succeed on valid bytes");
         assert_eq!(iter.len(), 0);
         assert!(iter.next().is_none());
     }
@@ -1439,7 +1450,7 @@ mod tests {
     fn headers_iter_exact_size() {
         let msg = HeadersMsg(vec![sample_header(0), sample_header(1), sample_header(2)]);
         let bytes = encode(&msg);
-        let iter = HeadersMsg::iter_entries::<2_000>(&bytes).unwrap();
+        let iter = HeadersMsg::iter_entries::<2_000>(&bytes).expect("iter_entries must succeed on valid bytes");
         assert_eq!(iter.len(), 3);
     }
 
@@ -1457,9 +1468,9 @@ mod tests {
         let mut bytes = encode(&msg);
         // Each encoded entry is 81 bytes (80 header + 1 byte tx_count VarInt).
         bytes.truncate(1 + 81 + 40); // VarInt + full entry + partial second
-        let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes).unwrap();
-        assert!(iter.next().unwrap().is_ok());
-        assert_eq!(iter.next().unwrap().unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes).expect("iter_entries must succeed on valid bytes");
+        assert!(iter.next().expect("first entry must be present").is_ok());
+        assert_eq!(iter.next().expect("second entry must be present").unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
         assert!(iter.next().is_none());
     }
 
@@ -1469,12 +1480,12 @@ mod tests {
         let bytes = encode(&msg);
         let mut buf: Vec<BlockHeader> = Vec::new();
         HeadersMsg::decode_into_limited::<2_000>(&mut std::io::Cursor::new(&bytes), &mut buf)
-            .unwrap();
+            .expect("decode_into_limited must succeed on valid bytes");
         assert_eq!(buf, msg.0);
         let cap_after_first = buf.capacity();
 
         HeadersMsg::decode_into_limited::<2_000>(&mut std::io::Cursor::new(&bytes), &mut buf)
-            .unwrap();
+            .expect("decode_into_limited must succeed on valid bytes");
         assert_eq!(buf, msg.0);
         assert!(buf.capacity() >= cap_after_first);
     }

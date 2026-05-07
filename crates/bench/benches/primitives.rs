@@ -9,7 +9,7 @@ fn main() {
 
 fn encode_bytes<T: Encode>(val: &T) -> Vec<u8> {
     let mut buf = Vec::new();
-    val.encode(&mut buf).unwrap();
+    val.encode(&mut buf).expect("Vec<u8> write cannot fail");
     buf
 }
 
@@ -53,12 +53,12 @@ fn hash256_encode() -> Vec<u8> {
 
 #[divan::bench]
 fn hash256_decode() -> Hash256 {
-    Hash256::decode(&mut Cursor::new([0xabu8; 32].as_slice())).unwrap()
+    Hash256::decode(&mut Cursor::new([0xabu8; 32].as_slice())).expect("Hash256 decode cannot fail on 32 bytes")
 }
 
 #[divan::bench]
 fn hash256_decode_ref() -> (Hash256, &'static [u8]) {
-    Hash256::decode_ref(&[0xabu8; 32]).unwrap()
+    Hash256::decode_ref(&[0xabu8; 32]).expect("Hash256 decode_ref cannot fail on 32 bytes")
 }
 
 // ── BlockHeader ───────────────────────────────────────────────────────────────
@@ -82,13 +82,13 @@ fn block_header_encode() -> Vec<u8> {
 #[divan::bench]
 fn block_header_decode(bencher: divan::Bencher) {
     let bytes = encode_bytes(&make_header(42));
-    bencher.bench(|| BlockHeader::decode(&mut Cursor::new(bytes.as_slice())).unwrap());
+    bencher.bench(|| BlockHeader::decode(&mut Cursor::new(bytes.as_slice())).expect("BlockHeader decode cannot fail on valid bytes"));
 }
 
 #[divan::bench]
 fn block_header_decode_ref(bencher: divan::Bencher) {
     let bytes = encode_bytes(&make_header(42));
-    bencher.bench(|| BlockHeader::decode_ref(bytes.as_slice()).unwrap());
+    bencher.bench(|| BlockHeader::decode_ref(bytes.as_slice()).expect("BlockHeader decode_ref cannot fail on valid bytes"));
 }
 
 // ── OutPoint ──────────────────────────────────────────────────────────────────
@@ -101,13 +101,13 @@ fn outpoint_encode() -> Vec<u8> {
 #[divan::bench]
 fn outpoint_decode(bencher: divan::Bencher) {
     let bytes = encode_bytes(&OutPoint { txid: Hash256([0xabu8; 32]), vout: 0 });
-    bencher.bench(|| OutPoint::decode(&mut Cursor::new(bytes.as_slice())).unwrap());
+    bencher.bench(|| OutPoint::decode(&mut Cursor::new(bytes.as_slice())).expect("OutPoint decode cannot fail on valid bytes"));
 }
 
 #[divan::bench]
 fn outpoint_decode_ref(bencher: divan::Bencher) {
     let bytes = encode_bytes(&OutPoint { txid: Hash256([0xabu8; 32]), vout: 0 });
-    bencher.bench(|| OutPoint::decode_ref(bytes.as_slice()).unwrap());
+    bencher.bench(|| OutPoint::decode_ref(bytes.as_slice()).expect("OutPoint decode_ref cannot fail on valid bytes"));
 }
 
 // ── TxIn / TxInRef ────────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ fn txin_decode(bencher: divan::Bencher) {
         sequence: u32::MAX,
     };
     let bytes = encode_bytes(&txin);
-    bencher.bench(|| TxIn::decode(&mut Cursor::new(bytes.as_slice())).unwrap());
+    bencher.bench(|| TxIn::decode(&mut Cursor::new(bytes.as_slice())).expect("TxIn decode cannot fail on valid bytes"));
 }
 
 #[divan::bench]
@@ -141,7 +141,7 @@ fn txin_decode_ref(bencher: divan::Bencher) {
     };
     let bytes = encode_bytes(&txin);
     bencher.bench(|| {
-        let (r, _) = TxInRef::decode_ref(bytes.as_slice()).unwrap();
+        let (r, _) = TxInRef::decode_ref(bytes.as_slice()).expect("TxInRef decode_ref cannot fail on valid bytes");
         black_box(r.sequence)
     });
 }
@@ -156,14 +156,14 @@ fn txout_encode() -> Vec<u8> {
 #[divan::bench]
 fn txout_decode(bencher: divan::Bencher) {
     let bytes = encode_bytes(&TxOut { value: 5_000_000_000, script_pubkey: vec![0x76, 0xa9, 0x14] });
-    bencher.bench(|| TxOut::decode(&mut Cursor::new(bytes.as_slice())).unwrap());
+    bencher.bench(|| TxOut::decode(&mut Cursor::new(bytes.as_slice())).expect("TxOut decode cannot fail on valid bytes"));
 }
 
 #[divan::bench]
 fn txout_decode_ref(bencher: divan::Bencher) {
     let bytes = encode_bytes(&TxOut { value: 5_000_000_000, script_pubkey: vec![0x76, 0xa9, 0x14] });
     bencher.bench(|| {
-        let (r, _) = TxOutRef::decode_ref(bytes.as_slice()).unwrap();
+        let (r, _) = TxOutRef::decode_ref(bytes.as_slice()).expect("TxOutRef decode_ref cannot fail on valid bytes");
         black_box(r.value)
     });
 }
@@ -179,7 +179,7 @@ fn transaction_encode(bencher: divan::Bencher, n: usize) {
 #[divan::bench(args = [1usize, 4, 16])]
 fn transaction_decode(bencher: divan::Bencher, n: usize) {
     let bytes = encode_bytes(&make_tx(n, n));
-    bencher.bench(|| Transaction::decode(&mut Cursor::new(bytes.as_slice())).unwrap());
+    bencher.bench(|| Transaction::decode(&mut Cursor::new(bytes.as_slice())).expect("Transaction decode cannot fail on valid bytes"));
 }
 
 /// Zero-copy parse: DecodeRef only scans the buffer to find boundaries —
@@ -188,7 +188,7 @@ fn transaction_decode(bencher: divan::Bencher, n: usize) {
 fn transaction_decode_ref(bencher: divan::Bencher, n: usize) {
     let bytes = encode_bytes(&make_tx(n, n));
     bencher.bench(|| {
-        let (tx, _) = TransactionRef::decode_ref(bytes.as_slice()).unwrap();
+        let (tx, _) = TransactionRef::decode_ref(bytes.as_slice()).expect("TransactionRef decode_ref cannot fail on valid bytes");
         black_box(tx.version)
     });
 }
@@ -197,11 +197,11 @@ fn transaction_decode_ref(bencher: divan::Bencher, n: usize) {
 #[divan::bench(args = [1usize, 4, 16])]
 fn transaction_ref_iter(bencher: divan::Bencher, n: usize) {
     let bytes = encode_bytes(&make_tx(n, n));
-    let (tx_ref, _) = TransactionRef::decode_ref(bytes.as_slice()).unwrap();
+    let (tx_ref, _) = TransactionRef::decode_ref(bytes.as_slice()).expect("TransactionRef decode_ref cannot fail on valid bytes");
     bencher.bench(|| {
         let mut sum = 0u64;
-        for r in tx_ref.inputs() { sum += r.unwrap().sequence as u64; }
-        for r in tx_ref.outputs() { sum += r.unwrap().value; }
+        for r in tx_ref.inputs() { sum += r.expect("input decode cannot fail on valid bytes").sequence as u64; }
+        for r in tx_ref.outputs() { sum += r.expect("output decode cannot fail on valid bytes").value; }
         black_box(sum)
     });
 }
@@ -210,8 +210,8 @@ fn transaction_ref_iter(bencher: divan::Bencher, n: usize) {
 #[divan::bench(args = [1usize, 4, 16])]
 fn transaction_ref_to_owned(bencher: divan::Bencher, n: usize) {
     let bytes = encode_bytes(&make_tx(n, n));
-    let (tx_ref, _) = TransactionRef::decode_ref(bytes.as_slice()).unwrap();
-    bencher.bench(|| tx_ref.to_owned().unwrap());
+    let (tx_ref, _) = TransactionRef::decode_ref(bytes.as_slice()).expect("TransactionRef decode_ref cannot fail on valid bytes");
+    bencher.bench(|| tx_ref.to_owned().expect("to_owned cannot fail on valid bytes"));
 }
 
 // ── Block ─────────────────────────────────────────────────────────────────────
@@ -232,5 +232,5 @@ fn block_decode(bencher: divan::Bencher, n: usize) {
         transactions: (0..n).map(|_| make_tx(2, 2)).collect(),
     };
     let bytes = encode_bytes(&block);
-    bencher.bench(|| Block::decode(&mut Cursor::new(bytes.as_slice())).unwrap());
+    bencher.bench(|| Block::decode(&mut Cursor::new(bytes.as_slice())).expect("Block decode cannot fail on valid bytes"));
 }

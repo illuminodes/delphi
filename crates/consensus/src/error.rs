@@ -55,6 +55,8 @@ pub enum ValidationError {
     UnknownParent,
     /// `ChainView` returned an error.
     ChainView(ChainViewError),
+    /// An I/O error during serialisation (e.g. computing a txid).
+    Io(String),
 }
 
 impl std::fmt::Display for ValidationError {
@@ -68,6 +70,12 @@ impl std::error::Error for ValidationError {}
 impl From<ChainViewError> for ValidationError {
     fn from(e: ChainViewError) -> Self {
         Self::ChainView(e)
+    }
+}
+
+impl From<std::io::Error> for ValidationError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e.to_string())
     }
 }
 

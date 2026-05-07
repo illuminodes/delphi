@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mantle::codec::{DecodeRef, Encode, VarInt};
@@ -84,13 +85,13 @@ const NULL_OUTPOINT: OutPoint = OutPoint {
 
 /// Compute the txid (`SHA256d` of the non-witness serialisation) of a transaction.
 ///
-/// # Panics
-/// Never — encoding to a `Vec<u8>` cannot fail.
-#[must_use]
-pub fn txid(tx: &Transaction) -> Hash256 {
+/// # Errors
+/// Propagates any I/O error from encoding (in practice only possible if the
+/// underlying writer fails; encoding into a `Vec<u8>` never does).
+pub fn txid(tx: &Transaction) -> io::Result<Hash256> {
     let mut buf = Vec::new();
-    txid_into(tx, &mut buf);
-    Hash256(sha256d(&buf))
+    txid_into(tx, &mut buf)?;
+    Ok(Hash256(sha256d(&buf)))
 }
 
 /// Like [`txid`] but reuses a caller-supplied buffer, avoiding a per-call allocation.
@@ -98,34 +99,33 @@ pub fn txid(tx: &Transaction) -> Hash256 {
 /// `buf` is cleared and refilled on every call; the caller should keep it alive
 /// across a loop to amortise the allocation across many transactions.
 ///
-/// # Panics
-/// Never — encoding to a `Vec<u8>` cannot fail.
-pub fn txid_into(tx: &Transaction, buf: &mut Vec<u8>) {
+/// # Errors
+/// Propagates any I/O error from encoding.
+pub fn txid_into(tx: &Transaction, buf: &mut Vec<u8>) -> io::Result<()> {
     buf.clear();
     buf.reserve(tx.encoded_len());
-    tx.encode(buf).expect("Vec<u8> write cannot fail");
+    tx.encode(buf)
 }
 
 /// Compute the txid of a zero-copy [`TransactionRef`], reusing a caller-supplied
 /// buffer. No heap allocation beyond the buffer's existing capacity.
 ///
-/// # Panics
-/// Never — encoding to a `Vec<u8>` cannot fail.
-pub fn txid_ref_into(tx: TransactionRef<'_>, buf: &mut Vec<u8>) {
+/// # Errors
+/// Propagates any I/O error from encoding.
+pub fn txid_ref_into(tx: TransactionRef<'_>, buf: &mut Vec<u8>) -> io::Result<()> {
     buf.clear();
     buf.reserve(tx.encoded_len());
-    tx.encode(buf).expect("Vec<u8> write cannot fail");
+    tx.encode(buf)
 }
 
 /// Compute the txid of a zero-copy [`TransactionRef`].
 ///
-/// # Panics
-/// Never.
-#[must_use]
-pub fn txid_ref(tx: TransactionRef<'_>) -> Hash256 {
+/// # Errors
+/// Propagates any I/O error from encoding.
+pub fn txid_ref(tx: TransactionRef<'_>) -> io::Result<Hash256> {
     let mut buf = Vec::new();
-    txid_ref_into(tx, &mut buf);
-    Hash256(sha256d(&buf))
+    txid_ref_into(tx, &mut buf)?;
+    Ok(Hash256(sha256d(&buf)))
 }
 
 /// Stage 1: stateless structural validation.
@@ -207,7 +207,7 @@ where
     txids.clear();
     txids.reserve(block.transactions.len());
     for tx in &block.transactions {
-        txid_into(tx, serial_scratch);
+        txid_into(tx, serial_scratch)?;
         txids.push(Hash256(sha256d(serial_scratch)));
     }
 
@@ -468,7 +468,9 @@ fn validate_transaction_ref_structure<S: std::hash::BuildHasher>(
     let malformed = |_| ValidationError::MalformedTransaction { tx_index };
 
     // Decode only the first input for the coinbase check — no full iteration.
-    let first_input = tx.inputs().next().unwrap().map_err(malformed)?;
+    let first_input = tx.inputs().next()
+        .ok_or(ValidationError::MalformedTransaction { tx_index })?
+        .map_err(malformed)?;
     let first_is_coinbase = first_input.previous_output == NULL_OUTPOINT;
 
     if expect_coinbase && !first_is_coinbase {
@@ -622,8 +624,9 @@ fn expected_nbits(
 
     // Decode parent nBits to a big-integer target, scale, re-encode.
     let old_target = nbits_to_target(parent.bits).ok_or(ValidationError::InvalidBits)?;
-    let new_target = scale_target(old_target, clamped, TARGET_TIMESPAN);
-    Ok(target_to_nbits(new_target))
+    let new_target = scale_target(old_target, clamped, TARGET_TIMESPAN)
+        .ok_or(ValidationError::InvalidBits)?;
+    target_to_nbits(new_target).ok_or(ValidationError::InvalidBits)
 }
 
 /// Mainnet powLimit (the maximum permitted target). Equal to the target encoded
@@ -780,29 +783,24 @@ impl PartialOrd for U256 {
 /// Computes `floor(target * actual / expected)` exactly in 256-bit arithmetic,
 /// then clamps against the powLimit. Matches Bitcoin Core's behaviour in
 /// `pow.cpp::CalculateNextWorkRequired`.
-fn scale_target(target: [u8; 32], actual: u64, expected: u64) -> [u8; 32] {
+fn scale_target(target: [u8; 32], actual: u64, expected: u64) -> Option<[u8; 32]> {
     let scaled = U256::from_be_bytes(target)
         .saturating_mul_u64(actual)
         .div_u64(expected);
 
-    // Clamp to powLimit: never produce a target easier than the network
-    // minimum difficulty.
-    let pow_limit = U256::from_be_bytes(
-        nbits_to_target(POW_LIMIT_BITS).expect("POW_LIMIT_BITS is a valid encoding"),
-    );
-    scaled.min(pow_limit).to_be_bytes()
+    let pow_limit = U256::from_be_bytes(nbits_to_target(POW_LIMIT_BITS)?);
+    Some(scaled.min(pow_limit).to_be_bytes())
 }
 
 /// Encode a 256-bit big-endian target back to nBits compact format.
-fn target_to_nbits(target: [u8; 32]) -> u32 {
+///
+/// Returns `None` if the exponent cannot be represented (input has all-zero bytes).
+fn target_to_nbits(target: [u8; 32]) -> Option<u32> {
     // Find the most-significant non-zero byte.
-    let Some(first_nonzero) = target.iter().position(|&b| b != 0) else {
-        return 0;
-    };
+    let first_nonzero = target.iter().position(|&b| b != 0)?;
 
-    // Exponent = number of bytes from the most-significant byte to the end.
-    // first_nonzero ≤ 31 so 32 - first_nonzero ≤ 32, always fits in u32.
-    let exponent = u32::try_from(32 - first_nonzero).expect("≤ 32, always fits");
+    // first_nonzero ≤ 31, so 32 - first_nonzero is in 1..=32, fits in u32.
+    let exponent = u32::try_from(32 - first_nonzero).ok()?;
 
     // Mantissa = 3 bytes starting at first_nonzero.
     let mut mantissa = u32::from(target[first_nonzero]) << 16;
@@ -816,9 +814,9 @@ fn target_to_nbits(target: [u8; 32]) -> u32 {
     // If the sign bit would be set, shift right by one byte and increment exponent.
     if mantissa & 0x0080_0000 != 0 {
         mantissa >>= 8;
-        (exponent + 1) << 24 | mantissa
+        Some((exponent + 1) << 24 | mantissa)
     } else {
-        exponent << 24 | mantissa
+        Some(exponent << 24 | mantissa)
     }
 }
 
@@ -927,8 +925,12 @@ mod tests {
     }
 
     fn make_block(txs: Vec<Transaction>, bits: u32) -> Block {
-        let txids: Vec<Hash256> = txs.iter().map(txid).collect();
-        let merkle_root = compute_merkle_root(&txids).unwrap();
+        let txids: Vec<Hash256> = txs.iter()
+            .map(txid)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("txid encoding cannot fail");
+        let merkle_root = compute_merkle_root(&txids)
+            .expect("non-empty tx list always has a merkle root");
         Block {
             header: BlockHeader {
                 version: 1,
@@ -945,7 +947,8 @@ mod tests {
     /// Build a block with a valid PoW nonce (brute-force search).
     /// Only used for tests that exercise PoW validation.
     fn mine_block(mut block: Block) -> Block {
-        let target = nbits_to_target(block.header.bits).unwrap();
+        let target = nbits_to_target(block.header.bits)
+            .expect("mine_block called with invalid nBits");
         for nonce in 0..=u32::MAX {
             block.header.nonce = nonce;
             let raw = sha256d(&block.header.to_bytes());
@@ -1096,10 +1099,9 @@ mod tests {
 
     #[test]
     fn nbits_roundtrip_genesis() {
-        // Genesis nBits = 0x1d00ffff.
         let bits = 0x1d00_ffff_u32;
-        let target = nbits_to_target(bits).unwrap();
-        let back = target_to_nbits(target);
+        let target = nbits_to_target(bits).expect("genesis nBits must decode");
+        let back = target_to_nbits(target).expect("genesis target must re-encode");
         assert_eq!(back, bits);
     }
 
@@ -1154,7 +1156,8 @@ mod tests {
             header: BlockHeader {
                 version: 4,
                 prev_block: Hash256([0xff; 32]), // unknown
-                merkle_root: compute_merkle_root(&[txid(&tx)]).unwrap(),
+                merkle_root: compute_merkle_root(&[txid(&tx).expect("txid encoding cannot fail")])
+                    .expect("single-tx merkle root cannot be empty"),
                 time: 1_296_688_602 + 600,
                 bits: 0x207f_ffff,
                 nonce: 0,
@@ -1171,7 +1174,8 @@ mod tests {
     fn timestamp_too_early_rejected() {
         let view = build_view_with_chain(12);
         let tip = view.tip();
-        let tip_header = view.get_header_at(tip.height).unwrap().unwrap();
+        let tip_header = view.get_header_at(tip.height)
+            .expect("chain view error").expect("tip header must exist");
         let tx = coinbase_tx(tip.height + 1, 5_000_000_000);
         let mtp = view.median_time_past(&BlockHeader {
             version: 4,
@@ -1180,12 +1184,13 @@ mod tests {
             time: 0,
             bits: 0x207f_ffff,
             nonce: 0,
-        }).unwrap();
+        }).expect("median_time_past must succeed for a populated chain");
         let block = Block {
             header: BlockHeader {
                 version: 4,
                 prev_block: tip.hash,
-                merkle_root: compute_merkle_root(&[txid(&tx)]).unwrap(),
+                merkle_root: compute_merkle_root(&[txid(&tx).expect("txid encoding cannot fail")])
+                    .expect("single-tx merkle root cannot be empty"),
                 time: mtp, // exactly MTP — must be > MTP
                 bits: 0x207f_ffff,
                 nonce: 0,
@@ -1206,7 +1211,8 @@ mod tests {
     fn timestamp_too_far_future_rejected() {
         let view = build_view_with_chain(12);
         let tip = view.tip();
-        let parent_time = view.get_header_at(tip.height).unwrap().unwrap().time;
+        let parent_time = view.get_header_at(tip.height)
+            .expect("chain view error").expect("tip header must exist").time;
         let tx = coinbase_tx(tip.height + 1, 5_000_000_000);
 
         // Block claims a time ≥ now + 3h.
@@ -1217,8 +1223,9 @@ mod tests {
             header: BlockHeader {
                 version: 4,
                 prev_block: tip.hash,
-                merkle_root: compute_merkle_root(&[txid(&tx)]).unwrap(),
-                time: u32::try_from(block_time).expect("fits in u32 for test"),
+                merkle_root: compute_merkle_root(&[txid(&tx).expect("txid encoding cannot fail")])
+                    .expect("single-tx merkle root cannot be empty"),
+                time: u32::try_from(block_time).expect("test block_time fits in u32"),
                 bits: 0x207f_ffff,
                 nonce: 0,
             },
@@ -1241,7 +1248,8 @@ mod tests {
             header: BlockHeader {
                 version: 4,
                 prev_block: tip.hash,
-                merkle_root: compute_merkle_root(&[txid(&tx)]).unwrap(),
+                merkle_root: compute_merkle_root(&[txid(&tx).expect("txid encoding cannot fail")])
+                    .expect("single-tx merkle root cannot be empty"),
                 time: 1_296_688_602 + BIP34_HEIGHT * 600 + 600,
                 bits: 0x207f_ffff,
                 nonce: 0,
@@ -1362,15 +1370,17 @@ mod tests {
     /// records.
     #[test]
     fn first_mainnet_retarget_matches_core() {
-        let old_target = nbits_to_target(0x1d00_ffff).unwrap();
+        let old_target = nbits_to_target(0x1d00_ffff).expect("genesis nBits must decode");
         let actual = 1_262_152_739_u64 - 1_231_006_505_u64;
         assert_eq!(actual, 31_146_234, "raw timespan from block headers");
 
         let clamped = actual.clamp(MIN_TIMESPAN, MAX_TIMESPAN);
         assert_eq!(clamped, MAX_TIMESPAN, "timespan must clamp to MAX_TIMESPAN");
 
-        let new_target = scale_target(old_target, clamped, TARGET_TIMESPAN);
-        let new_bits = target_to_nbits(new_target);
+        let new_target = scale_target(old_target, clamped, TARGET_TIMESPAN)
+            .expect("scale_target must succeed for valid inputs");
+        let new_bits = target_to_nbits(new_target)
+            .expect("target_to_nbits must succeed for valid target");
 
         assert_eq!(
             new_bits, 0x1d00_ffff,
@@ -1388,12 +1398,13 @@ mod tests {
     #[test]
     fn retarget_arithmetic_round_trip() {
         let old_bits = 0x1c05_a3f4_u32;
-        let old_target = nbits_to_target(old_bits).unwrap();
+        let old_target = nbits_to_target(old_bits).expect("old_bits must decode");
         let actual = TARGET_TIMESPAN / 2; // blocks came twice as fast
         let clamped = actual.clamp(MIN_TIMESPAN, MAX_TIMESPAN);
         assert_eq!(clamped, actual, "actual is within clamp bounds");
 
-        let new_target = scale_target(old_target, clamped, TARGET_TIMESPAN);
+        let new_target = scale_target(old_target, clamped, TARGET_TIMESPAN)
+            .expect("scale_target must succeed for valid inputs");
         // new_target ≈ old_target / 2. Re-derive without scale_target to
         // verify: U256(old_target) / 2.
         let expected = U256::from_be_bytes(old_target).div_u64(2);
@@ -1404,7 +1415,9 @@ mod tests {
         );
 
         // And the new target must still be ≤ powLimit (sanity).
-        let pow_limit = U256::from_be_bytes(nbits_to_target(POW_LIMIT_BITS).unwrap());
+        let pow_limit = U256::from_be_bytes(
+            nbits_to_target(POW_LIMIT_BITS).expect("POW_LIMIT_BITS must decode"),
+        );
         assert!(U256::from_be_bytes(new_target) <= pow_limit);
     }
 
@@ -1414,11 +1427,13 @@ mod tests {
     /// at the powLimit, never exceed it.
     #[test]
     fn retarget_clamps_to_pow_limit() {
-        let old_target = nbits_to_target(POW_LIMIT_BITS).unwrap();
+        let old_target = nbits_to_target(POW_LIMIT_BITS).expect("POW_LIMIT_BITS must decode");
         // Even a max-clamped timespan (×4) would yield 4× the target if not
         // clamped. We expect the powLimit clamp to bring it back.
-        let new_target = scale_target(old_target, MAX_TIMESPAN, TARGET_TIMESPAN);
-        let new_bits = target_to_nbits(new_target);
+        let new_target = scale_target(old_target, MAX_TIMESPAN, TARGET_TIMESPAN)
+            .expect("scale_target must succeed for valid inputs");
+        let new_bits = target_to_nbits(new_target)
+            .expect("target_to_nbits must succeed for valid target");
         assert_eq!(
             new_bits, POW_LIMIT_BITS,
             "target above powLimit must clamp back, got {new_bits:#010x}",
@@ -1441,10 +1456,10 @@ mod tests {
             0x1903_a30c,     // mid-2010s mainnet difficulty (illustrative shape)
             0x207f_ffff,     // regtest
         ] {
-            let target = nbits_to_target(bits).unwrap_or_else(|| {
-                panic!("bits {bits:#010x} must decode to a target");
-            });
-            let back = target_to_nbits(target);
+            let target = nbits_to_target(bits)
+                .unwrap_or_else(|| panic!("bits {bits:#010x} must decode to a target"));
+            let back = target_to_nbits(target)
+                .unwrap_or_else(|| panic!("target from {bits:#010x} must re-encode"));
             assert_eq!(back, bits, "round-trip failed for {bits:#010x} → {back:#010x}");
         }
     }

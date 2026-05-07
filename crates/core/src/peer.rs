@@ -64,6 +64,12 @@ impl std::error::Error for Error {
     }
 }
 
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Self::Codec(e)
+    }
+}
+
 impl From<Error> for std::io::Error {
     fn from(e: Error) -> Self {
         std::io::Error::other(e.to_string())
@@ -408,7 +414,7 @@ impl Node {
             return Ok(());
         };
         let fd = peer.fd;
-        let chunk = self.recv_chunks.get_mut(&id).unwrap();
+        let chunk = self.recv_chunks.get_mut(&id).expect("recv_chunks entry exists for every connected peer");
         let sqe = Sqe::recv(fd, chunk.as_mut_slice(), MsgFlags::default())
             .user_data(make_tag(id, OP_RECV));
         self.ring
@@ -449,7 +455,7 @@ impl Node {
 
             // Validate checksum directly against recv_buf — no copy needed.
             let payload_slice = &peer.recv_buf[PeerState::HEADER_SIZE..total];
-            if checksum(payload_slice) != header.checksum {
+            if checksum(payload_slice)? != header.checksum {
                 eprintln!("{}", Error::ChecksumMismatch { peer: id });
                 self.peers.remove(&id);
                 return Ok(());

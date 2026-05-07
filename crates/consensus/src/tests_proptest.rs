@@ -97,7 +97,8 @@ proptest! {
     #[test]
     fn varint_roundtrip(v in arb_varint()) {
         let encoded = encode_to_vec(&v);
-        let decoded = VarInt::decode(&mut Cursor::new(&encoded)).unwrap();
+        let decoded = VarInt::decode(&mut Cursor::new(&encoded))
+            .expect("VarInt roundtrip must decode");
         prop_assert_eq!(decoded, v);
     }
 
@@ -113,7 +114,8 @@ proptest! {
     #[test]
     fn varint_canonical(v in arb_varint()) {
         let first = encode_to_vec(&v);
-        let decoded = VarInt::decode(&mut Cursor::new(&first)).unwrap();
+        let decoded = VarInt::decode(&mut Cursor::new(&first))
+            .expect("VarInt canonical decode must succeed");
         let second = encode_to_vec(&decoded);
         prop_assert_eq!(first, second, "VarInt({}) re-encoded differently", v.0);
     }
@@ -127,7 +129,8 @@ proptest! {
     fn block_header_roundtrip(h in arb_block_header()) {
         let encoded = encode_to_vec(&h);
         prop_assert_eq!(encoded.len(), BlockHeader::ENCODED_LEN);
-        let decoded = BlockHeader::decode(&mut Cursor::new(&encoded)).unwrap();
+        let decoded = BlockHeader::decode(&mut Cursor::new(&encoded))
+            .expect("BlockHeader roundtrip must decode");
         prop_assert_eq!(decoded, h);
     }
 
@@ -138,8 +141,10 @@ proptest! {
         let via_to_bytes = h.to_bytes();
         prop_assert_eq!(&via_encode[..], &via_to_bytes[..]);
 
-        let from_encode = BlockHeader::decode(&mut Cursor::new(&via_encode)).unwrap();
-        let from_bytes = BlockHeader::from_bytes(&via_to_bytes);
+        let from_encode = BlockHeader::decode(&mut Cursor::new(&via_encode))
+            .expect("BlockHeader from_encode must decode");
+        let from_bytes = BlockHeader::from_bytes(&via_to_bytes)
+            .expect("BlockHeader from_bytes must decode");
         prop_assert_eq!(from_encode, from_bytes);
     }
 }
@@ -151,7 +156,8 @@ proptest! {
     #[test]
     fn transaction_roundtrip(tx in arb_transaction()) {
         let encoded = encode_to_vec(&tx);
-        let decoded = Transaction::decode(&mut Cursor::new(&encoded)).unwrap();
+        let decoded = Transaction::decode(&mut Cursor::new(&encoded))
+            .expect("Transaction roundtrip must decode");
         prop_assert_eq!(decoded, tx);
     }
 }
@@ -163,7 +169,8 @@ proptest! {
     #[test]
     fn block_roundtrip(b in arb_block()) {
         let encoded = encode_to_vec(&b);
-        let decoded = Block::decode(&mut Cursor::new(&encoded)).unwrap();
+        let decoded = Block::decode(&mut Cursor::new(&encoded))
+            .expect("Block roundtrip must decode");
         prop_assert_eq!(decoded, b);
     }
 }
@@ -182,7 +189,8 @@ proptest! {
     /// Single-tx merkle root equals the txid itself (no hashing).
     #[test]
     fn merkle_single_tx_is_txid(txid in arb_hash256()) {
-        let root = compute_merkle_root(&[txid]).unwrap();
+        let root = compute_merkle_root(&[txid])
+            .expect("single-element merkle root must exist");
         prop_assert_eq!(root, txid);
     }
 
@@ -201,10 +209,12 @@ proptest! {
             |v| v.len() % 2 == 1,
         )
     ) {
-        let root_odd = compute_merkle_root(&txids).unwrap();
+        let root_odd = compute_merkle_root(&txids)
+            .expect("odd-length merkle root must exist");
         let mut padded = txids.clone();
-        padded.push(*txids.last().unwrap());
-        let root_padded = compute_merkle_root(&padded).unwrap();
+        padded.push(txids[txids.len() - 1]);
+        let root_padded = compute_merkle_root(&padded)
+            .expect("padded merkle root must exist");
         prop_assert_eq!(root_odd, root_padded,
             "odd-length duplicate invariant broken for {} txids", txids.len());
     }

@@ -235,9 +235,9 @@ mod tests {
     fn get_header_by_height() {
         let mut view = MemoryChainView::new();
         push_chain(&mut view, &[1_000, 2_000, 3_000]);
-        assert_eq!(view.get_header_at(0).unwrap().unwrap().time, 1_000);
-        assert_eq!(view.get_header_at(2).unwrap().unwrap().time, 3_000);
-        assert!(view.get_header_at(3).unwrap().is_none());
+        assert_eq!(view.get_header_at(0).expect("no error").expect("height 0 exists").time, 1_000);
+        assert_eq!(view.get_header_at(2).expect("no error").expect("height 2 exists").time, 3_000);
+        assert!(view.get_header_at(3).expect("no error").is_none());
     }
 
     #[test]
@@ -246,8 +246,8 @@ mod tests {
         let h = header(9_999, Hash256::ZERO);
         view.push_header(h);
         let hash = Hash256(mantle::hash::sha256d(&h.to_bytes()));
-        assert_eq!(view.get_header(&hash).unwrap().unwrap().time, 9_999);
-        assert!(view.get_header(&Hash256::ZERO).unwrap().is_none());
+        assert_eq!(view.get_header(&hash).expect("no error").expect("header exists").time, 9_999);
+        assert!(view.get_header(&Hash256::ZERO).expect("no error").is_none());
     }
 
     #[test]
@@ -260,11 +260,11 @@ mod tests {
             height: 100,
             coinbase: false,
         };
-        assert!(view.get_coin(&op).unwrap().is_none());
+        assert!(view.get_coin(&op).expect("no error").is_none());
         view.insert_coin(op, coin.clone());
-        assert_eq!(view.get_coin(&op).unwrap().unwrap(), coin);
+        assert_eq!(view.get_coin(&op).expect("no error").expect("coin exists"), coin);
         view.spend_coin(&op);
-        assert!(view.get_coin(&op).unwrap().is_none());
+        assert!(view.get_coin(&op).expect("no error").is_none());
     }
 
     #[test]
@@ -275,7 +275,7 @@ mod tests {
         let genesis_hash = view.tip().hash;
         let next = header(2_000, genesis_hash);
         // MTP for `next` = median of [1_000] = 1_000.
-        assert_eq!(view.median_time_past(&next).unwrap(), 1_000);
+        assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), 1_000);
     }
 
     #[test]
@@ -286,7 +286,7 @@ mod tests {
         let tip_hash = view.tip().hash;
         let next = header(99, tip_hash);
         // Median of [1..=11] = 6.
-        assert_eq!(view.median_time_past(&next).unwrap(), 6);
+        assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), 6);
     }
 
     #[test]
@@ -297,7 +297,7 @@ mod tests {
         push_chain(&mut view, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
         let tip_hash = view.tip().hash;
         let next = header(99, tip_hash);
-        assert_eq!(view.median_time_past(&next).unwrap(), 10);
+        assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), 10);
     }
 
     #[test]
@@ -308,7 +308,7 @@ mod tests {
         let coin = Coin { value: 1000, script_pubkey: vec![], height: 1, coinbase: false };
         view.insert_coin(op1, coin.clone());
 
-        let results = view.get_coins(&[op1, op2]).unwrap();
+        let results = view.get_coins(&[op1, op2]).expect("get_coins must succeed");
         assert_eq!(results[0], Some(coin));
         assert_eq!(results[1], None);
     }

@@ -3,14 +3,14 @@ use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::merkle_root_owned;
-use mantle_consensus::validation::{txid, validate_block_structure_reusing};
+use mantle_consensus::validation::{txid, validate_block_structure_reusing, validate_block_wire};
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 fn encode<T: Encode>(val: &T) -> Vec<u8> {
     let mut buf = Vec::new();
-    val.encode(&mut buf).unwrap();
+    val.encode(&mut buf).expect("Vec<u8> write cannot fail");
     buf
 }
 
@@ -73,7 +73,8 @@ fn nbits_to_target(bits: u32) -> Option<[u8; 32]> {
 }
 
 fn mine_block(mut block: Block) -> Block {
-    let target = nbits_to_target(block.header.bits).unwrap();
+    let target = nbits_to_target(block.header.bits)
+        .expect("mine_block called with invalid nBits");
     for nonce in 0..=u32::MAX {
         block.header.nonce = nonce;
         let raw = sha256d(&block.header.to_bytes());
@@ -85,8 +86,12 @@ fn mine_block(mut block: Block) -> Block {
 }
 
 fn make_valid_block(txs: Vec<Transaction>) -> Block {
-    let txids: Vec<Hash256> = txs.iter().map(txid).collect();
-    let merkle_root = merkle_root_owned(txids).unwrap();
+    let txids: Vec<Hash256> = txs.iter()
+        .map(txid)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("txid encoding cannot fail");
+    let merkle_root = merkle_root_owned(txids)
+        .expect("non-empty tx list always has a merkle root");
     let block = Block {
         header: BlockHeader {
             version: 1,
@@ -124,7 +129,7 @@ fn main() {
                 &mut txids,
                 &mut seen_inputs,
                 &mut seen_txids,
-            ).unwrap();
+            ).expect("valid block must pass structure check");
         }
     }
 
@@ -141,7 +146,7 @@ fn main() {
         let block = make_valid_block(txs);
         for _ in 0..200 {
             let bytes = encode(&block);
-            let _ = Block::decode(&mut Cursor::new(bytes.as_slice())).unwrap();
+            let _ = Block::decode(&mut Cursor::new(bytes.as_slice())).expect("valid block bytes must decode");
         }
     }
 
@@ -149,9 +154,9 @@ fn main() {
     {
         let view = build_chain(200);
         for i in 0..1000u32 {
-            let _ = view.get_header_at(i % 200).unwrap();
+            let _ = view.get_header_at(i % 200).expect("storage error");
             let tip = view.tip();
-            let _ = view.get_header(&tip.hash).unwrap();
+            let _ = view.get_header(&tip.hash).expect("storage error");
         }
     }
 
@@ -159,7 +164,7 @@ fn main() {
     {
         let template: Vec<Hash256> = (0..1000u32).map(|i| Hash256([(i & 0xff) as u8; 32])).collect();
         for _ in 0..100 {
-            let _ = merkle_root_owned(template.clone()).unwrap();
+            let _ = merkle_root_owned(template.clone()).expect("non-empty tx list must have merkle root");
         }
     }
 
@@ -169,8 +174,25 @@ fn main() {
         for i in 0..5000u32 {
             let op = OutPoint { txid: Hash256(sha256d(&i.to_le_bytes())), vout: 0 };
             view.insert_coin(op, Coin { value: 1000, script_pubkey: vec![0x51], height: i, coinbase: false });
-            let _ = view.get_coin(&op).unwrap();
+            let _ = view.get_coin(&op).expect("storage error");
             view.spend_coin(&op);
+        }
+    }
+
+    // --- scenario 6: validate_block_wire on 100-tx block (500 iters, zero-copy path) ---
+    {
+        use std::collections::HashSet;
+        let cb = coinbase_tx(vec![0x03, 0x64, 0x00, 0x00], 5_000_000_000);
+        let mut txs = vec![cb];
+        for i in 1..100u8 {
+            txs.push(regular_tx(Hash256([i; 32]), 0, 1000));
+        }
+        let wire = encode(&make_valid_block(txs));
+        let mut txids: Vec<Hash256> = Vec::new();
+        let mut seen_inputs: HashSet<OutPoint> = HashSet::new();
+        let mut seen_txids: HashSet<Hash256> = HashSet::new();
+        for _ in 0..500 {
+            validate_block_wire(&wire, &mut txids, &mut seen_inputs, &mut seen_txids).expect("valid block wire must pass structure check");
         }
     }
 }

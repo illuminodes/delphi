@@ -4,13 +4,13 @@ use mantle::codec::Encode;
 use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
 use mantle_consensus::merkle::compute_merkle_root;
-use mantle_consensus::validation::{txid, validate_block_structure};
+use mantle_consensus::validation::{txid, validate_block_structure, validate_block_wire};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 fn encode<T: Encode>(v: &T) -> Vec<u8> {
     let mut b = Vec::new();
-    v.encode(&mut b).unwrap();
+    v.encode(&mut b).expect("Vec<u8> write cannot fail");
     b
 }
 
@@ -65,8 +65,11 @@ fn mine(mut b: Block) -> Block {
 }
 
 fn valid_block(txs: Vec<Transaction>) -> Block {
-    let ids: Vec<Hash256> = txs.iter().map(txid).collect();
-    let root = compute_merkle_root(&ids).unwrap();
+    let ids: Vec<Hash256> = txs.iter()
+        .map(txid)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("txid encoding cannot fail");
+    let root = compute_merkle_root(&ids).expect("non-empty tx list must have merkle root");
     let b = Block {
         header: BlockHeader {
             version: 1, prev_block: Hash256::ZERO, merkle_root: root,
@@ -92,7 +95,7 @@ fn main() {
         let mut txs = vec![coinbase(vec![0x03, 0x64, 0x00, 0x00], 5_000_000_000)];
         for i in 1..100u8 { txs.push(regular(Hash256([i; 32]), 0, 1000)); }
         let block = valid_block(txs);
-        let n = run_for(secs, || { validate_block_structure(black_box(&block)).unwrap(); black_box(()); });
+        let n = run_for(secs, || { validate_block_structure(black_box(&block)).expect("valid block must pass structure check"); black_box(()); });
         eprintln!("validate_structure(100tx): {n} iters");
     }
 
@@ -108,7 +111,9 @@ fn main() {
             outputs: vec![TxOut { value: 1000, script_pubkey: vec![0x51] }],
             locktime: 0,
         };
-        let n = run_for(secs, || { black_box(txid(black_box(&tx))); });
+        let n = run_for(secs, || {
+            black_box(txid(black_box(&tx)).expect("txid encoding cannot fail"));
+        });
         eprintln!("txid(16-input tx): {n} iters");
     }
 
@@ -128,8 +133,24 @@ fn main() {
         let block = valid_block(txs);
         let bytes = encode(&block);
         let n = run_for(secs, || {
-            black_box(Block::decode(&mut Cursor::new(black_box(bytes.as_slice()))).unwrap());
+            black_box(Block::decode(&mut Cursor::new(black_box(bytes.as_slice()))).expect("valid block bytes must decode"));
         });
         eprintln!("block_decode(50tx): {n} iters");
+    }
+
+    // ── workload E: validate_block_wire, 100-tx block (zero-copy path) ───────
+    {
+        use std::collections::HashSet;
+        let mut txs = vec![coinbase(vec![0x03, 0x64, 0x00, 0x00], 5_000_000_000)];
+        for i in 1..100u8 { txs.push(regular(Hash256([i; 32]), 0, 1000)); }
+        let wire = encode(&valid_block(txs));
+        let mut t: Vec<Hash256> = Vec::new();
+        let mut si: HashSet<OutPoint> = HashSet::new();
+        let mut st: HashSet<Hash256> = HashSet::new();
+        let n = run_for(secs, || {
+            validate_block_wire(black_box(&wire), &mut t, &mut si, &mut st).expect("valid block wire must pass structure check");
+            black_box(());
+        });
+        eprintln!("validate_wire(100tx):   {n} iters");
     }
 }

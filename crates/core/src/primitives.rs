@@ -57,7 +57,7 @@ impl<'a> DecodeRef<'a> for Hash256 {
             ));
         }
         let (head, tail) = buf.split_at(32);
-        Ok((Self(head.try_into().unwrap()), tail))
+        Ok((Self(head.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?), tail))
     }
 }
 
@@ -81,36 +81,39 @@ impl BlockHeader {
 impl BlockHeader {
     /// Serialize to a fixed 80-byte stack buffer.
     #[must_use]
+    #[allow(clippy::missing_panics_doc)] // writing into a fixed-size array cannot fail
     pub fn to_bytes(&self) -> [u8; Self::ENCODED_LEN] {
         let mut buf = [0u8; Self::ENCODED_LEN];
-        buf[0..4].copy_from_slice(&self.version.to_le_bytes());
-        buf[4..36].copy_from_slice(&self.prev_block.0);
-        buf[36..68].copy_from_slice(&self.merkle_root.0);
-        buf[68..72].copy_from_slice(&self.time.to_le_bytes());
-        buf[72..76].copy_from_slice(&self.bits.to_le_bytes());
-        buf[76..80].copy_from_slice(&self.nonce.to_le_bytes());
+        self.encode(&mut buf.as_mut_slice()).expect("fixed-size write cannot fail");
         buf
     }
 
     /// Deserialize from a fixed 80-byte slice.
-    #[must_use]
-    #[allow(clippy::missing_panics_doc)] // slices are exact — unwraps cannot panic
-    pub fn from_bytes(b: &[u8; Self::ENCODED_LEN]) -> Self {
-        Self {
-            version: i32::from_le_bytes(b[0..4].try_into().unwrap()),
-            prev_block: Hash256(b[4..36].try_into().unwrap()),
-            merkle_root: Hash256(b[36..68].try_into().unwrap()),
-            time: u32::from_le_bytes(b[68..72].try_into().unwrap()),
-            bits: u32::from_le_bytes(b[72..76].try_into().unwrap()),
-            nonce: u32::from_le_bytes(b[76..80].try_into().unwrap()),
-        }
+    ///
+    /// # Errors
+    /// Returns an error if the bytes are malformed (in practice, never for a
+    /// fixed-size 80-byte input).
+    pub fn from_bytes(b: &[u8; Self::ENCODED_LEN]) -> io::Result<Self> {
+        let mut r = b.as_slice();
+        let version = i32::decode(&mut r)?;
+        let prev_block = Hash256::decode(&mut r)?;
+        let merkle_root = Hash256::decode(&mut r)?;
+        let time = u32::decode(&mut r)?;
+        let bits = u32::decode(&mut r)?;
+        let nonce = u32::decode(&mut r)?;
+        Ok(Self { version, prev_block, merkle_root, time, bits, nonce })
     }
 }
 
 impl Encode for BlockHeader {
     #[inline]
     fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(&self.to_bytes())
+        self.version.encode(w)?;
+        self.prev_block.encode(w)?;
+        self.merkle_root.encode(w)?;
+        self.time.encode(w)?;
+        self.bits.encode(w)?;
+        self.nonce.encode(w)
     }
 }
 
@@ -119,7 +122,7 @@ impl Decode for BlockHeader {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
         let mut buf = [0u8; Self::ENCODED_LEN];
         r.read_exact(&mut buf)?;
-        Ok(Self::from_bytes(&buf))
+        Self::from_bytes(&buf)
     }
 }
 
@@ -130,7 +133,7 @@ impl<'a> DecodeRef<'a> for BlockHeader {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "not enough bytes"));
         }
         let (head, tail) = buf.split_at(Self::ENCODED_LEN);
-        Ok((Self::from_bytes(head.try_into().unwrap()), tail))
+        Ok((Self::from_bytes(head.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?)?, tail))
     }
 }
 
@@ -622,16 +625,16 @@ mod tests {
 
     fn encode<T: Encode>(val: &T) -> Vec<u8> {
         let mut buf = Vec::new();
-        val.encode(&mut buf).unwrap();
+        val.encode(&mut buf).expect("Vec<u8> write cannot fail");
         buf
     }
 
     fn decode<T: Decode>(bytes: &[u8]) -> T {
-        T::decode(&mut Cursor::new(bytes)).unwrap()
+        T::decode(&mut Cursor::new(bytes)).expect("test data must decode")
     }
 
     fn decode_ref<'a, T: DecodeRef<'a>>(buf: &'a [u8]) -> (T, &'a [u8]) {
-        T::decode_ref(buf).unwrap()
+        T::decode_ref(buf).expect("test data must decode")
     }
 
     #[test]
@@ -1071,13 +1074,13 @@ mod tests {
         assert_eq!(tx_ref.output_count(), tx.outputs.len());
 
         for (r, expected) in tx_ref.inputs().zip(&tx.inputs) {
-            let i = r.unwrap();
+            let i = r.expect("input decode must succeed");
             assert_eq!(i.previous_output, expected.previous_output);
             assert_eq!(i.script_sig, expected.script_sig.as_slice());
             assert_eq!(i.sequence, expected.sequence);
         }
         for (r, expected) in tx_ref.outputs().zip(&tx.outputs) {
-            let o = r.unwrap();
+            let o = r.expect("output decode must succeed");
             assert_eq!(o.value, expected.value);
             assert_eq!(o.script_pubkey, expected.script_pubkey.as_slice());
         }
@@ -1088,7 +1091,7 @@ mod tests {
         let tx = make_tx();
         let bytes = encode(&tx);
         let (tx_ref, _) = decode_ref::<TransactionRef>(&bytes);
-        let first = tx_ref.inputs().next().unwrap().unwrap();
+        let first = tx_ref.inputs().next().expect("tx has inputs").expect("input decode must succeed");
         // script_sig must point directly into `bytes`, not a new allocation.
         let script_start = first.script_sig.as_ptr() as usize;
         let buf_start = bytes.as_ptr() as usize;
@@ -1101,7 +1104,7 @@ mod tests {
         let tx = make_tx();
         let bytes = encode(&tx);
         let (tx_ref, _) = decode_ref::<TransactionRef>(&bytes);
-        assert_eq!(tx_ref.to_owned().unwrap(), tx);
+        assert_eq!(tx_ref.to_owned().expect("to_owned must succeed"), tx);
     }
 
     #[test]
@@ -1150,6 +1153,6 @@ mod tests {
         assert_eq!(tx_ref.output_count(), 0);
         assert!(tx_ref.inputs().next().is_none());
         assert!(tx_ref.outputs().next().is_none());
-        assert_eq!(tx_ref.to_owned().unwrap(), tx);
+        assert_eq!(tx_ref.to_owned().expect("to_owned must succeed"), tx);
     }
 }

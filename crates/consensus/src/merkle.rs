@@ -24,7 +24,7 @@ pub fn merkle_root_owned(mut row: Vec<Hash256>) -> Option<Hash256> {
     while row.len() > 1 {
         // Pad odd row by duplicating the last element.
         if row.len() % 2 == 1 {
-            let last = *row.last().unwrap();
+            let last = row[row.len() - 1];
             row.push(last);
         }
         // Fold pairs in-place: write each parent hash into the front half,
@@ -52,7 +52,8 @@ mod tests {
     fn txid_from_hex(s: &str) -> Hash256 {
         let bytes: Vec<u8> = (0..s.len())
             .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16)
+            .unwrap_or_else(|_| panic!("invalid hex at offset {i}")))
             .collect();
         // txids are stored internally in byte order (not display-reversed)
         let mut arr = [0u8; 32];
@@ -113,7 +114,7 @@ mod tests {
         let genesis_txid_hex =
             "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a";
         let txid = txid_from_hex(genesis_txid_hex);
-        let root = compute_merkle_root(&[txid]).unwrap();
+        let root = compute_merkle_root(&[txid]).expect("single-tx merkle root must exist");
         assert_eq!(root, txid);
     }
 }

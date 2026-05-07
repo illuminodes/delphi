@@ -41,7 +41,7 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
 }
 
 fn mine_block(mut block: Block) -> Block {
-    let target = nbits_to_target(block.header.bits).unwrap();
+    let target = nbits_to_target(block.header.bits).expect("EASY_BITS must produce a valid target");
     for nonce in 0..=u32::MAX {
         block.header.nonce = nonce;
         let raw = sha256d(&block.header.to_bytes());
@@ -70,8 +70,8 @@ fn nbits_to_target(bits: u32) -> Option<[u8; 32]> {
 }
 
 fn make_valid_block(txs: Vec<Transaction>) -> Block {
-    let txids: Vec<Hash256> = txs.iter().map(txid).collect();
-    let merkle_root = compute_merkle_root(&txids).unwrap();
+    let txids: Vec<Hash256> = txs.iter().map(|tx| txid(tx).expect("txid encoding cannot fail")).collect();
+    let merkle_root = compute_merkle_root(&txids).expect("non-empty tx list must have a merkle root");
     let block = Block {
         header: BlockHeader {
             version: 1,
@@ -108,7 +108,7 @@ fn build_chain(len: u32) -> MemoryChainView {
 
 #[divan::bench]
 fn txid_coinbase() {
-    black_box(txid(&coinbase_tx(5_000_000_000)));
+    black_box(txid(&coinbase_tx(5_000_000_000)).expect("txid encoding cannot fail"));
 }
 
 #[divan::bench(args = [1usize, 4, 16])]
@@ -141,7 +141,7 @@ fn merkle_root(bencher: divan::Bencher, n: usize) {
 #[divan::bench]
 fn validate_structure_single_coinbase(bencher: divan::Bencher) {
     let block = make_valid_block(vec![coinbase_tx(5_000_000_000)]);
-    bencher.bench(|| validate_block_structure(black_box(&block)).unwrap());
+    bencher.bench(|| validate_block_structure(black_box(&block)).expect("valid block must pass structure validation"));
 }
 
 #[divan::bench(args = [2usize, 10, 100])]
@@ -151,7 +151,7 @@ fn validate_structure_n_txs(bencher: divan::Bencher, n: usize) {
         txs.push(regular_tx(Hash256([i as u8; 32]), 0, 1000));
     }
     let block = make_valid_block(txs);
-    bencher.bench(|| validate_block_structure(black_box(&block)).unwrap());
+    bencher.bench(|| validate_block_structure(black_box(&block)).expect("valid block must pass structure validation"));
 }
 
 // ── validate_block_wire ───────────────────────────────────────────────────────
@@ -160,12 +160,12 @@ fn validate_structure_n_txs(bencher: divan::Bencher, n: usize) {
 fn validate_wire_single_coinbase(bencher: divan::Bencher) {
     let block = make_valid_block(vec![coinbase_tx(5_000_000_000)]);
     let mut wire = Vec::new();
-    block.encode(&mut wire).unwrap();
+    block.encode(&mut wire).expect("Vec<u8> write cannot fail");
     let mut t = Vec::new();
     let mut si = std::collections::HashSet::new();
     let mut st = std::collections::HashSet::new();
     bencher.bench_local(|| {
-        validate_block_wire(black_box(&wire), &mut t, &mut si, &mut st).unwrap();
+        validate_block_wire(black_box(&wire), &mut t, &mut si, &mut st).expect("valid block wire must pass validation");
     });
 }
 
@@ -177,12 +177,12 @@ fn validate_wire_n_txs(bencher: divan::Bencher, n: usize) {
     }
     let block = make_valid_block(txs);
     let mut wire = Vec::new();
-    block.encode(&mut wire).unwrap();
+    block.encode(&mut wire).expect("Vec<u8> write cannot fail");
     let mut t = Vec::new();
     let mut si = std::collections::HashSet::new();
     let mut st = std::collections::HashSet::new();
     bencher.bench_local(|| {
-        validate_block_wire(black_box(&wire), &mut t, &mut si, &mut st).unwrap();
+        validate_block_wire(black_box(&wire), &mut t, &mut si, &mut st).expect("valid block wire must pass validation");
     });
 }
 
@@ -192,7 +192,10 @@ fn validate_wire_n_txs(bencher: divan::Bencher, n: usize) {
 fn validate_context_chain_12(bencher: divan::Bencher) {
     let view = build_chain(12);
     let tip = view.tip();
-    let parent_time = view.get_header_at(tip.height).unwrap().unwrap().time;
+    let parent_time = view.get_header_at(tip.height)
+        .expect("storage error")
+        .expect("tip header must exist")
+        .time;
     let clock_now = u64::from(parent_time) + 600;
 
     let tx = Transaction {
@@ -205,7 +208,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
         outputs: vec![TxOut { value: 5_000_000_000, script_pubkey: vec![0x51] }],
         locktime: 0,
     };
-    let merkle_root = compute_merkle_root(&[txid(&tx)]).unwrap();
+    let merkle_root = compute_merkle_root(&[txid(&tx).expect("txid encoding cannot fail")]).expect("single-tx merkle root must exist");
     let mtp = view.median_time_past(&BlockHeader {
         version: 4,
         prev_block: tip.hash,
@@ -213,7 +216,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
         time: 0,
         bits: EASY_BITS,
         nonce: 0,
-    }).unwrap();
+    }).expect("median_time_past must succeed on valid chain");
     let block = Block {
         header: BlockHeader {
             version: 4,
@@ -227,7 +230,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
     };
     let clock = FixedClock(clock_now + 3600);
     bencher.bench(|| {
-        validate_block_context_with_clock(black_box(&block), &view, &clock).unwrap()
+        validate_block_context_with_clock(black_box(&block), &view, &clock).expect("valid block must pass context validation")
     });
 }
 
@@ -237,20 +240,20 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
 fn chain_view_get_header_by_hash(bencher: divan::Bencher) {
     let view = build_chain(100);
     let tip = view.tip();
-    bencher.bench(|| view.get_header(black_box(&tip.hash)).unwrap());
+    bencher.bench(|| view.get_header(black_box(&tip.hash)).expect("storage error"));
 }
 
 #[divan::bench]
 fn chain_view_get_header_at(bencher: divan::Bencher) {
     let view = build_chain(100);
-    bencher.bench(|| view.get_header_at(black_box(50)).unwrap());
+    bencher.bench(|| view.get_header_at(black_box(50)).expect("storage error"));
 }
 
 #[divan::bench]
 fn chain_view_height_of(bencher: divan::Bencher) {
     let view = build_chain(100);
     let tip = view.tip();
-    bencher.bench(|| view.height_of(black_box(&tip.hash)).unwrap());
+    bencher.bench(|| view.height_of(black_box(&tip.hash)).expect("storage error"));
 }
 
 #[divan::bench]
@@ -264,14 +267,14 @@ fn chain_view_get_coin_hit(bencher: divan::Bencher) {
     let mut view = MemoryChainView::new();
     let op = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
     view.insert_coin(op, Coin { value: 5_000_000_000, script_pubkey: vec![0x51], height: 1, coinbase: false });
-    bencher.bench(|| view.get_coin(black_box(&op)).unwrap());
+    bencher.bench(|| view.get_coin(black_box(&op)).expect("storage error"));
 }
 
 #[divan::bench]
 fn chain_view_get_coin_miss(bencher: divan::Bencher) {
     let view = MemoryChainView::new();
     let op = OutPoint { txid: Hash256([0xffu8; 32]), vout: 0 };
-    bencher.bench(|| view.get_coin(black_box(&op)).unwrap());
+    bencher.bench(|| view.get_coin(black_box(&op)).expect("storage error"));
 }
 
 #[divan::bench(args = [1usize, 10, 100])]
@@ -283,7 +286,7 @@ fn chain_view_get_coins_batch(bencher: divan::Bencher, n: usize) {
     for &op in &ops {
         view.insert_coin(op, Coin { value: 1000, script_pubkey: vec![], height: 1, coinbase: false });
     }
-    bencher.bench(|| view.get_coins(black_box(&ops)).unwrap());
+    bencher.bench(|| view.get_coins(black_box(&ops)).expect("storage error"));
 }
 
 #[divan::bench]
@@ -298,5 +301,5 @@ fn chain_view_median_time_past(bencher: divan::Bencher) {
         bits: EASY_BITS,
         nonce: 0,
     };
-    bencher.bench(|| view.median_time_past(black_box(&next_header)).unwrap());
+    bencher.bench(|| view.median_time_past(black_box(&next_header)).expect("median_time_past must succeed on valid chain"));
 }
