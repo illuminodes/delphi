@@ -1,43 +1,63 @@
 use mantle::hash::sha256d;
 use mantle::primitives::Hash256;
 
-/// Compute the merkle root from a slice, cloning into a working buffer.
+/// Compute the merkle root from a slice, reusing `buf` as the working buffer.
+///
+/// `buf` is cleared and refilled on every call; the caller retains ownership
+/// so its capacity is amortised across calls. Use this on hot paths where the
+/// same buffer can be passed in repeatedly.
+///
+/// Returns `None` only on an empty input.
+#[must_use]
+pub fn compute_merkle_root_reusing(txids: &[Hash256], buf: &mut Vec<Hash256>) -> Option<Hash256> {
+    if txids.is_empty() {
+        return None;
+    }
+    buf.clear();
+    buf.extend_from_slice(txids);
+    Some(reduce_in_place(buf))
+}
+
+/// Compute the merkle root from a slice, cloning into a temporary working buffer.
+///
+/// Prefer [`compute_merkle_root_reusing`] on hot paths to avoid the per-call
+/// allocation.
 ///
 /// Returns `None` only on an empty input.
 #[must_use]
 pub fn compute_merkle_root(txids: &[Hash256]) -> Option<Hash256> {
-    merkle_root_owned(txids.to_vec())
+    compute_merkle_root_reusing(txids, &mut Vec::new())
 }
 
-/// Same as `compute_merkle_root` but consumes an already-owned Vec, avoiding
-/// the clone. Use this when you already hold ownership of the txid list.
+/// Compute the merkle root by consuming an already-owned Vec.
 ///
-/// # Panics
-/// Never — the internal `unwrap` on `last()` is protected by the odd-length
-/// pad that runs immediately before it.
+/// Avoids the clone when the caller already holds ownership of the txid list.
 #[must_use]
 pub fn merkle_root_owned(mut row: Vec<Hash256>) -> Option<Hash256> {
     if row.is_empty() {
         return None;
     }
-    let mut buf = [0u8; 64];
+    Some(reduce_in_place(&mut row))
+}
+
+/// In-place fold: overwrites the front of `row` with parent hashes each round,
+/// truncates, repeats until one element remains. `row` must be non-empty.
+fn reduce_in_place(row: &mut Vec<Hash256>) -> Hash256 {
+    let mut pair = [0u8; 64];
     while row.len() > 1 {
-        // Pad odd row by duplicating the last element.
         if row.len() % 2 == 1 {
             let last = row[row.len() - 1];
             row.push(last);
         }
-        // Fold pairs in-place: write each parent hash into the front half,
-        // then truncate. No allocations after the initial vec.
         let parents = row.len() / 2;
         for i in 0..parents {
-            buf[..32].copy_from_slice(&row[i * 2].0);
-            buf[32..].copy_from_slice(&row[i * 2 + 1].0);
-            row[i] = Hash256(sha256d(&buf));
+            pair[..32].copy_from_slice(&row[i * 2].0);
+            pair[32..].copy_from_slice(&row[i * 2 + 1].0);
+            row[i] = Hash256(sha256d(&pair));
         }
         row.truncate(parents);
     }
-    Some(row[0])
+    row[0]
 }
 
 

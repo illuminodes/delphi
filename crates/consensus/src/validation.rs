@@ -238,17 +238,13 @@ where
 
     for tx_index in 0..tx_count {
         let malformed = |_| ValidationError::MalformedTransaction { tx_index };
-        let tx_start = rest;
         let (tx, remaining) = TransactionRef::decode_ref(rest).map_err(malformed)?;
-        // Raw wire bytes for this tx — hash directly, no re-encoding.
-        let tx_wire = &tx_start[..tx_start.len() - remaining.len()];
         rest = remaining;
 
         check_tx_structure(&tx, tx_index, tx_index == 0, seen_inputs)?;
 
-        base_size += tx_wire.len();
-
-        txids.push(Hash256(sha256d(tx_wire)));
+        base_size += tx.raw.len();
+        txids.push(Hash256(sha256d(tx.raw)));
     }
 
     let weight = base_size as u64 * WITNESS_SCALE_FACTOR;

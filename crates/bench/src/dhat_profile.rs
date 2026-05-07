@@ -2,7 +2,7 @@ use mantle::codec::Encode;
 use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
-use mantle_consensus::merkle::merkle_root_owned;
+use mantle_consensus::merkle::{compute_merkle_root_reusing, merkle_root_owned};
 use mantle_consensus::validation::{validate_block_structure_reusing, validate_block_wire};
 
 #[global_allocator]
@@ -130,9 +130,11 @@ fn main() {
             txs.push(regular_tx(Hash256([i; 32]), 0, 1000));
         }
         let block = make_valid_block(txs);
+        let mut encode_buf: Vec<u8> = Vec::new();
         for _ in 0..200 {
-            let bytes = encode(&block);
-            let _ = Block::decode(&mut Cursor::new(bytes.as_slice())).expect("valid block bytes must decode");
+            encode_buf.clear();
+            block.encode(&mut encode_buf).expect("Vec<u8> write cannot fail");
+            let _ = Block::decode(&mut Cursor::new(encode_buf.as_slice())).expect("valid block bytes must decode");
         }
     }
 
@@ -149,8 +151,9 @@ fn main() {
     // --- scenario 4: merkle root over 1000 txids (100 iters) ---
     {
         let template: Vec<Hash256> = (0..1000u32).map(|i| Hash256([(i & 0xff) as u8; 32])).collect();
+        let mut buf: Vec<Hash256> = Vec::with_capacity(template.len());
         for _ in 0..100 {
-            let _ = merkle_root_owned(template.clone()).expect("non-empty tx list must have merkle root");
+            let _ = compute_merkle_root_reusing(&template, &mut buf).expect("non-empty tx list must have merkle root");
         }
     }
 

@@ -1,5 +1,5 @@
 use mantle::codec::{Decode, DecodeRef, Encode};
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, TxIn, TxInRef, TxOut, TxOutRef};
+use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, TxHash, TxIn, TxInRef, TxOut, TxOutRef};
 use std::hint::black_box;
 use std::io::Cursor;
 
@@ -212,6 +212,29 @@ fn transaction_ref_to_owned(bencher: divan::Bencher, n: usize) {
     let bytes = encode_bytes(&make_tx(n, n));
     let (tx_ref, _) = TransactionRef::decode_ref(bytes.as_slice()).expect("TransactionRef decode_ref cannot fail on valid bytes");
     bencher.bench(|| tx_ref.to_owned().expect("to_owned cannot fail on valid bytes"));
+}
+
+/// Re-encode a `TransactionRef` back to bytes — zero-copy read, sequential write.
+#[divan::bench(args = [1usize, 4, 16])]
+fn transaction_ref_encode(bencher: divan::Bencher, n: usize) {
+    let bytes = encode_bytes(&make_tx(n, n));
+    let (tx_ref, _) = TransactionRef::decode_ref(bytes.as_slice()).expect("TransactionRef decode_ref cannot fail on valid bytes");
+    bencher.bench(|| encode_bytes(&tx_ref));
+}
+
+/// Compute txid via `TxHash` on a `TransactionRef` (hashes raw wire bytes, no re-encode).
+#[divan::bench(args = [1usize, 4, 16])]
+fn transaction_ref_txid(bencher: divan::Bencher, n: usize) {
+    let bytes = encode_bytes(&make_tx(n, n));
+    let (tx_ref, _) = TransactionRef::decode_ref(bytes.as_slice()).expect("TransactionRef decode_ref cannot fail on valid bytes");
+    bencher.bench(|| tx_ref.txid().expect("txid encoding cannot fail"));
+}
+
+/// Compare: txid on owned `Transaction` vs `TransactionRef` at same sizes.
+#[divan::bench(args = [1usize, 4, 16])]
+fn transaction_txid(bencher: divan::Bencher, n: usize) {
+    let tx = make_tx(n, n);
+    bencher.bench(|| tx.txid().expect("txid encoding cannot fail"));
 }
 
 // ── Block ─────────────────────────────────────────────────────────────────────

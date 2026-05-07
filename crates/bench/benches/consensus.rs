@@ -1,7 +1,7 @@
 use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
-use mantle_consensus::merkle::compute_merkle_root;
+use mantle_consensus::merkle::{compute_merkle_root, compute_merkle_root_reusing};
 use mantle::codec::Encode;
 use mantle_consensus::validation::{FixedClock, validate_block_structure, validate_block_wire, validate_block_context_with_clock};
 use std::hint::black_box;
@@ -117,8 +117,15 @@ fn txid_regular(bencher: divan::Bencher, n_inputs: usize) {
 
 #[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
 fn merkle_root(bencher: divan::Bencher, n: usize) {
-    let txids: Vec<Hash256> = (0..n).map(|i| Hash256([u8::try_from(i).expect("bench index fits u8"); 32])).collect();
+    let txids: Vec<Hash256> = (0..n).map(|i| Hash256([(i & 0xff) as u8; 32])).collect();
     bencher.bench(|| compute_merkle_root(black_box(&txids)));
+}
+
+#[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
+fn merkle_root_reusing(bencher: divan::Bencher, n: usize) {
+    let txids: Vec<Hash256> = (0..n).map(|i| Hash256([(i & 0xff) as u8; 32])).collect();
+    let mut buf: Vec<Hash256> = Vec::with_capacity(n);
+    bencher.bench_local(|| compute_merkle_root_reusing(black_box(&txids), &mut buf));
 }
 
 // ── validate_block_structure ──────────────────────────────────────────────────
@@ -133,7 +140,7 @@ fn validate_structure_single_coinbase(bencher: divan::Bencher) {
 fn validate_structure_n_txs(bencher: divan::Bencher, n: usize) {
     let mut txs = vec![coinbase_tx(5_000_000_000)];
     for i in 1..n {
-        txs.push(regular_tx(Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), 0, 1000));
+        txs.push(regular_tx(Hash256([(i & 0xff) as u8; 32]), 0, 1000));
     }
     let block = make_valid_block(txs);
     bencher.bench(|| validate_block_structure(black_box(&block)).expect("valid block must pass structure validation"));
@@ -158,7 +165,7 @@ fn validate_wire_single_coinbase(bencher: divan::Bencher) {
 fn validate_wire_n_txs(bencher: divan::Bencher, n: usize) {
     let mut txs = vec![coinbase_tx(5_000_000_000)];
     for i in 1..n {
-        txs.push(regular_tx(Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), 0, 1000));
+        txs.push(regular_tx(Hash256([(i & 0xff) as u8; 32]), 0, 1000));
     }
     let block = make_valid_block(txs);
     let mut wire = Vec::new();

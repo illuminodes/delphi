@@ -802,10 +802,16 @@ impl<'a> Iterator for TxOutRefIter<'a> {
 /// lazily from slices of the original buffer. Use [`inputs`](Self::inputs) and
 /// [`outputs`](Self::outputs) to iterate; use [`to_owned`](Self::to_owned) to
 /// materialise a full `Transaction` when needed.
+///
+/// `raw` holds the complete wire bytes for this transaction (version through
+/// locktime). `encode` is a single `write_all(raw)` and `txid_into` hashes
+/// `raw` directly, skipping re-serialisation entirely.
 #[derive(Debug, Clone, Copy)]
 pub struct TransactionRef<'a> {
     pub version: i32,
     pub locktime: u32,
+    /// Complete wire bytes spanning this transaction (version … locktime).
+    pub raw: &'a [u8],
     input_count: usize,
     inputs_buf: &'a [u8],
     output_count: usize,
@@ -837,23 +843,11 @@ impl<'a> TransactionRef<'a> {
         self.output_count
     }
 
-    /// Serialised byte length, computed without allocating.
+    /// Serialised byte length — O(1), reads directly from the raw wire span.
+    #[inline]
     #[must_use]
     pub fn encoded_len(&self) -> usize {
-        let inputs_len: usize = self
-            .inputs()
-            .map(|r| r.map_or(0, |i| OutPoint::ENCODED_LEN + VarInt(i.script_sig.len() as u64).encoded_len() + i.script_sig.len() + 4))
-            .sum();
-        let outputs_len: usize = self
-            .outputs()
-            .map(|r| r.map_or(0, |o| 8 + VarInt(o.script_pubkey.len() as u64).encoded_len() + o.script_pubkey.len()))
-            .sum();
-        4
-            + VarInt(self.input_count as u64).encoded_len()
-            + inputs_len
-            + VarInt(self.output_count as u64).encoded_len()
-            + outputs_len
-            + 4
+        self.raw.len()
     }
 
     /// Materialise into an owned `Transaction`, allocating.
@@ -885,38 +879,22 @@ impl<'a> TransactionRef<'a> {
 }
 
 impl Encode for TransactionRef<'_> {
+    #[inline]
     fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        self.version.encode(w)?;
-        VarInt(self.input_count as u64).encode(w)?;
-        for r in self.inputs() {
-            let i = r?;
-            i.previous_output.encode(w)?;
-            VarInt(i.script_sig.len() as u64).encode(w)?;
-            w.write_all(i.script_sig)?;
-            i.sequence.encode(w)?;
-        }
-        VarInt(self.output_count as u64).encode(w)?;
-        for r in self.outputs() {
-            let o = r?;
-            o.value.encode(w)?;
-            VarInt(o.script_pubkey.len() as u64).encode(w)?;
-            w.write_all(o.script_pubkey)?;
-        }
-        self.locktime.encode(w)
+        w.write_all(self.raw)
     }
 }
 
 impl TxHash for TransactionRef<'_> {
-    fn txid_into(&self, buf: &mut Vec<u8>) -> io::Result<Hash256> {
-        buf.clear();
-        buf.reserve(self.encoded_len());
-        self.encode(buf)?;
-        Ok(Hash256(sha256d(buf)))
+    #[inline]
+    fn txid_into(&self, _buf: &mut Vec<u8>) -> io::Result<Hash256> {
+        Ok(Hash256(sha256d(self.raw)))
     }
 }
 
 impl<'a> DecodeRef<'a> for TransactionRef<'a> {
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+        let tx_start = buf;
         let (version, buf) = i32::decode_ref(buf)?;
 
         let (VarInt(n), buf) = VarInt::decode_ref(buf)?;
@@ -942,8 +920,9 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
         }
 
         let (locktime, rest) = u32::decode_ref(rest)?;
+        let raw = &tx_start[..tx_start.len() - rest.len()];
         Ok((
-            Self { version, locktime, input_count, inputs_buf, output_count, outputs_buf },
+            Self { version, locktime, raw, input_count, inputs_buf, output_count, outputs_buf },
             rest,
         ))
     }
