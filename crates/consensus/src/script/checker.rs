@@ -143,18 +143,26 @@ impl SignatureChecker for TxSigChecker<'_> {
         const SEQUENCE_LOCKTIME_TYPE_FLAG: i64 = 1 << 22;
         const SEQUENCE_LOCKTIME_MASK: i64 = 0x0000_ffff;
 
-        // BIP68 only applies to v2+ transactions. Pre-v2 txs are exempt
-        // from relative-locktime enforcement, so CSV is a NOP and *passes*
-        // (Core treats this as success, not failure — matching its NOP
-        // forward-compat semantics).
-        if self.tx.version < 2 {
+        // BIP112: if the *stack* value has the disable flag set, CSV is a
+        // NOP-pass regardless of tx version. Checked by the caller (the
+        // opcode handler peeks; we only see the value). Implemented above.
+        if sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG != 0 {
             return true;
         }
 
-        // If the high bit of the script value is set, BIP112 says the
-        // opcode succeeds without further checks (forward-compat).
-        if sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG != 0 {
-            return true;
+        // BIP68 only applies to txs whose version (treated as **unsigned**,
+        // per Core) is ≥ 2. Pre-v2 txs disable BIP112 relative locktime
+        // enforcement, but with the stack disable bit *clear* the rule
+        // says CSV must fail (the spec treats this as "transaction can't
+        // satisfy CSV without opting in").
+        //
+        // Probed via fuzz/tests/csv_oracle_probe.rs — Core uses u32 here,
+        // so a negative i32 with high-byte 0xfd reads as a huge positive
+        // u32 and CSV proceeds normally.
+        #[allow(clippy::cast_sign_loss)] // intentional u32 reinterpretation
+        let version_u32 = self.tx.version as u32;
+        if version_u32 < 2 {
+            return false;
         }
 
         let tx_seq = i64::from(self.tx.inputs[self.n_in].sequence);
