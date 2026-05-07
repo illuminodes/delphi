@@ -4,7 +4,7 @@
 /// data. No runtime file I/O; everything compiles into the test binary.
 use mantle::codec::{Decode, Encode};
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut, Witness};
 use std::io::Cursor;
 
 use crate::chain_view::{ChainView, Coin, MemoryChainView};
@@ -27,6 +27,7 @@ fn coinbase_input(script_sig: Vec<u8>) -> TxIn {
         previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
         script_sig: script_sig.into(),
         sequence: u32::MAX,
+        witness: Witness::empty(),
     }
 }
 
@@ -169,6 +170,7 @@ fn stage1_first_tx_not_coinbase_rejected() {
             previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
             script_sig: vec![].into(),
             sequence: u32::MAX,
+            witness: Witness::empty(),
         }],
         outputs: vec![make_output(1000)],
         locktime: 0,
@@ -302,8 +304,8 @@ fn stage1_duplicate_inputs_rejected() {
     let tx = Transaction {
         version: 1,
         inputs: vec![
-            TxIn { previous_output: outpoint, script_sig: vec![].into(), sequence: u32::MAX },
-            TxIn { previous_output: outpoint, script_sig: vec![].into(), sequence: u32::MAX }, // dup
+            TxIn { previous_output: outpoint, script_sig: vec![].into(), sequence: u32::MAX, witness: Witness::empty() },
+            TxIn { previous_output: outpoint, script_sig: vec![].into(), sequence: u32::MAX, witness: Witness::empty() }, // dup
         ],
         outputs: vec![make_output(1000)],
         locktime: 0,
@@ -687,6 +689,7 @@ fn sequence_field_roundtrip() {
                 previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
                 script_sig: vec![].into(),
                 sequence: seq,
+                witness: Witness::empty(),
             }],
             outputs: vec![make_output(1000)],
             locktime: 0,
@@ -827,6 +830,7 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
                     previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
                     script_sig: vec![0x51].into(),
                     sequence: u32::MAX,
+                    witness: Witness::empty(),
                 }],
                 outputs: vec![make_output(1000)],
                 locktime: 0,

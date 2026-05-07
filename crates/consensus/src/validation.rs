@@ -1177,7 +1177,7 @@ mod tests {
     use super::*;
     use crate::chain_view::{Coin, MemoryChainView};
     use crate::merkle::compute_merkle_root;
-    use mantle::primitives::{TxIn, TxOut};
+    use mantle::primitives::{TxIn, TxOut, Witness};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -1188,6 +1188,7 @@ mod tests {
                 previous_output: NULL_OUTPOINT,
                 script_sig: Transaction::bip34_height_script(height).into(),
                 sequence: u32::MAX,
+                witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(value),
@@ -1204,6 +1205,7 @@ mod tests {
                 previous_output: OutPoint { txid: prev_txid, vout },
                 script_sig: vec![0x00].into(),
                 sequence: u32::MAX,
+                witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(value),
@@ -1907,6 +1909,7 @@ mod tests {
                 previous_output: NULL_OUTPOINT,
                 script_sig: Transaction::bip34_height_script(BlockHeight(1)).into(),
                 sequence: u32::MAX,
+                witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(50 * 100_000_000 + 1), // one satoshi over
@@ -1958,6 +1961,7 @@ mod tests {
                 previous_output: NULL_OUTPOINT,
                 script_sig: Transaction::bip34_height_script(BlockHeight(1)).into(),
                 sequence: u32::MAX,
+                witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(block_subsidy(BlockHeight(1)).to_u64()),

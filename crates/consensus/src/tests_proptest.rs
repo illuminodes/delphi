@@ -5,7 +5,7 @@
 use proptest::prelude::*;
 
 use mantle::codec::{Decode, Encode, VarInt};
-use mantle::primitives::{Block, BlockHeader, CompactBits, Hash256, OutPoint, Transaction, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, CompactBits, Hash256, OutPoint, Transaction, TxIn, TxOut, Witness};
 use std::io::Cursor;
 
 use crate::merkle::compute_merkle_root;
@@ -56,13 +56,14 @@ fn arb_txin() -> impl Strategy<Value = TxIn> {
             previous_output: OutPoint { txid, vout },
             script_sig: script_sig.into(),
             sequence,
+            witness: Witness::empty(),
         })
 }
 
 fn arb_transaction() -> impl Strategy<Value = Transaction> {
     (
         any::<i32>(),
-        prop::collection::vec(arb_txin(), 0..=8_usize),
+        prop::collection::vec(arb_txin(), 1..=8_usize),
         prop::collection::vec(arb_txout(), 0..=8_usize),
         any::<u32>(),
     )

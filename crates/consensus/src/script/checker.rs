@@ -13,7 +13,7 @@ use mantle::primitives::{Satoshi, Transaction};
 use super::consensus_crypto;
 use super::flags::ScriptFlags;
 use super::sig_version::SigVersion;
-use super::sighash::{SigHashType, find_and_delete_sig, signature_hash};
+use super::sighash::{Bip143Cache, SigHashType, find_and_delete_sig, signature_hash, signature_hash_bip143};
 
 /// Asks "does this signature, pubkey, and scriptCode verify?" for the script
 /// being evaluated. The interpreter calls one of these methods for every
@@ -45,25 +45,27 @@ pub trait SignatureChecker {
     fn check_sequence(&self, sequence: i64) -> bool;
 }
 
-/// Production legacy `SignatureChecker`. Borrows the transaction being
-/// validated, the input index whose script is currently executing, and the
-/// amount of the spent output (unused in legacy sighash, kept for API
-/// uniformity with the BIP143 path that arrives in M2).
+/// Production `SignatureChecker`. Borrows the transaction being validated, the
+/// input index whose script is currently executing, the amount of the spent
+/// output, and a pre-computed [`Bip143Cache`] for the segwit v0 sighash path.
 ///
 /// `script_flags` is the full `ScriptFlags` for this verification call —
 /// `consensus_crypto::verify_ecdsa` reads `DERSIG` / `STRICTENC` / `LOW_S`
 /// from it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TxSigChecker<'a> {
     pub tx: &'a Transaction,
     pub n_in: usize,
     pub amount: Satoshi,
     pub script_flags: ScriptFlags,
+    /// Pre-computed BIP143 shared hash fields. Built once per transaction in
+    /// `new`; reused for every input during segwit v0 verification.
+    bip143_cache: Bip143Cache,
 }
 
 impl<'a> TxSigChecker<'a> {
     /// Construct a checker for input `n_in` of `tx` with the given output
-    /// amount and verification flags.
+    /// amount and verification flags. Pre-computes the BIP143 cache.
     #[must_use]
     pub fn new(
         tx: &'a Transaction,
@@ -71,7 +73,7 @@ impl<'a> TxSigChecker<'a> {
         amount: Satoshi,
         script_flags: ScriptFlags,
     ) -> Self {
-        Self { tx, n_in, amount, script_flags }
+        Self { tx, n_in, amount, script_flags, bip143_cache: Bip143Cache::new(tx) }
     }
 }
 
@@ -83,26 +85,41 @@ impl SignatureChecker for TxSigChecker<'_> {
         script_code: &[u8],
         sig_version: SigVersion,
     ) -> bool {
-        // M1 only does the legacy regime. Witness sighash is M2.
-        if !sig_version.is_base() {
+        // Tapscript uses Schnorr, not ECDSA — should never reach here.
+        if sig_version == SigVersion::Tapscript {
             return false;
         }
 
         // The signature on the wire is `<DER>||<hashtype>`. An empty signature
-        // is a fail — there's no hashtype byte to read. The trait contract
-        // says we return `false` in that case; under NULLFAIL the *opcode*
-        // (not us) requires the empty signature to be the only failure mode.
+        // is a fail — there's no hashtype byte to read.
         let Some((&hashtype_byte, sig_der)) = sig.split_last() else {
             return false;
         };
         let hash_type = SigHashType(u32::from(hashtype_byte));
 
-        // FindAndDelete: legacy regime removes any push of the exact `sig`
-        // bytes from `script_code` before hashing. Match Core: the signature
-        // matched is the full `<DER>||<hashtype>` blob, not just the DER part.
-        let cleaned_code = find_and_delete_sig(script_code, sig);
+        let digest = match sig_version {
+            SigVersion::Base => {
+                // FindAndDelete: legacy regime removes any push of the exact
+                // `sig` bytes from `script_code` before hashing.
+                let cleaned_code = find_and_delete_sig(script_code, sig);
+                signature_hash(self.tx, self.n_in, &cleaned_code, hash_type)
+            }
+            SigVersion::WitnessV0 => {
+                // BIP143: no FindAndDelete; script_code is already the
+                // scriptCode for this input (P2WPKH synthetic or P2WSH witness
+                // script), passed through unchanged.
+                signature_hash_bip143(
+                    self.tx,
+                    self.n_in,
+                    script_code,
+                    self.amount,
+                    hash_type,
+                    &self.bip143_cache,
+                )
+            }
+            SigVersion::Tapscript => unreachable!(),
+        };
 
-        let digest = signature_hash(self.tx, self.n_in, &cleaned_code, hash_type);
         consensus_crypto::verify_ecdsa(sig_der, pubkey, &digest.0)
     }
 
@@ -220,7 +237,7 @@ mod tests {
 
     use k256::ecdsa::signature::hazmat::PrehashSigner;
     use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
-    use mantle::primitives::{Hash256, OutPoint, TxIn, TxOut};
+    use mantle::primitives::{Hash256, OutPoint, TxIn, TxOut, Witness};
     use ripemd::Ripemd160;
     use sha2::{Digest, Sha256};
 
@@ -263,6 +280,7 @@ mod tests {
                 previous_output: OutPoint { txid: Hash256([0u8; 32]), vout: 0 },
                 script_sig: Vec::<u8>::new().into(),
                 sequence: 0xffff_ffff,
+                witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(50_000),

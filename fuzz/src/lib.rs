@@ -13,12 +13,13 @@ use std::io::Cursor;
 
 /// Mask to the flag bits we currently assert parity on.
 ///
-/// **M1**: legacy script — P2SH, BIP66 (DERSIG), NULLDUMMY, CLTV, CSV.
-pub const M1_FLAGS_MASK: u32 = conformance::VERIFY_P2SH
+/// **M2**: legacy + segwit v0 — P2SH, BIP66 (DERSIG), NULLDUMMY, CLTV, CSV, WITNESS.
+pub const FLAGS_MASK: u32 = conformance::VERIFY_P2SH
     | conformance::VERIFY_DERSIG
     | conformance::VERIFY_NULLDUMMY
     | conformance::VERIFY_CHECKLOCKTIMEVERIFY
-    | conformance::VERIFY_CHECKSEQUENCEVERIFY;
+    | conformance::VERIFY_CHECKSEQUENCEVERIFY
+    | conformance::VERIFY_WITNESS;
 
 /// One entry in the spent-outputs table: the script_pubkey and amount for a
 /// single input's corresponding UTXO.
@@ -57,7 +58,11 @@ impl FuzzInput {
 /// target produces — so a regression test failure reads exactly like
 /// the crash that caused it.
 pub fn run_differential(input: &FuzzInput) {
-    let flags = input.flags & M1_FLAGS_MASK;
+    let mut flags = input.flags & FLAGS_MASK;
+    // Bitcoin Core asserts P2SH must be set whenever WITNESS is set.
+    if flags & conformance::VERIFY_WITNESS != 0 {
+        flags |= conformance::VERIFY_P2SH;
+    }
     let mantle_flags = ScriptFlags::from_bits(flags);
 
     let tx = match Transaction::decode(&mut Cursor::new(&input.tx_bytes)) {
@@ -93,7 +98,8 @@ pub fn run_differential(input: &FuzzInput) {
         assert_eq!(txout.value, txout_rt.value);
         assert_eq!(txout.script_pubkey, txout_rt.script_pubkey);
 
-        if is_witness_program(&spent.script_pubkey) {
+        // Skip taproot outputs — M3 not yet implemented.
+        if is_taproot_program(&spent.script_pubkey) {
             continue;
         }
 
@@ -115,14 +121,11 @@ pub fn run_differential(input: &FuzzInput) {
             mantle_flags,
         );
 
+        // Skip if the oracle returns a taproot-related error string — those
+        // require Schnorr and are M3 scope.
         if let Err(ref e) = oracle {
             let s = format!("{e}");
-            if s.contains("witness")
-                || s.contains("Witness")
-                || s.contains("taproot")
-                || s.contains("Taproot")
-                || s.contains("Schnorr")
-            {
+            if s.contains("taproot") || s.contains("Taproot") || s.contains("Schnorr") {
                 continue;
             }
         }
@@ -130,7 +133,7 @@ pub fn run_differential(input: &FuzzInput) {
         assert_eq!(
             oracle.is_ok(),
             mantle.is_ok(),
-            "M1 divergence at input {i}: oracle={oracle:?} mantle={mantle:?}\n\
+            "M2 divergence at input {i}: oracle={oracle:?} mantle={mantle:?}\n\
              tx_wire={tx_wire:02x?}\n\
              script_pubkey={:02x?}\n\
              flags={flags:#010x}",
@@ -139,19 +142,9 @@ pub fn run_differential(input: &FuzzInput) {
     }
 }
 
-/// True if `script` looks like a segwit witness program — those activate
-/// in M2/M3 and aren't part of M1's assertion surface.
-fn is_witness_program(script: &[u8]) -> bool {
-    if script.len() < 4 || script.len() > 42 {
-        return false;
-    }
-    let version_ok = script[0] == 0x00 || (0x51..=0x60).contains(&script[0]);
-    if !version_ok {
-        return false;
-    }
-    let push_len = script[1];
-    if !(0x02..=0x28).contains(&push_len) {
-        return false;
-    }
-    script.len() == 2 + push_len as usize
+/// True if `script` is a taproot (witness v1, 32-byte program) output.
+///
+/// These require Schnorr verification (M3) and are skipped in M2 differential.
+fn is_taproot_program(script: &[u8]) -> bool {
+    script.len() == 34 && script[0] == 0x51 && script[1] == 0x20
 }

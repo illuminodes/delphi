@@ -184,6 +184,33 @@ impl Encode for VarInt {
     }
 }
 
+impl VarInt {
+    /// Decode a `VarInt` when the first byte has already been consumed.
+    ///
+    /// # Errors
+    /// Propagates any I/O error from reading remaining bytes.
+    #[inline]
+    pub fn decode_from_first_byte(first: u8, r: &mut impl Read) -> io::Result<Self> {
+        let mut buf = [0u8; 8];
+        let value = match first {
+            0xff => {
+                r.read_exact(&mut buf)?;
+                u64::from_le_bytes(buf)
+            }
+            0xfe => {
+                r.read_exact(&mut buf[..4])?;
+                u64::from(u32::from_le_bytes(buf[..4].try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?))
+            }
+            0xfd => {
+                r.read_exact(&mut buf[..2])?;
+                u64::from(u16::from_le_bytes(buf[..2].try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?))
+            }
+            n => u64::from(n),
+        };
+        Ok(VarInt(value))
+    }
+}
+
 impl Decode for VarInt {
     #[inline]
     fn decode(r: &mut impl Read) -> io::Result<Self> {

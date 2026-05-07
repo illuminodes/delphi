@@ -51,6 +51,7 @@ fn build_tx(version: i32, input_seq: u32) -> Transaction {
             },
             script_sig: Vec::<u8>::new().into(),
             sequence: input_seq,
+            witness: mantle::primitives::Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(0),

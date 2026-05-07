@@ -1,29 +1,44 @@
-//! Legacy (pre-segwit) signature hash computation.
+//! Signature hash computation — legacy (pre-segwit) and BIP143 (segwit v0).
 //!
-//! `signature_hash` produces the 32-byte digest that an ECDSA signature in
-//! the legacy regime is computed over. The algorithm is:
+//! ## Legacy (`signature_hash`)
+//!
+//! Produces the 32-byte digest that an ECDSA signature in the legacy regime is
+//! computed over. The algorithm:
 //!
 //! 1. Build a *modified* transaction:
 //!    - Replace every input's `script_sig` with the empty script.
 //!    - Replace input `n_in`'s `script_sig` with `script_code` (after
-//!      `FindAndDelete` of the signature being checked, applied by the
-//!      caller — see `find_and_delete_sig`).
+//!      `FindAndDelete` of the signature being checked — see
+//!      `find_and_delete_sig`).
 //!    - Apply the `hash_type` modifications:
-//!      - `SIGHASH_NONE`: clear all outputs and zero every other input's
-//!        sequence.
+//!      - `SIGHASH_NONE`: clear all outputs and zero every other input's sequence.
 //!      - `SIGHASH_SINGLE`: keep only output `n_in`; if `n_in >= n_outputs`,
-//!        return the constant digest `0x0000…0001` (the **"1" bug**) and skip
-//!        the rest of the algorithm.
+//!        return the constant digest `0x0000…0001` (the **"1" bug**).
 //!      - `SIGHASH_ANYONECANPAY`: keep only input `n_in`.
 //! 2. Serialise the modified tx in legacy form, append the 4-byte
 //!    little-endian `hash_type`, and SHA-256d.
 //!
 //! All four base modes plus `ANYONECANPAY` are reproduced exactly, including
 //! the `SIGHASH_SINGLE` "1" bug — fixing it would be a hard fork.
+//!
+//! ## BIP143 (`signature_hash_bip143`)
+//!
+//! Segwit v0 sighash. Commits to amounts and removes quadratic hashing by
+//! pre-hashing shared fields (`hashPrevouts`, `hashSequence`, `hashOutputs`)
+//! once per transaction via [`Bip143Cache`], then per-input serialises:
+//!
+//! ```text
+//! nVersion || hashPrevouts || hashSequence || outpoint || scriptCode ||
+//! amount || nSequence || hashOutputs || nLocktime || nHashType
+//! ```
+//!
+//! `scriptCode` for P2WPKH is a synthetic P2PKH script; for P2WSH it is the
+//! witness script with a `VarInt` length prefix (both supplied by the caller
+//! from the segwit dispatch logic in `verify_script`).
 
-use mantle::codec::Encode;
+use mantle::codec::{Encode, VarInt};
 use mantle::hash::sha256d;
-use mantle::primitives::{Hash256, Transaction, TxIn, TxOut};
+use mantle::primitives::{Hash256, Satoshi, Transaction, TxIn, TxOut, Witness};
 
 /// `hash_type` mode (low 5 bits, masking off `ANYONECANPAY`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +123,120 @@ pub fn signature_hash(
     Hash256(sha256d(&buf))
 }
 
+/// Per-transaction cache of the three BIP143 hash fields that are shared
+/// across all inputs of a single transaction verification.
+///
+/// Computing these once up front eliminates the quadratic hashing that
+/// plagued legacy sighash when many inputs sign the same tx.
+///
+/// Create with [`Bip143Cache::new`] before calling [`signature_hash_bip143`]
+/// for each input; drop it when the transaction is fully verified.
+#[derive(Debug, Clone)]
+pub struct Bip143Cache {
+    /// `SHA256d` of the concatenation of all input outpoints (36 bytes each).
+    /// Zeroed when `ANYONECANPAY` is set.
+    prevouts: Hash256,
+    /// `SHA256d` of the concatenation of all input `nSequence` values (4 LE each).
+    /// Zeroed when `ANYONECANPAY`, `SIGHASH_SINGLE`, or `SIGHASH_NONE` is set.
+    sequence: Hash256,
+    /// `SHA256d` of the concatenation of all outputs serialised as
+    /// `value(8 LE) || scriptPubKey(VarInt len + bytes)`.
+    /// Zeroed for `SIGHASH_NONE`; per-input for `SIGHASH_SINGLE`.
+    outputs: Hash256,
+}
+
+impl Bip143Cache {
+    /// Compute the shared hash fields from `tx`. Call once per transaction.
+    #[must_use]
+    pub fn new(tx: &Transaction) -> Self {
+        let mut prevouts_buf = Vec::with_capacity(tx.inputs.len() * 36);
+        let mut seq_buf = Vec::with_capacity(tx.inputs.len() * 4);
+        for input in &tx.inputs {
+            // OutPoint is fixed-size; encode into a growing Vec (infallible).
+            let _ = input.previous_output.encode(&mut prevouts_buf);
+            seq_buf.extend_from_slice(&input.sequence.to_le_bytes());
+        }
+
+        let mut outputs_buf: Vec<u8> = Vec::new();
+        for output in &tx.outputs {
+            let _ = output.encode(&mut outputs_buf);
+        }
+
+        Self {
+            prevouts: Hash256(sha256d(&prevouts_buf)),
+            sequence: Hash256(sha256d(&seq_buf)),
+            outputs: Hash256(sha256d(&outputs_buf)),
+        }
+    }
+}
+
+/// Compute the BIP143 (segwit v0) signature hash.
+///
+/// `script_code` is the scriptCode for this input as defined by BIP143:
+/// - P2WPKH: the 25-byte synthetic `OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG`
+///   built by the segwit dispatch in `verify_script`.
+/// - P2WSH: the witness script bytes (the last witness stack item).
+///
+/// In both cases this function prepends a `VarInt(len)` length prefix as
+/// required by BIP143 §Script Code. The cache must have been built from the
+/// same `tx`.
+///
+/// # Panics
+/// Panics if `n_in >= tx.inputs.len()`. The interpreter only reaches this
+/// with a valid input index.
+#[must_use]
+pub fn signature_hash_bip143(
+    tx: &Transaction,
+    n_in: usize,
+    script_code: &[u8],
+    amount: Satoshi,
+    hash_type: SigHashType,
+    cache: &Bip143Cache,
+) -> Hash256 {
+    let mode = hash_type.mode();
+    let anyonecanpay = hash_type.is_anyonecanpay();
+
+    let hash_prevouts = if anyonecanpay { Hash256::ZERO } else { cache.prevouts };
+
+    let hash_sequence =
+        if anyonecanpay || mode == SigHashMode::Single || mode == SigHashMode::None {
+            Hash256::ZERO
+        } else {
+            cache.sequence
+        };
+
+    let hash_outputs = match mode {
+        SigHashMode::All => cache.outputs,
+        SigHashMode::None => Hash256::ZERO,
+        SigHashMode::Single => {
+            if n_in < tx.outputs.len() {
+                let mut buf: Vec<u8> = Vec::new();
+                let _ = tx.outputs[n_in].encode(&mut buf);
+                Hash256(sha256d(&buf))
+            } else {
+                Hash256::ZERO
+            }
+        }
+    };
+
+    let input = &tx.inputs[n_in];
+
+    let mut buf: Vec<u8> = Vec::with_capacity(200);
+    buf.extend_from_slice(&tx.version.to_le_bytes());
+    buf.extend_from_slice(&hash_prevouts.0);
+    buf.extend_from_slice(&hash_sequence.0);
+    let _ = input.previous_output.encode(&mut buf);
+    let _ = VarInt(script_code.len() as u64).encode(&mut buf);
+    buf.extend_from_slice(script_code);
+    buf.extend_from_slice(&u64::from(amount).to_le_bytes());
+    buf.extend_from_slice(&input.sequence.to_le_bytes());
+    buf.extend_from_slice(&hash_outputs.0);
+    buf.extend_from_slice(&tx.locktime.to_le_bytes());
+    buf.extend_from_slice(&hash_type.0.to_le_bytes());
+
+    Hash256(sha256d(&buf))
+}
+
 /// Build the modified `Transaction` that the legacy preimage hashes.
 ///
 /// Allocates — this is the legacy path; BIP143 (M2) caches and reuses.
@@ -127,6 +256,7 @@ fn build_modified_tx(
             previous_output: tx.inputs[n_in].previous_output,
             script_sig: script_code.to_vec().into(),
             sequence: tx.inputs[n_in].sequence,
+            witness: Witness::empty(),
         }]
     } else {
         tx.inputs
@@ -148,6 +278,7 @@ fn build_modified_tx(
                     previous_output: txin.previous_output,
                     script_sig,
                     sequence,
+                    witness: Witness::empty(),
                 }
             })
             .collect()
@@ -314,7 +445,7 @@ pub fn script_code_after_codeseparator(script: &[u8], code_separator_pos: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mantle::primitives::{OutPoint, Satoshi};
+    use mantle::primitives::{OutPoint, Satoshi, Witness};
 
     fn make_tx() -> Transaction {
         Transaction {
@@ -327,6 +458,7 @@ mod tests {
                     },
                     script_sig: vec![0xaa].into(),
                     sequence: 0xffff_fffe,
+                    witness: Witness::empty(),
                 },
                 TxIn {
                     previous_output: OutPoint {
@@ -335,6 +467,7 @@ mod tests {
                     },
                     script_sig: vec![0xbb].into(),
                     sequence: 0xffff_fffd,
+                    witness: Witness::empty(),
                 },
             ],
             outputs: vec![
@@ -516,5 +649,139 @@ mod tests {
     fn codesep_slice_out_of_bounds_is_empty() {
         let script = [0x01, 0xaa];
         assert_eq!(script_code_after_codeseparator(&script, 99), &[] as &[u8]);
+    }
+
+    // ── BIP143 test vectors ─────────────────────────────────────────────────
+    //
+    // Source: https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki
+    // "Native P2WPKH" example transaction.
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
+            .collect()
+    }
+
+    fn hash256_from_hex(s: &str) -> Hash256 {
+        let b = hex(s);
+        assert_eq!(b.len(), 32);
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&b);
+        Hash256(arr)
+    }
+
+    /// Build the BIP143 "Native P2WPKH" example transaction.
+    ///
+    /// Source: <https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki>
+    /// Unsigned tx hex (no witnesses, no scriptSigs):
+    /// 0100000002fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f
+    /// 0000000000eeffffffef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57
+    /// b90ec68a0100000000ffffffff02202cb206000000001976a9148280b37df378db99f66f85
+    /// c95a783a76ac7a6d5988ac9093510d000000001976a9143bde42dbee7e4dbe6a21b2d50ce
+    /// 2f0167faa815988ac11000000
+    fn bip143_p2wpkh_tx() -> Transaction {
+        Transaction {
+            version: 1,
+            inputs: vec![
+                TxIn {
+                    previous_output: OutPoint {
+                        txid: hash256_from_hex(
+                            "fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f",
+                        ),
+                        vout: 0,
+                    },
+                    script_sig: vec![].into(),
+                    sequence: 0xffffffee,
+                    witness: Witness::empty(),
+                },
+                TxIn {
+                    previous_output: OutPoint {
+                        txid: hash256_from_hex(
+                            "ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a",
+                        ),
+                        vout: 1,
+                    },
+                    script_sig: vec![].into(),
+                    sequence: 0xffffffff,
+                    witness: Witness::empty(),
+                },
+            ],
+            outputs: vec![
+                TxOut {
+                    value: Satoshi::new(112_340_000),
+                    script_pubkey: hex("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac")
+                        .into(),
+                },
+                TxOut {
+                    value: Satoshi::new(223_450_000),
+                    script_pubkey: hex("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac")
+                        .into(),
+                },
+            ],
+            locktime: 0x11,
+        }
+    }
+
+    #[test]
+    fn bip143_hash_prevouts() {
+        let tx = bip143_p2wpkh_tx();
+        let cache = Bip143Cache::new(&tx);
+        // hashPrevouts from BIP143 §"Native P2WPKH"
+        assert_eq!(
+            cache.prevouts,
+            hash256_from_hex("96b827c8483d4e9b96712b6713a7b68d6e8003a781feba36c31143470b4efd37"),
+        );
+    }
+
+    #[test]
+    fn bip143_hash_sequence() {
+        let tx = bip143_p2wpkh_tx();
+        let cache = Bip143Cache::new(&tx);
+        // hashSequence from BIP143 §"Native P2WPKH"
+        assert_eq!(
+            cache.sequence,
+            hash256_from_hex("52b0a642eea2fb7ae638c36f6252b6750293dbe574a806984b8e4d8548339a3b"),
+        );
+    }
+
+    #[test]
+    fn bip143_hash_outputs() {
+        let tx = bip143_p2wpkh_tx();
+        let cache = Bip143Cache::new(&tx);
+        // hashOutputs from BIP143 §"Native P2WPKH"
+        assert_eq!(
+            cache.outputs,
+            hash256_from_hex("863ef3e1a92afbfdb97f31ad0fc7683ee943e9abcf2501590ff8f6551f47e5e5"),
+        );
+    }
+
+    #[test]
+    fn bip143_sighash_input1_p2wpkh() {
+        let tx = bip143_p2wpkh_tx();
+        let cache = Bip143Cache::new(&tx);
+
+        // Input 1 signs a P2WPKH. scriptCode = synthetic P2PKH over the pubkeyhash
+        // embedded in the witness program. The BIP gives:
+        // scriptCode = 1976a9141d0f172a0ecb48aee1be1f2687d2963ae33f71a188ac
+        // where 0x19 is the VarInt length prefix consumed by the sighash preimage.
+        // We pass the raw script (without the VarInt prefix).
+        let script_code = hex("76a9141d0f172a0ecb48aee1be1f2687d2963ae33f71a188ac");
+        let amount = Satoshi::new(600_000_000); // 6 BTC
+
+        let digest = signature_hash_bip143(
+            &tx,
+            1,
+            &script_code,
+            amount,
+            SigHashType::ALL,
+            &cache,
+        );
+
+        // sigHash from BIP143 §"Native P2WPKH"
+        assert_eq!(
+            digest,
+            hash256_from_hex("c37af31116d1b27caf68aae9e3ac82f1477929014d5b917657d0eb49478cb670"),
+        );
     }
 }

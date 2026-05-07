@@ -1,6 +1,6 @@
 use mantle::codec::Encode;
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut, Witness};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::{compute_merkle_root_reusing, merkle_root_owned};
 use mantle_consensus::script::{Interpreter, NopSigChecker, ScriptFlags, SigVersion};
@@ -22,6 +22,7 @@ fn coinbase_tx(height_script: Vec<u8>, value: u64) -> Transaction {
             previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
             script_sig: height_script.into(),
             sequence: u32::MAX,
+            witness: Witness::empty(),
         }],
         outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }],
         locktime: 0,
@@ -35,6 +36,7 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
             previous_output: OutPoint { txid: prev, vout },
             script_sig: vec![0x51; 20].into(),
             sequence: u32::MAX,
+            witness: Witness::empty(),
         }],
         outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }],
         locktime: 0,
