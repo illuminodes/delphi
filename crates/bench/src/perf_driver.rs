@@ -6,9 +6,9 @@ use mantle::codec::Encode;
 use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut, Witness};
 use mantle_consensus::merkle::compute_merkle_root;
-use mantle_consensus::script::{Interpreter, NopSigChecker, ScriptFlags, SigVersion};
+use mantle_consensus::script::{Interpreter, InterpStackElement, NopSigChecker, ScriptFlags, SigVersion};
 use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, signature_hash_bip143};
-use mantle_consensus::script::verify::verify_script;
+use mantle_consensus::script::verify::{verify_script, verify_script_with_bufs};
 use mantle_consensus::validation::{validate_block_structure, validate_block_wire};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
@@ -214,7 +214,82 @@ fn main() {
                 .expect("p2wpkh must verify");
             black_box(());
         });
-        eprintln!("verify_script(p2wpkh):    {n} iters");
+        eprintln!("verify_script(p2wpkh):         {n} iters");
+    }
+
+    // ── workload G-buf: verify_script_with_bufs P2WPKH ───────────────────────
+    // Same as G but with buffer reuse — stack Vecs are allocated once and
+    // threaded through every call. Measures the zero-alloc ceiling.
+    {
+        let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
+        let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+        let pkh: [u8; 20] = {
+            let mid = Sha256::digest(&pk);
+            Ripemd160::digest(mid).into()
+        };
+        let mut spk = vec![0x00u8, 0x14];
+        spk.extend_from_slice(&pkh);
+
+        let mut script_code = vec![0x76u8, 0xa9, 0x14];
+        script_code.extend_from_slice(&pkh);
+        script_code.extend_from_slice(&[0x88, 0xac]);
+
+        let amount = Satoshi::new(100_000);
+        let flags = ScriptFlags::P2SH
+            | ScriptFlags::DERSIG
+            | ScriptFlags::LOW_S
+            | ScriptFlags::STRICTENC
+            | ScriptFlags::NULLDUMMY
+            | ScriptFlags::WITNESS;
+
+        let tmp_tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+        let cache = Bip143Cache::new(&tmp_tx);
+        let digest = signature_hash_bip143(&tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache);
+        let raw_sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
+        let raw_sig = raw_sig.normalize_s().unwrap_or(raw_sig);
+        let mut sig_bytes = raw_sig.to_der().as_bytes().to_vec();
+        sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
+
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice()]),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+
+        let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
+        // warm up the bufs outside the timed loop
+        let (r, b) = verify_script_with_bufs(&[], &spk, &tx, 0, amount, flags, bufs);
+        r.expect("p2wpkh must verify");
+        bufs = b;
+
+        let mut n = 0u64;
+        let deadline = std::time::Instant::now() + secs;
+        while std::time::Instant::now() < deadline {
+            let (r, b) = verify_script_with_bufs(
+                black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, flags, bufs,
+            );
+            r.expect("p2wpkh must verify");
+            bufs = b;
+            black_box(());
+            n += 1;
+        }
+        eprintln!("verify_script_bufs(p2wpkh):    {n} iters");
     }
 
     // ── workload H: verify_script P2WSH end-to-end ───────────────────────────
@@ -278,7 +353,81 @@ fn main() {
                 .expect("p2wsh must verify");
             black_box(());
         });
-        eprintln!("verify_script(p2wsh):     {n} iters");
+        eprintln!("verify_script(p2wsh):          {n} iters");
+    }
+
+    // ── workload H-buf: verify_script_with_bufs P2WSH ────────────────────────
+    // Same as H but with buffer reuse.
+    {
+        let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
+        let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+        let pkh: [u8; 20] = {
+            let mid = Sha256::digest(&pk);
+            Ripemd160::digest(mid).into()
+        };
+        let mut witness_script = vec![0x76u8, 0xa9, 0x14];
+        witness_script.extend_from_slice(&pkh);
+        witness_script.extend_from_slice(&[0x88, 0xac]);
+
+        let script_hash: [u8; 32] = Sha256::digest(&witness_script).into();
+        let mut spk = vec![0x00u8, 0x20];
+        spk.extend_from_slice(&script_hash);
+
+        let amount = Satoshi::new(200_000);
+        let flags = ScriptFlags::P2SH
+            | ScriptFlags::DERSIG
+            | ScriptFlags::LOW_S
+            | ScriptFlags::STRICTENC
+            | ScriptFlags::NULLDUMMY
+            | ScriptFlags::WITNESS;
+
+        let tmp_tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+        let cache = Bip143Cache::new(&tmp_tx);
+        let digest = signature_hash_bip143(&tmp_tx, 0, &witness_script, amount, SigHashType::ALL, &cache);
+        let raw_sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
+        let raw_sig = raw_sig.normalize_s().unwrap_or(raw_sig);
+        let mut sig_bytes = raw_sig.to_der().as_bytes().to_vec();
+        sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
+
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice(), witness_script.as_slice()]),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+
+        let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
+        let (r, b) = verify_script_with_bufs(&[], &spk, &tx, 0, amount, flags, bufs);
+        r.expect("p2wsh must verify");
+        bufs = b;
+
+        let mut n = 0u64;
+        let deadline = std::time::Instant::now() + secs;
+        while std::time::Instant::now() < deadline {
+            let (r, b) = verify_script_with_bufs(
+                black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, flags, bufs,
+            );
+            r.expect("p2wsh must verify");
+            bufs = b;
+            black_box(());
+            n += 1;
+        }
+        eprintln!("verify_script_bufs(p2wsh):     {n} iters");
     }
 
     // ── workload F: script Interpreter::eval, P2PKH-shape mix ────────────────

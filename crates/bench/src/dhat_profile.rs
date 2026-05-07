@@ -5,9 +5,9 @@ use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut, Witness};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::{compute_merkle_root_reusing, merkle_root_owned};
-use mantle_consensus::script::{Interpreter, NopSigChecker, ScriptFlags, SigVersion};
+use mantle_consensus::script::{Interpreter, InterpStackElement, NopSigChecker, ScriptFlags, SigVersion};
 use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, signature_hash_bip143};
-use mantle_consensus::script::verify::verify_script;
+use mantle_consensus::script::verify::{verify_script, verify_script_with_bufs};
 use mantle_consensus::validation::{validate_block_structure_reusing, validate_block_wire};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
@@ -275,6 +275,71 @@ fn main() {
         }
     }
 
+    // --- scenario 8b: verify_script_with_bufs P2WPKH (2000 iters) ---
+    // Same workload as scenario 8 but with buffer reuse. After the first
+    // iteration the two stack Vecs are already warm — subsequent calls should
+    // incur zero heap allocation. dhat should show a flat allocation curve
+    // here versus a linear one in scenario 8.
+    {
+        let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
+        let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+        let pkh: [u8; 20] = {
+            let mid = Sha256::digest(&pk);
+            Ripemd160::digest(mid).into()
+        };
+        let mut spk = vec![0x00u8, 0x14];
+        spk.extend_from_slice(&pkh);
+
+        let mut script_code = vec![0x76u8, 0xa9, 0x14];
+        script_code.extend_from_slice(&pkh);
+        script_code.extend_from_slice(&[0x88, 0xac]);
+
+        let amount = Satoshi::new(100_000);
+        let flags = ScriptFlags::P2SH
+            | ScriptFlags::DERSIG
+            | ScriptFlags::LOW_S
+            | ScriptFlags::STRICTENC
+            | ScriptFlags::NULLDUMMY
+            | ScriptFlags::WITNESS;
+
+        let tmp_tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+        let cache = Bip143Cache::new(&tmp_tx);
+        let digest = signature_hash_bip143(&tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache);
+        let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
+        let sig = sig.normalize_s().unwrap_or(sig);
+        let mut sig_bytes = sig.to_der().as_bytes().to_vec();
+        sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
+
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice()]),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+
+        let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
+        for _ in 0..2_000 {
+            let (result, returned) = verify_script_with_bufs(&[], &spk, &tx, 0, amount, flags, bufs);
+            result.expect("p2wpkh must verify");
+            bufs = returned;
+        }
+    }
+
     // --- scenario 9: verify_script P2WSH end-to-end (1000 iters) ---
     // Exercises the P2WSH path: SHA256 commitment check, witness script eval,
     // clean-stack enforcement. The witness script is a P2PKH-inside-P2WSH.
@@ -333,6 +398,69 @@ fn main() {
 
         for _ in 0..1_000 {
             verify_script(&[], &spk, &tx, 0, amount, flags).expect("p2wsh must verify");
+        }
+    }
+
+    // --- scenario 9b: verify_script_with_bufs P2WSH (1000 iters) ---
+    // Buffer-reuse counterpart to scenario 9.
+    {
+        let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
+        let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+        let pkh: [u8; 20] = {
+            let mid = Sha256::digest(&pk);
+            Ripemd160::digest(mid).into()
+        };
+        let mut witness_script = vec![0x76u8, 0xa9, 0x14];
+        witness_script.extend_from_slice(&pkh);
+        witness_script.extend_from_slice(&[0x88, 0xac]);
+
+        let script_hash: [u8; 32] = Sha256::digest(&witness_script).into();
+        let mut spk = vec![0x00u8, 0x20];
+        spk.extend_from_slice(&script_hash);
+
+        let amount = Satoshi::new(200_000);
+        let flags = ScriptFlags::P2SH
+            | ScriptFlags::DERSIG
+            | ScriptFlags::LOW_S
+            | ScriptFlags::STRICTENC
+            | ScriptFlags::NULLDUMMY
+            | ScriptFlags::WITNESS;
+
+        let tmp_tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+        let cache = Bip143Cache::new(&tmp_tx);
+        let digest = signature_hash_bip143(&tmp_tx, 0, &witness_script, amount, SigHashType::ALL, &cache);
+        let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
+        let sig = sig.normalize_s().unwrap_or(sig);
+        let mut sig_bytes = sig.to_der().as_bytes().to_vec();
+        sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
+
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice(), witness_script.as_slice()]),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+
+        let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
+        for _ in 0..1_000 {
+            let (result, returned) = verify_script_with_bufs(&[], &spk, &tx, 0, amount, flags, bufs);
+            result.expect("p2wsh must verify");
+            bufs = returned;
         }
     }
 

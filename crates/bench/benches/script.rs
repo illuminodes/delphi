@@ -13,10 +13,10 @@ use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, Witness};
 use mantle_consensus::script::{
-    Interpreter, NopSigChecker, ScriptFlags, SigVersion,
+    Interpreter, InterpStackElement, NopSigChecker, ScriptFlags, SigVersion,
 };
 use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, signature_hash_bip143};
-use mantle_consensus::script::verify::verify_script;
+use mantle_consensus::script::verify::{verify_script, verify_script_with_bufs};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 use std::hint::black_box;
@@ -288,6 +288,8 @@ fn ecdsa_sign(sk: &SigningKey, digest: &[u8; 32], hash_type: SigHashType) -> Vec
 
 /// Full `verify_script` call for a P2WPKH input. Exercises BIP143 sighash,
 /// `TxSigChecker` construction (including `Bip143Cache`), and ECDSA verify.
+///
+/// Pair with `verify_p2wpkh_with_bufs` to see the allocation overhead in isolation.
 #[divan::bench]
 fn verify_p2wpkh(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
@@ -317,6 +319,8 @@ fn verify_p2wpkh(bencher: divan::Bencher) {
 
 /// Full `verify_script` call for a P2WSH input (witness script = P2PKH).
 /// Adds SHA256 commitment check and witness-script eval on top of P2WPKH cost.
+///
+/// Pair with `verify_p2wsh_with_bufs` to see the allocation overhead in isolation.
 #[divan::bench]
 fn verify_p2wsh(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
@@ -342,5 +346,74 @@ fn verify_p2wsh(bencher: divan::Bencher) {
     bencher.bench(|| {
         verify_script(black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, segwit_flags())
             .expect("p2wsh must verify");
+    });
+}
+
+/// P2WPKH with caller-supplied stack buffers reused across iterations.
+/// The delta vs `verify_p2wpkh` isolates the cost of per-call heap allocation.
+#[divan::bench]
+fn verify_p2wpkh_with_bufs(bencher: divan::Bencher) {
+    let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
+    let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+    let pkh = hash160(&pk);
+
+    let mut spk = vec![0x00u8, 0x14];
+    spk.extend_from_slice(&pkh);
+
+    let mut script_code = vec![0x76u8, 0xa9, 0x14];
+    script_code.extend_from_slice(&pkh);
+    script_code.extend_from_slice(&[0x88, 0xac]);
+
+    let amount = Satoshi::new(100_000);
+    let tmp_tx = make_witness_tx(&[]);
+    let cache = Bip143Cache::new(&tmp_tx);
+    let digest = signature_hash_bip143(&tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache);
+    let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
+
+    let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
+
+    let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
+    bencher.bench_local(|| {
+        let (r, b) = verify_script_with_bufs(
+            black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, segwit_flags(),
+            std::mem::take(&mut bufs),
+        );
+        r.expect("p2wpkh must verify");
+        bufs = b;
+    });
+}
+
+/// P2WSH with caller-supplied stack buffers reused across iterations.
+/// The delta vs `verify_p2wsh` isolates the cost of per-call heap allocation.
+#[divan::bench]
+fn verify_p2wsh_with_bufs(bencher: divan::Bencher) {
+    let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
+    let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+    let pkh = hash160(&pk);
+
+    let mut witness_script = vec![0x76u8, 0xa9, 0x14];
+    witness_script.extend_from_slice(&pkh);
+    witness_script.extend_from_slice(&[0x88, 0xac]);
+
+    let script_hash: [u8; 32] = Sha256::digest(&witness_script).into();
+    let mut spk = vec![0x00u8, 0x20];
+    spk.extend_from_slice(&script_hash);
+
+    let amount = Satoshi::new(200_000);
+    let tmp_tx = make_witness_tx(&[]);
+    let cache = Bip143Cache::new(&tmp_tx);
+    let digest = signature_hash_bip143(&tmp_tx, 0, &witness_script, amount, SigHashType::ALL, &cache);
+    let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
+
+    let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice(), witness_script.as_slice()]);
+
+    let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
+    bencher.bench_local(|| {
+        let (r, b) = verify_script_with_bufs(
+            black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, segwit_flags(),
+            std::mem::take(&mut bufs),
+        );
+        r.expect("p2wsh must verify");
+        bufs = b;
     });
 }

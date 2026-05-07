@@ -20,7 +20,7 @@ use mantle::primitives::{Satoshi, Transaction};
 use super::checker::TxSigChecker;
 use super::error::ScriptError;
 use super::flags::ScriptFlags;
-use super::interpreter::Interpreter;
+use super::interpreter::{InterpStackElement, Interpreter};
 use super::sig_version::SigVersion;
 
 /// Verify a single transaction input's script pair.
@@ -43,6 +43,58 @@ pub fn verify_script(
     amount: Satoshi,
     flags: ScriptFlags,
 ) -> Result<(), ScriptError> {
+    let bufs = (Vec::new(), Vec::new());
+    let (result, _bufs) = verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, bufs);
+    result
+}
+
+/// Zero-allocation variant of [`verify_script`].
+///
+/// The caller passes two pre-allocated, empty `Vec` buffers (for the main and
+/// alt stacks). On return — success *or* error — the same buffers are returned
+/// cleared but with their capacity intact, ready to be reused for the next
+/// input. A block validator can therefore allocate a single pair of bufs once
+/// and drive every input through this function with no per-input heap allocation
+/// once the buffers have grown to their working-set size.
+///
+/// # Errors
+/// Same as [`verify_script`].
+pub fn verify_script_with_bufs(
+    script_sig: &[u8],
+    script_pubkey: &[u8],
+    tx: &Transaction,
+    n_in: usize,
+    amount: Satoshi,
+    flags: ScriptFlags,
+    bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
+) -> (Result<(), ScriptError>, (Vec<InterpStackElement>, Vec<InterpStackElement>)) {
+    verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, bufs)
+}
+
+fn verify_script_impl(
+    script_sig: &[u8],
+    script_pubkey: &[u8],
+    tx: &Transaction,
+    n_in: usize,
+    amount: Satoshi,
+    flags: ScriptFlags,
+    mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
+) -> (Result<(), ScriptError>, (Vec<InterpStackElement>, Vec<InterpStackElement>)) {
+    // Run the actual verification, then always return bufs alongside the result.
+    let result = verify_script_inner(script_sig, script_pubkey, tx, n_in, amount, flags, &mut bufs);
+    (result, bufs)
+}
+
+#[allow(clippy::too_many_lines)]
+fn verify_script_inner(
+    script_sig: &[u8],
+    script_pubkey: &[u8],
+    tx: &Transaction,
+    n_in: usize,
+    amount: Satoshi,
+    flags: ScriptFlags,
+    bufs: &mut (Vec<InterpStackElement>, Vec<InterpStackElement>),
+) -> Result<(), ScriptError> {
     // ── SIGPUSHONLY ─────────────────────────────────────────────────────────
     // BIP62 rule 2. Only push opcodes may appear in scriptSig. Always required
     // for P2SH (Core enforces it implicitly via the redeem-script extraction)
@@ -52,10 +104,19 @@ pub fn verify_script(
     }
 
     let checker = TxSigChecker::new(tx, n_in, amount, flags);
-    let mut interp = Interpreter::new(&checker, flags, SigVersion::Base);
+    let stack_buf = std::mem::take(&mut bufs.0);
+    let altstack_buf = std::mem::take(&mut bufs.1);
+    let mut interp =
+        Interpreter::new_with_bufs(&checker, flags, SigVersion::Base, stack_buf, altstack_buf);
 
     // ── scriptSig ───────────────────────────────────────────────────────────
-    interp.eval(script_sig)?;
+    let r = interp.eval(script_sig);
+    if let Err(e) = r {
+        let (s, a) = interp.into_bufs();
+        bufs.0 = s;
+        bufs.1 = a;
+        return Err(e);
+    }
 
     // Snapshot the post-scriptSig stack so we can roll back to it if the
     // P2SH redeem path activates. Cheap: `Stack` clone is a Vec clone of
@@ -64,13 +125,33 @@ pub fn verify_script(
         if flags.contains(ScriptFlags::P2SH) { Some(interp.stack().clone()) } else { None };
 
     // ── scriptPubKey ────────────────────────────────────────────────────────
-    interp.eval(script_pubkey)?;
+    macro_rules! try_interp {
+        ($e:expr) => {
+            match $e {
+                Ok(v) => v,
+                Err(e) => {
+                    let (s, a) = interp.into_bufs();
+                    bufs.0 = s;
+                    bufs.1 = a;
+                    return Err(e);
+                }
+            }
+        };
+    }
+
+    try_interp!(interp.eval(script_pubkey));
 
     // The scriptPubKey eval must leave at least one truthy item on top.
     if interp.stack().is_empty() {
+        let (s, a) = interp.into_bufs();
+        bufs.0 = s;
+        bufs.1 = a;
         return Err(ScriptError::EvalFalse);
     }
-    if !interp.stack().peek(0)?.is_truthy() {
+    if !try_interp!(interp.stack().peek(0)).is_truthy() {
+        let (s, a) = interp.into_bufs();
+        bufs.0 = s;
+        bufs.1 = a;
         return Err(ScriptError::EvalFalse);
     }
 
@@ -84,13 +165,16 @@ pub fn verify_script(
         // without the standalone flag — because we extract the redeem
         // script from a single push at the top of `script_sig`.
         if !is_push_only(script_sig) {
+            let (s, a) = interp.into_bufs();
+            bufs.0 = s;
+            bufs.1 = a;
             return Err(ScriptError::SigPushOnly);
         }
 
         // Restore the post-scriptSig stack and pop the last push: that
         // push *is* the redeem script.
         *interp.stack_mut() = saved_stack;
-        let redeem = interp.stack_mut().pop()?;
+        let redeem = try_interp!(interp.stack_mut().pop());
 
         // If the redeem script is itself a witness program, record it for
         // the segwit path below. The P2SH eval is still required to pass
@@ -99,19 +183,36 @@ pub fn verify_script(
             witness_program = witness_program_of(redeem.as_slice());
         }
 
-        interp.eval(redeem.as_slice())?;
+        try_interp!(interp.eval(redeem.as_slice()));
 
         if interp.stack().is_empty() {
+            let (s, a) = interp.into_bufs();
+            bufs.0 = s;
+            bufs.1 = a;
             return Err(ScriptError::EvalFalse);
         }
-        if !interp.stack().peek(0)?.is_truthy() {
+        if !try_interp!(interp.stack().peek(0)).is_truthy() {
+            let (s, a) = interp.into_bufs();
+            bufs.0 = s;
+            bufs.1 = a;
             return Err(ScriptError::EvalFalse);
         }
     } else if flags.contains(ScriptFlags::WITNESS) {
         witness_program = witness_program_of(script_pubkey);
     }
 
+    // ── CLEANSTACK (legacy path) ─────────────────────────────────────────────
+    // BIP62 rule 6. Final stack must contain exactly one element. Only meaningful
+    // under P2SH (Core gates it accordingly); we follow the same gate.
+    let cleanstack_len = interp.stack().len();
+
     // ── BIP141 segwit v0 ────────────────────────────────────────────────────
+    // Recover bufs before potentially branching into witness execution, which
+    // creates its own interpreter.
+    let (s, a) = interp.into_bufs();
+    bufs.0 = s;
+    bufs.1 = a;
+
     if flags.contains(ScriptFlags::WITNESS) {
         if let Some((version, program)) = witness_program {
             // Native segwit: scriptSig must be empty (otherwise it's malleable).
@@ -128,7 +229,7 @@ pub fn verify_script(
             let witness = &tx.inputs[n_in].witness;
 
             if version == 0 {
-                run_witness_v0(&program, &witness.to_vec(), tx, n_in, amount, flags)?;
+                run_witness_v0(&program, &witness.to_vec(), tx, n_in, amount, flags, bufs)?;
             } else {
                 // Unknown witness version.
                 if flags.contains(ScriptFlags::DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM) {
@@ -149,12 +250,9 @@ pub fn verify_script(
         }
     }
 
-    // ── CLEANSTACK ──────────────────────────────────────────────────────────
-    // BIP62 rule 6. Final stack must contain exactly one element. Only meaningful
-    // under P2SH (Core gates it accordingly); we follow the same gate.
     if flags.contains(ScriptFlags::CLEANSTACK)
         && flags.contains(ScriptFlags::P2SH)
-        && interp.stack().len() != 1
+        && cleanstack_len != 1
     {
         return Err(ScriptError::CleanStack);
     }
@@ -174,27 +272,36 @@ fn eval_witness_script(
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
+    bufs: &mut (Vec<InterpStackElement>, Vec<InterpStackElement>),
 ) -> Result<(), ScriptError> {
     let checker = TxSigChecker::new(tx, n_in, amount, flags);
-    let mut interp = Interpreter::new(&checker, flags, SigVersion::WitnessV0);
+    let stack_buf = std::mem::take(&mut bufs.0);
+    let altstack_buf = std::mem::take(&mut bufs.1);
+    let mut interp =
+        Interpreter::new_with_bufs(&checker, flags, SigVersion::WitnessV0, stack_buf, altstack_buf);
 
-    for item in stack_items {
-        interp.stack_mut().push_checked(item, 0)?;
-    }
+    let result = (|| {
+        for item in stack_items {
+            interp.stack_mut().push_checked(item, 0)?;
+        }
+        interp.eval(script)?;
+        if interp.stack().is_empty() {
+            return Err(ScriptError::EvalFalse);
+        }
+        if !interp.stack().peek(0)?.is_truthy() {
+            return Err(ScriptError::EvalFalse);
+        }
+        // BIP141: witness execution always requires a clean stack.
+        if interp.stack().len() != 1 {
+            return Err(ScriptError::CleanStack);
+        }
+        Ok(())
+    })();
 
-    interp.eval(script)?;
-
-    if interp.stack().is_empty() {
-        return Err(ScriptError::EvalFalse);
-    }
-    if !interp.stack().peek(0)?.is_truthy() {
-        return Err(ScriptError::EvalFalse);
-    }
-    // BIP141: witness execution always requires a clean stack.
-    if interp.stack().len() != 1 {
-        return Err(ScriptError::CleanStack);
-    }
-    Ok(())
+    let (s, a) = interp.into_bufs();
+    bufs.0 = s;
+    bufs.1 = a;
+    result
 }
 
 /// Dispatch a segwit v0 witness program (P2WPKH or P2WSH).
@@ -208,6 +315,7 @@ fn run_witness_v0(
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
+    bufs: &mut (Vec<InterpStackElement>, Vec<InterpStackElement>),
 ) -> Result<(), ScriptError> {
     match program.len() {
         20 => {
@@ -221,7 +329,7 @@ fn run_witness_v0(
             script_code.extend_from_slice(&[0x88, 0xac]);
 
             let refs: Vec<&[u8]> = witness_items.iter().map(Vec::as_slice).collect();
-            eval_witness_script(&refs, &script_code, tx, n_in, amount, flags)
+            eval_witness_script(&refs, &script_code, tx, n_in, amount, flags, bufs)
         }
         32 => {
             use sha2::{Digest, Sha256};
@@ -238,7 +346,7 @@ fn run_witness_v0(
             }
 
             let refs: Vec<&[u8]> = stack_items.iter().map(Vec::as_slice).collect();
-            eval_witness_script(&refs, script_item, tx, n_in, amount, flags)
+            eval_witness_script(&refs, script_item, tx, n_in, amount, flags, bufs)
         }
         _ => Err(ScriptError::WitnessProgramMismatch),
     }

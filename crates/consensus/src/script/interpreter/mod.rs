@@ -25,7 +25,10 @@ use crate::script::error::ScriptError;
 use crate::script::flags::ScriptFlags;
 use crate::script::opcodes::Opcode;
 use crate::script::sig_version::SigVersion;
-use crate::script::stack::Stack;
+use crate::script::stack::{Stack, StackElement};
+
+/// Convenience alias for the element type used by the interpreter's stacks.
+pub type InterpStackElement = StackElement<{ crate::script::stack::DEFAULT_INLINE_CAP }>;
 
 use reader::{ScriptReader, Step};
 
@@ -52,8 +55,7 @@ pub struct Interpreter<'a, C: SignatureChecker> {
 }
 
 impl<'a, C: SignatureChecker> Interpreter<'a, C> {
-    /// Construct an interpreter ready to evaluate a script under the given
-    /// flags and sighash regime.
+    /// Construct an interpreter, allocating fresh stack buffers.
     #[must_use]
     pub fn new(checker: &'a C, flags: ScriptFlags, sig_version: SigVersion) -> Self {
         Self {
@@ -66,6 +68,39 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             sig_version,
             checker,
         }
+    }
+
+    /// Construct an interpreter using caller-provided, pre-allocated stack
+    /// buffers. Both vecs must be empty (asserted in debug builds); their
+    /// capacity is reused so that repeated calls across many inputs incur no
+    /// heap allocation once the buffers have grown to their working-set size.
+    ///
+    /// Pair with [`Interpreter::into_bufs`] to recover the buffers after use.
+    #[must_use]
+    pub fn new_with_bufs(
+        checker: &'a C,
+        flags: ScriptFlags,
+        sig_version: SigVersion,
+        stack_buf: Vec<InterpStackElement>,
+        altstack_buf: Vec<InterpStackElement>,
+    ) -> Self {
+        Self {
+            stack: Stack::from_buf(stack_buf),
+            altstack: Stack::from_buf(altstack_buf),
+            conditions: ConditionStack::new(),
+            op_count: 0,
+            last_codeseparator: 0,
+            flags,
+            sig_version,
+            checker,
+        }
+    }
+
+    /// Consume the interpreter and return the two stack buffers (both cleared,
+    /// capacity preserved) so the caller can reuse them for the next input.
+    #[must_use]
+    pub fn into_bufs(self) -> (Vec<InterpStackElement>, Vec<InterpStackElement>) {
+        (self.stack.into_buf(), self.altstack.into_buf())
     }
 
     /// Borrow the main stack — for tests and for the upcoming

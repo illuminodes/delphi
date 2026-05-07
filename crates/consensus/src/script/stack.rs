@@ -222,6 +222,29 @@ impl<const N: usize> Stack<N> {
         Self { items: Vec::with_capacity(INITIAL_STACK_CAP) }
     }
 
+    /// Wrap a caller-provided, already-empty `Vec` as the backing store.
+    ///
+    /// The vec must be empty (debug-asserted). Its capacity is preserved, so
+    /// the caller can pre-allocate once and pass the same buffer across many
+    /// inputs — truly zero per-input allocation once the buffer has grown to
+    /// the working set size.
+    #[inline]
+    #[must_use]
+    pub fn from_buf(buf: Vec<StackElement<N>>) -> Self {
+        debug_assert!(buf.is_empty(), "buf passed to Stack::from_buf must be empty");
+        Self { items: buf }
+    }
+
+    /// Consume the stack, returning the backing `Vec` (cleared, capacity kept).
+    ///
+    /// Pair with [`Stack::from_buf`] to reuse the allocation across inputs.
+    #[inline]
+    #[must_use]
+    pub fn into_buf(mut self) -> Vec<StackElement<N>> {
+        self.items.clear();
+        self.items
+    }
+
     /// Number of items.
     #[inline]
     #[must_use]
