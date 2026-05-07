@@ -5,6 +5,23 @@ pub mod merkle;
 pub mod validation;
 
 #[cfg(test)]
+pub(crate) mod test_helpers {
+    pub fn decode_hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16)
+                .unwrap_or_else(|_| panic!("invalid hex at offset {i}")))
+            .collect()
+    }
+
+    pub fn hash_to_hex(hash: [u8; 32]) -> String {
+        let mut rev = hash;
+        rev.reverse();
+        rev.iter().fold(String::with_capacity(64), |mut s, b| { use std::fmt::Write; write!(s, "{b:02x}").unwrap(); s })
+    }
+}
+
+#[cfg(test)]
 mod tests_proptest;
 
 #[cfg(test)]

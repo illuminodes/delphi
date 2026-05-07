@@ -1,9 +1,9 @@
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle::codec::Encode;
-use mantle_consensus::validation::{FixedClock, txid, validate_block_structure, validate_block_wire, validate_block_context_with_clock};
+use mantle_consensus::validation::{FixedClock, validate_block_structure, validate_block_wire, validate_block_context_with_clock};
 use std::hint::black_box;
 
 fn main() {
@@ -12,7 +12,7 @@ fn main() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const EASY_BITS: u32 = 0x207f_ffff;
+const EASY_BITS: CompactBits = CompactBits(0x207f_ffff);
 
 fn coinbase_tx(value: u64) -> Transaction {
     Transaction {
@@ -41,7 +41,7 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
 }
 
 fn mine_block(mut block: Block) -> Block {
-    let target = nbits_to_target(block.header.bits).expect("EASY_BITS must produce a valid target");
+    let target = block.header.bits.to_target().expect("EASY_BITS must produce a valid target");
     for nonce in 0..=u32::MAX {
         block.header.nonce = nonce;
         let raw = sha256d(&block.header.to_bytes());
@@ -54,23 +54,8 @@ fn mine_block(mut block: Block) -> Block {
     panic!("no valid nonce found");
 }
 
-fn nbits_to_target(bits: u32) -> Option<[u8; 32]> {
-    let exponent = (bits >> 24) as usize;
-    let mantissa = bits & 0x007f_ffff;
-    if bits & 0x0080_0000 != 0 || mantissa == 0 { return None; }
-    if exponent > 34 || (exponent == 34 && mantissa > 0xff) { return None; }
-    let mut target = [0u8; 32];
-    if exponent >= 3 {
-        let start = 32 - exponent;
-        target[start] = ((mantissa >> 16) & 0xff) as u8;
-        target[start + 1] = ((mantissa >> 8) & 0xff) as u8;
-        target[start + 2] = (mantissa & 0xff) as u8;
-    }
-    Some(target)
-}
-
 fn make_valid_block(txs: Vec<Transaction>) -> Block {
-    let txids: Vec<Hash256> = txs.iter().map(|tx| txid(tx).expect("txid encoding cannot fail")).collect();
+    let txids: Vec<Hash256> = txs.iter().map(|tx| tx.txid().expect("txid encoding cannot fail")).collect();
     let merkle_root = compute_merkle_root(&txids).expect("non-empty tx list must have a merkle root");
     let block = Block {
         header: BlockHeader {
@@ -108,7 +93,7 @@ fn build_chain(len: u32) -> MemoryChainView {
 
 #[divan::bench]
 fn txid_coinbase() {
-    black_box(txid(&coinbase_tx(5_000_000_000)).expect("txid encoding cannot fail"));
+    black_box(coinbase_tx(5_000_000_000).txid().expect("txid encoding cannot fail"));
 }
 
 #[divan::bench(args = [1usize, 4, 16])]
@@ -118,21 +103,21 @@ fn txid_regular(bencher: divan::Bencher, n_inputs: usize) {
     let big_tx = Transaction {
         inputs: (0..n_inputs)
             .map(|i| TxIn {
-                previous_output: OutPoint { txid: Hash256([i as u8; 32]), vout: i as u32 },
+                previous_output: OutPoint { txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), vout: u32::try_from(i).expect("bench index fits u32") },
                 script_sig: vec![0x51; 20],
                 sequence: u32::MAX,
             })
             .collect(),
         ..tx
     };
-    bencher.bench(|| black_box(txid(&big_tx)));
+    bencher.bench(|| black_box(big_tx.txid()));
 }
 
 // ── compute_merkle_root ───────────────────────────────────────────────────────
 
 #[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
 fn merkle_root(bencher: divan::Bencher, n: usize) {
-    let txids: Vec<Hash256> = (0..n).map(|i| Hash256([i as u8; 32])).collect();
+    let txids: Vec<Hash256> = (0..n).map(|i| Hash256([u8::try_from(i).expect("bench index fits u8"); 32])).collect();
     bencher.bench(|| compute_merkle_root(black_box(&txids)));
 }
 
@@ -148,7 +133,7 @@ fn validate_structure_single_coinbase(bencher: divan::Bencher) {
 fn validate_structure_n_txs(bencher: divan::Bencher, n: usize) {
     let mut txs = vec![coinbase_tx(5_000_000_000)];
     for i in 1..n {
-        txs.push(regular_tx(Hash256([i as u8; 32]), 0, 1000));
+        txs.push(regular_tx(Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), 0, 1000));
     }
     let block = make_valid_block(txs);
     bencher.bench(|| validate_block_structure(black_box(&block)).expect("valid block must pass structure validation"));
@@ -173,7 +158,7 @@ fn validate_wire_single_coinbase(bencher: divan::Bencher) {
 fn validate_wire_n_txs(bencher: divan::Bencher, n: usize) {
     let mut txs = vec![coinbase_tx(5_000_000_000)];
     for i in 1..n {
-        txs.push(regular_tx(Hash256([i as u8; 32]), 0, 1000));
+        txs.push(regular_tx(Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), 0, 1000));
     }
     let block = make_valid_block(txs);
     let mut wire = Vec::new();
@@ -208,7 +193,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
         outputs: vec![TxOut { value: 5_000_000_000, script_pubkey: vec![0x51] }],
         locktime: 0,
     };
-    let merkle_root = compute_merkle_root(&[txid(&tx).expect("txid encoding cannot fail")]).expect("single-tx merkle root must exist");
+    let merkle_root = compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")]).expect("single-tx merkle root must exist");
     let mtp = view.median_time_past(&BlockHeader {
         version: 4,
         prev_block: tip.hash,
@@ -230,7 +215,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
     };
     let clock = FixedClock(clock_now + 3600);
     bencher.bench(|| {
-        validate_block_context_with_clock(black_box(&block), &view, &clock).expect("valid block must pass context validation")
+        validate_block_context_with_clock(black_box(&block), &view, &clock).expect("valid block must pass context validation");
     });
 }
 
@@ -246,7 +231,7 @@ fn chain_view_get_header_by_hash(bencher: divan::Bencher) {
 #[divan::bench]
 fn chain_view_get_header_at(bencher: divan::Bencher) {
     let view = build_chain(100);
-    bencher.bench(|| view.get_header_at(black_box(50)).expect("storage error"));
+    bencher.bench(|| view.get_header_at(black_box(BlockHeight(50))).expect("storage error"));
 }
 
 #[divan::bench]
@@ -266,7 +251,7 @@ fn chain_view_tip(bencher: divan::Bencher) {
 fn chain_view_get_coin_hit(bencher: divan::Bencher) {
     let mut view = MemoryChainView::new();
     let op = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
-    view.insert_coin(op, Coin { value: 5_000_000_000, script_pubkey: vec![0x51], height: 1, coinbase: false });
+    view.insert_coin(op, Coin { value: 5_000_000_000, script_pubkey: vec![0x51], height: BlockHeight(1), coinbase: false });
     bencher.bench(|| view.get_coin(black_box(&op)).expect("storage error"));
 }
 
@@ -281,10 +266,10 @@ fn chain_view_get_coin_miss(bencher: divan::Bencher) {
 fn chain_view_get_coins_batch(bencher: divan::Bencher, n: usize) {
     let mut view = MemoryChainView::new();
     let ops: Vec<OutPoint> = (0..n)
-        .map(|i| OutPoint { txid: Hash256([i as u8; 32]), vout: 0 })
+        .map(|i| OutPoint { txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), vout: 0 })
         .collect();
     for &op in &ops {
-        view.insert_coin(op, Coin { value: 1000, script_pubkey: vec![], height: 1, coinbase: false });
+        view.insert_coin(op, Coin { value: 1000, script_pubkey: vec![], height: BlockHeight(1), coinbase: false });
     }
     bencher.bench(|| view.get_coins(black_box(&ops)).expect("storage error"));
 }

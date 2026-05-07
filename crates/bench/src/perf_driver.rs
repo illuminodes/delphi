@@ -2,9 +2,9 @@
 /// so `perf record` accumulates a statistically meaningful sample set.
 use mantle::codec::Encode;
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut};
 use mantle_consensus::merkle::compute_merkle_root;
-use mantle_consensus::validation::{txid, validate_block_structure, validate_block_wire};
+use mantle_consensus::validation::{validate_block_structure, validate_block_wire};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -40,21 +40,8 @@ fn regular(prev: Hash256, vout: u32, value: u64) -> Transaction {
     }
 }
 
-fn nbits_to_target(bits: u32) -> [u8; 32] {
-    let exp = (bits >> 24) as usize;
-    let m   = bits & 0x007f_ffff;
-    let mut t = [0u8; 32];
-    if exp >= 3 {
-        let s = 32 - exp;
-        t[s]   = ((m >> 16) & 0xff) as u8;
-        t[s+1] = ((m >>  8) & 0xff) as u8;
-        t[s+2] = (m         & 0xff) as u8;
-    }
-    t
-}
-
 fn mine(mut b: Block) -> Block {
-    let target = nbits_to_target(b.header.bits);
+    let target = b.header.bits.to_target().expect("mine called with invalid nBits");
     for n in 0..=u32::MAX {
         b.header.nonce = n;
         let mut h = sha256d(&b.header.to_bytes());
@@ -66,14 +53,14 @@ fn mine(mut b: Block) -> Block {
 
 fn valid_block(txs: Vec<Transaction>) -> Block {
     let ids: Vec<Hash256> = txs.iter()
-        .map(txid)
+        .map(Transaction::txid)
         .collect::<Result<Vec<_>, _>>()
         .expect("txid encoding cannot fail");
     let root = compute_merkle_root(&ids).expect("non-empty tx list must have merkle root");
     let b = Block {
         header: BlockHeader {
             version: 1, prev_block: Hash256::ZERO, merkle_root: root,
-            time: 1_231_006_505, bits: 0x207f_ffff, nonce: 0,
+            time: 1_231_006_505, bits: mantle::primitives::CompactBits(0x207f_ffff), nonce: 0,
         },
         transactions: txs,
     };
@@ -112,7 +99,7 @@ fn main() {
             locktime: 0,
         };
         let n = run_for(secs, || {
-            black_box(txid(black_box(&tx)).expect("txid encoding cannot fail"));
+            black_box(black_box(&tx).txid().expect("txid encoding cannot fail"));
         });
         eprintln!("txid(16-input tx): {n} iters");
     }

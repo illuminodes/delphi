@@ -5,7 +5,7 @@
 use proptest::prelude::*;
 
 use mantle::codec::{Decode, Encode, VarInt};
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, CompactBits, Hash256, OutPoint, Transaction, TxIn, TxOut};
 use std::io::Cursor;
 
 use crate::merkle::compute_merkle_root;
@@ -33,7 +33,7 @@ fn arb_block_header() -> impl Strategy<Value = BlockHeader> {
             prev_block,
             merkle_root,
             time,
-            bits,
+            bits: CompactBits(bits),
             nonce,
         },
     )

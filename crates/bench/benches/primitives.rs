@@ -16,11 +16,11 @@ fn encode_bytes<T: Encode>(val: &T) -> Vec<u8> {
 fn make_header(i: usize) -> BlockHeader {
     BlockHeader {
         version: 1,
-        prev_block: Hash256([i as u8; 32]),
+        prev_block: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]),
         merkle_root: Hash256::ZERO,
-        time: i as u32,
-        bits: 0x1d00ffff,
-        nonce: i as u32,
+        time: u32::try_from(i).expect("bench index fits u32"),
+        bits: mantle::primitives::CompactBits(0x1d00_ffff),
+        nonce: u32::try_from(i).expect("bench index fits u32"),
     }
 }
 
@@ -29,7 +29,7 @@ fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
         version: 1,
         inputs: (0..n_inputs)
             .map(|i| TxIn {
-                previous_output: OutPoint { txid: Hash256([i as u8; 32]), vout: i as u32 },
+                previous_output: OutPoint { txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), vout: u32::try_from(i).expect("bench index fits u32") },
                 script_sig: vec![0x51; 20],
                 sequence: u32::MAX,
             })
@@ -182,7 +182,7 @@ fn transaction_decode(bencher: divan::Bencher, n: usize) {
     bencher.bench(|| Transaction::decode(&mut Cursor::new(bytes.as_slice())).expect("Transaction decode cannot fail on valid bytes"));
 }
 
-/// Zero-copy parse: DecodeRef only scans the buffer to find boundaries —
+/// Zero-copy parse: `DecodeRef` only scans the buffer to find boundaries —
 /// no Vec allocations.
 #[divan::bench(args = [1usize, 4, 16])]
 fn transaction_decode_ref(bencher: divan::Bencher, n: usize) {
@@ -193,20 +193,20 @@ fn transaction_decode_ref(bencher: divan::Bencher, n: usize) {
     });
 }
 
-/// Iterate all inputs and outputs from a TransactionRef without allocating.
+/// Iterate all inputs and outputs from a `TransactionRef` without allocating.
 #[divan::bench(args = [1usize, 4, 16])]
 fn transaction_ref_iter(bencher: divan::Bencher, n: usize) {
     let bytes = encode_bytes(&make_tx(n, n));
     let (tx_ref, _) = TransactionRef::decode_ref(bytes.as_slice()).expect("TransactionRef decode_ref cannot fail on valid bytes");
     bencher.bench(|| {
         let mut sum = 0u64;
-        for r in tx_ref.inputs() { sum += r.expect("input decode cannot fail on valid bytes").sequence as u64; }
+        for r in tx_ref.inputs() { sum += u64::from(r.expect("input decode cannot fail on valid bytes").sequence); }
         for r in tx_ref.outputs() { sum += r.expect("output decode cannot fail on valid bytes").value; }
         black_box(sum)
     });
 }
 
-/// Materialise a TransactionRef into an owned Transaction.
+/// Materialise a `TransactionRef` into an owned Transaction.
 #[divan::bench(args = [1usize, 4, 16])]
 fn transaction_ref_to_owned(bencher: divan::Bencher, n: usize) {
     let bytes = encode_bytes(&make_tx(n, n));

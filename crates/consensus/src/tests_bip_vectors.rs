@@ -4,32 +4,21 @@
 /// data. No runtime file I/O; everything compiles into the test binary.
 use mantle::codec::{Decode, Encode};
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut};
 use std::io::Cursor;
 
 use crate::chain_view::{ChainView, Coin, MemoryChainView};
 use crate::error::ValidationError;
 use crate::genesis::{GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEX};
 use crate::merkle::compute_merkle_root;
+use crate::test_helpers::{decode_hex, hash_to_hex};
 use crate::validation::{
-    txid, validate_block_context, validate_block_structure, BIP34_HEIGHT,
+    validate_block_context, validate_block_structure, BIP34_HEIGHT,
     MAX_COINBASE_SCRIPTSIG_LEN, MAX_MONEY, MIN_COINBASE_SCRIPTSIG_LEN,
 };
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
-
-fn decode_hex(s: &str) -> Vec<u8> {
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16)
-            .unwrap_or_else(|_| panic!("invalid hex at offset {i}")))
-        .collect()
-}
-
 fn hash_to_hex_display(hash: Hash256) -> String {
-    let mut rev = hash.0;
-    rev.reverse();
-    rev.iter().map(|b| format!("{b:02x}")).collect()
+    hash_to_hex(hash.0)
 }
 
 /// Build the minimal null-outpoint input (coinbase marker).
@@ -41,23 +30,6 @@ fn coinbase_input(script_sig: Vec<u8>) -> TxIn {
     }
 }
 
-/// Encode BIP34 height the same way the validator does (mirrors internal fn).
-fn bip34_script(height: u32) -> Vec<u8> {
-    if height == 0 {
-        return vec![0x00];
-    }
-    let mut le = height.to_le_bytes().to_vec();
-    while le.last() == Some(&0) {
-        le.pop();
-    }
-    if le.last().is_some_and(|&b| b & 0x80 != 0) {
-        le.push(0x00);
-    }
-    let len = u8::try_from(le.len()).expect("bip34 height encoding fits in u8");
-    let mut out = vec![len];
-    out.extend_from_slice(&le);
-    out
-}
 
 fn make_output(value: u64) -> TxOut {
     TxOut { value, script_pubkey: vec![0x51] } // OP_1 (trivial P2PK stand-in)
@@ -79,7 +51,7 @@ fn minimal_block(coinbase_script_sig: Vec<u8>, transactions: Vec<Transaction>) -
     txs.extend(transactions);
 
     let txids: Vec<Hash256> = txs.iter()
-        .map(txid)
+        .map(Transaction::txid)
         .collect::<Result<Vec<_>, _>>()
         .expect("txid encoding cannot fail");
     let merkle_root = compute_merkle_root(&txids).expect("non-empty tx list must have merkle root");
@@ -90,7 +62,7 @@ fn minimal_block(coinbase_script_sig: Vec<u8>, transactions: Vec<Transaction>) -
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 1_231_006_505,
-            bits: 0x207f_ffff, // regtest easiest target
+            bits: mantle::primitives::CompactBits(0x207f_ffff), // regtest easiest target
             nonce: 0,
         },
         transactions: txs,
@@ -99,7 +71,7 @@ fn minimal_block(coinbase_script_sig: Vec<u8>, transactions: Vec<Transaction>) -
 
 // ── Build a MemoryChainView with N sequential headers ─────────────────────────
 
-fn build_chain(n: u32, bits: u32, base_time: u32) -> MemoryChainView {
+fn build_chain(n: u32, bits: mantle::primitives::CompactBits, base_time: u32) -> MemoryChainView {
     let mut view = MemoryChainView::new();
     let mut prev = Hash256::ZERO;
     for i in 0..n {
@@ -159,7 +131,7 @@ fn stage1_empty_block_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 0,
-            bits: 0x207f_ffff,
+            bits: mantle::primitives::CompactBits(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![],
@@ -179,7 +151,7 @@ fn stage1_first_tx_not_coinbase_rejected() {
         outputs: vec![make_output(1000)],
         locktime: 0,
     };
-    let txids = vec![txid(&non_cb).expect("txid encoding cannot fail")];
+    let txids = vec![non_cb.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
         header: BlockHeader {
@@ -187,7 +159,7 @@ fn stage1_first_tx_not_coinbase_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 0,
-            bits: 0x207f_ffff,
+            bits: mantle::primitives::CompactBits(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![non_cb],
@@ -199,7 +171,7 @@ fn stage1_first_tx_not_coinbase_rejected() {
 fn stage1_non_coinbase_with_null_outpoint_rejected() {
     // Second tx uses the coinbase null outpoint — must be rejected.
     let cb_script = {
-        let mut s = bip34_script(0);
+        let mut s = Transaction::bip34_height_script(BlockHeight::ZERO);
         s.extend_from_slice(&[0x00]); // pad to meet min length
         s
     };
@@ -217,8 +189,8 @@ fn stage1_non_coinbase_with_null_outpoint_rejected() {
     };
     let _ = cb_script;
     let txids = vec![
-        txid(&fake_cb).expect("txid encoding cannot fail"),
-        txid(&imposter).expect("txid encoding cannot fail"),
+        fake_cb.txid().expect("txid encoding cannot fail"),
+        imposter.txid().expect("txid encoding cannot fail"),
     ];
     let merkle_root = compute_merkle_root(&txids).expect("two-tx merkle root must exist");
     let block = Block {
@@ -227,7 +199,7 @@ fn stage1_non_coinbase_with_null_outpoint_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 0,
-            bits: 0x207f_ffff,
+            bits: mantle::primitives::CompactBits(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![fake_cb, imposter],
@@ -283,7 +255,7 @@ fn stage1_output_value_over_max_money_rejected() {
         outputs: vec![TxOut { value: too_much, script_pubkey: vec![0x51] }],
         locktime: 0,
     };
-    let txids = vec![txid(&coinbase).expect("txid encoding cannot fail")];
+    let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
         header: BlockHeader {
@@ -291,7 +263,7 @@ fn stage1_output_value_over_max_money_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 0,
-            bits: 0x207f_ffff,
+            bits: mantle::primitives::CompactBits(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![coinbase],
@@ -321,8 +293,8 @@ fn stage1_duplicate_inputs_rejected() {
         locktime: 0,
     };
     let txids = vec![
-        txid(&coinbase).expect("txid encoding cannot fail"),
-        txid(&tx).expect("txid encoding cannot fail"),
+        coinbase.txid().expect("txid encoding cannot fail"),
+        tx.txid().expect("txid encoding cannot fail"),
     ];
     let merkle_root = compute_merkle_root(&txids).expect("two-tx merkle root must exist");
     let block = Block {
@@ -331,7 +303,7 @@ fn stage1_duplicate_inputs_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 0,
-            bits: 0x207f_ffff,
+            bits: mantle::primitives::CompactBits(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![coinbase, tx],
@@ -353,7 +325,7 @@ fn stage1_merkle_mismatch_rejected() {
 #[test]
 fn stage1_invalid_bits_rejected() {
     let mut block = minimal_block(vec![0x51, 0x52], vec![]);
-    block.header.bits = 0; // zero nBits is always invalid
+    block.header.bits = mantle::primitives::CompactBits(0); // zero nBits is always invalid
     // Also recompute merkle (header bits don't affect merkle root — this is fine).
     assert_eq!(validate_block_structure(&block), Err(ValidationError::InvalidBits));
 }
@@ -364,12 +336,12 @@ fn stage1_insufficient_pow_rejected() {
     // requires the hash to be almost zero). The block header nonce is 0 so
     // the hash is effectively random and almost certainly fails this target.
     let mut block = minimal_block(vec![0x51, 0x52], vec![]);
-    block.header.bits = 0x1900_0001; // very hard target
+    block.header.bits = mantle::primitives::CompactBits(0x1900_0001); // very hard target
     // Recompute the hash check — the actual hash won't satisfy target 0x0001…
     // Note: we don't update merkle root for the bits field (it only appears in
     // the header, not in tx data). So we need to rebuild:
     let txids: Vec<Hash256> = block.transactions.iter()
-        .map(txid)
+        .map(Transaction::txid)
         .collect::<Result<Vec<_>, _>>()
         .expect("txid encoding cannot fail");
     let merkle_root = compute_merkle_root(&txids).expect("non-empty tx list must have merkle root");
@@ -386,14 +358,14 @@ fn stage1_insufficient_pow_rejected() {
 /// BIP34 height encoding for `this_height`.
 fn stage2_block_for_height(
     view: &MemoryChainView,
-    this_height: u32,
+    this_height: BlockHeight,
     version: i32,
 ) -> Block {
     let tip = view.tip();
     let parent_bits = view.get_header_at(tip.height)
         .expect("storage error").expect("tip header must exist").bits;
     let script_sig = {
-        let mut s = bip34_script(this_height);
+        let mut s = Transaction::bip34_height_script(this_height);
         // Ensure minimum length of 2 even if bip34_script produced 1 byte.
         if s.len() < MIN_COINBASE_SCRIPTSIG_LEN {
             s.push(0x00);
@@ -406,7 +378,7 @@ fn stage2_block_for_height(
         outputs: vec![make_output(50_0000_0000)],
         locktime: 0,
     };
-    let txids = vec![txid(&coinbase).expect("txid encoding cannot fail")];
+    let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
 
     // MTP = median of up to 11 preceding blocks. We need time > MTP.
@@ -430,8 +402,8 @@ fn stage2_block_for_height(
 
 #[test]
 fn stage2_unknown_parent_rejected() {
-    let view = build_chain(10, 0x207f_ffff, 1_000_000);
-    let mut block = stage2_block_for_height(&view, 10, 4);
+    let view = build_chain(10, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let mut block = stage2_block_for_height(&view, BlockHeight(10), 4);
     // Point to an unknown parent.
     block.header.prev_block = Hash256([0xde; 32]);
     assert_eq!(
@@ -442,10 +414,10 @@ fn stage2_unknown_parent_rejected() {
 
 #[test]
 fn stage2_unexpected_difficulty_rejected() {
-    let view = build_chain(10, 0x207f_ffff, 1_000_000);
-    let mut block = stage2_block_for_height(&view, 10, 4);
+    let view = build_chain(10, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let mut block = stage2_block_for_height(&view, BlockHeight(10), 4);
     // Change the nBits to something different from the parent (non-retarget block).
-    block.header.bits = 0x1d00_ffff;
+    block.header.bits = mantle::primitives::CompactBits(0x1d00_ffff);
     assert_eq!(
         validate_block_context(&block, &view),
         Err(ValidationError::UnexpectedDifficulty),
@@ -454,13 +426,13 @@ fn stage2_unexpected_difficulty_rejected() {
 
 #[test]
 fn stage2_timestamp_not_greater_than_mtp_rejected() {
-    let view = build_chain(12, 0x207f_ffff, 1_000_000);
+    let view = build_chain(12, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
     let tip = view.tip();
     let parent_bits = view.get_header_at(tip.height)
         .expect("storage error").expect("tip header must exist").bits;
     let this_height = tip.height + 1;
     let script_sig = {
-        let mut s = bip34_script(this_height);
+        let mut s = Transaction::bip34_height_script(this_height);
         if s.len() < MIN_COINBASE_SCRIPTSIG_LEN {
             s.push(0x00);
         }
@@ -472,7 +444,7 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
         outputs: vec![make_output(50_0000_0000)],
         locktime: 0,
     };
-    let txids = vec![txid(&coinbase).expect("txid encoding cannot fail")];
+    let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
 
     // MTP for 12 blocks at times [1_000_000, 1_000_600, …, 1_006_600].
@@ -494,7 +466,7 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
     // Build a block with time == MTP (not strictly greater).
     let bad_block = {
         let script_sig2 = {
-            let mut s = bip34_script(this_height);
+            let mut s = Transaction::bip34_height_script(this_height);
             if s.len() < MIN_COINBASE_SCRIPTSIG_LEN {
                 s.push(0x00);
             }
@@ -506,7 +478,7 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
             outputs: vec![make_output(50_0000_0000)],
             locktime: 0,
         };
-        let txids2 = vec![txid(&coinbase2).expect("txid encoding cannot fail")];
+        let txids2 = vec![coinbase2.txid().expect("txid encoding cannot fail")];
         let mr2 = compute_merkle_root(&txids2).expect("single-tx merkle root must exist");
         Block {
             header: BlockHeader {
@@ -529,9 +501,9 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
 #[test]
 fn stage2_bip34_height_missing_rejected() {
     // Build a chain with BIP34_HEIGHT blocks (each header is cheap: 80 bytes).
-    let view = build_chain(BIP34_HEIGHT, 0x207f_ffff, 1_000_000);
+    let view = build_chain(BIP34_HEIGHT.0, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
     let tip = view.tip();
-    assert_eq!(tip.height, BIP34_HEIGHT - 1);
+    assert_eq!(tip.height, BIP34_HEIGHT - 1u32);
 
     let parent_bits = view.get_header_at(tip.height)
         .expect("storage error").expect("tip header must exist").bits;
@@ -546,7 +518,7 @@ fn stage2_bip34_height_missing_rejected() {
         outputs: vec![make_output(50_0000_0000)],
         locktime: 0,
     };
-    let txids = vec![txid(&coinbase).expect("txid encoding cannot fail")];
+    let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
         header: BlockHeader {
@@ -567,7 +539,7 @@ fn stage2_bip34_height_missing_rejected() {
 
 #[test]
 fn stage2_bip34_correct_encoding_accepted() {
-    let view = build_chain(BIP34_HEIGHT, 0x207f_ffff, 1_000_000);
+    let view = build_chain(BIP34_HEIGHT.0, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
     let block = stage2_block_for_height(&view, BIP34_HEIGHT, 4);
     // Stage 1 uses easiest PoW so it passes; Stage 2 should also pass.
     validate_block_context(&block, &view)
@@ -577,8 +549,8 @@ fn stage2_bip34_correct_encoding_accepted() {
 #[test]
 fn stage2_block_version_too_low_rejected() {
     // Build a chain at BIP65 activation height (388_381). Version must be ≥ 4.
-    let view = build_chain(388_381, 0x207f_ffff, 1_000_000);
-    let block = stage2_block_for_height(&view, 388_381, 3); // version 3 < required 4
+    let view = build_chain(388_381, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let block = stage2_block_for_height(&view, BlockHeight(388_381), 3); // version 3 < required 4
     assert_eq!(
         validate_block_context(&block, &view),
         Err(ValidationError::BlockVersionTooLow { version: 3, required: 4 }),
@@ -588,7 +560,7 @@ fn stage2_block_version_too_low_rejected() {
 #[test]
 fn stage2_valid_block_accepted() {
     // Small chain, pre-BIP34: no height encoding required, version 1 is fine.
-    let view = build_chain(5, 0x207f_ffff, 1_000_000);
+    let view = build_chain(5, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
     let tip = view.tip();
     let parent_bits = view.get_header_at(tip.height)
         .expect("storage error").expect("tip header must exist").bits;
@@ -600,7 +572,7 @@ fn stage2_valid_block_accepted() {
         outputs: vec![make_output(50_0000_0000)],
         locktime: 0,
     };
-    let txids = vec![txid(&coinbase).expect("txid encoding cannot fail")];
+    let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
         header: BlockHeader {
@@ -664,7 +636,7 @@ fn genesis_coinbase_decode_roundtrip() {
 fn genesis_coinbase_txid_matches() {
     let bytes = decode_hex(GENESIS_COINBASE_RAW);
     let tx = Transaction::decode(&mut Cursor::new(&bytes)).expect("genesis coinbase must decode");
-    let computed = txid(&tx).expect("txid encoding cannot fail");
+    let computed = tx.txid().expect("txid encoding cannot fail");
     assert_eq!(
         hash_to_hex_display(computed),
         GENESIS_COINBASE_TXID_DISPLAY,
@@ -716,7 +688,7 @@ fn memory_chain_view_utxo_insert_lookup_spend() {
     let coin = Coin {
         value: 100_000,
         script_pubkey: vec![0x76, 0xa9, 0x14], // OP_DUP OP_HASH160 OP_DATA14
-        height: 500_000,
+        height: BlockHeight(500_000),
         coinbase: false,
     };
 
@@ -735,13 +707,13 @@ fn memory_chain_view_coinbase_flag_preserved() {
     let coin = Coin {
         value: 50_0000_0000,
         script_pubkey: vec![0x51],
-        height: 0,
+        height: BlockHeight::ZERO,
         coinbase: true,
     };
     view.insert_coin(op, coin.clone());
     let retrieved = view.get_coin(&op).expect("storage error").expect("coin must exist after insert");
     assert!(retrieved.coinbase, "coinbase flag must survive round-trip through MemoryChainView");
-    assert_eq!(retrieved.height, 0);
+    assert_eq!(retrieved.height, BlockHeight::ZERO);
     assert_eq!(retrieved.value, 50_0000_0000);
 }
 
@@ -780,7 +752,7 @@ fn wire_empty_block_rejected() {
     let block = Block {
         header: BlockHeader {
             version: 1, prev_block: Hash256::ZERO, merkle_root: Hash256::ZERO,
-            time: 0, bits: 0x207f_ffff, nonce: 0,
+            time: 0, bits: mantle::primitives::CompactBits(0x207f_ffff), nonce: 0,
         },
         transactions: vec![],
     };
@@ -839,12 +811,12 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
                 outputs: vec![make_output(1000)],
                 locktime: 0,
             };
-            let txids = vec![txid(&non_cb).expect("txid encoding cannot fail")];
+            let txids = vec![non_cb.txid().expect("txid encoding cannot fail")];
             let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
             Block {
                 header: BlockHeader {
                     version: 4, prev_block: Hash256::ZERO, merkle_root,
-                    time: 1_231_006_505, bits: 0x207f_ffff, nonce: 0,
+                    time: 1_231_006_505, bits: mantle::primitives::CompactBits(0x207f_ffff), nonce: 0,
                 },
                 transactions: vec![non_cb],
             }
@@ -858,12 +830,12 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
                 outputs: vec![TxOut { value: u64::MAX, script_pubkey: vec![0x51] }],
                 locktime: 0,
             };
-            let txids = vec![txid(&coinbase).expect("txid encoding cannot fail")];
+            let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
             let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
             Block {
                 header: BlockHeader {
                     version: 4, prev_block: Hash256::ZERO, merkle_root,
-                    time: 1_231_006_505, bits: 0x207f_ffff, nonce: 0,
+                    time: 1_231_006_505, bits: mantle::primitives::CompactBits(0x207f_ffff), nonce: 0,
                 },
                 transactions: vec![coinbase],
             }

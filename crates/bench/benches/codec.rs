@@ -59,14 +59,14 @@ fn u16_encode() -> Vec<u8> {
 #[divan::bench]
 fn u32_encode() -> Vec<u8> {
     let mut buf = Vec::with_capacity(4);
-    0xdeadbeefu32.encode(&mut buf).expect("Vec<u8> write cannot fail");
+    0xdead_beef_u32.encode(&mut buf).expect("Vec<u8> write cannot fail");
     buf
 }
 
 #[divan::bench]
 fn u64_encode() -> Vec<u8> {
     let mut buf = Vec::with_capacity(8);
-    0xdeadbeef_cafebabeu64.encode(&mut buf).expect("Vec<u8> write cannot fail");
+    0xdead_beef_cafe_babe_u64.encode(&mut buf).expect("Vec<u8> write cannot fail");
     buf
 }
 
@@ -126,7 +126,7 @@ fn decode_string_limited_bench(bencher: divan::Bencher, len: usize) {
 // ── VarStr ────────────────────────────────────────────────────────────────────
 
 mod varstr {
-    use super::*;
+    use super::{Encode, Decode, Cursor, DecodeRef};
 
     fn encode_str(s: &str) -> Vec<u8> {
         let mut buf = Vec::new();

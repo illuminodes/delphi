@@ -382,16 +382,16 @@ mod tests {
 
     #[test]
     fn u32_le() {
-        let bytes = roundtrip_encode(&0x01020304u32);
+        let bytes = roundtrip_encode(&0x0102_0304_u32);
         assert_eq!(bytes, [0x04, 0x03, 0x02, 0x01]);
-        assert_eq!(roundtrip_decode::<u32>(&bytes), 0x01020304u32);
+        assert_eq!(roundtrip_decode::<u32>(&bytes), 0x0102_0304_u32);
     }
 
     #[test]
     fn u32_decode_ref() {
         let buf = [0x04u8, 0x03, 0x02, 0x01, 0xff];
         let (val, tail) = decode_ref::<u32>(&buf);
-        assert_eq!(val, 0x01020304u32);
+        assert_eq!(val, 0x0102_0304_u32);
         assert_eq!(tail, &[0xff]);
     }
 
@@ -464,7 +464,7 @@ mod tests {
         assert_eq!(s, "hello");
         assert_eq!(tail, b"world");
         // s borrows directly from buf — no allocation
-        assert!(std::ptr::eq(s.as_bytes().as_ptr(), &buf[1]));
+        assert!(std::ptr::eq(s.as_bytes().as_ptr(), &raw const buf[1]));
     }
 
     #[test]
@@ -473,7 +473,7 @@ mod tests {
         let (data, tail) = decode_ref::<&[u8]>(buf);
         assert_eq!(data, &[0xde, 0xad, 0xbe, 0xef]);
         assert_eq!(tail, b"XX");
-        assert!(std::ptr::eq(data.as_ptr(), &buf[1]));
+        assert!(std::ptr::eq(data.as_ptr(), &raw const buf[1]));
     }
 
     #[test]

@@ -808,6 +808,7 @@ impl Decode for HeadersMsg {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::CompactBits;
     use std::io::Cursor;
 
     fn encode<T: Encode>(val: &T) -> Vec<u8> {
@@ -895,7 +896,7 @@ mod tests {
         let header = MessageHeader {
             magic: Magic::Mainnet.bytes(),
             command: CommandName::new("version"),
-            length: payload.len() as u32,
+            length: u32::try_from(payload.len()).expect("payload fits u32"),
             checksum: checksum(payload)?,
         };
         let bytes = encode(&header);
@@ -914,7 +915,7 @@ mod tests {
         let mut bytes = encode(&MessageHeader {
             magic: Magic::Mainnet.bytes(),
             command: CommandName::new("ping"),
-            length: payload.len() as u32,
+            length: u32::try_from(payload.len()).expect("payload fits u32"),
             checksum: checksum(payload)?,
         });
         bytes.push(0xab); // sentinel
@@ -951,7 +952,7 @@ mod tests {
     #[test]
     fn ping_roundtrip() {
         let ping = PingMsg {
-            nonce: 0xdeadbeefcafe,
+            nonce: 0xdead_beef_cafe,
         };
         let bytes = encode(&ping);
         assert_eq!(decode::<PingMsg>(&bytes), ping);
@@ -990,9 +991,9 @@ mod tests {
             version: 1,
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
-            time: 1231006505,
-            bits: 0x1d00ffff,
-            nonce: 2083236893,
+            time: 1_231_006_505,
+            bits: CompactBits(0x1d00_ffff),
+            nonce: 2_083_236_893,
         };
         let msg = HeadersMsg(vec![header]);
         let bytes = encode(&msg);
@@ -1005,7 +1006,7 @@ mod tests {
         let msg = VersionMsg {
             version: 70015,
             services: services::NODE_NETWORK,
-            timestamp: 1700000000,
+            timestamp: 1_700_000_000,
             receiver: NetworkAddr {
                 services: 0,
                 ip: [0u8; 16],
@@ -1016,7 +1017,7 @@ mod tests {
                 ip: [0u8; 16],
                 port: 8333,
             },
-            nonce: 0xdeadbeef,
+            nonce: 0xdead_beef,
             user_agent: "/mantle:0.1.0/".to_string(),
             start_height: 0,
             relay: true,
@@ -1225,7 +1226,7 @@ mod tests {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 0,
-            bits: 0x1d00ffff,
+            bits: CompactBits(0x1d00_ffff),
             nonce: 0,
         };
         // Manually encode with tx_count = 5 instead of 0.
@@ -1246,7 +1247,7 @@ mod tests {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 0,
-            bits: 0,
+            bits: CompactBits(0),
             nonce: 0,
         };
         let mut bytes = encode(&HeadersMsg(vec![header]));
@@ -1422,7 +1423,7 @@ mod tests {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 0,
-            bits: 0x1d00ffff,
+            bits: CompactBits(0x1d00_ffff),
             nonce,
         }
     }

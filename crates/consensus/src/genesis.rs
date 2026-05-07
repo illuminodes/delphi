@@ -22,24 +22,11 @@ pub const GENESIS_TXID: &str = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77a
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{decode_hex, hash_to_hex};
     use mantle::codec::{Decode, DecodeRef};
     use mantle::hash::sha256d;
     use mantle::primitives::{Block, BlockHeader};
     use std::io::Cursor;
-
-    fn decode_hex(s: &str) -> Vec<u8> {
-        (0..s.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16)
-                .unwrap_or_else(|_| panic!("invalid hex at offset {i}")))
-            .collect()
-    }
-
-    fn hash_to_hex(hash: [u8; 32]) -> String {
-        let mut rev = hash;
-        rev.reverse();
-        rev.iter().map(|b| format!("{b:02x}")).collect()
-    }
 
     #[test]
     fn genesis_header_fields() {
@@ -48,9 +35,9 @@ mod tests {
             .expect("genesis block header must decode");
 
         assert_eq!(header.version, 1);
-        assert_eq!(header.time, 1231006505);
-        assert_eq!(header.bits, 0x1d00ffff);
-        assert_eq!(header.nonce, 2083236893);
+        assert_eq!(header.time, 1_231_006_505);
+        assert_eq!(header.bits, mantle::primitives::CompactBits(0x1d00_ffff));
+        assert_eq!(header.nonce, 2_083_236_893);
         assert_eq!(header.prev_block, mantle::primitives::Hash256::ZERO);
     }
 
@@ -76,11 +63,11 @@ mod tests {
 
     #[test]
     fn genesis_txid() {
+        use mantle::codec::Encode;
         let bytes = decode_hex(GENESIS_BLOCK_HEX);
         let block = Block::decode(&mut Cursor::new(&bytes)).expect("genesis block must decode");
 
         let mut tx_bytes = Vec::new();
-        use mantle::codec::Encode;
         block.transactions[0].encode(&mut tx_bytes).expect("Vec<u8> write cannot fail");
         let txid = sha256d(&tx_bytes);
         assert_eq!(hash_to_hex(txid), GENESIS_TXID);

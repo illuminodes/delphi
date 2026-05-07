@@ -1,9 +1,9 @@
 use mantle::codec::Encode;
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::merkle_root_owned;
-use mantle_consensus::validation::{txid, validate_block_structure_reusing, validate_block_wire};
+use mantle_consensus::validation::{validate_block_structure_reusing, validate_block_wire};
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -49,7 +49,7 @@ fn build_chain(len: u32) -> MemoryChainView {
             prev_block: prev,
             merkle_root: Hash256::ZERO,
             time: 1_296_688_602 + i * 600,
-            bits: 0x207f_ffff,
+            bits: CompactBits(0x207f_ffff),
             nonce: 0,
         };
         prev = Hash256(sha256d(&h.to_bytes()));
@@ -58,22 +58,8 @@ fn build_chain(len: u32) -> MemoryChainView {
     view
 }
 
-fn nbits_to_target(bits: u32) -> Option<[u8; 32]> {
-    let exponent = (bits >> 24) as usize;
-    let mantissa = bits & 0x007f_ffff;
-    if bits & 0x0080_0000 != 0 || mantissa == 0 || exponent > 34 { return None; }
-    let mut target = [0u8; 32];
-    if exponent >= 3 {
-        let start = 32 - exponent;
-        target[start] = ((mantissa >> 16) & 0xff) as u8;
-        target[start + 1] = ((mantissa >> 8) & 0xff) as u8;
-        target[start + 2] = (mantissa & 0xff) as u8;
-    }
-    Some(target)
-}
-
 fn mine_block(mut block: Block) -> Block {
-    let target = nbits_to_target(block.header.bits)
+    let target = block.header.bits.to_target()
         .expect("mine_block called with invalid nBits");
     for nonce in 0..=u32::MAX {
         block.header.nonce = nonce;
@@ -87,7 +73,7 @@ fn mine_block(mut block: Block) -> Block {
 
 fn make_valid_block(txs: Vec<Transaction>) -> Block {
     let txids: Vec<Hash256> = txs.iter()
-        .map(txid)
+        .map(Transaction::txid)
         .collect::<Result<Vec<_>, _>>()
         .expect("txid encoding cannot fail");
     let merkle_root = merkle_root_owned(txids)
@@ -98,7 +84,7 @@ fn make_valid_block(txs: Vec<Transaction>) -> Block {
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 1_231_006_505,
-            bits: 0x207f_ffff,
+            bits: CompactBits(0x207f_ffff),
             nonce: 0,
         },
         transactions: txs,
@@ -154,7 +140,7 @@ fn main() {
     {
         let view = build_chain(200);
         for i in 0..1000u32 {
-            let _ = view.get_header_at(i % 200).expect("storage error");
+            let _ = view.get_header_at(BlockHeight(i % 200)).expect("storage error");
             let tip = view.tip();
             let _ = view.get_header(&tip.hash).expect("storage error");
         }
@@ -173,7 +159,7 @@ fn main() {
         let mut view = MemoryChainView::new();
         for i in 0..5000u32 {
             let op = OutPoint { txid: Hash256(sha256d(&i.to_le_bytes())), vout: 0 };
-            view.insert_coin(op, Coin { value: 1000, script_pubkey: vec![0x51], height: i, coinbase: false });
+            view.insert_coin(op, Coin { value: 1000, script_pubkey: vec![0x51], height: BlockHeight(i), coinbase: false });
             let _ = view.get_coin(&op).expect("storage error");
             view.spend_coin(&op);
         }

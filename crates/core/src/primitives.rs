@@ -2,6 +2,7 @@ use std::fmt;
 use std::io::{self, Read, Write};
 
 use crate::codec::{Decode, DecodeRef, Encode, VarInt, decode_bytes_limited};
+use crate::hash::sha256d;
 
 // ── Hash256 ───────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,170 @@ impl<'a> DecodeRef<'a> for Hash256 {
     }
 }
 
+// ── CompactBits ───────────────────────────────────────────────────────────────
+
+/// The `nBits` compact-format difficulty target stored in a block header.
+///
+/// Wraps a `u32` to make difficulty fields type-distinct from plain integers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct CompactBits(pub u32);
+
+impl From<u32> for CompactBits {
+    #[inline]
+    fn from(v: u32) -> Self {
+        Self(v)
+    }
+}
+
+impl From<CompactBits> for u32 {
+    #[inline]
+    fn from(v: CompactBits) -> Self {
+        v.0
+    }
+}
+
+impl Encode for CompactBits {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for CompactBits {
+    #[inline]
+    fn decode(r: &mut impl Read) -> io::Result<Self> {
+        u32::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for CompactBits {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+        u32::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}
+
+// ── BlockHeight ───────────────────────────────────────────────────────────────
+
+/// A block height on the canonical chain.
+///
+/// Wraps a `u32` to make height values type-distinct from plain integers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct BlockHeight(pub u32);
+
+impl BlockHeight {
+    pub const ZERO: Self = Self(0);
+
+    #[must_use]
+    pub fn checked_add(self, rhs: u32) -> Option<Self> {
+        self.0.checked_add(rhs).map(Self)
+    }
+
+    #[must_use]
+    pub fn saturating_sub(self, rhs: u32) -> Self {
+        Self(self.0.saturating_sub(rhs))
+    }
+}
+
+impl From<u32> for BlockHeight {
+    #[inline]
+    fn from(v: u32) -> Self {
+        Self(v)
+    }
+}
+
+impl From<BlockHeight> for u32 {
+    #[inline]
+    fn from(v: BlockHeight) -> Self {
+        v.0
+    }
+}
+
+impl From<BlockHeight> for usize {
+    #[inline]
+    fn from(v: BlockHeight) -> Self {
+        v.0 as usize
+    }
+}
+
+impl fmt::Display for BlockHeight {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::ops::Add<u32> for BlockHeight {
+    type Output = Self;
+    fn add(self, rhs: u32) -> Self {
+        Self(self.0.checked_add(rhs).expect("BlockHeight overflow"))
+    }
+}
+
+impl std::ops::Sub<u32> for BlockHeight {
+    type Output = Self;
+    fn sub(self, rhs: u32) -> Self {
+        Self(self.0.checked_sub(rhs).expect("BlockHeight underflow"))
+    }
+}
+
+impl std::ops::Rem<u32> for BlockHeight {
+    type Output = u32;
+    fn rem(self, rhs: u32) -> u32 {
+        self.0 % rhs
+    }
+}
+
+impl CompactBits {
+    /// Decode to a 256-bit target as a 32-byte big-endian array.
+    ///
+    /// Returns `None` if the value is zero, negative, or encodes an overflowed target.
+    #[must_use]
+    pub fn to_target(self) -> Option<[u8; 32]> {
+        let raw = self.0;
+        let exponent = (raw >> 24) as usize;
+        let mantissa = raw & 0x007f_ffff;
+
+        if raw & 0x0080_0000 != 0 { return None; } // negative mantissa
+        if mantissa == 0 { return None; }
+        if exponent > 34 || (exponent == 34 && mantissa > 0xff) { return None; }
+
+        let mut target = [0u8; 32];
+        if exponent >= 3 {
+            let start = 32 - exponent;
+            target[start]     = ((mantissa >> 16) & 0xff) as u8;
+            target[start + 1] = ((mantissa >>  8) & 0xff) as u8;
+            target[start + 2] = ( mantissa        & 0xff) as u8;
+        } else {
+            let shift = (3 - exponent) * 8;
+            let m = mantissa >> shift;
+            if exponent > 0 {
+                target[32 - exponent] = (m & 0xff) as u8;
+            }
+        }
+        Some(target)
+    }
+
+    /// Encode a 256-bit big-endian target back into compact nBits format.
+    ///
+    /// Returns `None` if the target is all-zero.
+    #[must_use]
+    pub fn from_target(target: [u8; 32]) -> Option<Self> {
+        let first_nonzero = target.iter().position(|&b| b != 0)?;
+        let exponent = u32::try_from(32 - first_nonzero).ok()?;
+
+        let mut mantissa = u32::from(target[first_nonzero]) << 16;
+        if first_nonzero + 1 < 32 { mantissa |= u32::from(target[first_nonzero + 1]) << 8; }
+        if first_nonzero + 2 < 32 { mantissa |=  u32::from(target[first_nonzero + 2]);      }
+
+        if mantissa & 0x0080_0000 != 0 {
+            mantissa >>= 8;
+            Some(Self((exponent + 1) << 24 | mantissa))
+        } else {
+            Some(Self(exponent << 24 | mantissa))
+        }
+    }
+}
+
 // ── BlockHeader ───────────────────────────────────────────────────────────────
 
 /// 80-byte fixed-size block header. No heap allocation.
@@ -70,7 +235,7 @@ pub struct BlockHeader {
     pub prev_block: Hash256,
     pub merkle_root: Hash256,
     pub time: u32,
-    pub bits: u32,
+    pub bits: CompactBits,
     pub nonce: u32,
 }
 
@@ -99,7 +264,7 @@ impl BlockHeader {
         let prev_block = Hash256::decode(&mut r)?;
         let merkle_root = Hash256::decode(&mut r)?;
         let time = u32::decode(&mut r)?;
-        let bits = u32::decode(&mut r)?;
+        let bits = CompactBits::decode(&mut r)?;
         let nonce = u32::decode(&mut r)?;
         Ok(Self { version, prev_block, merkle_root, time, bits, nonce })
     }
@@ -271,6 +436,35 @@ impl<'a> DecodeRef<'a> for TxOutRef<'a> {
     }
 }
 
+// ── TxHash ────────────────────────────────────────────────────────────────────
+
+/// Implemented by any type that can compute a Bitcoin transaction id.
+///
+/// The required method [`txid_into`] writes the serialisation into a
+/// caller-owned buffer to avoid a per-call heap allocation. The provided
+/// [`txid`] allocates its own buffer; use it when the extra allocation is
+/// acceptable.
+///
+/// Both `Transaction` and `TransactionRef<'_>` implement this trait, so code
+/// that must handle either can be generic over `T: TxHash`.
+pub trait TxHash {
+    /// Compute the txid (`SHA256d` of the non-witness serialisation), reusing
+    /// `buf` as scratch space. `buf` is cleared and refilled on every call.
+    ///
+    /// # Errors
+    /// Propagates any I/O error from encoding (encoding into `Vec<u8>` never
+    /// fails in practice).
+    fn txid_into(&self, buf: &mut Vec<u8>) -> io::Result<Hash256>;
+
+    /// Compute the txid, allocating a fresh buffer internally.
+    ///
+    /// # Errors
+    /// Propagates any I/O error from encoding.
+    fn txid(&self) -> io::Result<Hash256> {
+        self.txid_into(&mut Vec::new())
+    }
+}
+
 // ── Transaction ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,7 +475,49 @@ pub struct Transaction {
     pub locktime: u32,
 }
 
+impl TxHash for Transaction {
+    fn txid_into(&self, buf: &mut Vec<u8>) -> io::Result<Hash256> {
+        buf.clear();
+        buf.reserve(self.encoded_len());
+        self.encode(buf)?;
+        Ok(Hash256(sha256d(buf)))
+    }
+}
+
 impl Transaction {
+    /// BIP34: check that the coinbase scriptSig begins with a minimally-encoded
+    /// push of `height`.
+    ///
+    /// Returns `false` if the prefix is absent or malformed.
+    #[must_use]
+    pub fn validate_bip34(&self, height: BlockHeight) -> bool {
+        let script = &self.inputs[0].script_sig;
+        let encoded = Self::bip34_height_script(height);
+        script.len() >= encoded.len() && script[..encoded.len()] == encoded
+    }
+
+    /// Minimal Script push encoding of a block height as used by BIP34.
+    ///
+    /// # Panics
+    /// Never in practice — a `u32` height encodes to at most 5 bytes, which fits in `u8`.
+    #[must_use]
+    pub fn bip34_height_script(height: BlockHeight) -> Vec<u8> {
+        if height == BlockHeight::ZERO {
+            return vec![0x00];
+        }
+        let mut le = height.0.to_le_bytes().to_vec();
+        while le.last() == Some(&0) {
+            le.pop();
+        }
+        if le.last().is_some_and(|&b| b & 0x80 != 0) {
+            le.push(0x00);
+        }
+        let len = u8::try_from(le.len()).expect("BIP34 height encoding ≤ 5 bytes");
+        let mut out = vec![len];
+        out.extend_from_slice(&le);
+        out
+    }
+
     /// Serialised byte length of this transaction, computed arithmetically
     /// without allocating. Matches what `Encode::encode` would produce.
     #[must_use]
@@ -535,6 +771,15 @@ impl Encode for TransactionRef<'_> {
     }
 }
 
+impl TxHash for TransactionRef<'_> {
+    fn txid_into(&self, buf: &mut Vec<u8>) -> io::Result<Hash256> {
+        buf.clear();
+        buf.reserve(self.encoded_len());
+        self.encode(buf)?;
+        Ok(Hash256(sha256d(buf)))
+    }
+}
+
 impl<'a> DecodeRef<'a> for TransactionRef<'a> {
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
         let (version, buf) = i32::decode_ref(buf)?;
@@ -589,6 +834,17 @@ impl Encode for Block {
 }
 
 impl Block {
+    /// Block weight: base serialisation size × 4 (no witness data yet).
+    #[must_use]
+    pub fn weight(&self) -> u64 {
+        use crate::codec::VarInt;
+        let tx_count = self.transactions.len();
+        let base: usize = BlockHeader::ENCODED_LEN
+            + VarInt(tx_count as u64).encoded_len()
+            + self.transactions.iter().map(Transaction::encoded_len).sum::<usize>();
+        base as u64 * 4
+    }
+
     /// Decode with caller-specified caps forwarded to each `Transaction`.
     ///
     /// # Errors
@@ -655,9 +911,9 @@ mod tests {
             version: 1,
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
-            time: 1231006505,
-            bits: 0x1d00ffff,
-            nonce: 2083236893,
+            time: 1_231_006_505,
+            bits: CompactBits(0x1d00_ffff),
+            nonce: 2_083_236_893,
         };
         let bytes = encode(&header);
         assert_eq!(bytes.len(), BlockHeader::ENCODED_LEN);
@@ -671,7 +927,7 @@ mod tests {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 1000,
-            bits: 0x1d00ffff,
+            bits: CompactBits(0x1d00_ffff),
             nonce: 42,
         };
         let mut bytes = encode(&header);
@@ -710,19 +966,19 @@ mod tests {
         // script_sig borrows directly from bytes
         assert!(std::ptr::eq(
             txin_ref.script_sig.as_ptr(),
-            &bytes[OutPoint::ENCODED_LEN + 1]
+            &raw const bytes[OutPoint::ENCODED_LEN + 1]
         ));
     }
 
     #[test]
     fn txout_ref_zero_copy() {
         let txout = TxOut {
-            value: 5000000000,
+            value: 5_000_000_000,
             script_pubkey: vec![0xac, 0xbd],
         };
         let bytes = encode(&txout);
         let (txout_ref, tail) = decode_ref::<TxOutRef>(&bytes);
-        assert_eq!(txout_ref.value, 5000000000);
+        assert_eq!(txout_ref.value, 5_000_000_000);
         assert_eq!(txout_ref.script_pubkey, &[0xac, 0xbd]);
         assert!(tail.is_empty());
     }
@@ -734,13 +990,13 @@ mod tests {
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::ZERO,
-                    vout: 0xffffffff,
+                    vout: 0xffff_ffff,
                 },
                 script_sig: vec![0x04, 0xff, 0xff, 0x00, 0x1d, 0x01, 0x04],
                 sequence: u32::MAX,
             }],
             outputs: vec![TxOut {
-                value: 5000000000,
+                value: 5_000_000_000,
                 script_pubkey: vec![0x41, 0xac],
             }],
             locktime: 0,
@@ -756,22 +1012,22 @@ mod tests {
                 version: 1,
                 prev_block: Hash256::ZERO,
                 merkle_root: Hash256::ZERO,
-                time: 1231006505,
-                bits: 0x1d00ffff,
-                nonce: 2083236893,
+                time: 1_231_006_505,
+                bits: CompactBits(0x1d00_ffff),
+                nonce: 2_083_236_893,
             },
             transactions: vec![Transaction {
                 version: 1,
                 inputs: vec![TxIn {
                     previous_output: OutPoint {
                         txid: Hash256::ZERO,
-                        vout: 0xffffffff,
+                        vout: 0xffff_ffff,
                     },
                     script_sig: vec![0x04],
                     sequence: u32::MAX,
                 }],
                 outputs: vec![TxOut {
-                    value: 5000000000,
+                    value: 5_000_000_000,
                     script_pubkey: vec![0xac],
                 }],
                 locktime: 0,
@@ -847,7 +1103,7 @@ mod tests {
             prev_block: Hash256([0xff; 32]),
             merkle_root: Hash256([0xab; 32]),
             time: u32::MAX,
-            bits: u32::MAX,
+            bits: CompactBits(u32::MAX),
             nonce: u32::MAX,
         };
         let bytes = encode(&h);
@@ -979,7 +1235,7 @@ mod tests {
                 prev_block: Hash256::ZERO,
                 merkle_root: Hash256::ZERO,
                 time: 0,
-                bits: 0,
+                bits: CompactBits(0),
                 nonce: 0,
             },
             transactions: vec![],
@@ -997,7 +1253,7 @@ mod tests {
                 prev_block: Hash256::ZERO,
                 merkle_root: Hash256::ZERO,
                 time: 0,
-                bits: 0,
+                bits: CompactBits(0),
                 nonce: 0,
             },
             transactions: vec![],
@@ -1026,7 +1282,7 @@ mod tests {
                 prev_block: Hash256::ZERO,
                 merkle_root: Hash256::ZERO,
                 time: 0,
-                bits: 0,
+                bits: CompactBits(0),
                 nonce: 0,
             },
             transactions: vec![dummy_tx; 253],
