@@ -5,6 +5,7 @@ members = [
     "crates/consensus",
     "crates/mantle-node",
     "crates/mantle-bench",
+    "crates/mantle-conformance",
 ]
 
 [workspace.package]

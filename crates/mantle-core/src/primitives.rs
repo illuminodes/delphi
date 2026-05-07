@@ -136,7 +136,7 @@ impl<'a> DecodeRef<'a> for BlockHeader {
 
 // ── OutPoint ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OutPoint {
     pub txid: Hash256,
     pub vout: u32,
