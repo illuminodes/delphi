@@ -24,5 +24,7 @@ debug = true
 
 [workspace.dependencies]
 sha2 = { version = "0.11", default-features = false }
+sha1 = { version = "0.11", default-features = false }
+ripemd = { version = "0.2", default-features = false }
 ququmatz = { path = "/home/cuarentaydos/Code/tooling/ququmatz" }
 quetzalcoatl = { path = "/home/cuarentaydos/Code/tooling/quetzalcoatl" }

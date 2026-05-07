@@ -11,6 +11,7 @@
 //! `Vec` directly.
 
 use super::error::ScriptError;
+use super::num::ScriptNum;
 
 /// Maximum size of any single stack element, in bytes (`MAX_SCRIPT_ELEMENT_SIZE`).
 pub const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
@@ -27,10 +28,11 @@ pub struct Stack {
 }
 
 impl Stack {
-    /// Empty stack.
+    /// Empty stack pre-sized to the consensus cap so opcode handlers don't
+    /// pay reallocation cost on growth.
     #[must_use]
-    pub const fn new() -> Self {
-        Self { items: Vec::new() }
+    pub fn new() -> Self {
+        Self { items: Vec::with_capacity(MAX_STACK_SIZE) }
     }
 
     /// Number of items.
@@ -127,6 +129,73 @@ impl Stack {
         self.items.truncate(new_len);
         Ok(())
     }
+
+    // ── High-level helpers used by opcode handlers ──────────────────────────
+
+    /// Pop the top element and decode it as a `ScriptNum` operand.
+    ///
+    /// `max_len` is the per-opcode size limit (4 for arithmetic, 5 for
+    /// `OP_CHECKLOCKTIMEVERIFY`); `require_minimal` is the `MINIMALDATA`
+    /// gate.
+    ///
+    /// # Errors
+    /// - `InvalidStackOperation` if the stack is empty.
+    /// - `NumOverflow` / `NumNotMinimal` per `ScriptNum::from_bytes`.
+    pub fn pop_num(
+        &mut self,
+        max_len: usize,
+        require_minimal: bool,
+    ) -> Result<i64, ScriptError> {
+        let bytes = self.pop()?;
+        Ok(ScriptNum::from_bytes(&bytes, max_len, require_minimal)?.to_i64())
+    }
+
+    /// Pop the top element and interpret it as a Bitcoin-script boolean.
+    ///
+    /// A value is "truthy" iff any byte is non-zero, *except* the last byte
+    /// having only the sign bit set (i.e. `0x80`) is treated as zero — that
+    /// encodes negative-zero in `ScriptNum`.
+    ///
+    /// # Errors
+    /// `InvalidStackOperation` if the stack is empty.
+    pub fn pop_bool(&mut self) -> Result<bool, ScriptError> {
+        let bytes = self.pop()?;
+        Ok(Self::cast_to_bool(&bytes))
+    }
+
+    /// Push a `ScriptNum`, encoded minimally, with both stack caps enforced.
+    ///
+    /// # Errors
+    /// `StackSize` if the combined depth would exceed `MAX_STACK_SIZE`.
+    pub fn push_num(&mut self, value: i64, altstack_len: usize) -> Result<(), ScriptError> {
+        let n = ScriptNum::from_i64(value);
+        self.push_checked(n.as_bytes().to_vec(), altstack_len)
+    }
+
+    /// Push a boolean as either the empty byte string (false) or `[0x01]` (true).
+    ///
+    /// # Errors
+    /// `StackSize` if the combined depth would exceed `MAX_STACK_SIZE`.
+    pub fn push_bool(&mut self, value: bool, altstack_len: usize) -> Result<(), ScriptError> {
+        let bytes = if value { vec![0x01] } else { Vec::new() };
+        self.push_checked(bytes, altstack_len)
+    }
+
+    /// Bitcoin's "is this byte string truthy?" rule. Public so callers that
+    /// already hold the bytes (e.g. `OP_IF` peeking at the top of stack) can
+    /// reuse the rule without round-tripping through pop/push.
+    #[must_use]
+    pub fn cast_to_bool(bytes: &[u8]) -> bool {
+        let Some((&last, rest)) = bytes.split_last() else {
+            return false;
+        };
+        if rest.iter().any(|&b| b != 0) {
+            return true;
+        }
+        // Only the most-significant byte is non-zero. It's truthy unless it's
+        // the sign-only byte 0x80 (which encodes negative zero).
+        last != 0 && last != 0x80
+    }
 }
 
 #[cfg(test)]
@@ -216,5 +285,75 @@ mod tests {
         s.truncate(2).expect("smaller");
         assert_eq!(s.len(), 2);
         assert!(matches!(s.truncate(99), Err(ScriptError::InvalidStackOperation)));
+    }
+
+    // ── High-level helpers ──────────────────────────────────────────────────
+
+    #[test]
+    fn push_pop_num_roundtrip() {
+        let mut s = Stack::new();
+        for v in [-127, -1, 0, 1, 127, 128, 0x7fff_ffff] {
+            s.push_num(v, 0).expect("ok");
+            assert_eq!(s.pop_num(4, false).expect("ok"), v);
+        }
+    }
+
+    #[test]
+    fn pop_num_respects_size_limit() {
+        let mut s = Stack::new();
+        // Five-byte encoding pushed.
+        s.push_num(0x7fff_ffff_ffi64, 0).expect("ok");
+        // Arithmetic limit (4) rejects it.
+        assert!(matches!(
+            s.pop_num(4, false),
+            Err(ScriptError::NumOverflow)
+        ));
+    }
+
+    #[test]
+    fn pop_num_minimal_check() {
+        let mut s = Stack::new();
+        // Non-minimal encoding of zero.
+        s.push_unchecked(vec![0x00]);
+        assert!(matches!(
+            s.pop_num(4, true),
+            Err(ScriptError::NumNotMinimal)
+        ));
+    }
+
+    #[test]
+    fn cast_to_bool_rules() {
+        // Empty is false.
+        assert!(!Stack::cast_to_bool(&[]));
+        // All-zero bytes is false.
+        assert!(!Stack::cast_to_bool(&[0, 0, 0]));
+        // Single 0x80 (negative zero) is false.
+        assert!(!Stack::cast_to_bool(&[0x80]));
+        // 0x00 0x80 is also false (mantissa zero, sign byte only).
+        assert!(!Stack::cast_to_bool(&[0x00, 0x80]));
+        // Any non-zero byte before the last makes it true.
+        assert!(Stack::cast_to_bool(&[0x01, 0x80]));
+        // A non-sign-only last byte is true.
+        assert!(Stack::cast_to_bool(&[0x01]));
+        assert!(Stack::cast_to_bool(&[0x7f]));
+    }
+
+    #[test]
+    fn push_pop_bool() {
+        let mut s = Stack::new();
+        s.push_bool(true, 0).expect("ok");
+        s.push_bool(false, 0).expect("ok");
+        assert_eq!(s.pop_bool().expect("ok"), false);
+        assert_eq!(s.pop_bool().expect("ok"), true);
+    }
+
+    #[test]
+    fn push_bool_encodes_canonically() {
+        let mut s = Stack::new();
+        s.push_bool(true, 0).expect("ok");
+        assert_eq!(s.peek(0).expect("non-empty"), &[0x01]);
+        s.pop().expect("ok");
+        s.push_bool(false, 0).expect("ok");
+        assert!(s.peek(0).expect("non-empty").is_empty());
     }
 }
