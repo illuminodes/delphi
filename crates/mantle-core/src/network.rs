@@ -483,15 +483,26 @@ impl Encode for InvMsg {
     }
 }
 
-impl Decode for InvMsg {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+impl InvMsg {
+    /// # Errors
+    /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES`, or on any I/O error.
+    pub fn decode_limited<const MAX_ENTRIES: usize>(r: &mut impl Read) -> io::Result<Self> {
         let count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if count > MAX_ENTRIES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "inv entry count exceeds limit"));
+        }
         let mut entries = Vec::with_capacity(count);
         for _ in 0..count {
             entries.push(InvEntry::decode(r)?);
         }
         Ok(Self(entries))
+    }
+}
+
+impl Decode for InvMsg {
+    fn decode(r: &mut impl Read) -> io::Result<Self> {
+        Self::decode_limited::<50_000>(r)
     }
 }
 
@@ -517,21 +528,28 @@ impl Encode for GetHeadersMsg {
     }
 }
 
-impl Decode for GetHeadersMsg {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+impl GetHeadersMsg {
+    /// # Errors
+    /// Returns `InvalidData` if the locator count exceeds `MAX_LOCATORS`, or on any I/O error.
+    pub fn decode_limited<const MAX_LOCATORS: usize>(r: &mut impl Read) -> io::Result<Self> {
         let version = u32::decode(r)?;
         let count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if count > MAX_LOCATORS {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "locator count exceeds limit"));
+        }
         let mut locator_hashes = Vec::with_capacity(count);
         for _ in 0..count {
             locator_hashes.push(Hash256::decode(r)?);
         }
         let stop_hash = Hash256::decode(r)?;
-        Ok(Self {
-            version,
-            locator_hashes,
-            stop_hash,
-        })
+        Ok(Self { version, locator_hashes, stop_hash })
+    }
+}
+
+impl Decode for GetHeadersMsg {
+    fn decode(r: &mut impl Read) -> io::Result<Self> {
+        Self::decode_limited::<2_000>(r)
     }
 }
 
@@ -551,16 +569,27 @@ impl Encode for HeadersMsg {
     }
 }
 
-impl Decode for HeadersMsg {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+impl HeadersMsg {
+    /// # Errors
+    /// Returns `InvalidData` if the header count exceeds `MAX_HEADERS`, or on any I/O error.
+    pub fn decode_limited<const MAX_HEADERS: usize>(r: &mut impl Read) -> io::Result<Self> {
         let count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if count > MAX_HEADERS {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "header count exceeds limit"));
+        }
         let mut headers = Vec::with_capacity(count);
         for _ in 0..count {
             headers.push(BlockHeader::decode(r)?);
             let _tx_count = VarInt::decode(r)?;
         }
         Ok(Self(headers))
+    }
+}
+
+impl Decode for HeadersMsg {
+    fn decode(r: &mut impl Read) -> io::Result<Self> {
+        Self::decode_limited::<2_000>(r)
     }
 }
 

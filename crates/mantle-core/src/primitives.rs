@@ -283,28 +283,42 @@ impl Encode for Transaction {
     }
 }
 
-impl Decode for Transaction {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+impl Transaction {
+    /// Decode with caller-specified per-list caps.
+    /// `MAX_INPUTS` and `MAX_OUTPUTS` default to Bitcoin's practical consensus limit.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` if either list count exceeds its cap, or on any I/O error.
+    pub fn decode_limited<const MAX_INPUTS: usize, const MAX_OUTPUTS: usize>(
+        r: &mut impl Read,
+    ) -> io::Result<Self> {
         let version = i32::decode(r)?;
         let input_count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if input_count > MAX_INPUTS {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "input count exceeds limit"));
+        }
         let mut inputs = Vec::with_capacity(input_count);
         for _ in 0..input_count {
             inputs.push(TxIn::decode(r)?);
         }
         let output_count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if output_count > MAX_OUTPUTS {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "output count exceeds limit"));
+        }
         let mut outputs = Vec::with_capacity(output_count);
         for _ in 0..output_count {
             outputs.push(TxOut::decode(r)?);
         }
         let locktime = u32::decode(r)?;
-        Ok(Self {
-            version,
-            inputs,
-            outputs,
-            locktime,
-        })
+        Ok(Self { version, inputs, outputs, locktime })
+    }
+}
+
+impl Decode for Transaction {
+    fn decode(r: &mut impl Read) -> io::Result<Self> {
+        Self::decode_limited::<10_000, 10_000>(r)
     }
 }
 
@@ -327,19 +341,31 @@ impl Encode for Block {
     }
 }
 
-impl Decode for Block {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+impl Block {
+    /// Decode with caller-specified caps forwarded to each `Transaction`.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` if the tx count exceeds `MAX_TXS`, or on any I/O error.
+    pub fn decode_limited<const MAX_TXS: usize, const MAX_INPUTS: usize, const MAX_OUTPUTS: usize>(
+        r: &mut impl Read,
+    ) -> io::Result<Self> {
         let header = BlockHeader::decode(r)?;
         let tx_count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if tx_count > MAX_TXS {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "tx count exceeds limit"));
+        }
         let mut transactions = Vec::with_capacity(tx_count);
         for _ in 0..tx_count {
-            transactions.push(Transaction::decode(r)?);
+            transactions.push(Transaction::decode_limited::<MAX_INPUTS, MAX_OUTPUTS>(r)?);
         }
-        Ok(Self {
-            header,
-            transactions,
-        })
+        Ok(Self { header, transactions })
+    }
+}
+
+impl Decode for Block {
+    fn decode(r: &mut impl Read) -> io::Result<Self> {
+        Self::decode_limited::<10_000, 10_000, 10_000>(r)
     }
 }
 
