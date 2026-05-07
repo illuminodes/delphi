@@ -439,33 +439,51 @@ pub struct InvEntry {
     pub hash: Hash256,
 }
 
+impl InvEntry {
+    pub const ENCODED_LEN: usize = 36; // 4 (type) + 32 (hash)
+
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::ENCODED_LEN] {
+        let mut buf = [0u8; Self::ENCODED_LEN];
+        buf[0..4].copy_from_slice(&self.kind.to_u32().to_le_bytes());
+        buf[4..36].copy_from_slice(&self.hash.0);
+        buf
+    }
+
+    #[must_use]
+    #[allow(clippy::missing_panics_doc)] // slices are exact — unwraps cannot panic
+    pub fn from_bytes(b: &[u8; Self::ENCODED_LEN]) -> Self {
+        Self {
+            kind: InvType::from_u32(u32::from_le_bytes(b[0..4].try_into().unwrap())),
+            hash: Hash256(b[4..36].try_into().unwrap()),
+        }
+    }
+}
+
 impl Encode for InvEntry {
+    #[inline]
     fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        self.kind.to_u32().encode(w)?;
-        self.hash.encode(w)
+        w.write_all(&self.to_bytes())
     }
 }
 
 impl Decode for InvEntry {
+    #[inline]
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        Ok(Self {
-            kind: InvType::from_u32(u32::decode(r)?),
-            hash: Hash256::decode(r)?,
-        })
+        let mut buf = [0u8; Self::ENCODED_LEN];
+        r.read_exact(&mut buf)?;
+        Ok(Self::from_bytes(&buf))
     }
 }
 
 impl<'a> DecodeRef<'a> for InvEntry {
+    #[inline]
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
-        let (kind_u32, buf) = u32::decode_ref(buf)?;
-        let (hash, buf) = Hash256::decode_ref(buf)?;
-        Ok((
-            Self {
-                kind: InvType::from_u32(kind_u32),
-                hash,
-            },
-            buf,
-        ))
+        if buf.len() < Self::ENCODED_LEN {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "not enough bytes"));
+        }
+        let (head, tail) = buf.split_at(Self::ENCODED_LEN);
+        Ok((Self::from_bytes(head.try_into().unwrap()), tail))
     }
 }
 
@@ -486,16 +504,21 @@ impl Encode for InvMsg {
 impl InvMsg {
     /// # Errors
     /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES`, or on any I/O error.
+    #[allow(clippy::missing_panics_doc)] // chunks_exact guarantees chunk size — unwrap cannot panic
     pub fn decode_limited<const MAX_ENTRIES: usize>(r: &mut impl Read) -> io::Result<Self> {
         let count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if count > MAX_ENTRIES {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "inv entry count exceeds limit"));
         }
-        let mut entries = Vec::with_capacity(count);
-        for _ in 0..count {
-            entries.push(InvEntry::decode(r)?);
-        }
+        // Read all entry bytes in one shot, then decode via the zero-copy path.
+        let byte_len = count * InvEntry::ENCODED_LEN;
+        let mut buf = vec![0u8; byte_len];
+        r.read_exact(&mut buf)?;
+        let entries = buf
+            .chunks_exact(InvEntry::ENCODED_LEN)
+            .map(|chunk| InvEntry::from_bytes(chunk.try_into().unwrap()))
+            .collect();
         Ok(Self(entries))
     }
 }

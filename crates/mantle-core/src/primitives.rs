@@ -78,49 +78,59 @@ impl BlockHeader {
     pub const ENCODED_LEN: usize = 80;
 }
 
+impl BlockHeader {
+    /// Serialize to a fixed 80-byte stack buffer.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::ENCODED_LEN] {
+        let mut buf = [0u8; Self::ENCODED_LEN];
+        buf[0..4].copy_from_slice(&self.version.to_le_bytes());
+        buf[4..36].copy_from_slice(&self.prev_block.0);
+        buf[36..68].copy_from_slice(&self.merkle_root.0);
+        buf[68..72].copy_from_slice(&self.time.to_le_bytes());
+        buf[72..76].copy_from_slice(&self.bits.to_le_bytes());
+        buf[76..80].copy_from_slice(&self.nonce.to_le_bytes());
+        buf
+    }
+
+    /// Deserialize from a fixed 80-byte slice.
+    #[must_use]
+    #[allow(clippy::missing_panics_doc)] // slices are exact — unwraps cannot panic
+    pub fn from_bytes(b: &[u8; Self::ENCODED_LEN]) -> Self {
+        Self {
+            version: i32::from_le_bytes(b[0..4].try_into().unwrap()),
+            prev_block: Hash256(b[4..36].try_into().unwrap()),
+            merkle_root: Hash256(b[36..68].try_into().unwrap()),
+            time: u32::from_le_bytes(b[68..72].try_into().unwrap()),
+            bits: u32::from_le_bytes(b[72..76].try_into().unwrap()),
+            nonce: u32::from_le_bytes(b[76..80].try_into().unwrap()),
+        }
+    }
+}
+
 impl Encode for BlockHeader {
+    #[inline]
     fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        self.version.encode(w)?;
-        self.prev_block.encode(w)?;
-        self.merkle_root.encode(w)?;
-        self.time.encode(w)?;
-        self.bits.encode(w)?;
-        self.nonce.encode(w)
+        w.write_all(&self.to_bytes())
     }
 }
 
 impl Decode for BlockHeader {
+    #[inline]
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        Ok(Self {
-            version: i32::decode(r)?,
-            prev_block: Hash256::decode(r)?,
-            merkle_root: Hash256::decode(r)?,
-            time: u32::decode(r)?,
-            bits: u32::decode(r)?,
-            nonce: u32::decode(r)?,
-        })
+        let mut buf = [0u8; Self::ENCODED_LEN];
+        r.read_exact(&mut buf)?;
+        Ok(Self::from_bytes(&buf))
     }
 }
 
 impl<'a> DecodeRef<'a> for BlockHeader {
+    #[inline]
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
-        let (version, buf) = i32::decode_ref(buf)?;
-        let (prev_block, buf) = Hash256::decode_ref(buf)?;
-        let (merkle_root, buf) = Hash256::decode_ref(buf)?;
-        let (time, buf) = u32::decode_ref(buf)?;
-        let (bits, buf) = u32::decode_ref(buf)?;
-        let (nonce, buf) = u32::decode_ref(buf)?;
-        Ok((
-            Self {
-                version,
-                prev_block,
-                merkle_root,
-                time,
-                bits,
-                nonce,
-            },
-            buf,
-        ))
+        if buf.len() < Self::ENCODED_LEN {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "not enough bytes"));
+        }
+        let (head, tail) = buf.split_at(Self::ENCODED_LEN);
+        Ok((Self::from_bytes(head.try_into().unwrap()), tail))
     }
 }
 
