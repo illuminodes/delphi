@@ -30,6 +30,8 @@ pub enum ValidationError {
     BlockWeightExceeded { weight: u64 },
     /// Block contains more transactions than the practical consensus limit.
     TooManyTransactions { count: usize },
+    /// A transaction's wire encoding is truncated or otherwise malformed.
+    MalformedTransaction { tx_index: usize },
     /// Merkle root in the header does not match the computed root of the tx list.
     MerkleRootMismatch,
     /// Header proof-of-work does not satisfy the claimed nBits target.

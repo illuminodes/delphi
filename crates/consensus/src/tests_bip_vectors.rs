@@ -742,3 +742,141 @@ fn memory_chain_view_coinbase_flag_preserved() {
     assert_eq!(retrieved.height, 0);
     assert_eq!(retrieved.value, 50_0000_0000);
 }
+
+// ── validate_block_wire ───────────────────────────────────────────────────────
+
+use std::collections::HashSet;
+use crate::validation::validate_block_wire;
+
+fn wire_scratch() -> (Vec<mantle::primitives::Hash256>, HashSet<OutPoint>, HashSet<mantle::primitives::Hash256>) {
+    (Vec::new(), HashSet::new(), HashSet::new())
+}
+
+#[test]
+fn wire_genesis_passes_stage1() {
+    let bytes = decode_hex(GENESIS_BLOCK_HEX);
+    let (mut t, mut si, mut st) = wire_scratch();
+    validate_block_wire(&bytes, &mut t, &mut si, &mut st)
+        .expect("genesis wire must pass Stage 1");
+}
+
+#[test]
+fn wire_agrees_with_owned_on_valid_block() {
+    let block = minimal_block(vec![0x03, 0x01, 0x00, 0x00], vec![]);
+    let mut bytes = Vec::new();
+    block.encode(&mut bytes).unwrap();
+
+    let owned_result = validate_block_structure(&block);
+    let (mut t, mut si, mut st) = wire_scratch();
+    let wire_result = validate_block_wire(&bytes, &mut t, &mut si, &mut st);
+    assert_eq!(owned_result.is_ok(), wire_result.is_ok());
+}
+
+#[test]
+fn wire_empty_block_rejected() {
+    // Header + VarInt(0) — no transactions.
+    let block = Block {
+        header: BlockHeader {
+            version: 1, prev_block: Hash256::ZERO, merkle_root: Hash256::ZERO,
+            time: 0, bits: 0x207f_ffff, nonce: 0,
+        },
+        transactions: vec![],
+    };
+    let mut bytes = Vec::new();
+    block.encode(&mut bytes).unwrap();
+    let (mut t, mut si, mut st) = wire_scratch();
+    assert_eq!(
+        validate_block_wire(&bytes, &mut t, &mut si, &mut st),
+        Err(ValidationError::EmptyBlock),
+    );
+}
+
+#[test]
+fn wire_merkle_mismatch_rejected() {
+    let mut block = minimal_block(vec![0x03, 0x01, 0x00, 0x00], vec![]);
+    block.header.merkle_root = Hash256([0xff; 32]); // corrupt the root
+    let mut bytes = Vec::new();
+    block.encode(&mut bytes).unwrap();
+    let (mut t, mut si, mut st) = wire_scratch();
+    assert_eq!(
+        validate_block_wire(&bytes, &mut t, &mut si, &mut st),
+        Err(ValidationError::MerkleRootMismatch),
+    );
+}
+
+#[test]
+fn wire_truncated_returns_malformed() {
+    let block = minimal_block(vec![0x03, 0x01, 0x00, 0x00], vec![]);
+    let mut bytes = Vec::new();
+    block.encode(&mut bytes).unwrap();
+    let truncated = &bytes[..bytes.len() / 2];
+    let (mut t, mut si, mut st) = wire_scratch();
+    let err = validate_block_wire(truncated, &mut t, &mut si, &mut st).unwrap_err();
+    assert!(
+        matches!(err, ValidationError::MalformedTransaction { .. }),
+        "expected MalformedTransaction, got {err:?}",
+    );
+}
+
+#[test]
+fn wire_agrees_with_owned_on_all_stage1_errors() {
+    // Run a matrix of blocks that owned validation rejects and verify
+    // wire validation returns the same error variant.
+    use mantle::primitives::TxIn;
+
+    let cases: &[(&str, Block)] = &[
+        ("first_tx_not_coinbase", {
+            let non_cb = Transaction {
+                version: 1,
+                inputs: vec![TxIn {
+                    previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
+                    script_sig: vec![0x51],
+                    sequence: u32::MAX,
+                }],
+                outputs: vec![make_output(1000)],
+                locktime: 0,
+            };
+            let txids = vec![txid(&non_cb)];
+            let merkle_root = compute_merkle_root(&txids).unwrap();
+            Block {
+                header: BlockHeader {
+                    version: 4, prev_block: Hash256::ZERO, merkle_root,
+                    time: 1_231_006_505, bits: 0x207f_ffff, nonce: 0,
+                },
+                transactions: vec![non_cb],
+            }
+        }),
+        ("coinbase_script_too_short",
+            minimal_block(vec![0x51], vec![])),
+        ("output_value_overflow", {
+            let coinbase = Transaction {
+                version: 1,
+                inputs: vec![coinbase_input(vec![0x03, 0x01, 0x00, 0x00])],
+                outputs: vec![TxOut { value: u64::MAX, script_pubkey: vec![0x51] }],
+                locktime: 0,
+            };
+            let txids = vec![txid(&coinbase)];
+            let merkle_root = compute_merkle_root(&txids).unwrap();
+            Block {
+                header: BlockHeader {
+                    version: 4, prev_block: Hash256::ZERO, merkle_root,
+                    time: 1_231_006_505, bits: 0x207f_ffff, nonce: 0,
+                },
+                transactions: vec![coinbase],
+            }
+        }),
+    ];
+
+    for (name, block) in cases {
+        let mut bytes = Vec::new();
+        block.encode(&mut bytes).unwrap();
+        let owned_err = validate_block_structure(block).unwrap_err();
+        let (mut t, mut si, mut st) = wire_scratch();
+        let wire_err = validate_block_wire(&bytes, &mut t, &mut si, &mut st).unwrap_err();
+        assert_eq!(
+            std::mem::discriminant(&owned_err),
+            std::mem::discriminant(&wire_err),
+            "case {name}: owned={owned_err:?} wire={wire_err:?}",
+        );
+    }
+}

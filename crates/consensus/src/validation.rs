@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mantle::codec::{Encode, VarInt};
+use mantle::codec::{DecodeRef, Encode, VarInt};
 use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TransactionRef};
 
@@ -232,6 +232,98 @@ where
     Ok(())
 }
 
+/// Stage 1 from raw wire bytes — zero heap allocations for the validation
+/// path itself.
+///
+/// Parses the 80-byte header and iterates transactions as [`TransactionRef`]
+/// views directly into `wire`. No `Transaction` structs are materialised and
+/// txids are computed by hashing the raw wire span directly — no re-encoding.
+///
+/// - `txids` — accumulator for the merkle check; cleared and filled per call.
+/// - `seen_inputs` — dedup set for inputs within a single transaction.
+/// - `seen_txids` — dedup set for the CVE-2012-2459 check.
+///
+/// # Errors
+/// Returns the first `ValidationError` encountered, or
+/// `ValidationError::MalformedTransaction` if the wire bytes are truncated
+/// or corrupt.
+///
+/// # Panics
+/// Never — the `.expect` on the merkle root is guarded by the non-empty check
+/// at the top of the function.
+pub fn validate_block_wire<S1, S2>(
+    wire: &[u8],
+    txids: &mut Vec<Hash256>,
+    seen_inputs: &mut HashSet<OutPoint, S1>,
+    seen_txids: &mut HashSet<Hash256, S2>,
+) -> Result<(), ValidationError>
+where
+    S1: std::hash::BuildHasher,
+    S2: std::hash::BuildHasher,
+{
+    let malformed_block = |_| ValidationError::MalformedTransaction { tx_index: usize::MAX };
+
+    let (header, rest) = BlockHeader::decode_ref(wire).map_err(malformed_block)?;
+
+    let (mantle::codec::VarInt(tx_count_raw), mut rest) =
+        mantle::codec::VarInt::decode_ref(rest).map_err(malformed_block)?;
+    let tx_count = usize::try_from(tx_count_raw)
+        .map_err(|_| ValidationError::TooManyTransactions { count: usize::MAX })?;
+
+    if tx_count == 0 {
+        return Err(ValidationError::EmptyBlock);
+    }
+    if tx_count > MAX_BLOCK_TRANSACTIONS {
+        return Err(ValidationError::TooManyTransactions { count: tx_count });
+    }
+
+    // Per-transaction structural checks and weight accumulation.
+    let mut base_size = BlockHeader::ENCODED_LEN
+        + mantle::codec::VarInt(tx_count as u64).encoded_len();
+    seen_inputs.clear();
+    txids.clear();
+    txids.reserve(tx_count);
+
+    for tx_index in 0..tx_count {
+        let malformed = |_| ValidationError::MalformedTransaction { tx_index };
+        let tx_start = rest;
+        let (tx, remaining) = TransactionRef::decode_ref(rest).map_err(malformed)?;
+        // Raw wire bytes for this tx — hash directly, no re-encoding.
+        let tx_wire = &tx_start[..tx_start.len() - remaining.len()];
+        rest = remaining;
+
+        validate_transaction_ref_structure(tx, tx_index, tx_index == 0, seen_inputs)?;
+
+        base_size += tx_wire.len();
+
+        txids.push(Hash256(sha256d(tx_wire)));
+    }
+
+    let weight = base_size as u64 * WITNESS_SCALE_FACTOR;
+    if weight > MAX_BLOCK_WEIGHT {
+        return Err(ValidationError::BlockWeightExceeded { weight });
+    }
+
+    // CVE-2012-2459.
+    seen_txids.clear();
+    seen_txids.reserve(txids.len());
+    for &id in txids.iter() {
+        if !seen_txids.insert(id) {
+            return Err(ValidationError::DuplicateTransaction);
+        }
+    }
+
+    let computed_root = merkle_root_owned(std::mem::take(txids))
+        .expect("non-empty; checked above");
+    if computed_root != header.merkle_root {
+        return Err(ValidationError::MerkleRootMismatch);
+    }
+
+    validate_proof_of_work(&header)?;
+
+    Ok(())
+}
+
 /// Stage 2: contextual validation, using the wall clock for the
 /// "≤ now + 2h" timestamp rule.
 ///
@@ -351,6 +443,70 @@ fn validate_transaction_structure<S: std::hash::BuildHasher>(
         seen_inputs.clear();
         seen_inputs.reserve(tx.inputs.len());
         for input in &tx.inputs {
+            if !seen_inputs.insert(input.previous_output) {
+                return Err(ValidationError::DuplicateInput { tx_index });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_transaction_ref_structure<S: std::hash::BuildHasher>(
+    tx: TransactionRef<'_>,
+    tx_index: usize,
+    expect_coinbase: bool,
+    seen_inputs: &mut HashSet<OutPoint, S>,
+) -> Result<(), ValidationError> {
+    if tx.input_count() == 0 {
+        return Err(ValidationError::EmptyInputs { tx_index });
+    }
+    if tx.output_count() == 0 {
+        return Err(ValidationError::EmptyOutputs { tx_index });
+    }
+
+    let malformed = |_| ValidationError::MalformedTransaction { tx_index };
+
+    // Decode only the first input for the coinbase check — no full iteration.
+    let first_input = tx.inputs().next().unwrap().map_err(malformed)?;
+    let first_is_coinbase = first_input.previous_output == NULL_OUTPOINT;
+
+    if expect_coinbase && !first_is_coinbase {
+        return Err(ValidationError::FirstTxNotCoinbase);
+    }
+    if !expect_coinbase && first_is_coinbase {
+        return Err(ValidationError::UnexpectedCoinbaseInput { tx_index });
+    }
+
+    if expect_coinbase {
+        let script_len = first_input.script_sig.len();
+        if !(MIN_COINBASE_SCRIPTSIG_LEN..=MAX_COINBASE_SCRIPTSIG_LEN).contains(&script_len) {
+            return Err(ValidationError::CoinbaseScriptSigLength { len: script_len });
+        }
+    }
+
+    // Output value bounds.
+    let mut total: u64 = 0;
+    for (i, r) in tx.outputs().enumerate() {
+        let out = r.map_err(malformed)?;
+        if out.value > MAX_MONEY {
+            return Err(ValidationError::OutputValueOutOfRange {
+                tx_index,
+                output_index: i,
+            });
+        }
+        total = total
+            .checked_add(out.value)
+            .filter(|&s| s <= MAX_MONEY)
+            .ok_or(ValidationError::TotalOutputValueOverflow { tx_index })?;
+    }
+
+    // Duplicate inputs within a single transaction.
+    if !expect_coinbase {
+        seen_inputs.clear();
+        seen_inputs.reserve(tx.input_count());
+        for r in tx.inputs() {
+            let input = r.map_err(malformed)?;
             if !seen_inputs.insert(input.previous_output) {
                 return Err(ValidationError::DuplicateInput { tx_index });
             }

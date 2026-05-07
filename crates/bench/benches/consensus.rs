@@ -2,7 +2,8 @@ use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::compute_merkle_root;
-use mantle_consensus::validation::{FixedClock, txid, validate_block_structure, validate_block_context_with_clock};
+use mantle::codec::Encode;
+use mantle_consensus::validation::{FixedClock, txid, validate_block_structure, validate_block_wire, validate_block_context_with_clock};
 use std::hint::black_box;
 
 fn main() {
@@ -151,6 +152,38 @@ fn validate_structure_n_txs(bencher: divan::Bencher, n: usize) {
     }
     let block = make_valid_block(txs);
     bencher.bench(|| validate_block_structure(black_box(&block)).unwrap());
+}
+
+// ── validate_block_wire ───────────────────────────────────────────────────────
+
+#[divan::bench]
+fn validate_wire_single_coinbase(bencher: divan::Bencher) {
+    let block = make_valid_block(vec![coinbase_tx(5_000_000_000)]);
+    let mut wire = Vec::new();
+    block.encode(&mut wire).unwrap();
+    let mut t = Vec::new();
+    let mut si = std::collections::HashSet::new();
+    let mut st = std::collections::HashSet::new();
+    bencher.bench_local(|| {
+        validate_block_wire(black_box(&wire), &mut t, &mut si, &mut st).unwrap();
+    });
+}
+
+#[divan::bench(args = [2usize, 10, 100])]
+fn validate_wire_n_txs(bencher: divan::Bencher, n: usize) {
+    let mut txs = vec![coinbase_tx(5_000_000_000)];
+    for i in 1..n {
+        txs.push(regular_tx(Hash256([i as u8; 32]), 0, 1000));
+    }
+    let block = make_valid_block(txs);
+    let mut wire = Vec::new();
+    block.encode(&mut wire).unwrap();
+    let mut t = Vec::new();
+    let mut si = std::collections::HashSet::new();
+    let mut st = std::collections::HashSet::new();
+    bencher.bench_local(|| {
+        validate_block_wire(black_box(&wire), &mut t, &mut si, &mut st).unwrap();
+    });
 }
 
 // ── validate_block_context ────────────────────────────────────────────────────
