@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use mantle::collections::PrehashedMap;
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi};
 
 use crate::error::ChainViewError;
@@ -106,9 +105,9 @@ pub struct MemoryChainView {
     /// Headers in insertion order. `headers[0]` is at height `height_base`.
     headers: Vec<BlockHeader>,
     /// Hash → absolute height on the canonical chain.
-    header_index: HashMap<Hash256, BlockHeight>,
+    header_index: PrehashedMap<Hash256, BlockHeight>,
     /// Live UTXO set.
-    utxos: HashMap<OutPoint, Coin>,
+    utxos: PrehashedMap<OutPoint, Coin>,
 }
 
 impl MemoryChainView {

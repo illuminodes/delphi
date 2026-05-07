@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mantle::codec::DecodeRef;
+use mantle::codec::{DecodeRef, VarInt};
+use mantle::collections::PrehashedSet;
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, TxHash};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, TxHash, TxInRef, TxOutRef};
+
 
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
-use crate::merkle::merkle_root_owned;
+use crate::merkle::compute_merkle_root_reusing;
 
 // ── Clock ─────────────────────────────────────────────────────────────────────
 
@@ -100,19 +102,21 @@ pub fn validate_block_structure(block: &Block) -> Result<(), ValidationError> {
         block,
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut HashSet::new(),
-        &mut HashSet::new(),
+        &mut Vec::new(),
+        &mut PrehashedSet::default(),
+        &mut PrehashedSet::default(),
     )
 }
 
 /// Stage 1 with caller-supplied scratch buffers.
 ///
-/// All four scratch containers are cleared before use; the caller just needs to
+/// All five scratch containers are cleared before use; the caller just needs to
 /// keep them alive across calls to amortise allocations. Capacity is retained
 /// between calls so the buffers grow to the high-water mark and stay there.
 ///
 /// - `serial_scratch` — byte buffer reused for tx serialisation (txid hashing).
 /// - `txids` — accumulator for per-block txid list fed into the merkle check.
+/// - `merkle_buf` — working buffer for the in-place merkle reduction.
 /// - `seen_inputs` — dedup set for inputs within a single transaction.
 /// - `seen_txids` — dedup set for CVE-2012-2459 check across all txids.
 ///
@@ -125,6 +129,7 @@ pub fn validate_block_structure_reusing<S1, S2>(
     block: &Block,
     serial_scratch: &mut Vec<u8>,
     txids: &mut Vec<Hash256>,
+    merkle_buf: &mut Vec<Hash256>,
     seen_inputs: &mut HashSet<OutPoint, S1>,
     seen_txids: &mut HashSet<Hash256, S2>,
 ) -> Result<(), ValidationError>
@@ -172,7 +177,7 @@ where
         }
     }
 
-    let computed_root = merkle_root_owned(std::mem::take(txids))
+    let computed_root = compute_merkle_root_reusing(txids, merkle_buf)
         .expect("non-empty; checked above");
     if computed_root != block.header.merkle_root {
         return Err(ValidationError::MerkleRootMismatch);
@@ -184,6 +189,97 @@ where
     Ok(())
 }
 
+/// Parse and validate one transaction from raw wire bytes in a single pass.
+///
+/// Returns `(tx_raw_len, txid)` on success. `tx_raw_len` is the number of
+/// bytes consumed from `wire`; the caller advances its cursor by that amount.
+///
+/// Combines what `TransactionRef::decode_ref` + `check_tx_structure` would do
+/// in two passes into one: inputs are decoded once and simultaneously checked
+/// for coinbase rules and duplicates; outputs are decoded once and checked for
+/// value bounds.
+fn scan_tx_wire<S>(
+    wire: &[u8],
+    tx_index: usize,
+    seen_inputs: &mut HashSet<OutPoint, S>,
+) -> Result<(usize, Hash256), ValidationError>
+where
+    S: std::hash::BuildHasher,
+{
+    let malformed = |_: std::io::Error| ValidationError::MalformedTransaction { tx_index };
+
+    let (_, buf) = i32::decode_ref(wire).map_err(malformed)?; // version
+
+    let (VarInt(n), mut buf) = VarInt::decode_ref(buf).map_err(malformed)?;
+    let input_count = usize::try_from(n)
+        .map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
+    if input_count == 0 {
+        return Err(ValidationError::EmptyInputs { tx_index });
+    }
+
+    let expect_coinbase = tx_index == 0;
+    let (first_in, buf_after_first) = TxInRef::decode_ref(buf).map_err(malformed)?;
+    let first_is_coinbase = first_in.previous_output == NULL_OUTPOINT;
+
+    if expect_coinbase && !first_is_coinbase {
+        return Err(ValidationError::FirstTxNotCoinbase);
+    }
+    if !expect_coinbase && first_is_coinbase {
+        return Err(ValidationError::UnexpectedCoinbaseInput { tx_index });
+    }
+    if expect_coinbase
+        && !(MIN_COINBASE_SCRIPTSIG_LEN..=MAX_COINBASE_SCRIPTSIG_LEN)
+            .contains(&first_in.script_sig.len())
+    {
+        return Err(ValidationError::CoinbaseScriptSigLength {
+            len: first_in.script_sig.len(),
+        });
+    }
+
+    buf = buf_after_first;
+    if expect_coinbase {
+        for _ in 1..input_count {
+            let (_, next) = TxInRef::decode_ref(buf).map_err(malformed)?;
+            buf = next;
+        }
+    } else {
+        seen_inputs.clear();
+        seen_inputs.reserve(input_count);
+        seen_inputs.insert(first_in.previous_output);
+        for _ in 1..input_count {
+            let (inp, next) = TxInRef::decode_ref(buf).map_err(malformed)?;
+            buf = next;
+            if !seen_inputs.insert(inp.previous_output) {
+                return Err(ValidationError::DuplicateInput { tx_index });
+            }
+        }
+    }
+
+    let (VarInt(m), mut buf) = VarInt::decode_ref(buf).map_err(malformed)?;
+    let output_count = usize::try_from(m)
+        .map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
+    if output_count == 0 {
+        return Err(ValidationError::EmptyOutputs { tx_index });
+    }
+
+    let mut total = Satoshi::ZERO;
+    for output_index in 0..output_count {
+        let (out, next) = TxOutRef::decode_ref(buf).map_err(malformed)?;
+        buf = next;
+        if out.value > MAX_MONEY {
+            return Err(ValidationError::OutputValueOutOfRange { tx_index, output_index });
+        }
+        total = total
+            .checked_add(out.value)
+            .filter(|&s| s <= MAX_MONEY)
+            .ok_or(ValidationError::TotalOutputValueOverflow { tx_index })?;
+    }
+
+    let (_, rest) = u32::decode_ref(buf).map_err(malformed)?; // locktime
+    let tx_raw_len = wire.len() - rest.len();
+    Ok((tx_raw_len, Hash256(sha256d(&wire[..tx_raw_len]))))
+}
+
 /// Stage 1 from raw wire bytes — zero heap allocations for the validation
 /// path itself.
 ///
@@ -192,6 +288,7 @@ where
 /// txids are computed by hashing the raw wire span directly — no re-encoding.
 ///
 /// - `txids` — accumulator for the merkle check; cleared and filled per call.
+/// - `merkle_buf` — working buffer for the in-place merkle reduction.
 /// - `seen_inputs` — dedup set for inputs within a single transaction.
 /// - `seen_txids` — dedup set for the CVE-2012-2459 check.
 ///
@@ -206,6 +303,7 @@ where
 pub fn validate_block_wire<S1, S2>(
     wire: &[u8],
     txids: &mut Vec<Hash256>,
+    merkle_buf: &mut Vec<Hash256>,
     seen_inputs: &mut HashSet<OutPoint, S1>,
     seen_txids: &mut HashSet<Hash256, S2>,
 ) -> Result<(), ValidationError>
@@ -229,22 +327,18 @@ where
         return Err(ValidationError::TooManyTransactions { count: tx_count });
     }
 
-    // Per-transaction structural checks and weight accumulation.
-    let mut base_size = BlockHeader::ENCODED_LEN
-        + mantle::codec::VarInt(tx_count as u64).encoded_len();
+    // Single-pass per-transaction scan: parse + validate in one walk.
+    let mut base_size = BlockHeader::ENCODED_LEN + VarInt(tx_count as u64).encoded_len();
     seen_inputs.clear();
     txids.clear();
     txids.reserve(tx_count);
 
     for tx_index in 0..tx_count {
-        let malformed = |_| ValidationError::MalformedTransaction { tx_index };
-        let (tx, remaining) = TransactionRef::decode_ref(rest).map_err(malformed)?;
-        rest = remaining;
-
-        check_tx_structure(&tx, tx_index, tx_index == 0, seen_inputs)?;
-
-        base_size += tx.raw.len();
-        txids.push(Hash256(sha256d(tx.raw)));
+        let (tx_raw_len, txid) =
+            scan_tx_wire(rest, tx_index, seen_inputs)?;
+        rest = &rest[tx_raw_len..];
+        base_size += tx_raw_len;
+        txids.push(txid);
     }
 
     let weight = base_size as u64 * WITNESS_SCALE_FACTOR;
@@ -261,7 +355,7 @@ where
         }
     }
 
-    let computed_root = merkle_root_owned(std::mem::take(txids))
+    let computed_root = compute_merkle_root_reusing(txids, merkle_buf)
         .expect("non-empty; checked above");
     if computed_root != header.merkle_root {
         return Err(ValidationError::MerkleRootMismatch);

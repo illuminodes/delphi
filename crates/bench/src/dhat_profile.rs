@@ -106,6 +106,7 @@ fn main() {
         let block = make_valid_block(txs);
         let mut serial_scratch = Vec::new();
         let mut txids = Vec::new();
+        let mut merkle_buf = Vec::new();
         let mut seen_inputs = HashSet::new();
         let mut seen_txids = HashSet::new();
         for _ in 0..500 {
@@ -113,6 +114,7 @@ fn main() {
                 &block,
                 &mut serial_scratch,
                 &mut txids,
+                &mut merkle_buf,
                 &mut seen_inputs,
                 &mut seen_txids,
             ).expect("valid block must pass structure check");
@@ -178,10 +180,11 @@ fn main() {
         }
         let wire = encode(&make_valid_block(txs));
         let mut txids: Vec<Hash256> = Vec::new();
+        let mut merkle_buf: Vec<Hash256> = Vec::new();
         let mut seen_inputs: HashSet<OutPoint> = HashSet::new();
         let mut seen_txids: HashSet<Hash256> = HashSet::new();
         for _ in 0..500 {
-            validate_block_wire(&wire, &mut txids, &mut seen_inputs, &mut seen_txids).expect("valid block wire must pass structure check");
+            validate_block_wire(&wire, &mut txids, &mut merkle_buf, &mut seen_inputs, &mut seen_txids).expect("valid block wire must pass structure check");
         }
     }
 }

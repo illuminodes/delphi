@@ -132,10 +132,11 @@ fn main() {
         for i in 1..100u8 { txs.push(regular(Hash256([i; 32]), 0, 1000)); }
         let wire = encode(&valid_block(txs));
         let mut t: Vec<Hash256> = Vec::new();
+        let mut mb: Vec<Hash256> = Vec::new();
         let mut si: HashSet<OutPoint> = HashSet::new();
         let mut st: HashSet<Hash256> = HashSet::new();
         let n = run_for(secs, || {
-            validate_block_wire(black_box(&wire), &mut t, &mut si, &mut st).expect("valid block wire must pass structure check");
+            validate_block_wire(black_box(&wire), &mut t, &mut mb, &mut si, &mut st).expect("valid block wire must pass structure check");
             black_box(());
         });
         eprintln!("validate_wire(100tx):   {n} iters");

@@ -154,10 +154,11 @@ fn validate_wire_single_coinbase(bencher: divan::Bencher) {
     let mut wire = Vec::new();
     block.encode(&mut wire).expect("Vec<u8> write cannot fail");
     let mut t = Vec::new();
+    let mut mb = Vec::new();
     let mut si = std::collections::HashSet::new();
     let mut st = std::collections::HashSet::new();
     bencher.bench_local(|| {
-        validate_block_wire(black_box(&wire), &mut t, &mut si, &mut st).expect("valid block wire must pass validation");
+        validate_block_wire(black_box(&wire), &mut t, &mut mb, &mut si, &mut st).expect("valid block wire must pass validation");
     });
 }
 
@@ -171,10 +172,11 @@ fn validate_wire_n_txs(bencher: divan::Bencher, n: usize) {
     let mut wire = Vec::new();
     block.encode(&mut wire).expect("Vec<u8> write cannot fail");
     let mut t = Vec::new();
+    let mut mb = Vec::new();
     let mut si = std::collections::HashSet::new();
     let mut st = std::collections::HashSet::new();
     bencher.bench_local(|| {
-        validate_block_wire(black_box(&wire), &mut t, &mut si, &mut st).expect("valid block wire must pass validation");
+        validate_block_wire(black_box(&wire), &mut t, &mut mb, &mut si, &mut st).expect("valid block wire must pass validation");
     });
 }
 

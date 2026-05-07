@@ -742,15 +742,15 @@ fn memory_chain_view_coinbase_flag_preserved() {
 use std::collections::HashSet;
 use crate::validation::validate_block_wire;
 
-fn wire_scratch() -> (Vec<mantle::primitives::Hash256>, HashSet<OutPoint>, HashSet<mantle::primitives::Hash256>) {
-    (Vec::new(), HashSet::new(), HashSet::new())
+fn wire_scratch() -> (Vec<mantle::primitives::Hash256>, Vec<mantle::primitives::Hash256>, HashSet<OutPoint>, HashSet<mantle::primitives::Hash256>) {
+    (Vec::new(), Vec::new(), HashSet::new(), HashSet::new())
 }
 
 #[test]
 fn wire_genesis_passes_stage1() {
     let bytes = decode_hex(GENESIS_BLOCK_HEX);
-    let (mut t, mut si, mut st) = wire_scratch();
-    validate_block_wire(&bytes, &mut t, &mut si, &mut st)
+    let (mut t, mut mb, mut si, mut st) = wire_scratch();
+    validate_block_wire(&bytes, &mut t, &mut mb, &mut si, &mut st)
         .expect("genesis wire must pass Stage 1");
 }
 
@@ -761,8 +761,8 @@ fn wire_agrees_with_owned_on_valid_block() {
     block.encode(&mut bytes).expect("Vec<u8> write cannot fail");
 
     let owned_result = validate_block_structure(&block);
-    let (mut t, mut si, mut st) = wire_scratch();
-    let wire_result = validate_block_wire(&bytes, &mut t, &mut si, &mut st);
+    let (mut t, mut mb, mut si, mut st) = wire_scratch();
+    let wire_result = validate_block_wire(&bytes, &mut t, &mut mb, &mut si, &mut st);
     assert_eq!(owned_result.is_ok(), wire_result.is_ok());
 }
 
@@ -778,9 +778,9 @@ fn wire_empty_block_rejected() {
     };
     let mut bytes = Vec::new();
     block.encode(&mut bytes).expect("Vec<u8> write cannot fail");
-    let (mut t, mut si, mut st) = wire_scratch();
+    let (mut t, mut mb, mut si, mut st) = wire_scratch();
     assert_eq!(
-        validate_block_wire(&bytes, &mut t, &mut si, &mut st),
+        validate_block_wire(&bytes, &mut t, &mut mb, &mut si, &mut st),
         Err(ValidationError::EmptyBlock),
     );
 }
@@ -791,9 +791,9 @@ fn wire_merkle_mismatch_rejected() {
     block.header.merkle_root = Hash256([0xff; 32]); // corrupt the root
     let mut bytes = Vec::new();
     block.encode(&mut bytes).expect("Vec<u8> write cannot fail");
-    let (mut t, mut si, mut st) = wire_scratch();
+    let (mut t, mut mb, mut si, mut st) = wire_scratch();
     assert_eq!(
-        validate_block_wire(&bytes, &mut t, &mut si, &mut st),
+        validate_block_wire(&bytes, &mut t, &mut mb, &mut si, &mut st),
         Err(ValidationError::MerkleRootMismatch),
     );
 }
@@ -804,8 +804,8 @@ fn wire_truncated_returns_malformed() {
     let mut bytes = Vec::new();
     block.encode(&mut bytes).expect("Vec<u8> write cannot fail");
     let truncated = &bytes[..bytes.len() / 2];
-    let (mut t, mut si, mut st) = wire_scratch();
-    let err = validate_block_wire(truncated, &mut t, &mut si, &mut st)
+    let (mut t, mut mb, mut si, mut st) = wire_scratch();
+    let err = validate_block_wire(truncated, &mut t, &mut mb, &mut si, &mut st)
         .expect_err("truncated block must fail validation");
     assert!(
         matches!(err, ValidationError::MalformedTransaction { .. }),
@@ -866,8 +866,8 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
         let mut bytes = Vec::new();
         block.encode(&mut bytes).expect("Vec<u8> write cannot fail");
         let owned_err = validate_block_structure(block).expect_err("case must fail owned validation");
-        let (mut t, mut si, mut st) = wire_scratch();
-        let wire_err = validate_block_wire(&bytes, &mut t, &mut si, &mut st)
+        let (mut t, mut mb, mut si, mut st) = wire_scratch();
+        let wire_err = validate_block_wire(&bytes, &mut t, &mut mb, &mut si, &mut st)
             .expect_err("case must fail wire validation");
         assert_eq!(
             std::mem::discriminant(&owned_err),
