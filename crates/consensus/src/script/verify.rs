@@ -17,10 +17,12 @@
 
 use mantle::primitives::{Satoshi, Transaction};
 
-use super::checker::TxSigChecker;
+use super::checker::{SignatureChecker, TxSigChecker};
+use super::consensus_crypto;
 use super::error::ScriptError;
 use super::flags::ScriptFlags;
 use super::interpreter::{InterpStackElement, Interpreter};
+use super::sighash::Bip143Cache;
 use super::sig_version::SigVersion;
 
 /// Verify a single transaction input's script pair.
@@ -43,8 +45,31 @@ pub fn verify_script(
     amount: Satoshi,
     flags: ScriptFlags,
 ) -> Result<(), ScriptError> {
+    let cache = Bip143Cache::new(tx);
     let bufs = (Vec::new(), Vec::new());
-    let (result, _bufs) = verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, bufs);
+    let (result, _bufs) = verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, &cache, bufs);
+    result
+}
+
+/// Variant of [`verify_script`] that accepts a pre-built [`Bip143Cache`].
+///
+/// When verifying multiple inputs of the same transaction, build the cache
+/// once with [`Bip143Cache::new`] and pass it to every call. This avoids
+/// recomputing `hashPrevouts`, `hashSequence`, and `hashOutputs` per input.
+///
+/// # Errors
+/// Same as [`verify_script`].
+pub fn verify_script_with_cache(
+    script_sig: &[u8],
+    script_pubkey: &[u8],
+    tx: &Transaction,
+    n_in: usize,
+    amount: Satoshi,
+    flags: ScriptFlags,
+    cache: &Bip143Cache,
+) -> Result<(), ScriptError> {
+    let bufs = (Vec::new(), Vec::new());
+    let (result, _bufs) = verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, cache, bufs);
     result
 }
 
@@ -68,9 +93,33 @@ pub fn verify_script_with_bufs(
     flags: ScriptFlags,
     bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
 ) -> (Result<(), ScriptError>, (Vec<InterpStackElement>, Vec<InterpStackElement>)) {
-    verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, bufs)
+    let cache = Bip143Cache::new(tx);
+    verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, &cache, bufs)
 }
 
+/// Full zero-allocation variant: pre-built cache *and* reused stack buffers.
+///
+/// Combine [`verify_script_with_cache`] and [`verify_script_with_bufs`]: build
+/// the [`Bip143Cache`] once per transaction, allocate the stack `Vec`s once per
+/// block, and pass both through every input verification.
+///
+/// # Errors
+/// Same as [`verify_script`].
+#[allow(clippy::too_many_arguments)]
+pub fn verify_script_with_cache_and_bufs(
+    script_sig: &[u8],
+    script_pubkey: &[u8],
+    tx: &Transaction,
+    n_in: usize,
+    amount: Satoshi,
+    flags: ScriptFlags,
+    cache: &Bip143Cache,
+    bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
+) -> (Result<(), ScriptError>, (Vec<InterpStackElement>, Vec<InterpStackElement>)) {
+    verify_script_impl(script_sig, script_pubkey, tx, n_in, amount, flags, cache, bufs)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn verify_script_impl(
     script_sig: &[u8],
     script_pubkey: &[u8],
@@ -78,14 +127,110 @@ fn verify_script_impl(
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
+    cache: &Bip143Cache,
     mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
 ) -> (Result<(), ScriptError>, (Vec<InterpStackElement>, Vec<InterpStackElement>)) {
-    // Run the actual verification, then always return bufs alongside the result.
-    let result = verify_script_inner(script_sig, script_pubkey, tx, n_in, amount, flags, &mut bufs);
+    let result = verify_script_inner(script_sig, script_pubkey, tx, n_in, amount, flags, cache, &mut bufs);
     (result, bufs)
 }
 
-#[allow(clippy::too_many_lines)]
+/// Fast path for the P2PKH pattern (`OP_DUP OP_HASH160 <20> <pkh> OP_EQUALVERIFY OP_CHECKSIG`).
+///
+/// Returns `Some(result)` when the scriptPubKey matches and scriptSig is two
+/// canonical pushes (`<sig> <pubkey>`). Returns `None` to fall through to the
+/// full interpreter for any other shape.
+///
+/// Correctness invariants vs. the full interpreter path:
+/// - `SIGPUSHONLY`: P2PKH scriptSig is always two push opcodes — the check
+///   passes trivially for any well-formed two-push scriptSig and we never admit
+///   non-push bytes, so we skip the explicit scan.
+/// - `CLEANSTACK`: final stack always has exactly one item → always satisfied.
+/// - `WITNESS`: if the flag is set and the input carries a witness, that is
+///   `WitnessUnexpected` — checked here.
+/// - `NULLFAIL`: if sig is non-empty and CHECKSIG fails, reject.
+/// - `DERSIG`/`STRICTENC`/`LOW_S`: delegated to `check_signature_encoding` and
+///   `check_pubkey_encoding` (same code the opcode handler calls).
+fn try_verify_p2pkh(
+    script_sig: &[u8],
+    script_pubkey: &[u8],
+    tx: &Transaction,
+    n_in: usize,
+    amount: Satoshi,
+    flags: ScriptFlags,
+    cache: &Bip143Cache,
+) -> Option<Result<(), ScriptError>> {
+    use ripemd::Ripemd160;
+    use sha2::{Digest, Sha256};
+    use super::interpreter::reader::ScriptReader;
+
+    // ── Pattern match on scriptPubKey ────────────────────────────────────────
+    // 25 bytes: OP_DUP(76) OP_HASH160(a9) OP_PUSHBYTES_20(14) <20b> OP_EQUALVERIFY(88) OP_CHECKSIG(ac)
+    if script_pubkey.len() != 25
+        || script_pubkey[0] != 0x76
+        || script_pubkey[1] != 0xa9
+        || script_pubkey[2] != 0x14
+        || script_pubkey[23] != 0x88
+        || script_pubkey[24] != 0xac
+    {
+        return None;
+    }
+    let pkh: &[u8; 20] = script_pubkey[3..23].try_into().ok()?;
+
+    // ── Parse scriptSig as <push sig> <push pubkey> ─────────────────────────
+    // Decode with the same ScriptReader the interpreter uses; accept exactly
+    // two push steps and nothing else.
+    let mut reader = ScriptReader::new(script_sig);
+    let sig_step = reader.next_step().ok()??;
+    let pk_step = reader.next_step().ok()??;
+    if reader.next_step().ok()?.is_some() {
+        return None; // more than two items — fall through
+    }
+    if !sig_step.opcode.is_push() || !pk_step.opcode.is_push() {
+        return None;
+    }
+    let sig = sig_step.data;
+    let pubkey = pk_step.data;
+
+    // ── WITNESS: no witness allowed on legacy P2PKH ──────────────────────────
+    if flags.contains(ScriptFlags::WITNESS) && !tx.inputs[n_in].witness.is_empty() {
+        return Some(Err(ScriptError::WitnessUnexpected));
+    }
+
+    // ── Encoding checks (DERSIG / STRICTENC / LOW_S) ─────────────────────────
+    if let Err(e) = consensus_crypto::check_signature_encoding(sig, flags) {
+        return Some(Err(e));
+    }
+    if let Err(e) = consensus_crypto::check_pubkey_encoding(pubkey, flags) {
+        return Some(Err(e));
+    }
+
+    // ── OP_HASH160: RIPEMD160(SHA256(pubkey)) must match pkh ─────────────────
+    let computed_pkh: [u8; 20] = Ripemd160::digest(Sha256::digest(pubkey)).into();
+    if &computed_pkh != pkh {
+        return Some(Err(ScriptError::EvalFalse));
+    }
+
+    // ── OP_CHECKSIG ─────────────────────────────────────────────────────────
+    // Empty sig → CHECKSIG pushes false. With NULLFAIL, a *non-empty* sig that
+    // fails verification is also an error.
+    if sig.is_empty() {
+        return Some(Err(ScriptError::EvalFalse));
+    }
+
+    // scriptCode = the full scriptPubKey (no OP_CODESEPARATOR in P2PKH).
+    let checker = TxSigChecker::with_cache(tx, n_in, amount, flags, cache.clone());
+    let ok = checker.check_ecdsa_sig(sig, pubkey, script_pubkey, SigVersion::Base);
+    if !ok {
+        if flags.contains(ScriptFlags::NULLFAIL) {
+            return Some(Err(ScriptError::SigNullFail));
+        }
+        return Some(Err(ScriptError::EvalFalse));
+    }
+
+    Some(Ok(()))
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn verify_script_inner(
     script_sig: &[u8],
     script_pubkey: &[u8],
@@ -93,8 +238,16 @@ fn verify_script_inner(
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
+    cache: &Bip143Cache,
     bufs: &mut (Vec<InterpStackElement>, Vec<InterpStackElement>),
 ) -> Result<(), ScriptError> {
+    // ── P2PKH fast path ─────────────────────────────────────────────────────
+    // Handles ~60–70 % of mainnet inputs without touching the interpreter,
+    // ConditionStack, or any other interpreter state.
+    if let Some(result) = try_verify_p2pkh(script_sig, script_pubkey, tx, n_in, amount, flags, cache) {
+        return result;
+    }
+
     // ── SIGPUSHONLY ─────────────────────────────────────────────────────────
     // BIP62 rule 2. Only push opcodes may appear in scriptSig. Always required
     // for P2SH (Core enforces it implicitly via the redeem-script extraction)
@@ -103,7 +256,7 @@ fn verify_script_inner(
         return Err(ScriptError::SigPushOnly);
     }
 
-    let checker = TxSigChecker::new(tx, n_in, amount, flags);
+    let checker = TxSigChecker::with_cache(tx, n_in, amount, flags, cache.clone());
     let stack_buf = std::mem::take(&mut bufs.0);
     let altstack_buf = std::mem::take(&mut bufs.1);
     let mut interp =
@@ -266,7 +419,7 @@ fn verify_script_inner(
 /// The interpreter runs under `SigVersion::WitnessV0` so `check_ecdsa_sig`
 /// will use the BIP143 sighash path.
 fn eval_witness_script(
-    stack_items: &[&[u8]],
+    stack_items: &[&[u8]],  // caller builds this on the stack — no heap alloc
     script: &[u8],
     tx: &Transaction,
     n_in: usize,
@@ -324,15 +477,24 @@ fn run_witness_v0(
                 return Err(ScriptError::WitnessProgramMismatch);
             }
             // Synthetic P2PKH scriptCode over the 20-byte key hash.
-            let mut script_code = vec![0x76u8, 0xa9, 0x14];
-            script_code.extend_from_slice(program);
-            script_code.extend_from_slice(&[0x88, 0xac]);
+            let mut script_code = [0u8; 25];
+            script_code[0] = 0x76; // OP_DUP
+            script_code[1] = 0xa9; // OP_HASH160
+            script_code[2] = 0x14; // push 20
+            script_code[3..23].copy_from_slice(program);
+            script_code[23] = 0x88; // OP_EQUALVERIFY
+            script_code[24] = 0xac; // OP_CHECKSIG
 
-            let refs: Vec<&[u8]> = witness_items.iter().map(Vec::as_slice).collect();
+            let refs: [&[u8]; 2] = [&witness_items[0], &witness_items[1]];
             eval_witness_script(&refs, &script_code, tx, n_in, amount, flags, bufs)
         }
         32 => {
             use sha2::{Digest, Sha256};
+
+            // For the common case (≤ INLINE items) build the &[u8] slice on the
+            // stack to avoid a heap allocation; fall back to Vec for deep witness
+            // stacks (unusual in practice).
+            const INLINE: usize = 8;
 
             // P2WSH: last item is the witness script; the rest are stack inputs.
             let Some((script_item, stack_items)) = witness_items.split_last() else {
@@ -345,8 +507,16 @@ fn run_witness_v0(
                 return Err(ScriptError::WitnessProgramMismatch);
             }
 
-            let refs: Vec<&[u8]> = stack_items.iter().map(Vec::as_slice).collect();
-            eval_witness_script(&refs, script_item, tx, n_in, amount, flags, bufs)
+            if stack_items.len() <= INLINE {
+                let mut buf = [<&[u8]>::default(); INLINE];
+                for (i, item) in stack_items.iter().enumerate() {
+                    buf[i] = item.as_slice();
+                }
+                eval_witness_script(&buf[..stack_items.len()], script_item, tx, n_in, amount, flags, bufs)
+            } else {
+                let refs: Vec<&[u8]> = stack_items.iter().map(Vec::as_slice).collect();
+                eval_witness_script(&refs, script_item, tx, n_in, amount, flags, bufs)
+            }
         }
         _ => Err(ScriptError::WitnessProgramMismatch),
     }

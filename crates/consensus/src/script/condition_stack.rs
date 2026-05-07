@@ -6,33 +6,36 @@
 //! Core PR review club #16902). We track the same information in O(1) by
 //! caching:
 //!
-//! - `depth_total`     — how many `IF`/`NOTIF` are currently open.
+//! - `len`             — how many `IF`/`NOTIF` are currently open.
 //! - `depth_executing` — how many of those have `true` (executing) on top.
 //!
-//! "Are we executing?" is `depth_total == depth_executing`. Push, pop, and
+//! "Are we executing?" is `len == depth_executing`. Push, pop, and
 //! `OP_ELSE`'s toggle each update both counters in O(1).
 //!
 //! For the toggle we also track the bool that was last pushed at the current
-//! top, in a small inline buffer. The interpreter only ever toggles the
-//! topmost entry (`OP_ELSE`), so a single `Vec<bool>` with O(1) ops is
-//! sufficient — but the `executing()` query never reads from it.
+//! top, in a fixed-size inline array. `MAX_OPS_PER_SCRIPT = 201` limits nesting
+//! to at most 100 levels (each open `IF` costs at minimum one `OP_IF` + one
+//! `OP_ENDIF`), so a `[bool; 100]` covers every valid script with zero heap
+//! allocation.
 
-/// Tracks `OP_IF`/`OP_NOTIF` nesting with an O(1) "are we executing?" query.
+/// Maximum `OP_IF`/`OP_NOTIF` nesting depth for any valid script.
+///
+/// `MAX_OPS_PER_SCRIPT = 201` non-push opcodes. Each open IF consumes at least
+/// one `OP_IF` and one `OP_ENDIF`, so depth ≤ 201 / 2 = 100.
+pub const MAX_CONDITION_DEPTH: usize = 100;
+
+/// Tracks `OP_IF`/`OP_NOTIF` nesting with an O(1) "are we executing?" query
+/// and zero heap allocation.
 #[derive(Debug, Clone)]
 pub struct ConditionStack {
-    /// One bool per open `IF`/`NOTIF`, in nesting order. Used only by `toggle_top`
-    /// (i.e. `OP_ELSE`) and `pop` (i.e. `OP_ENDIF`); never scanned for the
-    /// hot-path `executing()` query.
-    branches: Vec<bool>,
-    /// Number of `true` entries in `branches`. Maintained incrementally.
-    depth_executing: u32,
+    /// Fixed-size inline store. Used only by `toggle_top` (`OP_ELSE`) and
+    /// `pop` (`OP_ENDIF`); never scanned for the hot-path `executing()` query.
+    branches: [bool; MAX_CONDITION_DEPTH],
+    /// Number of currently open `IF`/`NOTIF` levels.
+    len: u8,
+    /// Number of `true` entries in `branches[..len]`. Maintained incrementally.
+    depth_executing: u8,
 }
-
-/// Pre-allocated capacity for `branches`. Most legacy scripts have
-/// shallow IF nesting (≤ 4-8 levels); 16 covers typical use without
-/// burning RAM, and avoids Vec reallocs in the hot path. Deeper scripts
-/// grow it.
-const INITIAL_BRANCHES_CAPACITY: usize = 16;
 
 impl Default for ConditionStack {
     fn default() -> Self {
@@ -41,12 +44,12 @@ impl Default for ConditionStack {
 }
 
 impl ConditionStack {
-    /// Empty — no `OP_IF` is currently open. Pre-allocates a small
-    /// capacity so typical-depth IF nesting doesn't realloc.
+    /// Empty — no `OP_IF` is currently open.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            branches: Vec::with_capacity(INITIAL_BRANCHES_CAPACITY),
+            branches: [false; MAX_CONDITION_DEPTH],
+            len: 0,
             depth_executing: 0,
         }
     }
@@ -55,10 +58,7 @@ impl ConditionStack {
     #[inline]
     #[must_use]
     pub fn depth(&self) -> u32 {
-        // `branches.len()` is bounded by script size (≤ 10000 bytes ⇒ ≤ 10000
-        // opcodes ⇒ ≤ 10000 nested ifs). Fits a u32.
-        #[allow(clippy::cast_possible_truncation)]
-        { self.branches.len() as u32 }
+        u32::from(self.len)
     }
 
     /// `true` if every open branch is taking the executing side.
@@ -66,28 +66,36 @@ impl ConditionStack {
     #[inline]
     #[must_use]
     pub fn executing(&self) -> bool {
-        self.depth() == self.depth_executing
+        self.len == self.depth_executing
     }
 
     /// `true` if no `IF`/`NOTIF` is currently open.
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.branches.is_empty()
+        self.len == 0
     }
 
     /// Push the result of an `OP_IF`/`OP_NOTIF` condition.
+    ///
+    /// Callers must ensure `depth() < MAX_CONDITION_DEPTH`; the pre-scan
+    /// enforces this via the op-count limit before any `OP_IF` can execute.
     pub fn push(&mut self, executing: bool) {
-        self.branches.push(executing);
+        self.branches[usize::from(self.len)] = executing;
+        self.len += 1;
         if executing {
             self.depth_executing += 1;
         }
     }
 
-    /// Pop the topmost branch (`OP_ENDIF`). No-op if the stack is empty —
-    /// callers detect that via `is_empty` and return `UnbalancedConditional`.
+    /// Pop the topmost branch (`OP_ENDIF`). `None` if the stack is empty —
+    /// callers detect that and return `UnbalancedConditional`.
     pub fn pop(&mut self) -> Option<bool> {
-        let top = self.branches.pop()?;
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        let top = self.branches[usize::from(self.len)];
         if top {
             self.depth_executing -= 1;
         }
@@ -99,13 +107,16 @@ impl ConditionStack {
     /// scriptPubKey / P2SH-redeem evals — the stack persists, but `IF`
     /// nesting must not leak between scripts.
     pub fn clear(&mut self) {
-        self.branches.clear();
+        self.len = 0;
         self.depth_executing = 0;
     }
 
     /// Flip the topmost branch (`OP_ELSE`). `None` if the stack is empty.
     pub fn toggle_top(&mut self) -> Option<()> {
-        let top = self.branches.last_mut()?;
+        if self.len == 0 {
+            return None;
+        }
+        let top = &mut self.branches[usize::from(self.len - 1)];
         if *top {
             self.depth_executing -= 1;
         } else {
@@ -196,15 +207,15 @@ mod tests {
 
     #[test]
     fn deeply_nested_o1() {
-        // Push 10000 true entries — `executing()` must still be O(1) and true.
+        // Push MAX_CONDITION_DEPTH - 1 true entries — `executing()` must still be O(1) and true.
         let mut cs = ConditionStack::new();
-        for _ in 0..10_000 {
+        for _ in 0..MAX_CONDITION_DEPTH - 1 {
             cs.push(true);
         }
         assert!(cs.executing());
-        assert_eq!(cs.depth(), 10_000);
+        assert_eq!(cs.depth(), (MAX_CONDITION_DEPTH - 1) as u32);
 
-        // One false at depth 10000 makes us non-executing in O(1).
+        // One false at the maximum depth makes us non-executing in O(1).
         cs.push(false);
         assert!(!cs.executing());
     }

@@ -12,7 +12,9 @@ use crate::chain_view::{ConnectResult, NewCoin};
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
 use crate::merkle::compute_merkle_root_reusing;
-use crate::script::{ScriptFlags, verify_script};
+use crate::script::{ScriptFlags, verify_script_with_cache};
+use crate::script::sighash::Bip143Cache;
+
 
 // ── Clock ─────────────────────────────────────────────────────────────────────
 
@@ -1004,6 +1006,10 @@ pub fn connect_block<V: ChainView>(
         let outpoints: Vec<OutPoint> = tx.inputs.iter().map(|i| i.previous_output).collect();
         let coins = view.get_coins(&outpoints)?;
 
+        // Build the BIP143 cache once per transaction; all inputs share
+        // hashPrevouts / hashSequence / hashOutputs.
+        let bip143_cache = Bip143Cache::new(tx);
+
         let mut input_total = Satoshi::ZERO;
         for (input_index, (input, coin_opt)) in tx.inputs.iter().zip(coins.iter()).enumerate() {
             let coin = coin_opt.as_ref().ok_or(ValidationError::MissingInput {
@@ -1026,13 +1032,14 @@ pub fn connect_block<V: ChainView>(
             // the fourth per-input check, run after the coin lookup and
             // before fee math. A failure rejects the tx regardless of
             // whether the value math would have passed.
-            verify_script(
+            verify_script_with_cache(
                 input.script_sig.as_slice(),
                 coin.script_pubkey.as_slice(),
                 tx,
                 input_index,
                 coin.value,
                 script_flags,
+                &bip143_cache,
             )
             .map_err(|kind| ValidationError::ScriptVerifyFailed {
                 tx_index,

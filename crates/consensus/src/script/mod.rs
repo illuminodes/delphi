@@ -27,4 +27,4 @@ pub use num::ScriptNum;
 pub use opcodes::Opcode;
 pub use sig_version::SigVersion;
 pub use stack::{Stack, StackElement};
-pub use verify::{verify_script, verify_script_with_bufs};
+pub use verify::{verify_script, verify_script_with_bufs, verify_script_with_cache, verify_script_with_cache_and_bufs};

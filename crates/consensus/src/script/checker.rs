@@ -66,6 +66,9 @@ pub struct TxSigChecker<'a> {
 impl<'a> TxSigChecker<'a> {
     /// Construct a checker for input `n_in` of `tx` with the given output
     /// amount and verification flags. Pre-computes the BIP143 cache.
+    ///
+    /// Use [`Self::with_cache`] when verifying multiple inputs of the same
+    /// transaction to avoid recomputing the BIP143 shared fields per input.
     #[must_use]
     pub fn new(
         tx: &'a Transaction,
@@ -74,6 +77,23 @@ impl<'a> TxSigChecker<'a> {
         script_flags: ScriptFlags,
     ) -> Self {
         Self { tx, n_in, amount, script_flags, bip143_cache: Bip143Cache::new(tx) }
+    }
+
+    /// Construct a checker reusing a pre-built [`Bip143Cache`].
+    ///
+    /// Build the cache once with [`Bip143Cache::new`] before verifying any
+    /// input, then pass it to this constructor for each input. This avoids
+    /// recomputing `hashPrevouts`, `hashSequence`, and `hashOutputs` for
+    /// every input of the same transaction.
+    #[must_use]
+    pub fn with_cache(
+        tx: &'a Transaction,
+        n_in: usize,
+        amount: Satoshi,
+        script_flags: ScriptFlags,
+        bip143_cache: Bip143Cache,
+    ) -> Self {
+        Self { tx, n_in, amount, script_flags, bip143_cache }
     }
 }
 
