@@ -12,6 +12,7 @@ use crate::chain_view::{ConnectResult, NewCoin};
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
 use crate::merkle::compute_merkle_root_reusing;
+use crate::script::{ScriptFlags, verify_script};
 
 // ── Clock ─────────────────────────────────────────────────────────────────────
 
@@ -934,6 +935,7 @@ const BIP30_EXCEPTION_HEIGHTS: [u32; 2] = [91_842, 91_880];
 ///
 /// # Errors
 /// Returns the first [`ValidationError`] encountered.
+#[allow(clippy::too_many_lines)] // single-pass per-input loop reads better as one function
 pub fn connect_block<V: ChainView>(
     block: &Block,
     height: BlockHeight,
@@ -942,6 +944,7 @@ pub fn connect_block<V: ChainView>(
 ) -> Result<ConnectResult, ValidationError> {
     let is_bip30_exception = BIP30_EXCEPTION_HEIGHTS.contains(&height.0);
     let subsidy = block_subsidy(height);
+    let script_flags = ScriptFlags::for_height(height);
 
     // Pre-size the output vecs. Most blocks have O(thousands) of inputs/outputs.
     let total_inputs: usize = block.transactions.iter().map(|tx| tx.inputs.len()).sum();
@@ -1018,6 +1021,24 @@ pub fn connect_block<V: ChainView>(
                     });
                 }
             }
+
+            // Per `docs/architecture/script.md` M1: script verification is
+            // the fourth per-input check, run after the coin lookup and
+            // before fee math. A failure rejects the tx regardless of
+            // whether the value math would have passed.
+            verify_script(
+                input.script_sig.as_slice(),
+                coin.script_pubkey.as_slice(),
+                tx,
+                input_index,
+                coin.value,
+                script_flags,
+            )
+            .map_err(|kind| ValidationError::ScriptVerifyFailed {
+                tx_index,
+                input_index,
+                kind,
+            })?;
 
             input_total = input_total
                 .checked_add(coin.value)
@@ -1826,6 +1847,33 @@ mod tests {
             connect_block(&block, BlockHeight(50), &view, &mut scratch),
             Err(ValidationError::CoinbaseMaturityViolation { tx_index: 1, input_index: 0 })
         );
+    }
+
+    #[test]
+    fn connect_script_verify_failure_propagates() {
+        // The spent UTXO has scriptPubKey = OP_DUP, which pops the stack on
+        // execution. Combined with the regular_tx scriptSig of [OP_0], the
+        // OP_DUP duplicates an empty top — that succeeds, but the final stack
+        // top is empty (falsey) → EvalFalse from verify_script. The exact
+        // ScriptError variant only needs to be reachable, not specific.
+        let (mut view, _, _) = connect_setup(200);
+        let prev_op = OutPoint { txid: Hash256([0xee; 32]), vout: 0 };
+        view.insert_coin(prev_op, Coin {
+            value: Satoshi::new(50_000),
+            // OP_RETURN — guaranteed to fail any script verification.
+            script_pubkey: vec![0x6a].into(),
+            height: BlockHeight(1),
+            coinbase: false,
+        });
+        let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+        let spend = regular_tx(prev_op.txid, 0, 40_000);
+        let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
+        let mut scratch = Vec::new();
+        let r = connect_block(&block, BlockHeight(200), &view, &mut scratch);
+        assert!(matches!(
+            r,
+            Err(ValidationError::ScriptVerifyFailed { tx_index: 1, input_index: 0, .. })
+        ), "expected ScriptVerifyFailed, got {r:?}");
     }
 
     #[test]

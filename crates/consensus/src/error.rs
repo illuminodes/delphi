@@ -1,3 +1,5 @@
+use crate::script::ScriptError;
+
 /// All consensus validation failure modes.
 ///
 /// Variants are structured by validation stage so callers can distinguish
@@ -55,6 +57,9 @@ pub enum ValidationError {
     CoinbaseRewardExceedsSubsidy,
     /// Legacy sigops across the block exceed the 20,000 limit.
     SigopsLimitExceeded { count: u32 },
+    /// Script verification rejected this input — `kind` carries the
+    /// structured `ScriptError` from the interpreter.
+    ScriptVerifyFailed { tx_index: usize, input_index: usize, kind: ScriptError },
 
     // ── Stage 2: contextual ───────────────────────────────────────────────────
     /// nBits does not match the expected difficulty for this block's height.

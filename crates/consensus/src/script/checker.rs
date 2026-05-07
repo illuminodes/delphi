@@ -8,7 +8,12 @@
 //! Production wires a `TxSigChecker { tx, n_in, amount }` (M1.2). Tests wire
 //! `NopSigChecker` to exercise non-crypto opcodes without a transaction.
 
+use mantle::primitives::{Satoshi, Transaction};
+
+use super::consensus_crypto;
+use super::flags::ScriptFlags;
 use super::sig_version::SigVersion;
+use super::sighash::{SigHashType, find_and_delete_sig, signature_hash};
 
 /// Asks "does this signature, pubkey, and scriptCode verify?" for the script
 /// being evaluated. The interpreter calls one of these methods for every
@@ -38,6 +43,140 @@ pub trait SignatureChecker {
     /// `OP_CHECKSEQUENCEVERIFY` — does this input's `nSequence` permit
     /// spending under `sequence`?
     fn check_sequence(&self, sequence: i64) -> bool;
+}
+
+/// Production legacy `SignatureChecker`. Borrows the transaction being
+/// validated, the input index whose script is currently executing, and the
+/// amount of the spent output (unused in legacy sighash, kept for API
+/// uniformity with the BIP143 path that arrives in M2).
+///
+/// `script_flags` is the full `ScriptFlags` for this verification call —
+/// `consensus_crypto::verify_ecdsa` reads `DERSIG` / `STRICTENC` / `LOW_S`
+/// from it.
+#[derive(Debug, Clone, Copy)]
+pub struct TxSigChecker<'a> {
+    pub tx: &'a Transaction,
+    pub n_in: usize,
+    pub amount: Satoshi,
+    pub script_flags: ScriptFlags,
+}
+
+impl<'a> TxSigChecker<'a> {
+    /// Construct a checker for input `n_in` of `tx` with the given output
+    /// amount and verification flags.
+    #[must_use]
+    pub fn new(
+        tx: &'a Transaction,
+        n_in: usize,
+        amount: Satoshi,
+        script_flags: ScriptFlags,
+    ) -> Self {
+        Self { tx, n_in, amount, script_flags }
+    }
+}
+
+impl SignatureChecker for TxSigChecker<'_> {
+    fn check_ecdsa_sig(
+        &self,
+        sig: &[u8],
+        pubkey: &[u8],
+        script_code: &[u8],
+        sig_version: SigVersion,
+    ) -> bool {
+        // M1 only does the legacy regime. Witness sighash is M2.
+        if !sig_version.is_base() {
+            return false;
+        }
+
+        // The signature on the wire is `<DER>||<hashtype>`. An empty signature
+        // is a fail — there's no hashtype byte to read. The trait contract
+        // says we return `false` in that case; under NULLFAIL the *opcode*
+        // (not us) requires the empty signature to be the only failure mode.
+        let Some((&hashtype_byte, sig_der)) = sig.split_last() else {
+            return false;
+        };
+        let hash_type = SigHashType(u32::from(hashtype_byte));
+
+        // FindAndDelete: legacy regime removes any push of the exact `sig`
+        // bytes from `script_code` before hashing. Match Core: the signature
+        // matched is the full `<DER>||<hashtype>` blob, not just the DER part.
+        let cleaned_code = find_and_delete_sig(script_code, sig);
+
+        let digest = signature_hash(self.tx, self.n_in, &cleaned_code, hash_type);
+        consensus_crypto::verify_ecdsa(sig_der, pubkey, &digest.0)
+    }
+
+    fn check_lock_time(&self, locktime: i64) -> bool {
+        // BIP65: locktime semantics. The interpreter has already verified
+        // `locktime >= 0` and decoded it as a 5-byte ScriptNum. Here we
+        // compare to `tx.locktime` and `nSequence` of the spending input.
+        //
+        // Rule 1: both `locktime` and `tx.locktime` must be in the same
+        // range — block-height (< LOCKTIME_THRESHOLD) or median-time-past
+        // (>= LOCKTIME_THRESHOLD). Mixing them is rejected.
+        //
+        // Rule 2: `locktime > tx.locktime` rejects. The script's locktime
+        // requires the tx's claimed locktime to be at least that high.
+        //
+        // Rule 3: a `nSequence` of `0xffffffff` on this input would disable
+        // tx-level locktime entirely; if this CLTV opcode runs against
+        // such an input, it can't enforce anything → reject.
+        const LOCKTIME_THRESHOLD: i64 = 500_000_000;
+        let tx_lock = i64::from(self.tx.locktime);
+        if (locktime < LOCKTIME_THRESHOLD) != (tx_lock < LOCKTIME_THRESHOLD) {
+            return false;
+        }
+        if locktime > tx_lock {
+            return false;
+        }
+        // Caller-provided `n_in` is in range — `verify_script` is only
+        // reached for valid inputs.
+        let seq = self.tx.inputs[self.n_in].sequence;
+        seq != u32::MAX
+    }
+
+    fn check_sequence(&self, sequence: i64) -> bool {
+        // BIP112: relative-locktime via nSequence. The script-level value
+        // and the input's nSequence are compared after both have been
+        // pre-validated by the interpreter.
+        const SEQUENCE_LOCKTIME_DISABLE_FLAG: i64 = 1 << 31;
+        const SEQUENCE_LOCKTIME_TYPE_FLAG: i64 = 1 << 22;
+        const SEQUENCE_LOCKTIME_MASK: i64 = 0x0000_ffff;
+
+        // BIP68 only applies to v2+ transactions. Pre-v2 txs are exempt
+        // from relative-locktime enforcement, so CSV is a NOP and *passes*
+        // (Core treats this as success, not failure — matching its NOP
+        // forward-compat semantics).
+        if self.tx.version < 2 {
+            return true;
+        }
+
+        // If the high bit of the script value is set, BIP112 says the
+        // opcode succeeds without further checks (forward-compat).
+        if sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG != 0 {
+            return true;
+        }
+
+        let tx_seq = i64::from(self.tx.inputs[self.n_in].sequence);
+
+        // If the disable bit is set on the *input's* nSequence, the
+        // opcode can't enforce anything against it — reject.
+        if tx_seq & SEQUENCE_LOCKTIME_DISABLE_FLAG != 0 {
+            return false;
+        }
+
+        // The two values must be in the same locktime "type" (blocks vs.
+        // 512-second units), encoded in bit 22.
+        let masked_script = sequence & (SEQUENCE_LOCKTIME_TYPE_FLAG | SEQUENCE_LOCKTIME_MASK);
+        let masked_tx = tx_seq & (SEQUENCE_LOCKTIME_TYPE_FLAG | SEQUENCE_LOCKTIME_MASK);
+        if (masked_script < SEQUENCE_LOCKTIME_TYPE_FLAG)
+            != (masked_tx < SEQUENCE_LOCKTIME_TYPE_FLAG)
+        {
+            return false;
+        }
+
+        masked_script <= masked_tx
+    }
 }
 
 /// A `SignatureChecker` that fails every check. Useful in tests that exercise
@@ -71,11 +210,194 @@ impl SignatureChecker for NopSigChecker {
 mod tests {
     use super::*;
 
+    use k256::ecdsa::signature::hazmat::PrehashSigner;
+    use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
+    use mantle::primitives::{Hash256, OutPoint, TxIn, TxOut};
+    use ripemd::Ripemd160;
+    use sha2::{Digest, Sha256};
+
+    use crate::script::interpreter::Interpreter;
+    use crate::script::sighash::SigHashType;
+    use crate::script::stack::Stack;
+
     #[test]
     fn nop_checker_rejects_everything() {
         let c = NopSigChecker;
         assert!(!c.check_ecdsa_sig(&[], &[], &[], SigVersion::Base));
         assert!(!c.check_lock_time(0));
         assert!(!c.check_sequence(0));
+    }
+
+    /// Build a deterministic signing key from a 32-byte secret. Tests stay
+    /// reproducible without pulling `rand_core` into the test runtime.
+    fn key(secret: [u8; 32]) -> SigningKey {
+        SigningKey::from_bytes(&secret.into()).expect("nonzero secret")
+    }
+
+    /// Compressed SEC1 pubkey bytes (33 bytes).
+    fn compressed_pubkey(sk: &SigningKey) -> Vec<u8> {
+        sk.verifying_key().to_encoded_point(true).as_bytes().to_vec()
+    }
+
+    fn hash160(data: &[u8]) -> [u8; 20] {
+        let mid = Sha256::digest(data);
+        Ripemd160::digest(mid).into()
+    }
+
+    /// Build a single-input/single-output tx that spends a P2PKH output.
+    /// `_pubkey_hash` is unused inside the tx body — the hash lives in the
+    /// scriptPubKey, which the caller builds separately via `p2pkh_script`.
+    /// The argument is kept so call sites read at the level of intent.
+    fn make_tx_p2pkh(_pubkey_hash: &[u8; 20]) -> Transaction {
+        Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256([0u8; 32]), vout: 0 },
+                script_sig: Vec::<u8>::new().into(),
+                sequence: 0xffff_ffff,
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(50_000),
+                // Arbitrary scriptPubKey for the output; not exercised by sighash here.
+                script_pubkey: vec![0x6a].into(),
+            }],
+            locktime: 0,
+        }
+    }
+
+    /// Standard P2PKH scriptPubKey: `OP_DUP OP_HASH160 <20> <hash> OP_EQUALVERIFY OP_CHECKSIG`.
+    fn p2pkh_script(pubkey_hash: &[u8; 20]) -> Vec<u8> {
+        let mut s = vec![0x76, 0xa9, 0x14];
+        s.extend_from_slice(pubkey_hash);
+        s.extend_from_slice(&[0x88, 0xac]);
+        s
+    }
+
+    /// Sign a sighash with `sk`, returning `<DER>||<hashtype>`.
+    fn sign(sk: &SigningKey, sighash: &[u8; 32], hashtype: SigHashType) -> Vec<u8> {
+        let sig: EcdsaSig = sk
+            .sign_prehash(sighash)
+            .expect("signing a 32-byte digest cannot fail");
+        let sig = sig.normalize_s().unwrap_or(sig); // canonical low-S
+        let mut der = sig.to_der().as_bytes().to_vec();
+        der.push(u8::try_from(hashtype.0 & 0xff).expect("hashtype fits in u8"));
+        der
+    }
+
+    #[test]
+    fn p2pkh_end_to_end_succeeds() {
+        let sk = key([7u8; 32]);
+        let pk = compressed_pubkey(&sk);
+        let pkh: [u8; 20] = hash160(&pk);
+
+        let tx = make_tx_p2pkh(&pkh);
+        let script_pubkey = p2pkh_script(&pkh);
+
+        // Compute legacy sighash over the full scriptPubKey.
+        let digest =
+            crate::script::sighash::signature_hash(&tx, 0, &script_pubkey, SigHashType::ALL);
+        let sig = sign(&sk, &digest.0, SigHashType::ALL);
+
+        // Build scriptSig: <sig> <pubkey>.
+        let mut script_sig = vec![u8::try_from(sig.len()).expect("DER ≤ 72")];
+        script_sig.extend_from_slice(&sig);
+        script_sig.push(u8::try_from(pk.len()).expect("compressed ≤ 33"));
+        script_sig.extend_from_slice(&pk);
+
+        let flags = ScriptFlags::DERSIG | ScriptFlags::LOW_S | ScriptFlags::STRICTENC;
+        let checker = TxSigChecker::new(&tx, 0, Satoshi::ZERO, flags);
+
+        // Evaluate scriptSig then scriptPubKey on the same stack — what
+        // verify_script will do once it lands. For now we drive the
+        // Interpreter directly.
+        let mut interp = Interpreter::new(&checker, flags, SigVersion::Base);
+        interp.eval(&script_sig).expect("scriptSig pushes ok");
+        interp.eval(&script_pubkey).expect("scriptPubKey runs ok");
+        let s: &Stack = interp.stack();
+        assert_eq!(s.len(), 1);
+        assert!(s.peek(0).expect("non-empty").is_truthy());
+    }
+
+    #[test]
+    fn p2pkh_with_wrong_pubkey_pushes_false_or_fails() {
+        let sk = key([7u8; 32]);
+        let attacker_sk = key([8u8; 32]);
+        let pk = compressed_pubkey(&sk);
+        let attacker_pubkey = compressed_pubkey(&attacker_sk);
+        let pkh: [u8; 20] = hash160(&pk);
+
+        let tx = make_tx_p2pkh(&pkh);
+        let script_pubkey = p2pkh_script(&pkh);
+        let digest =
+            crate::script::sighash::signature_hash(&tx, 0, &script_pubkey, SigHashType::ALL);
+        let sig = sign(&sk, &digest.0, SigHashType::ALL);
+
+        // Wrong pubkey supplied — fails at OP_EQUALVERIFY (hash mismatch).
+        let mut script_sig = vec![u8::try_from(sig.len()).expect("DER ≤ 72")];
+        script_sig.extend_from_slice(&sig);
+        script_sig.push(u8::try_from(attacker_pubkey.len()).expect("compressed ≤ 33"));
+        script_sig.extend_from_slice(&attacker_pubkey);
+
+        let flags = ScriptFlags::DERSIG | ScriptFlags::LOW_S | ScriptFlags::STRICTENC;
+        let checker = TxSigChecker::new(&tx, 0, Satoshi::ZERO, flags);
+        let mut interp = Interpreter::new(&checker, flags, SigVersion::Base);
+        interp.eval(&script_sig).expect("scriptSig pushes ok");
+        let r = interp.eval(&script_pubkey);
+        assert!(matches!(r, Err(crate::script::error::ScriptError::Verify)));
+    }
+
+    #[test]
+    fn empty_signature_pushes_false() {
+        let sk = key([7u8; 32]);
+        let pk = compressed_pubkey(&sk);
+        let pkh = hash160(&pk);
+
+        let tx = make_tx_p2pkh(&pkh);
+        let flags = ScriptFlags::DERSIG | ScriptFlags::LOW_S | ScriptFlags::STRICTENC;
+        let checker = TxSigChecker::new(&tx, 0, Satoshi::ZERO, flags);
+
+        // Direct CHECKSIG with empty sig + valid pubkey.
+        let mut interp = Interpreter::new(&checker, flags, SigVersion::Base);
+        // Push empty sig (OP_0) and pubkey, then CHECKSIG.
+        let mut script = vec![0x00];
+        script.push(u8::try_from(pk.len()).expect("len fits"));
+        script.extend_from_slice(&pk);
+        script.push(0xac); // OP_CHECKSIG
+        interp.eval(&script).expect("ok");
+        let s = interp.stack();
+        assert_eq!(s.len(), 1);
+        assert!(!s.peek(0).expect("non-empty").is_truthy());
+    }
+
+    #[test]
+    fn nullfail_rejects_failed_nonempty_signature() {
+        let sk = key([7u8; 32]);
+        let other_sk = key([9u8; 32]);
+        let pk = compressed_pubkey(&sk);
+        let pkh = hash160(&pk);
+        let tx = make_tx_p2pkh(&pkh);
+        let script_pubkey = p2pkh_script(&pkh);
+
+        // Sign with the wrong key — yields a strict-DER signature that won't verify.
+        let digest =
+            crate::script::sighash::signature_hash(&tx, 0, &script_pubkey, SigHashType::ALL);
+        let sig = sign(&other_sk, &digest.0, SigHashType::ALL);
+
+        // Build scriptSig with the *correct* pubkey but wrong sig — CHECKSIG
+        // returns false; without NULLFAIL the result is just a `false` push.
+        let mut script_sig = vec![u8::try_from(sig.len()).expect("DER ≤ 72")];
+        script_sig.extend_from_slice(&sig);
+        script_sig.push(u8::try_from(pk.len()).expect("compressed ≤ 33"));
+        script_sig.extend_from_slice(&pk);
+
+        let flags = ScriptFlags::DERSIG
+            | ScriptFlags::LOW_S
+            | ScriptFlags::STRICTENC
+            | ScriptFlags::NULLFAIL;
+        let checker = TxSigChecker::new(&tx, 0, Satoshi::ZERO, flags);
+        let mut interp = Interpreter::new(&checker, flags, SigVersion::Base);
+        interp.eval(&script_sig).expect("scriptSig ok");
+        let r = interp.eval(&script_pubkey);
+        assert!(matches!(r, Err(crate::script::error::ScriptError::SigNullFail)));
     }
 }

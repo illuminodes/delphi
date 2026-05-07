@@ -7,15 +7,18 @@
 
 pub mod checker;
 pub mod condition_stack;
+pub mod consensus_crypto;
 pub mod error;
 pub mod flags;
 pub mod interpreter;
 pub mod num;
 pub mod opcodes;
 pub mod sig_version;
+pub mod sighash;
 pub mod stack;
+pub mod verify;
 
-pub use checker::{NopSigChecker, SignatureChecker};
+pub use checker::{NopSigChecker, SignatureChecker, TxSigChecker};
 pub use condition_stack::ConditionStack;
 pub use error::ScriptError;
 pub use flags::ScriptFlags;
@@ -24,3 +27,4 @@ pub use num::ScriptNum;
 pub use opcodes::Opcode;
 pub use sig_version::SigVersion;
 pub use stack::Stack;
+pub use verify::verify_script;

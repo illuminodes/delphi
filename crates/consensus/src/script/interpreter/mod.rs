@@ -91,9 +91,23 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
     pub fn eval(&mut self, script: &[u8]) -> Result<(), ScriptError> {
         pre_scan::pre_scan(script, self.sig_version)?;
 
+        // Reset per-script state — `verify_script` invokes `eval` up to three
+        // times on the same Interpreter (scriptSig, scriptPubKey, P2SH redeem)
+        // and the stack persists across them, but condition stack, op count,
+        // and `last_codeseparator` reset for each new script.
+        self.last_codeseparator = 0;
+        self.op_count = 0;
+        self.conditions.clear();
+
         let mut reader = ScriptReader::new(script);
         while let Some(step) = reader.next_step()? {
-            self.step(step)?;
+            // Snapshot the cursor *after* the opcode body has been consumed.
+            // For OP_CODESEPARATOR this is the offset of the next byte —
+            // exactly what BIP / Core record. For CHECKSIG it's the offset
+            // immediately after the CHECKSIG opcode, which is fine because
+            // sighash-relevant slicing only uses `last_codeseparator`.
+            let pos_after_step = reader.position();
+            self.step(script, pos_after_step, step)?;
         }
 
         if !self.conditions.is_empty() {
@@ -105,7 +119,17 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
 
     /// Dispatch one decoded step. Public to the parent module so individual
     /// opcodes can be tested in isolation by feeding hand-built `Step`s.
-    pub(super) fn step(&mut self, step: Step<'_>) -> Result<(), ScriptError> {
+    ///
+    /// `script` is the full script being evaluated (so signature opcodes can
+    /// slice from `last_codeseparator`). `pos_after_step` is the byte offset
+    /// in `script` of the byte immediately following the just-decoded opcode
+    /// — used by `OP_CODESEPARATOR` to record itself.
+    pub(super) fn step(
+        &mut self,
+        script: &[u8],
+        pos_after_step: usize,
+        step: Step<'_>,
+    ) -> Result<(), ScriptError> {
         // Always-fail opcodes: rejected even when reached only inside an
         // unexecuted `OP_IF` branch. Inlined here so we don't pay for a
         // separate pre-scan walk of the script.
@@ -145,7 +169,7 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             return Ok(());
         }
 
-        self.dispatch(step)
+        self.dispatch(script, pos_after_step, step)
     }
 
     /// The big match. Each arm calls the corresponding `op_*` method.
@@ -153,7 +177,12 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
         clippy::too_many_lines,    // dispatch table; methods do the work
         clippy::match_same_arms,   // arms grouped by category for readability
     )]
-    fn dispatch(&mut self, step: Step<'_>) -> Result<(), ScriptError> {
+    fn dispatch(
+        &mut self,
+        script: &[u8],
+        pos_after_step: usize,
+        step: Step<'_>,
+    ) -> Result<(), ScriptError> {
         match step.opcode {
             // ── Push opcodes ────────────────────────────────────────────────
             Opcode::Op0 => self.stack.push_checked(&[], self.altstack.len()),
@@ -238,14 +267,31 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             Opcode::Hash160 => self.op_hash160(),
             Opcode::Hash256 => self.op_hash256(),
 
-            // ── M1.2 stubs ──────────────────────────────────────────────────
-            Opcode::CodeSeparator => self.op_code_separator_unsupported(),
-            Opcode::CheckSig | Opcode::CheckSigVerify => self.op_check_sig_unsupported(),
-            Opcode::CheckMultiSig | Opcode::CheckMultiSigVerify => {
-                self.op_check_multi_sig_unsupported()
+            // ── Signatures ──────────────────────────────────────────────────
+            Opcode::CodeSeparator => self.op_code_separator(pos_after_step),
+            Opcode::CheckSig => self.op_check_sig(script, false),
+            Opcode::CheckSigVerify => self.op_check_sig(script, true),
+            Opcode::CheckMultiSig => self.op_check_multi_sig(script, false),
+            Opcode::CheckMultiSigVerify => self.op_check_multi_sig(script, true),
+
+            // ── Locktime opcodes ────────────────────────────────────────────
+            // Pre-activation, both are NOPs: BIP65/112 redefined OP_NOP2/OP_NOP3,
+            // so when their respective flags are unset they behave as upgradable
+            // NOPs (no-op unless DISCOURAGE_UPGRADABLE_NOPS).
+            Opcode::CheckLockTimeVerify => {
+                if self.flags.contains(ScriptFlags::CHECKLOCKTIMEVERIFY) {
+                    self.op_check_lock_time_verify()
+                } else {
+                    self.op_nop_upgradable()
+                }
             }
-            Opcode::CheckLockTimeVerify => self.op_check_lock_time_verify_unsupported(),
-            Opcode::CheckSequenceVerify => self.op_check_sequence_verify_unsupported(),
+            Opcode::CheckSequenceVerify => {
+                if self.flags.contains(ScriptFlags::CHECKSEQUENCEVERIFY) {
+                    self.op_check_sequence_verify()
+                } else {
+                    self.op_nop_upgradable()
+                }
+            }
 
             // ── Always-fail-when-executed ──────────────────────────────────
             // OP_RESERVED, OP_VER, OP_RESERVED1/2 fail when reached during
@@ -592,13 +638,31 @@ mod tests {
         run(&script).expect("ok");
     }
 
-    // ── M1.2 stubs ──────────────────────────────────────────────────────────
+    // ── Signature opcodes ───────────────────────────────────────────────────
 
     #[test]
-    fn op_check_sig_is_stubbed_to_sig_der() {
-        // OP_0 OP_0 OP_CHECKSIG  →  SigDer (M1.2 stub)
-        let r = run(&[0x00, 0x00, 0xac]);
-        assert!(matches!(r, Err(ScriptError::SigDer)));
+    fn op_check_sig_with_nop_checker_pushes_false() {
+        // OP_0 OP_0 OP_CHECKSIG. NopSigChecker fails every check; under no
+        // flags the result is just `false` pushed onto the stack.
+        let s = run(&[0x00, 0x00, 0xac]).expect("ok");
+        assert_eq!(s.len(), 1);
+        assert!(!s.peek(0).expect("ok").is_truthy());
+    }
+
+    #[test]
+    fn op_check_sig_verify_fails_under_nop_checker() {
+        // OP_0 OP_0 OP_CHECKSIGVERIFY  →  Verify (false top fails the verify form).
+        let r = run(&[0x00, 0x00, 0xad]);
+        assert!(matches!(r, Err(ScriptError::Verify)));
+    }
+
+    #[test]
+    fn op_code_separator_updates_offset() {
+        // OP_CODESEPARATOR OP_0 OP_0 OP_CHECKSIG  →  pushes false (sighash
+        // is computed over the suffix script after CODESEPARATOR; the
+        // NopSigChecker fails regardless, so we just check it doesn't error).
+        let s = run(&[0xab, 0x00, 0x00, 0xac]).expect("ok");
+        assert_eq!(s.len(), 1);
     }
 
     // ── Upgradable NOPs ─────────────────────────────────────────────────────

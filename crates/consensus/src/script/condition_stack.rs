@@ -94,6 +94,15 @@ impl ConditionStack {
         Some(top)
     }
 
+    /// Drop all open branches. Used at the start of each script invocation
+    /// when an `Interpreter` is reused across `verify_script`'s scriptSig /
+    /// scriptPubKey / P2SH-redeem evals — the stack persists, but `IF`
+    /// nesting must not leak between scripts.
+    pub fn clear(&mut self) {
+        self.branches.clear();
+        self.depth_executing = 0;
+    }
+
     /// Flip the topmost branch (`OP_ELSE`). `None` if the stack is empty.
     pub fn toggle_top(&mut self) -> Option<()> {
         let top = self.branches.last_mut()?;
