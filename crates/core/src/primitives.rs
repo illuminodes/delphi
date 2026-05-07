@@ -356,6 +356,216 @@ impl Decode for Transaction {
     }
 }
 
+// ── TransactionRef ────────────────────────────────────────────────────────────
+
+/// Lazy iterator over zero-copy `TxInRef` views.
+#[derive(Debug, Clone)]
+pub struct TxInRefIter<'a> {
+    buf: &'a [u8],
+    remaining: usize,
+}
+
+impl<'a> Iterator for TxInRefIter<'a> {
+    type Item = io::Result<TxInRef<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        match TxInRef::decode_ref(self.buf) {
+            Ok((item, rest)) => {
+                self.buf = rest;
+                self.remaining -= 1;
+                Some(Ok(item))
+            }
+            Err(e) => {
+                self.remaining = 0;
+                Some(Err(e))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+/// Lazy iterator over zero-copy `TxOutRef` views.
+#[derive(Debug, Clone)]
+pub struct TxOutRefIter<'a> {
+    buf: &'a [u8],
+    remaining: usize,
+}
+
+impl<'a> Iterator for TxOutRefIter<'a> {
+    type Item = io::Result<TxOutRef<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        match TxOutRef::decode_ref(self.buf) {
+            Ok((item, rest)) => {
+                self.buf = rest;
+                self.remaining -= 1;
+                Some(Ok(item))
+            }
+            Err(e) => {
+                self.remaining = 0;
+                Some(Err(e))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+/// Zero-copy borrowed view of a `Transaction`.
+///
+/// Inputs and outputs are not materialised into `Vec`s — they are decoded
+/// lazily from slices of the original buffer. Use [`inputs`](Self::inputs) and
+/// [`outputs`](Self::outputs) to iterate; use [`to_owned`](Self::to_owned) to
+/// materialise a full `Transaction` when needed.
+#[derive(Debug, Clone, Copy)]
+pub struct TransactionRef<'a> {
+    pub version: i32,
+    pub locktime: u32,
+    input_count: usize,
+    inputs_buf: &'a [u8],
+    output_count: usize,
+    outputs_buf: &'a [u8],
+}
+
+impl<'a> TransactionRef<'a> {
+    /// Lazily iterate over inputs. Each call returns a fresh iterator.
+    #[must_use]
+    pub fn inputs(&self) -> TxInRefIter<'a> {
+        TxInRefIter { buf: self.inputs_buf, remaining: self.input_count }
+    }
+
+    /// Lazily iterate over outputs. Each call returns a fresh iterator.
+    #[must_use]
+    pub fn outputs(&self) -> TxOutRefIter<'a> {
+        TxOutRefIter { buf: self.outputs_buf, remaining: self.output_count }
+    }
+
+    /// Number of inputs.
+    #[must_use]
+    pub fn input_count(&self) -> usize {
+        self.input_count
+    }
+
+    /// Number of outputs.
+    #[must_use]
+    pub fn output_count(&self) -> usize {
+        self.output_count
+    }
+
+    /// Serialised byte length, computed without allocating.
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        let inputs_len: usize = self
+            .inputs()
+            .map(|r| r.map_or(0, |i| OutPoint::ENCODED_LEN + VarInt(i.script_sig.len() as u64).encoded_len() + i.script_sig.len() + 4))
+            .sum();
+        let outputs_len: usize = self
+            .outputs()
+            .map(|r| r.map_or(0, |o| 8 + VarInt(o.script_pubkey.len() as u64).encoded_len() + o.script_pubkey.len()))
+            .sum();
+        4
+            + VarInt(self.input_count as u64).encoded_len()
+            + inputs_len
+            + VarInt(self.output_count as u64).encoded_len()
+            + outputs_len
+            + 4
+    }
+
+    /// Materialise into an owned `Transaction`, allocating.
+    ///
+    /// # Errors
+    /// Returns an error if any input or output is malformed.
+    pub fn to_owned(self) -> io::Result<Transaction> {
+        let inputs = self
+            .inputs()
+            .map(|r| {
+                r.map(|i| TxIn {
+                    previous_output: i.previous_output,
+                    script_sig: i.script_sig.to_vec(),
+                    sequence: i.sequence,
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let outputs = self
+            .outputs()
+            .map(|r| {
+                r.map(|o| TxOut {
+                    value: o.value,
+                    script_pubkey: o.script_pubkey.to_vec(),
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        Ok(Transaction { version: self.version, inputs, outputs, locktime: self.locktime })
+    }
+}
+
+impl Encode for TransactionRef<'_> {
+    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+        self.version.encode(w)?;
+        VarInt(self.input_count as u64).encode(w)?;
+        for r in self.inputs() {
+            let i = r?;
+            i.previous_output.encode(w)?;
+            VarInt(i.script_sig.len() as u64).encode(w)?;
+            w.write_all(i.script_sig)?;
+            i.sequence.encode(w)?;
+        }
+        VarInt(self.output_count as u64).encode(w)?;
+        for r in self.outputs() {
+            let o = r?;
+            o.value.encode(w)?;
+            VarInt(o.script_pubkey.len() as u64).encode(w)?;
+            w.write_all(o.script_pubkey)?;
+        }
+        self.locktime.encode(w)
+    }
+}
+
+impl<'a> DecodeRef<'a> for TransactionRef<'a> {
+    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+        let (version, buf) = i32::decode_ref(buf)?;
+
+        let (VarInt(n), buf) = VarInt::decode_ref(buf)?;
+        let input_count = usize::try_from(n)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let inputs_buf = buf;
+        // Scan past inputs to find the outputs boundary.
+        let mut rest = buf;
+        for _ in 0..input_count {
+            let (_, r) = TxInRef::decode_ref(rest)?;
+            rest = r;
+        }
+
+        let (VarInt(m), rest) = VarInt::decode_ref(rest)?;
+        let output_count = usize::try_from(m)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let outputs_buf = rest;
+        // Scan past outputs to reach locktime.
+        let mut rest = rest;
+        for _ in 0..output_count {
+            let (_, r) = TxOutRef::decode_ref(rest)?;
+            rest = r;
+        }
+
+        let (locktime, rest) = u32::decode_ref(rest)?;
+        Ok((
+            Self { version, locktime, input_count, inputs_buf, output_count, outputs_buf },
+            rest,
+        ))
+    }
+}
+
 // ── Block ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -822,5 +1032,124 @@ mod tests {
         // tx_count byte at offset 80 must be 0xfd (3-byte VarInt marker).
         assert_eq!(bytes[BlockHeader::ENCODED_LEN], 0xfd);
         assert_eq!(decode::<Block>(&bytes), block);
+    }
+
+    // ── TransactionRef ────────────────────────────────────────────────────────
+
+    fn make_tx() -> Transaction {
+        Transaction {
+            version: 2,
+            inputs: vec![
+                TxIn {
+                    previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 1 },
+                    script_sig: vec![0x01, 0x02, 0x03],
+                    sequence: 0xffff_fffe,
+                },
+                TxIn {
+                    previous_output: OutPoint { txid: Hash256([0xcd; 32]), vout: 0 },
+                    script_sig: vec![],
+                    sequence: 0,
+                },
+            ],
+            outputs: vec![
+                TxOut { value: 50_000, script_pubkey: vec![0x76, 0xa9] },
+                TxOut { value: 0, script_pubkey: vec![] },
+            ],
+            locktime: 800_000,
+        }
+    }
+
+    #[test]
+    fn transaction_ref_decode_ref_roundtrip() {
+        let tx = make_tx();
+        let bytes = encode(&tx);
+        let (tx_ref, tail) = decode_ref::<TransactionRef>(&bytes);
+        assert!(tail.is_empty());
+        assert_eq!(tx_ref.version, tx.version);
+        assert_eq!(tx_ref.locktime, tx.locktime);
+        assert_eq!(tx_ref.input_count(), tx.inputs.len());
+        assert_eq!(tx_ref.output_count(), tx.outputs.len());
+
+        for (r, expected) in tx_ref.inputs().zip(&tx.inputs) {
+            let i = r.unwrap();
+            assert_eq!(i.previous_output, expected.previous_output);
+            assert_eq!(i.script_sig, expected.script_sig.as_slice());
+            assert_eq!(i.sequence, expected.sequence);
+        }
+        for (r, expected) in tx_ref.outputs().zip(&tx.outputs) {
+            let o = r.unwrap();
+            assert_eq!(o.value, expected.value);
+            assert_eq!(o.script_pubkey, expected.script_pubkey.as_slice());
+        }
+    }
+
+    #[test]
+    fn transaction_ref_script_sig_zero_copy() {
+        let tx = make_tx();
+        let bytes = encode(&tx);
+        let (tx_ref, _) = decode_ref::<TransactionRef>(&bytes);
+        let first = tx_ref.inputs().next().unwrap().unwrap();
+        // script_sig must point directly into `bytes`, not a new allocation.
+        let script_start = first.script_sig.as_ptr() as usize;
+        let buf_start = bytes.as_ptr() as usize;
+        let buf_end = buf_start + bytes.len();
+        assert!(script_start >= buf_start && script_start < buf_end);
+    }
+
+    #[test]
+    fn transaction_ref_to_owned_matches_original() {
+        let tx = make_tx();
+        let bytes = encode(&tx);
+        let (tx_ref, _) = decode_ref::<TransactionRef>(&bytes);
+        assert_eq!(tx_ref.to_owned().unwrap(), tx);
+    }
+
+    #[test]
+    fn transaction_ref_encode_matches_original() {
+        let tx = make_tx();
+        let bytes = encode(&tx);
+        let (tx_ref, _) = decode_ref::<TransactionRef>(&bytes);
+        let re_encoded = encode(&tx_ref);
+        assert_eq!(re_encoded, bytes);
+    }
+
+    #[test]
+    fn transaction_ref_encoded_len_matches_transaction() {
+        let tx = make_tx();
+        let bytes = encode(&tx);
+        let (tx_ref, _) = decode_ref::<TransactionRef>(&bytes);
+        assert_eq!(tx_ref.encoded_len(), tx.encoded_len());
+        assert_eq!(tx_ref.encoded_len(), bytes.len());
+    }
+
+    #[test]
+    fn transaction_ref_tail_is_remaining_bytes() {
+        let tx = make_tx();
+        let mut bytes = encode(&tx);
+        bytes.extend_from_slice(&[0xde, 0xad]);
+        let (_, tail) = decode_ref::<TransactionRef>(&bytes);
+        assert_eq!(tail, &[0xde, 0xad]);
+    }
+
+    #[test]
+    fn transaction_ref_truncated_returns_error() {
+        let tx = make_tx();
+        let bytes = encode(&tx);
+        // Cut the buffer in half — must not panic, must return an error.
+        let e = TransactionRef::decode_ref(&bytes[..bytes.len() / 2]).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn transaction_ref_empty_inputs_outputs() {
+        let tx = Transaction { version: 1, inputs: vec![], outputs: vec![], locktime: 0 };
+        let bytes = encode(&tx);
+        let (tx_ref, tail) = decode_ref::<TransactionRef>(&bytes);
+        assert!(tail.is_empty());
+        assert_eq!(tx_ref.input_count(), 0);
+        assert_eq!(tx_ref.output_count(), 0);
+        assert!(tx_ref.inputs().next().is_none());
+        assert!(tx_ref.outputs().next().is_none());
+        assert_eq!(tx_ref.to_owned().unwrap(), tx);
     }
 }

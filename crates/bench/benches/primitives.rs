@@ -1,5 +1,5 @@
 use mantle::codec::{Decode, DecodeRef, Encode};
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxInRef, TxOut, TxOutRef};
+use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TransactionRef, TxIn, TxInRef, TxOut, TxOutRef};
 use std::hint::black_box;
 use std::io::Cursor;
 
@@ -168,7 +168,7 @@ fn txout_decode_ref(bencher: divan::Bencher) {
     });
 }
 
-// ── Transaction ───────────────────────────────────────────────────────────────
+// ── Transaction / TransactionRef ─────────────────────────────────────────────
 
 #[divan::bench(args = [1usize, 4, 16])]
 fn transaction_encode(bencher: divan::Bencher, n: usize) {
@@ -180,6 +180,38 @@ fn transaction_encode(bencher: divan::Bencher, n: usize) {
 fn transaction_decode(bencher: divan::Bencher, n: usize) {
     let bytes = encode_bytes(&make_tx(n, n));
     bencher.bench(|| Transaction::decode(&mut Cursor::new(bytes.as_slice())).unwrap());
+}
+
+/// Zero-copy parse: DecodeRef only scans the buffer to find boundaries —
+/// no Vec allocations.
+#[divan::bench(args = [1usize, 4, 16])]
+fn transaction_decode_ref(bencher: divan::Bencher, n: usize) {
+    let bytes = encode_bytes(&make_tx(n, n));
+    bencher.bench(|| {
+        let (tx, _) = TransactionRef::decode_ref(bytes.as_slice()).unwrap();
+        black_box(tx.version)
+    });
+}
+
+/// Iterate all inputs and outputs from a TransactionRef without allocating.
+#[divan::bench(args = [1usize, 4, 16])]
+fn transaction_ref_iter(bencher: divan::Bencher, n: usize) {
+    let bytes = encode_bytes(&make_tx(n, n));
+    let (tx_ref, _) = TransactionRef::decode_ref(bytes.as_slice()).unwrap();
+    bencher.bench(|| {
+        let mut sum = 0u64;
+        for r in tx_ref.inputs() { sum += r.unwrap().sequence as u64; }
+        for r in tx_ref.outputs() { sum += r.unwrap().value; }
+        black_box(sum)
+    });
+}
+
+/// Materialise a TransactionRef into an owned Transaction.
+#[divan::bench(args = [1usize, 4, 16])]
+fn transaction_ref_to_owned(bencher: divan::Bencher, n: usize) {
+    let bytes = encode_bytes(&make_tx(n, n));
+    let (tx_ref, _) = TransactionRef::decode_ref(bytes.as_slice()).unwrap();
+    bencher.bench(|| tx_ref.to_owned().unwrap());
 }
 
 // ── Block ─────────────────────────────────────────────────────────────────────

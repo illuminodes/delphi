@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mantle::codec::{Encode, VarInt};
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction};
+use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TransactionRef};
 
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
@@ -104,6 +104,28 @@ pub fn txid_into(tx: &Transaction, buf: &mut Vec<u8>) {
     buf.clear();
     buf.reserve(tx.encoded_len());
     tx.encode(buf).expect("Vec<u8> write cannot fail");
+}
+
+/// Compute the txid of a zero-copy [`TransactionRef`], reusing a caller-supplied
+/// buffer. No heap allocation beyond the buffer's existing capacity.
+///
+/// # Panics
+/// Never — encoding to a `Vec<u8>` cannot fail.
+pub fn txid_ref_into(tx: TransactionRef<'_>, buf: &mut Vec<u8>) {
+    buf.clear();
+    buf.reserve(tx.encoded_len());
+    tx.encode(buf).expect("Vec<u8> write cannot fail");
+}
+
+/// Compute the txid of a zero-copy [`TransactionRef`].
+///
+/// # Panics
+/// Never.
+#[must_use]
+pub fn txid_ref(tx: TransactionRef<'_>) -> Hash256 {
+    let mut buf = Vec::new();
+    txid_ref_into(tx, &mut buf);
+    Hash256(sha256d(&buf))
 }
 
 /// Stage 1: stateless structural validation.
