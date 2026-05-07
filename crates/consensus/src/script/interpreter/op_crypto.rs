@@ -119,6 +119,71 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
         }
     }
 
+    /// `OP_CHECKSIGADD` — BIP342 tapscript only.
+    ///
+    /// Stack on entry (top to bottom): `pubkey`, `n`, `sig`.
+    /// - If `pubkey` is empty, push `n` unchanged (unknown pubkey type = NOP).
+    /// - If `sig` is empty, push `n` unchanged (no signature = count stays).
+    /// - Otherwise verify the Schnorr signature and push `n + 1` on success,
+    ///   `n` on failure. Under `NULLFAIL`, a non-empty sig that fails is an error.
+    pub(super) fn op_check_sig_add(&mut self, _script: &[u8]) -> Result<(), ScriptError> {
+        use crate::script::num::ScriptNum;
+
+        let pubkey = self.stack.pop()?;
+        let n_elem = self.stack.pop()?;
+        let sig = self.stack.pop()?;
+
+        let n = ScriptNum::from_bytes(
+            n_elem.as_slice(),
+            crate::script::num::MAX_NUM_SIZE_ARITHMETIC,
+            self.flags.contains(ScriptFlags::MINIMALDATA),
+        )?
+        .to_i64();
+
+        // Unknown pubkey type (empty) — push n unchanged. BIP342 §"Rules".
+        if pubkey.is_empty() {
+            return self.stack.push_num(n, self.altstack.len());
+        }
+
+        // Pubkey must be 32 bytes (x-only).
+        if pubkey.as_slice().len() != 32 {
+            return Err(ScriptError::XOnlyPubkeySize);
+        }
+
+        // Empty sig → no contribution, push n unchanged.
+        if sig.is_empty() {
+            return self.stack.push_num(n, self.altstack.len());
+        }
+
+        // Verify the Schnorr signature using the tapscript context.
+        let Some(ctx) = &self.tapscript else {
+            // Should not be reachable — tapscript context must be set.
+            return Err(ScriptError::BadOpcode);
+        };
+        let leaf_hash = ctx.leaf_hash;
+        let code_sep_pos = u32::try_from(self.last_codeseparator).unwrap_or(0xffff_ffff);
+        let spent_amount = ctx.spent_amount;
+        let spent_spk = ctx.spent_spk.clone();
+        let bip341_cache = ctx.bip341_cache.clone();
+
+        let ok = self.checker.check_schnorr_sig(
+            sig.as_slice(),
+            pubkey.as_slice(),
+            &leaf_hash,
+            code_sep_pos,
+            spent_amount,
+            &spent_spk,
+            &bip341_cache,
+        );
+
+        if !ok && self.flags.contains(ScriptFlags::NULLFAIL) {
+            return Err(ScriptError::TaprootChecksigAdd);
+        }
+
+        let new_n = if ok { n.saturating_add(1) } else { n };
+        self.stack.push_num(new_n, self.altstack.len())
+    }
+
     /// `OP_CHECKMULTISIG` (and `OP_CHECKMULTISIGVERIFY` when `verify`).
     ///
     /// Stack on entry (top to bottom):

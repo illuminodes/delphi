@@ -20,12 +20,19 @@
 //!   are always accepted. Hybrid `0x06`/`0x07`-lead 65-byte encodings are
 //!   accepted *without* `STRICTENC` and rejected *with* it.
 //!
+//! - **BIP340 Schnorr** (M3). `verify_schnorr` checks an x-only pubkey against
+//!   a 64-byte signature and a 32-byte message digest. Tagged hashes
+//!   (`tagged_hash`) follow BIP340 §"Tagged hashes": the tag is SHA256'd
+//!   twice, prepended, then the whole thing is SHA256'd.
+//!
 //! Any signature/pubkey that fails these checks returns `false` from
-//! `verify_ecdsa`. The interpreter doesn't distinguish *why* — it only acts
-//! on the boolean.
+//! `verify_ecdsa`/`verify_schnorr`. The interpreter doesn't distinguish *why*.
 
 use k256::ecdsa::signature::hazmat::PrehashVerifier;
 use k256::ecdsa::{Signature as EcdsaSig, VerifyingKey};
+use k256::schnorr::{Signature as SchnorrSig, VerifyingKey as SchnorrVerifyingKey};
+use k256::schnorr::signature::Verifier as SchnorrVerifier;
+use sha2::{Digest, Sha256};
 
 use super::error::ScriptError;
 use super::flags::ScriptFlags;
@@ -235,6 +242,71 @@ fn is_low_s(sig_der: &[u8]) -> bool {
     let mut s_be = [0u8; 32];
     s_be[32 - s_mag.len()..].copy_from_slice(s_mag);
     s_be <= HALF_CURVE_ORDER_BE
+}
+
+/// Validate the wire encoding of a Schnorr signature *and* return the
+/// optional hash-type byte for the 65-byte form.
+///
+/// BIP340/342 wire format:
+/// - 64 bytes → `SIGHASH_DEFAULT` (all), no hash-type byte.
+/// - 65 bytes → explicit hash-type byte at the end; must not be 0x00
+///   (0x00 is reserved for `SIGHASH_DEFAULT` in the 64-byte form and is
+///   disallowed in the 65-byte form per BIP342).
+///
+/// Any other length is `SchnorrSigSize`. An explicit hash-type byte of
+/// 0x00 is `SchnorrSigHashType`.
+///
+/// Returns `(sig_bytes_64, hash_type_u8)` where `hash_type_u8` is `0x01`
+/// (ALL) when the 64-byte form is used.
+///
+/// # Errors
+/// `SchnorrSigSize` or `SchnorrSigHashType`.
+pub fn check_schnorr_sig_encoding(sig: &[u8]) -> Result<(&[u8], u8), super::error::ScriptError> {
+    use super::error::ScriptError;
+    match sig.len() {
+        64 => Ok((sig, 0x01)),
+        65 => {
+            let hash_type = sig[64];
+            if hash_type == 0x00 {
+                return Err(ScriptError::SchnorrSigHashType);
+            }
+            Ok((&sig[..64], hash_type))
+        }
+        _ => Err(ScriptError::SchnorrSigSize),
+    }
+}
+
+/// BIP340 tagged hash: `SHA256(SHA256(tag) || SHA256(tag) || msg)`.
+///
+/// The tag is hashed twice and prepended so that hash outputs in different
+/// protocol contexts are domain-separated even if they share the same
+/// message bytes.
+#[must_use]
+pub fn tagged_hash(tag: &[u8], msg: &[u8]) -> [u8; 32] {
+    let tag_hash = Sha256::digest(tag);
+    let mut h = Sha256::new();
+    h.update(tag_hash);
+    h.update(tag_hash);
+    h.update(msg);
+    h.finalize().into()
+}
+
+/// Verify a BIP340 Schnorr signature.
+///
+/// `sig64` must be exactly 64 bytes (the caller has already validated length
+/// via `check_schnorr_sig_encoding`). `pubkey32` is the x-only pubkey (32
+/// bytes). `msg` is the 32-byte sighash digest.
+///
+/// Returns `true` iff the signature verifies.
+#[must_use]
+pub fn verify_schnorr(sig64: &[u8], pubkey32: &[u8], msg: &[u8; 32]) -> bool {
+    let Ok(sig) = SchnorrSig::try_from(sig64) else {
+        return false;
+    };
+    let Ok(vk) = SchnorrVerifyingKey::from_bytes(pubkey32) else {
+        return false;
+    };
+    SchnorrVerifier::verify(&vk, msg, &sig).is_ok()
 }
 
 /// Pubkey is one of the two strict encodings: 33-byte compressed (`0x02`

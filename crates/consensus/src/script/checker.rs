@@ -13,7 +13,10 @@ use mantle::primitives::{Satoshi, Transaction};
 use super::consensus_crypto;
 use super::flags::ScriptFlags;
 use super::sig_version::SigVersion;
-use super::sighash::{Bip143Cache, SigHashType, find_and_delete_sig, signature_hash, signature_hash_bip143};
+use super::sighash::{
+    Bip143Cache, Bip341Cache, SigHashType, TaprootSigHashType, find_and_delete_sig,
+    signature_hash, signature_hash_bip143, signature_hash_bip341,
+};
 
 /// Asks "does this signature, pubkey, and scriptCode verify?" for the script
 /// being evaluated. The interpreter calls one of these methods for every
@@ -34,6 +37,29 @@ pub trait SignatureChecker {
         pubkey: &[u8],
         script_code: &[u8],
         sig_version: SigVersion,
+    ) -> bool;
+
+    /// Verify a BIP340 Schnorr signature in tapscript.
+    ///
+    /// `sig` is the raw witness item (64 or 65 bytes, already encoding-checked).
+    /// `pubkey32` is the x-only pubkey (32 bytes).
+    /// `leaf_hash` is the `TapLeaf` hash for this script-path execution.
+    /// `code_sep_pos` is `0xFFFF_FFFF` if no `OP_CODESEPARATOR` has been seen,
+    /// otherwise the byte offset of the last one.
+    /// `spent_amount` and `spent_spk` are the UTXO being spent.
+    /// `bip341_cache` carries the per-transaction precomputed hash fields.
+    ///
+    /// Returns `true` iff the signature verifies.
+    #[allow(clippy::too_many_arguments)]
+    fn check_schnorr_sig(
+        &self,
+        sig: &[u8],
+        pubkey32: &[u8],
+        leaf_hash: &[u8; 32],
+        code_sep_pos: u32,
+        spent_amount: mantle::primitives::Satoshi,
+        spent_spk: &[u8],
+        bip341_cache: &Bip341Cache,
     ) -> bool;
 
     /// `OP_CHECKLOCKTIMEVERIFY` — does this transaction's `nLockTime` permit
@@ -143,6 +169,44 @@ impl SignatureChecker for TxSigChecker<'_> {
         consensus_crypto::verify_ecdsa(sig_der, pubkey, &digest.0)
     }
 
+    fn check_schnorr_sig(
+        &self,
+        sig: &[u8],
+        pubkey32: &[u8],
+        leaf_hash: &[u8; 32],
+        code_sep_pos: u32,
+        spent_amount: mantle::primitives::Satoshi,
+        spent_spk: &[u8],
+        bip341_cache: &Bip341Cache,
+    ) -> bool {
+        // Encoding check: 64 or 65 bytes.
+        let Ok((sig64, hash_type_byte)) = consensus_crypto::check_schnorr_sig_encoding(sig) else {
+            return false;
+        };
+        // Pubkey must be exactly 32 bytes.
+        let Ok(pubkey_arr) = <&[u8; 32]>::try_from(pubkey32) else {
+            return false;
+        };
+
+        let hash_type = TaprootSigHashType(hash_type_byte);
+        if !hash_type.is_valid() {
+            return false;
+        }
+
+        let digest = signature_hash_bip341(
+            self.tx,
+            self.n_in,
+            spent_amount,
+            spent_spk,
+            hash_type,
+            bip341_cache,
+            None, // annex handled by caller before reaching here
+            Some((*leaf_hash, code_sep_pos)),
+        );
+
+        consensus_crypto::verify_schnorr(sig64, pubkey_arr, &digest)
+    }
+
     fn check_lock_time(&self, locktime: i64) -> bool {
         // BIP65: locktime semantics. The interpreter has already verified
         // `locktime >= 0` and decoded it as a 5-byte ScriptNum. Here we
@@ -238,6 +302,19 @@ impl SignatureChecker for NopSigChecker {
         _pubkey: &[u8],
         _script_code: &[u8],
         _sig_version: SigVersion,
+    ) -> bool {
+        false
+    }
+
+    fn check_schnorr_sig(
+        &self,
+        _sig: &[u8],
+        _pubkey32: &[u8],
+        _leaf_hash: &[u8; 32],
+        _code_sep_pos: u32,
+        _spent_amount: mantle::primitives::Satoshi,
+        _spent_spk: &[u8],
+        _bip341_cache: &Bip341Cache,
     ) -> bool {
         false
     }

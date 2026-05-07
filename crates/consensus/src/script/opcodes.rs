@@ -550,6 +550,40 @@ impl Opcode {
                 | Self::Nop10
         )
     }
+
+    /// `true` if this opcode is an `OP_SUCCESSx` in BIP342 tapscript.
+    ///
+    /// When any of these bytes appear in a tapscript, the *entire script*
+    /// succeeds immediately — they are not executed. This is the forward-compat
+    /// mechanism that lets future soft-forks assign meaning to these bytes.
+    ///
+    /// The set is every byte that is:
+    /// - `OP_RESERVED` (0x50) — was invalid/reserved in legacy
+    /// - `OP_VER` (0x62) — reserved
+    /// - 0x89..=0x8d — `OP_RETURN_*` group
+    /// - 0x8e — unused
+    /// - 0x90..=0x9d — unused arithmetic (splice group)
+    /// - 0xa6..=0xaf — unused
+    /// - `OP_CHECKSIGADD` (0xba) is NOT an `OP_SUCCESSx`; it is a defined opcode
+    /// - 0xbb..=0xfe — undefined range
+    /// - 0xff — undefined
+    ///
+    /// Source: BIP342 §"Rules for tapscript" and Bitcoin Core
+    /// `script/interpreter.cpp` `IsOpSuccess`.
+    #[must_use]
+    pub const fn is_tapscript_success(self) -> bool {
+        let b = self.to_byte();
+        matches!(b,
+            0x50        // OP_RESERVED
+            | 0x62      // OP_VER
+            | 0x89..=0x8d
+            | 0x8e
+            | 0x90..=0x9d
+            | 0xa6..=0xaf
+            | 0xbb..=0xfe
+            | 0xff
+        )
+    }
 }
 
 #[cfg(test)]

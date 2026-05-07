@@ -24,6 +24,7 @@ use crate::script::condition_stack::ConditionStack;
 use crate::script::error::ScriptError;
 use crate::script::flags::ScriptFlags;
 use crate::script::opcodes::Opcode;
+use crate::script::sighash::Bip341Cache;
 use crate::script::sig_version::SigVersion;
 use crate::script::stack::{Stack, StackElement};
 
@@ -37,6 +38,19 @@ use reader::{ScriptReader, Step};
 /// not counted.
 pub const MAX_OPS_PER_SCRIPT: u32 = 201;
 
+/// Tapscript execution context — fields only populated when `sig_version ==
+/// Tapscript`. Grouped to keep the `Interpreter` struct tidy.
+pub(super) struct TapscriptCtx {
+    /// `TapLeaf` hash for the leaf being executed.
+    pub leaf_hash: [u8; 32],
+    /// Value of the UTXO being spent (for BIP341 sighash).
+    pub spent_amount: mantle::primitives::Satoshi,
+    /// scriptPubKey of the UTXO being spent (for BIP341 sighash).
+    pub spent_spk: Vec<u8>,
+    /// Per-transaction BIP341 cache (shared across inputs).
+    pub bip341_cache: Bip341Cache,
+}
+
 /// Dispatch loop and execution state for a single script invocation.
 pub struct Interpreter<'a, C: SignatureChecker> {
     pub(super) stack: Stack,
@@ -44,14 +58,13 @@ pub struct Interpreter<'a, C: SignatureChecker> {
     pub(super) conditions: ConditionStack,
     pub(super) op_count: u32,
     /// Byte offset within the current script of the last `OP_CODESEPARATOR`,
-    /// or 0 if none has been seen. Used by sighash to slice scriptCode in M1.2.
-    #[allow(dead_code)] // wired in M1.2
+    /// or 0 if none has been seen.
     pub(super) last_codeseparator: usize,
     pub(super) flags: ScriptFlags,
     pub(super) sig_version: SigVersion,
-    /// Read by the signature opcodes in M1.2.
-    #[allow(dead_code)] // wired in M1.2
     pub(super) checker: &'a C,
+    /// Set when `sig_version == Tapscript`.
+    pub(super) tapscript: Option<TapscriptCtx>,
 }
 
 impl<'a, C: SignatureChecker> Interpreter<'a, C> {
@@ -67,6 +80,7 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             flags,
             sig_version,
             checker,
+            tapscript: None,
         }
     }
 
@@ -93,6 +107,7 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             flags,
             sig_version,
             checker,
+            tapscript: None,
         }
     }
 
@@ -171,7 +186,11 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
         // - VERIF / VERNOTIF: rejected in every script version.
         // - The legacy disabled set (CAT/SUBSTR/LEFT/RIGHT/INVERT/AND/OR/XOR/
         //   2MUL/2DIV/MUL/DIV/MOD/LSHIFT/RSHIFT): rejected unconditionally
-        //   under SigVersion::Base. Tapscript narrows this in M3.
+        //   under SigVersion::Base. Under Tapscript they only fail when
+        //   executed (not in unexecuted branches) — handled in dispatch.
+        // - OP_SUCCESSx (BIP342): if any such opcode appears *anywhere* in a
+        //   tapscript (even in an unexecuted branch), the whole script
+        //   succeeds immediately.
         match step.opcode {
             Opcode::VerIf | Opcode::VerNotIf => {
                 return Err(ScriptError::BadOpcodeReserved);
@@ -179,14 +198,23 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             op if op.is_disabled() && self.sig_version.is_base() => {
                 return Err(ScriptError::DisabledOpcode);
             }
+            op if op.is_tapscript_success()
+                && self.sig_version == SigVersion::Tapscript =>
+            {
+                // OP_SUCCESSx: entire script succeeds immediately.
+                return Ok(());
+            }
             _ => {}
         }
 
         let executing = self.conditions.executing();
 
-        // Op count is incremented for every executed non-push opcode that
-        // is `> OP_16` (0x60). Push opcodes don't count.
-        if !step.opcode.is_push() && step.opcode.to_byte() > Opcode::OpN(16).to_byte() {
+        // Op count: not enforced in tapscript (BIP342 replaces per-script
+        // op limit with a per-input weight-based sigop budget).
+        if self.sig_version != SigVersion::Tapscript
+            && !step.opcode.is_push()
+            && step.opcode.to_byte() > Opcode::OpN(16).to_byte()
+        {
             self.op_count += 1;
             if self.op_count > MAX_OPS_PER_SCRIPT {
                 return Err(ScriptError::OpCount);
@@ -355,8 +383,15 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             | Opcode::LShift
             | Opcode::RShift => Err(ScriptError::DisabledOpcode),
 
-            // ── M3 stub ─────────────────────────────────────────────────────
-            Opcode::CheckSigAdd => Err(ScriptError::BadOpcode),
+            // ── Tapscript (M3) ───────────────────────────────────────────────
+            Opcode::CheckSigAdd => {
+                if self.sig_version == SigVersion::Tapscript {
+                    self.op_check_sig_add(script)
+                } else {
+                    // Outside tapscript this byte is OP_INVALIDOPCODE.
+                    Err(ScriptError::BadOpcode)
+                }
+            }
 
             // ── Pre-scanned out (defensive) ─────────────────────────────────
             Opcode::VerIf | Opcode::VerNotIf => Err(ScriptError::BadOpcodeReserved),

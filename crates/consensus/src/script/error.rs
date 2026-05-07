@@ -76,7 +76,7 @@ pub enum ScriptError {
     /// disallowed under `CONST_SCRIPTCODE`.
     OpCodeSeparator,
 
-    // ── Witness / taproot (M2+ — placeholders so the enum doesn't churn) ────
+    // ── Witness / segwit ────────────────────────────────────────────────────
     /// Witness program version or length is invalid.
     WitnessProgramMismatch,
     /// Witness was provided where none was expected.
@@ -89,6 +89,29 @@ pub enum ScriptError {
     DiscourageUpgradableWitnessProgram,
     /// `OP_NOPx` execution under `DISCOURAGE_UPGRADABLE_NOPS`.
     DiscourageUpgradableNops,
+
+    // ── Taproot / tapscript (M3) ────────────────────────────────────────────
+    /// Schnorr signature is not exactly 64 or 65 bytes.
+    SchnorrSigSize,
+    /// Schnorr signature has an invalid hash type byte (65-byte form).
+    SchnorrSigHashType,
+    /// Schnorr signature failed verification.
+    SchnorrSigInvalidFormat,
+    /// x-only public key is not exactly 32 bytes.
+    XOnlyPubkeySize,
+    /// x-only public key does not correspond to a valid secp256k1 point.
+    XOnlyPubkeyTweak,
+    /// Taproot control block is malformed (wrong length, invalid leaf version).
+    TaprootWrongControlSize,
+    /// Taproot commitment check (tweaked-key vs. witness program) failed.
+    WitnessProgramMismatchTaproot,
+    /// Taproot key-path signature verification failed.
+    TaprootVerify,
+    /// Leaf version in the control block is not 0xC0 under
+    /// `DISCOURAGE_UPGRADABLE_TAPROOT_VERSION`.
+    DiscourageUpgradableTaprootVersion,
+    /// `OP_CHECKSIGADD` was given a non-empty signature that failed, under `NULLFAIL`.
+    TaprootChecksigAdd,
 
     // ── Limits ──────────────────────────────────────────────────────────────
     /// Script length exceeds the 10,000-byte limit.

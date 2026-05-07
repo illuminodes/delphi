@@ -40,6 +40,8 @@ use mantle::codec::{Encode, VarInt};
 use mantle::hash::sha256d;
 use mantle::primitives::{Hash256, Satoshi, Transaction, TxIn, TxOut, Witness};
 
+use super::consensus_crypto::tagged_hash;
+
 /// `hash_type` mode (low 5 bits, masking off `ANYONECANPAY`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigHashMode {
@@ -441,6 +443,315 @@ pub fn script_code_after_codeseparator(script: &[u8], code_separator_pos: usize)
 // `encoded_len` is on `Transaction` already; we route through it to avoid
 // a second size pass. `Vec<u8>` conversion of script_sig/script_pubkey is
 // needed because `ScriptSig` / `ScriptPubKey` round-trip via `Vec<u8>`.
+
+// ── BIP341 sighash ─────────────────────────────────────────────────────────
+
+/// BIP341 `hash_type` for taproot/tapscript.
+///
+/// - `0x00` → `SIGHASH_DEFAULT` (same as ALL but only valid in 64-byte form)
+/// - `0x01` → `SIGHASH_ALL`
+/// - `0x02` → `SIGHASH_NONE`
+/// - `0x03` → `SIGHASH_SINGLE`
+/// - `0x81` → `SIGHASH_ALL | ANYONECANPAY`
+/// - `0x82` → `SIGHASH_NONE | ANYONECANPAY`
+/// - `0x83` → `SIGHASH_SINGLE | ANYONECANPAY`
+///
+/// All other values are invalid under BIP341.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaprootSigHashType(pub u8);
+
+impl TaprootSigHashType {
+    pub const DEFAULT: Self = Self(0x00);
+    pub const ALL: Self = Self(0x01);
+    pub const NONE: Self = Self(0x02);
+    pub const SINGLE: Self = Self(0x03);
+    pub const ALL_ANYONECANPAY: Self = Self(0x81);
+    pub const NONE_ANYONECANPAY: Self = Self(0x82);
+    pub const SINGLE_ANYONECANPAY: Self = Self(0x83);
+
+    /// `true` if `ANYONECANPAY` bit is set (bit 7).
+    #[must_use]
+    pub const fn is_anyonecanpay(self) -> bool {
+        self.0 & 0x80 != 0
+    }
+
+    /// Output coverage mode (low 2 bits, after stripping ANYONECANPAY).
+    #[must_use]
+    pub const fn output_mode(self) -> SigHashMode {
+        match self.0 & 0x03 {
+            0x02 => SigHashMode::None,
+            0x03 => SigHashMode::Single,
+            _ => SigHashMode::All, // 0x00 (DEFAULT) and 0x01 (ALL) both → All
+        }
+    }
+
+    /// `true` iff this is a valid BIP341 hash type.
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        matches!(self.0, 0x00 | 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83)
+    }
+}
+
+/// Per-transaction cache for the five BIP341 shared hash fields.
+///
+/// BIP341 sighash commits to *all* input outpoints, amounts, scriptPubKeys,
+/// sequences, and (for non-ANYONECANPAY) all outputs. Pre-hashing them once
+/// per transaction eliminates the quadratic work of legacy sighash.
+#[derive(Debug, Clone)]
+pub struct Bip341Cache {
+    /// `SHA256(outpoint_0 || … || outpoint_{n-1})`
+    prevouts: [u8; 32],
+    /// `SHA256(amount_0 || … || amount_{n-1})`
+    amounts: [u8; 32],
+    /// `SHA256(spk_0 || … || spk_{n-1})`  (each prefixed with `VarInt` len)
+    scriptpubkeys: [u8; 32],
+    /// `SHA256(seq_0 || … || seq_{n-1})`
+    sequences: [u8; 32],
+    /// `SHA256(out_0 || … || out_{m-1})`
+    outputs: [u8; 32],
+}
+
+impl Bip341Cache {
+    /// Build the cache from the transaction and the scriptPubKeys of every
+    /// input's spent output. `spent_spks[i]` is the scriptPubKey of the
+    /// output that `tx.inputs[i]` spends.
+    ///
+    /// # Panics
+    /// Panics if `spent_spks.len() != tx.inputs.len()`.
+    #[must_use]
+    pub fn new(tx: &Transaction, spent_amounts: &[Satoshi], spent_spks: &[&[u8]]) -> Self {
+        assert_eq!(spent_amounts.len(), tx.inputs.len());
+        assert_eq!(spent_spks.len(), tx.inputs.len());
+
+        let hash_prevouts: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            for inp in &tx.inputs {
+                let mut buf = Vec::with_capacity(36);
+                let _ = inp.previous_output.encode(&mut buf);
+                h.update(&buf);
+            }
+            h.finalize().into()
+        };
+
+        let hash_amounts: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            for &amt in spent_amounts {
+                h.update(u64::from(amt).to_le_bytes());
+            }
+            h.finalize().into()
+        };
+
+        let hash_scriptpubkeys: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            for spk in spent_spks {
+                let mut buf = Vec::new();
+                let _ = VarInt(spk.len() as u64).encode(&mut buf);
+                h.update(&buf);
+                h.update(spk);
+            }
+            h.finalize().into()
+        };
+
+        let hash_sequences: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            for inp in &tx.inputs {
+                h.update(inp.sequence.to_le_bytes());
+            }
+            h.finalize().into()
+        };
+
+        let hash_outputs: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            for out in &tx.outputs {
+                let mut buf = Vec::new();
+                let _ = out.encode(&mut buf);
+                h.update(&buf);
+            }
+            h.finalize().into()
+        };
+
+        Self { prevouts: hash_prevouts, amounts: hash_amounts, scriptpubkeys: hash_scriptpubkeys, sequences: hash_sequences, outputs: hash_outputs }
+    }
+}
+
+/// Compute the BIP341 sighash for a taproot input.
+///
+/// `spent_spk` is the scriptPubKey of the output being spent by `tx.inputs[n_in]`.
+/// `spent_amount` is its value.
+///
+/// `annex` is the optional annex item (the witness item starting with `0x50`),
+/// already stripped of its leading byte — pass `None` if no annex is present.
+///
+/// For key-path spends, `leaf_hash_code_sep` is `None`.
+/// For script-path (tapscript) spends, `leaf_hash_code_sep` is
+/// `Some((leaf_hash, code_sep_pos))` where `leaf_hash` is the
+/// `tagged_hash("TapLeaf", version || compact_size(script) || script)` and
+/// `code_sep_pos` is `0xFFFF_FFFF` if no `OP_CODESEPARATOR` has been seen.
+///
+/// # Panics
+/// Panics if `n_in >= tx.inputs.len()`.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn signature_hash_bip341(
+    tx: &Transaction,
+    n_in: usize,
+    spent_amount: Satoshi,
+    spent_spk: &[u8],
+    hash_type: TaprootSigHashType,
+    cache: &Bip341Cache,
+    annex: Option<&[u8]>,
+    leaf_hash_code_sep: Option<([u8; 32], u32)>,
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+
+    let anyonecanpay = hash_type.is_anyonecanpay();
+    let out_mode = hash_type.output_mode();
+
+    // Epoch byte (BIP341 §Common signature message): always 0x00.
+    let epoch: u8 = 0x00;
+
+    let mut preimage: Vec<u8> = Vec::with_capacity(256);
+
+    // epoch
+    preimage.push(epoch);
+    // hash_type
+    preimage.push(hash_type.0);
+    // nVersion (4 LE)
+    preimage.extend_from_slice(&tx.version.to_le_bytes());
+    // nLocktime (4 LE)
+    preimage.extend_from_slice(&tx.locktime.to_le_bytes());
+
+    // Shared input hashes — omitted under ANYONECANPAY.
+    if !anyonecanpay {
+        preimage.extend_from_slice(&cache.prevouts);
+        preimage.extend_from_slice(&cache.amounts);
+        preimage.extend_from_slice(&cache.scriptpubkeys);
+        preimage.extend_from_slice(&cache.sequences);
+    }
+
+    // Output hash — mode-dependent.
+    match out_mode {
+        SigHashMode::All => preimage.extend_from_slice(&cache.outputs),
+        SigHashMode::None => {}
+        SigHashMode::Single => {
+            if n_in < tx.outputs.len() {
+                let mut buf = Vec::new();
+                let _ = tx.outputs[n_in].encode(&mut buf);
+                let h: [u8; 32] = Sha256::digest(&buf).into();
+                preimage.extend_from_slice(&h);
+            }
+            // If n_in >= n_outputs, nothing is appended (BIP341 spec).
+        }
+    }
+
+    // Spend type byte: bit 0 = has annex, bit 1 = script-path.
+    let has_annex = annex.is_some();
+    let is_script_path = leaf_hash_code_sep.is_some();
+    let spend_type: u8 = (u8::from(has_annex)) | (u8::from(is_script_path) << 1);
+    preimage.push(spend_type);
+
+    // Per-input data.
+    if anyonecanpay {
+        let inp = &tx.inputs[n_in];
+        let mut ob = Vec::with_capacity(36);
+        let _ = inp.previous_output.encode(&mut ob);
+        preimage.extend_from_slice(&ob);
+        preimage.extend_from_slice(&u64::from(spent_amount).to_le_bytes());
+        let mut spk_buf = Vec::new();
+        let _ = VarInt(spent_spk.len() as u64).encode(&mut spk_buf);
+        preimage.extend_from_slice(&spk_buf);
+        preimage.extend_from_slice(spent_spk);
+        preimage.extend_from_slice(&tx.inputs[n_in].sequence.to_le_bytes());
+    } else {
+        // Input index (4 LE).
+        preimage.extend_from_slice(&u32::try_from(n_in).unwrap_or(u32::MAX).to_le_bytes());
+    }
+
+    // Annex hash: SHA256(compact_size(len) || annex_bytes).
+    if let Some(annex_bytes) = annex {
+        let mut buf = Vec::new();
+        let _ = VarInt((annex_bytes.len() as u64) + 1).encode(&mut buf); // +1 for the 0x50 prefix byte
+        buf.push(0x50);
+        buf.extend_from_slice(annex_bytes);
+        let h: [u8; 32] = Sha256::digest(&buf).into();
+        preimage.extend_from_slice(&h);
+    }
+
+    // Script-path extension.
+    if let Some((leaf_hash, code_sep_pos)) = leaf_hash_code_sep {
+        preimage.extend_from_slice(&leaf_hash);
+        preimage.extend_from_slice(&code_sep_pos.to_le_bytes());
+    }
+
+    tagged_hash(b"TapSighash", &preimage)
+}
+
+/// BIP341 taproot hash helpers — leaf, branch, and output-key tweak.
+///
+/// All methods are associated (no `self`) because they operate on raw byte
+/// slices rather than any persistent state. Grouped as a struct to satisfy
+/// the project guideline against free functions.
+pub struct TapHasher;
+
+impl TapHasher {
+    /// `tagged_hash("TapLeaf", leaf_version || compact_size(len) || script)`.
+    ///
+    /// `leaf_version` is typically `0xC0`.
+    #[must_use]
+    pub fn leaf(leaf_version: u8, script: &[u8]) -> [u8; 32] {
+        let mut buf = Vec::with_capacity(1 + 9 + script.len());
+        buf.push(leaf_version);
+        let mut vint = Vec::new();
+        let _ = VarInt(script.len() as u64).encode(&mut vint);
+        buf.extend_from_slice(&vint);
+        buf.extend_from_slice(script);
+        tagged_hash(b"TapLeaf", &buf)
+    }
+
+    /// `tagged_hash("TapBranch", left || right)`.
+    ///
+    /// BIP341 uses caller-ordered (non-auto-sorted) branch hashing.
+    #[must_use]
+    pub fn branch(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+        let mut buf = [0u8; 64];
+        buf[..32].copy_from_slice(left);
+        buf[32..].copy_from_slice(right);
+        tagged_hash(b"TapBranch", &buf)
+    }
+
+    /// Compute the BIP341 tweaked output key.
+    ///
+    /// `tweak = tagged_hash("TapTweak", internal_key || merkle_root)`
+    /// `output_key = internal_key_point + tweak * G`  (x-only result).
+    ///
+    /// For key-path-only outputs pass an empty `merkle_root`.
+    /// Returns `None` if `internal_key` is not a valid secp256k1 x-only point.
+    #[must_use]
+    pub fn tweak_output_key(internal_key: &[u8; 32], merkle_root: &[u8]) -> Option<[u8; 32]> {
+        use k256::elliptic_curve::ops::{MulByGenerator, Reduce};
+        use k256::elliptic_curve::point::AffineCoordinates;
+        use k256::schnorr::VerifyingKey as SchnorrVK;
+        use k256::{ProjectivePoint, Scalar, U256};
+
+        let internal_vk = SchnorrVK::from_bytes(internal_key).ok()?;
+        let internal_point: ProjectivePoint = (*internal_vk.as_affine()).into();
+
+        let mut tweak_input = Vec::with_capacity(64);
+        tweak_input.extend_from_slice(internal_key);
+        tweak_input.extend_from_slice(merkle_root);
+        let tweak_hash = tagged_hash(b"TapTweak", &tweak_input);
+
+        let tweak_scalar = <Scalar as Reduce<U256>>::reduce_bytes((&tweak_hash).into());
+        let output_point = internal_point + ProjectivePoint::mul_by_generator(&tweak_scalar);
+        let x: [u8; 32] = output_point.to_affine().x().into();
+        Some(x)
+    }
+}
 
 #[cfg(test)]
 mod tests;
