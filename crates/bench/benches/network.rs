@@ -1,10 +1,10 @@
-use mantle_core::codec::{Decode, Encode, VarInt};
-use mantle_core::hash::checksum;
-use mantle_core::network::{
+use mantle::codec::{Decode, Encode, VarInt};
+use mantle::hash::checksum;
+use mantle::network::{
     Command, CommandName, GetHeadersMsg, HeadersMsg, InvEntry, InvMsg, InvType, Magic,
     MessageHeader, NetworkAddr, PingMsg, VersionMsg, encode_message,
 };
-use mantle_core::primitives::{BlockHeader, Hash256};
+use mantle::primitives::{BlockHeader, Hash256};
 use std::io::Cursor;
 use std::hint::black_box;
 

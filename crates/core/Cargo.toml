@@ -1,5 +1,5 @@
 [package]
-name = "mantle-core"
+name = "mantle"
 version.workspace = true
 edition.workspace = true
 

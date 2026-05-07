@@ -138,14 +138,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf0a07a401f374238ab8e2f11a104d2851bf9ce711ec69804834de8af45c7af"
 
 [[package]]
-name = "consensus"
-version = "0.1.0"
-dependencies = [
- "mantle-core",
- "proptest",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -379,11 +371,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "mantle"
+version = "0.1.0"
+dependencies = [
+ "quetzalcoatl",
+ "ququmatz",
+ "sha2",
+]
+
+[[package]]
 name = "mantle-bench"
 version = "0.1.0"
 dependencies = [
  "divan",
- "mantle-core",
+ "mantle",
 ]
 
 [[package]]
@@ -394,12 +395,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "mantle-core"
+name = "mantle-consensus"
 version = "0.1.0"
 dependencies = [
- "quetzalcoatl",
- "ququmatz",
- "sha2",
+ "mantle",
+ "proptest",
 ]
 
 [[package]]
@@ -407,7 +407,7 @@ name = "mantle-node"
 version = "0.1.0"
 dependencies = [
  "dhat",
- "mantle-core",
+ "mantle",
  "quetzalcoatl",
 ]
 

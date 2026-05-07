@@ -1,4 +1,4 @@
-use mantle_core::hash::{checksum, sha256d};
+use mantle::hash::{checksum, sha256d};
 
 fn main() {
     divan::main();

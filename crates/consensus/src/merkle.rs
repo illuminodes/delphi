@@ -1,5 +1,5 @@
-use mantle_core::hash::sha256d;
-use mantle_core::primitives::Hash256;
+use mantle::hash::sha256d;
+use mantle::primitives::Hash256;
 
 /// Compute the merkle root for a list of txids.
 ///

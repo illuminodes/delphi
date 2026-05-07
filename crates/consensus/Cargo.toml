@@ -1,5 +1,5 @@
 [package]
-name = "consensus"
+name = "mantle-consensus"
 version.workspace = true
 edition.workspace = true
 
@@ -7,7 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-mantle-core = { path = "../mantle-core" }
+mantle = { path = "../core" }
 
 [dev-dependencies]
 proptest = "1"

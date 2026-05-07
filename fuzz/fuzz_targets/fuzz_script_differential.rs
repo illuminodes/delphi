@@ -1,11 +1,11 @@
 #![no_main]
 
 use arbitrary::Arbitrary;
-use consensus::validation::validate_block_structure;
 use libfuzzer_sys::fuzz_target;
 use mantle_conformance::conformance;
-use mantle_core::codec::{Decode, Encode};
-use mantle_core::primitives::{Block, BlockHeader, Hash256, Transaction, TxOut};
+use mantle_consensus::validation::validate_block_structure;
+use mantle::codec::{Decode, Encode};
+use mantle::primitives::{Block, BlockHeader, Hash256, Transaction, TxOut};
 use std::io::Cursor;
 
 /// Mask to the flag bits bitcoinconsensus v26 accepts.
@@ -58,8 +58,8 @@ fuzz_target!(|input: FuzzInput| {
     // Wrap it in a minimal block so validate_block_structure can check it.
     // We deliberately use an easy nBits (regtest) and set the merkle root
     // correctly so only the tx-level checks are exercised here, not PoW.
-    let txid = consensus::validation::txid(&tx);
-    let merkle_root = consensus::merkle::compute_merkle_root(&[txid])
+    let txid = mantle_consensus::validation::txid(&tx);
+    let merkle_root = mantle_consensus::merkle::compute_merkle_root(&[txid])
         .expect("single-element slice is never empty");
 
     let block = Block {

@@ -1,7 +1,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use mantle_core::codec::{Decode, Encode};
-use mantle_core::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
+use mantle::codec::{Decode, Encode};
+use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
 use std::io::Cursor;
 
 macro_rules! fuzz_roundtrip {

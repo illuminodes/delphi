@@ -4,8 +4,8 @@
 /// hand-crafted examples. They run on every `cargo test` invocation.
 use proptest::prelude::*;
 
-use mantle_core::codec::{Decode, Encode, VarInt};
-use mantle_core::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
+use mantle::codec::{Decode, Encode, VarInt};
+use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
 use std::io::Cursor;
 
 use crate::merkle::compute_merkle_root;

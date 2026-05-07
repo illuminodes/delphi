@@ -6,7 +6,7 @@ pub mod primitives;
 
 // ── Crate-level Error ─────────────────────────────────────────────────────────
 
-/// The single error type that encompasses every failure mode in `mantle-core`.
+/// The single error type that encompasses every failure mode in `mantle`.
 #[derive(Debug)]
 pub enum Error {
     /// A wire-format encoding or decoding failure.

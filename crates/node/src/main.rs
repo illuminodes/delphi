@@ -5,12 +5,12 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 use std::net::SocketAddrV4;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mantle_core::codec::Encode;
-use mantle_core::network::{
+use mantle::codec::Encode;
+use mantle::network::{
     Command, GetHeadersMsg, HeadersMsg, Magic, NetworkAddr, VersionMsg, services,
 };
-use mantle_core::peer::{HandshakeState, InboundMsg, Node};
-use mantle_core::primitives::Hash256;
+use mantle::peer::{HandshakeState, InboundMsg, Node};
+use mantle::primitives::Hash256;
 
 // Resolved from multiple DNS seeds — tried in order until one responds.
 const SEED_PEERS: &[&str] = &[
@@ -86,7 +86,7 @@ fn main() {
     eprintln!("all seed peers exhausted");
 }
 
-fn try_peer(addr: SocketAddrV4) -> Result<bool, mantle_core::Error> {
+fn try_peer(addr: SocketAddrV4) -> Result<bool, mantle::Error> {
     let mut node = Node::new(Magic::Mainnet, 64, our_version())?;
     let peer_id = node.connect(addr)?;
     let inbound = node.inbound_rx.clone();
@@ -125,7 +125,7 @@ fn try_peer(addr: SocketAddrV4) -> Result<bool, mantle_core::Error> {
 
 /// Returns true if we received a `headers` message.
 fn handle_message(msg: &InboundMsg) -> bool {
-    let cmd = Command::from_command_name(mantle_core::network::CommandName(msg.command));
+    let cmd = Command::from_command_name(mantle::network::CommandName(msg.command));
 
     println!(
         "  <- {} ({} bytes)",
@@ -144,7 +144,7 @@ fn handle_message(msg: &InboundMsg) -> bool {
                         Err(e) => { eprintln!("  failed to decode header: {e}"); break; }
                     };
                     let raw = h.to_bytes();
-                    let hash = mantle_core::hash::sha256d(&raw);
+                    let hash = mantle::hash::sha256d(&raw);
                     let mut rev = hash;
                     rev.reverse();
                     let hex: String = rev.iter().fold(String::new(), |mut s, b| {

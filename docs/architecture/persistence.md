@@ -19,7 +19,7 @@ From `principles.md`:
 From the project state:
 - `ququmatz` provides io_uring bindings (raw syscalls, `#![no_std]`, no libc). `IoUring` is `!Send + !Sync` by construction — one ring per thread is enforced at the type level.
 - `quetzalcoatl` provides lock-free ring buffers (SPSC, MPSC, SPMC, MPMC, broadcast). Bounded by construction; power-of-two capacities; cache-padded cursors.
-- The network layer (`mantle-core::peer::Node`) already uses both crates: ququmatz `IoUring` for socket IO, quetzalcoatl `mpsc` for outbound and `spmc` for inbound. The storage subsystem follows the same template.
+- The network layer (`mantle::peer::Node`) already uses both crates: ququmatz `IoUring` for socket IO, quetzalcoatl `mpsc` for outbound and `spmc` for inbound. The storage subsystem follows the same template.
 
 ---
 
@@ -109,7 +109,7 @@ loop {
 }
 ```
 
-This is structurally identical to `Node::poll_or_timeout` in `mantle-core::peer.rs:318`. The differences are: ops are file IO instead of socket IO; correlation tokens are validator-supplied instead of `(peer_id, op)` tuples; completions feed a response ring instead of an inbound message ring.
+This is structurally identical to `Node::poll_or_timeout` in `mantle::peer.rs:318`. The differences are: ops are file IO instead of socket IO; correlation tokens are validator-supplied instead of `(peer_id, op)` tuples; completions feed a response ring instead of an inbound message ring.
 
 ### Wakeup
 
@@ -439,6 +439,6 @@ Things this document does *not* commit to. Phase 2 work.
 ## Cross-references
 
 - Crates underpinning this design: `ququmatz` (`/home/cuarentaydos/Code/tooling/ququmatz`), `quetzalcoatl` (`/home/cuarentaydos/Code/tooling/quetzalcoatl`).
-- The networking subsystem in `mantle-core::peer` is the structural template — same shape (one io_uring per thread, two ring buffers for ICC, eventfd-style wakeup is the upgrade path).
+- The networking subsystem in `mantle::peer` is the structural template — same shape (one io_uring per thread, two ring buffers for ICC, eventfd-style wakeup is the upgrade path).
 - Validation pillar: separate doc, to be written.
 - Architectural principles: `principles.md` in this directory.

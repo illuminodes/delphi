@@ -1,7 +1,7 @@
 /// Conformance testing glue: wraps libbitcoinconsensus (Bitcoin Core v26.0)
 /// and exposes a Rust API for differential testing.
 ///
-/// NEVER add this crate as a dependency of mantle-node or mantle-core.
+/// NEVER add this crate as a dependency of mantle-node or mantle.
 /// It is test-infrastructure only.
 pub mod conformance {
     pub use bitcoinconsensus::{

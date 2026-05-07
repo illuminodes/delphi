@@ -22,6 +22,8 @@ pub enum ValidationError {
     TotalOutputValueOverflow { tx_index: usize },
     /// A transaction contains duplicate inputs (same outpoint appears twice).
     DuplicateInput { tx_index: usize },
+    /// Two or more transactions in the block share the same txid (CVE-2012-2459).
+    DuplicateTransaction,
     /// Coinbase scriptSig length is outside [2, 100].
     CoinbaseScriptSigLength { len: usize },
     /// Block weight exceeds the 4,000,000 weight-unit limit (BIP141).

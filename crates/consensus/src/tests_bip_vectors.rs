@@ -2,9 +2,9 @@
 ///
 /// These are static, hand-encoded constants derived from known-good Bitcoin
 /// data. No runtime file I/O; everything compiles into the test binary.
-use mantle_core::codec::{Decode, Encode};
-use mantle_core::hash::sha256d;
-use mantle_core::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
+use mantle::codec::{Decode, Encode};
+use mantle::hash::sha256d;
+use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxIn, TxOut};
 use std::io::Cursor;
 
 use crate::chain_view::{ChainView, Coin, MemoryChainView};

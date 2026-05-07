@@ -22,9 +22,9 @@ pub const GENESIS_TXID: &str = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77a
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mantle_core::codec::{Decode, DecodeRef};
-    use mantle_core::hash::sha256d;
-    use mantle_core::primitives::{Block, BlockHeader};
+    use mantle::codec::{Decode, DecodeRef};
+    use mantle::hash::sha256d;
+    use mantle::primitives::{Block, BlockHeader};
     use std::io::Cursor;
 
     fn decode_hex(s: &str) -> Vec<u8> {
@@ -49,7 +49,7 @@ mod tests {
         assert_eq!(header.time, 1231006505);
         assert_eq!(header.bits, 0x1d00ffff);
         assert_eq!(header.nonce, 2083236893);
-        assert_eq!(header.prev_block, mantle_core::primitives::Hash256::ZERO);
+        assert_eq!(header.prev_block, mantle::primitives::Hash256::ZERO);
     }
 
     #[test]
@@ -78,7 +78,7 @@ mod tests {
         let block = Block::decode(&mut Cursor::new(&bytes)).unwrap();
 
         let mut tx_bytes = Vec::new();
-        use mantle_core::codec::Encode;
+        use mantle::codec::Encode;
         block.transactions[0].encode(&mut tx_bytes).unwrap();
         let txid = sha256d(&tx_bytes);
         assert_eq!(hash_to_hex(txid), GENESIS_TXID);

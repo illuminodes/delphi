@@ -19,7 +19,7 @@ From `principles.md`:
 
 From the project state:
 - The persistence subsystem (see `persistence.md`) exposes a message-passing API. The validator's view of storage is a synchronous-feeling abstraction (`ChainView`) backed by token-correlated async messages.
-- `mantle-core` already has codec, hash, and primitive types for headers and transactions.
+- `mantle` already has codec, hash, and primitive types for headers and transactions.
 
 ---
 
@@ -353,4 +353,4 @@ Things this document does *not* commit to:
 - The storage seam is specified in `persistence.md` (this directory). Validator never bypasses `ChainView`.
 - The conformance test infrastructure is specified in `conformance.md`. The `mantle-conformance` crate is implemented; the differential script fuzzer is scaffolded (`fuzz_script_differential`). *We do not write production script code before the differential fuzzer can run* — the scaffold is ready to activate when the interpreter exists.
 - Architectural principles: `principles.md` (this directory).
-- `mantle-core` has the codecs, header types, and primitive types this design assumes. The validator lives in the `consensus` crate, which imports `mantle-core` without circular dependencies.
+- `mantle` has the codecs, header types, and primitive types this design assumes. The validator lives in the `consensus` crate, which imports `mantle` without circular dependencies.

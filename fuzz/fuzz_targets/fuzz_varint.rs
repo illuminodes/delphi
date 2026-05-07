@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use mantle_core::codec::{Decode, DecodeRef, Encode, VarInt};
+use mantle::codec::{Decode, DecodeRef, Encode, VarInt};
 use std::io::Cursor;
 
 fuzz_target!(|data: &[u8]| {

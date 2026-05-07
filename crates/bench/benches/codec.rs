@@ -1,4 +1,4 @@
-use mantle_core::codec::{Decode, DecodeRef, Encode, VarInt};
+use mantle::codec::{Decode, DecodeRef, Encode, VarInt};
 use std::io::Cursor;
 
 fn main() {

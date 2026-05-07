@@ -32,9 +32,9 @@ test = false
 doc = false
 
 [dependencies]
-mantle-core = { path = "../crates/mantle-core" }
-mantle-conformance = { path = "../crates/mantle-conformance" }
-consensus = { path = "../crates/consensus" }
+mantle = { path = "../crates/core" }
+mantle-conformance = { path = "../crates/conformance" }
+mantle-consensus = { path = "../crates/consensus" }
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 arbitrary = { version = "1", features = ["derive"] }
 

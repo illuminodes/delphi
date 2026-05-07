@@ -1,7 +1,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use mantle_core::codec::{Decode, Encode};
-use mantle_core::network::{
+use mantle::codec::{Decode, Encode};
+use mantle::network::{
     GetHeadersMsg, HeadersMsg, InvMsg, MessageHeader, NetworkAddr, PingMsg, VersionMsg,
 };
 use std::io::Cursor;

@@ -88,7 +88,7 @@ Three new crates, each with a tightly scoped responsibility. All three are dev-o
 
 ### `mantle-conformance`
 
-**Status: implemented** at `crates/mantle-conformance/`.
+**Status: implemented** at `crates/conformance/`.
 
 The differential-test glue. Uses the `bitcoinconsensus = "0.106.0"` crate, which bundles the Bitcoin Core v26 C++ source and builds it as part of `cargo build` — no system library dependency, pinned to a specific Core version, reproducible on any machine.
 
@@ -129,7 +129,7 @@ pub mod conformance {
 
 **Note on build approach:** the design document anticipated two options (pinned source build vs. system library). The `bitcoinconsensus` crate eliminates this choice — it always builds from its bundled pinned source. This is strictly better than the system-library option and simpler than a custom build-script.
 
-**Constraint:** this crate is never in the dependency tree of the production node. It appears only as a dependency of the `mantle-fuzz` crate and future `mantle-replay` / integration test crates. It is never a dependency of `mantle-node`, `mantle-core`, or `consensus`.
+**Constraint:** this crate is never in the dependency tree of the production node. It appears only as a dependency of the `mantle-fuzz` crate and future `mantle-replay` / integration test crates. It is never a dependency of `mantle-node`, `mantle`, or `consensus`.
 
 ### `mantle-blkdat`
 
@@ -157,7 +157,7 @@ impl BlockDirReader {
 - No dependency on a running Core process during tests.
 - Format is essentially append-only; concurrent reads are safe while a Core node is writing (we just don't see blocks newer than what's been flushed).
 
-**Constraint:** `mantle-blkdat` does not depend on `mantle-core` types. It returns raw bytes. Decoding into `Block` is the consumer's responsibility — keeps the test crate's compile graph clean and lets us swap the consumer's decoder without touching the reader.
+**Constraint:** `mantle-blkdat` does not depend on `mantle` types. It returns raw bytes. Decoding into `Block` is the consumer's responsibility — keeps the test crate's compile graph clean and lets us swap the consumer's decoder without touching the reader.
 
 ### `mantle-replay`
 
@@ -412,5 +412,5 @@ Things this document does *not* commit to:
 - `persistence.md` — the storage seam that `ChainView` test implementations stand in for.
 - `fuzz/` — Layer 1 and the Layer 2 differential target (`fuzz_script_differential`) live here.
 - `crates/consensus/` — home of Stage 1/2 validation, `ChainView`, `MemoryChainView`, and the Layer 3/4 test modules.
-- `crates/mantle-conformance/` — implemented; the FFI bridge to `bitcoinconsensus` v26.
+- `crates/conformance/` — implemented; the FFI bridge to `bitcoinconsensus` v26.
 - `mantle-blkdat` and `mantle-replay` — not yet added to the workspace; needed for Layer 5.

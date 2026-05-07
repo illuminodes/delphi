@@ -20,7 +20,7 @@ name = "network"
 harness = false
 
 [dependencies]
-mantle-core = { path = "../mantle-core" }
+mantle = { path = "../core" }
 
 [dev-dependencies]
 divan = "0.1"

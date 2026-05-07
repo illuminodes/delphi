@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use mantle_core::primitives::{BlockHeader, Hash256, OutPoint};
+use mantle::primitives::{BlockHeader, Hash256, OutPoint};
 
 use crate::error::ChainViewError;
 
@@ -67,6 +67,17 @@ pub trait ChainView {
     /// current tip or is otherwise absent.
     fn get_header_at(&self, height: u32) -> Result<Option<BlockHeader>, ChainViewError>;
 
+    /// Height of a header on the canonical chain, by hash.
+    ///
+    /// This is the inverse of `get_header_at`. Implementations are expected
+    /// to satisfy this in O(1) — Stage 2 contextual validation calls it
+    /// for every block, so a linear scan would make IBD quadratic.
+    ///
+    /// # Errors
+    /// Returns `Err` on storage failure. Returns `Ok(None)` if no header
+    /// with that hash exists in the canonical chain.
+    fn height_of(&self, hash: &Hash256) -> Result<Option<u32>, ChainViewError>;
+
     /// Median-time-past for BIP113: median of the timestamps of the 11 blocks
     /// immediately preceding `header` (or fewer if near genesis).
     ///
@@ -106,7 +117,7 @@ impl MemoryChainView {
     /// Panics if the chain grows beyond `u32::MAX` headers (impossible in practice).
     pub fn push_header(&mut self, header: BlockHeader) {
         let height = u32::try_from(self.headers.len()).expect("chain height exceeds u32");
-        let hash = Hash256(mantle_core::hash::sha256d(&header.to_bytes()));
+        let hash = Hash256(mantle::hash::sha256d(&header.to_bytes()));
         self.header_index.insert(hash, height);
         self.headers.push(header);
     }
@@ -137,6 +148,10 @@ impl ChainView for MemoryChainView {
 
     fn get_header_at(&self, height: u32) -> Result<Option<BlockHeader>, ChainViewError> {
         Ok(self.headers.get(height as usize).copied())
+    }
+
+    fn height_of(&self, hash: &Hash256) -> Result<Option<u32>, ChainViewError> {
+        Ok(self.header_index.get(hash).copied())
     }
 
     fn median_time_past(&self, header: &BlockHeader) -> Result<u32, ChainViewError> {
@@ -174,7 +189,7 @@ impl ChainView for MemoryChainView {
             Some(h) => {
                 let height = u32::try_from(self.headers.len() - 1).expect("chain height exceeds u32");
                 TipInfo {
-                    hash: Hash256(mantle_core::hash::sha256d(&h.to_bytes())),
+                    hash: Hash256(mantle::hash::sha256d(&h.to_bytes())),
                     height,
                 }
             }
@@ -203,7 +218,7 @@ mod tests {
         let mut prev = Hash256::ZERO;
         for &t in times {
             let h = header(t, prev);
-            prev = Hash256(mantle_core::hash::sha256d(&h.to_bytes()));
+            prev = Hash256(mantle::hash::sha256d(&h.to_bytes()));
             view.push_header(h);
         }
     }
@@ -230,7 +245,7 @@ mod tests {
         let mut view = MemoryChainView::new();
         let h = header(9_999, Hash256::ZERO);
         view.push_header(h);
-        let hash = Hash256(mantle_core::hash::sha256d(&h.to_bytes()));
+        let hash = Hash256(mantle::hash::sha256d(&h.to_bytes()));
         assert_eq!(view.get_header(&hash).unwrap().unwrap().time, 9_999);
         assert!(view.get_header(&Hash256::ZERO).unwrap().is_none());
     }

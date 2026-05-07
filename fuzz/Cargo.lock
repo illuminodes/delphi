@@ -48,13 +48,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "consensus"
-version = "0.1.0"
-dependencies = [
- "mantle-core",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -147,14 +140,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mantle-conformance"
-version = "0.1.0"
-dependencies = [
- "bitcoinconsensus",
-]
-
-[[package]]
-name = "mantle-core"
+name = "mantle"
 version = "0.1.0"
 dependencies = [
  "quetzalcoatl",
@@ -163,14 +149,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "mantle-conformance"
+version = "0.1.0"
+dependencies = [
+ "bitcoinconsensus",
+]
+
+[[package]]
+name = "mantle-consensus"
+version = "0.1.0"
+dependencies = [
+ "mantle",
+]
+
+[[package]]
 name = "mantle-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
- "consensus",
  "libfuzzer-sys",
+ "mantle",
  "mantle-conformance",
- "mantle-core",
+ "mantle-consensus",
 ]
 
 [[package]]
