@@ -106,6 +106,23 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
     /// Dispatch one decoded step. Public to the parent module so individual
     /// opcodes can be tested in isolation by feeding hand-built `Step`s.
     pub(super) fn step(&mut self, step: Step<'_>) -> Result<(), ScriptError> {
+        // Always-fail opcodes: rejected even when reached only inside an
+        // unexecuted `OP_IF` branch. Inlined here so we don't pay for a
+        // separate pre-scan walk of the script.
+        // - VERIF / VERNOTIF: rejected in every script version.
+        // - The legacy disabled set (CAT/SUBSTR/LEFT/RIGHT/INVERT/AND/OR/XOR/
+        //   2MUL/2DIV/MUL/DIV/MOD/LSHIFT/RSHIFT): rejected unconditionally
+        //   under SigVersion::Base. Tapscript narrows this in M3.
+        match step.opcode {
+            Opcode::VerIf | Opcode::VerNotIf => {
+                return Err(ScriptError::BadOpcodeReserved);
+            }
+            op if op.is_disabled() && self.sig_version.is_base() => {
+                return Err(ScriptError::DisabledOpcode);
+            }
+            _ => {}
+        }
+
         let executing = self.conditions.executing();
 
         // Op count is incremented for every executed non-push opcode that

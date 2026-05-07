@@ -18,7 +18,7 @@
 //! sufficient — but the `executing()` query never reads from it.
 
 /// Tracks `OP_IF`/`OP_NOTIF` nesting with an O(1) "are we executing?" query.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ConditionStack {
     /// One bool per open `IF`/`NOTIF`, in nesting order. Used only by `toggle_top`
     /// (i.e. `OP_ELSE`) and `pop` (i.e. `OP_ENDIF`); never scanned for the
@@ -28,11 +28,27 @@ pub struct ConditionStack {
     depth_executing: u32,
 }
 
+/// Pre-allocated capacity for `branches`. Most legacy scripts have
+/// shallow IF nesting (≤ 4-8 levels); 16 covers typical use without
+/// burning RAM, and avoids Vec reallocs in the hot path. Deeper scripts
+/// grow it.
+const INITIAL_BRANCHES_CAPACITY: usize = 16;
+
+impl Default for ConditionStack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConditionStack {
-    /// Empty — no `OP_IF` is currently open.
+    /// Empty — no `OP_IF` is currently open. Pre-allocates a small
+    /// capacity so typical-depth IF nesting doesn't realloc.
     #[must_use]
-    pub const fn new() -> Self {
-        Self { branches: Vec::new(), depth_executing: 0 }
+    pub fn new() -> Self {
+        Self {
+            branches: Vec::with_capacity(INITIAL_BRANCHES_CAPACITY),
+            depth_executing: 0,
+        }
     }
 
     /// Total open `IF`/`NOTIF` depth.
