@@ -6,6 +6,7 @@ use mantle_core::network::{
 };
 use mantle_core::primitives::{BlockHeader, Hash256};
 use std::io::Cursor;
+use std::hint::black_box;
 
 fn main() {
     divan::main();
@@ -100,6 +101,31 @@ fn inv_msg_decode(bencher: divan::Bencher, n: usize) {
     bencher.bench(|| InvMsg::decode(&mut Cursor::new(bytes.as_slice())).unwrap());
 }
 
+#[divan::bench(args = [1usize, 16, 256, 2000])]
+fn inv_msg_iter(bencher: divan::Bencher, n: usize) {
+    let msg = InvMsg((0..n).map(|i| InvEntry { kind: InvType::Block, hash: Hash256([i as u8; 32]) }).collect());
+    let bytes = encode_bytes(&msg);
+    bencher.bench(|| {
+        let mut count = 0usize;
+        for entry in InvMsg::iter_entries::<50_000>(&bytes).unwrap() {
+            black_box(entry.unwrap());
+            count += 1;
+        }
+        count
+    });
+}
+
+#[divan::bench(args = [1usize, 16, 256, 2000])]
+fn inv_msg_decode_into(bencher: divan::Bencher, n: usize) {
+    let msg = InvMsg((0..n).map(|i| InvEntry { kind: InvType::Block, hash: Hash256([i as u8; 32]) }).collect());
+    let bytes = encode_bytes(&msg);
+    let mut buf = Vec::new();
+    bencher.bench_local(|| {
+        InvMsg::decode_into_limited::<50_000>(&mut Cursor::new(bytes.as_slice()), &mut buf).unwrap();
+        black_box(buf.len())
+    });
+}
+
 // ── HeadersMsg ────────────────────────────────────────────────────────────────
 
 fn make_header(i: usize) -> BlockHeader {
@@ -124,6 +150,31 @@ fn headers_msg_decode(bencher: divan::Bencher, n: usize) {
     let msg = HeadersMsg((0..n).map(make_header).collect());
     let bytes = encode_bytes(&msg);
     bencher.bench(|| HeadersMsg::decode(&mut Cursor::new(bytes.as_slice())).unwrap());
+}
+
+#[divan::bench(args = [1usize, 100, 2000])]
+fn headers_msg_iter(bencher: divan::Bencher, n: usize) {
+    let msg = HeadersMsg((0..n).map(make_header).collect());
+    let bytes = encode_bytes(&msg);
+    bencher.bench(|| {
+        let mut count = 0usize;
+        for header in HeadersMsg::iter_entries::<2_000>(&bytes).unwrap() {
+            black_box(header.unwrap());
+            count += 1;
+        }
+        count
+    });
+}
+
+#[divan::bench(args = [1usize, 100, 2000])]
+fn headers_msg_decode_into(bencher: divan::Bencher, n: usize) {
+    let msg = HeadersMsg((0..n).map(make_header).collect());
+    let bytes = encode_bytes(&msg);
+    let mut buf = Vec::new();
+    bencher.bench_local(|| {
+        HeadersMsg::decode_into_limited::<2_000>(&mut Cursor::new(bytes.as_slice()), &mut buf).unwrap();
+        black_box(buf.len())
+    });
 }
 
 // ── GetHeadersMsg ─────────────────────────────────────────────────────────────

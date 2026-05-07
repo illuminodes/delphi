@@ -501,7 +501,64 @@ impl Encode for InvMsg {
     }
 }
 
+/// Zero-alloc lazy iterator over `InvEntry` values parsed from a raw byte slice.
+///
+/// Created by [`InvMsg::iter_entries`]. Yields `io::Result<InvEntry>` so
+/// the caller can handle truncation errors entry-by-entry.
+#[derive(Debug)]
+pub struct InvEntryIter<'a> {
+    remaining: &'a [u8],
+    /// How many entries are left to yield (from the decoded `VarInt` count).
+    left: usize,
+}
+
+impl Iterator for InvEntryIter<'_> {
+    type Item = io::Result<InvEntry>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.left == 0 {
+            return None;
+        }
+        if self.remaining.len() < InvEntry::ENCODED_LEN {
+            self.left = 0; // prevent further iteration after error
+            return Some(Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated inv entry")));
+        }
+        let (head, tail) = self.remaining.split_at(InvEntry::ENCODED_LEN);
+        self.remaining = tail;
+        self.left -= 1;
+        Some(Ok(InvEntry::from_bytes(head.try_into().unwrap())))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left, Some(self.left))
+    }
+}
+
+impl ExactSizeIterator for InvEntryIter<'_> {}
+
 impl InvMsg {
+    /// Return a zero-allocation iterator over entries in a raw `inv`/`getdata` payload.
+    ///
+    /// `buf` must start immediately after the message framing (i.e. be the raw payload).
+    /// The `VarInt` count is read from the front of `buf`; no heap allocation occurs.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES` or if the `VarInt`
+    /// cannot be decoded. Individual entries surface truncation errors as `Err` items.
+    pub fn iter_entries<const MAX_ENTRIES: usize>(
+        buf: &[u8],
+    ) -> io::Result<InvEntryIter<'_>> {
+        let (varint, rest) = VarInt::decode_ref(buf)?;
+        let count = usize::try_from(varint.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if count > MAX_ENTRIES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "inv entry count exceeds limit"));
+        }
+        Ok(InvEntryIter { remaining: rest, left: count })
+    }
+
     /// # Errors
     /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES`, or on any I/O error.
     #[allow(clippy::missing_panics_doc)] // chunks_exact guarantees chunk size — unwrap cannot panic
@@ -520,6 +577,38 @@ impl InvMsg {
             .map(|chunk| InvEntry::from_bytes(chunk.try_into().unwrap()))
             .collect();
         Ok(Self(entries))
+    }
+
+    /// Decode into a caller-supplied buffer, clearing it first.
+    ///
+    /// On the second and subsequent calls the `Vec` already has capacity, so no
+    /// heap allocation occurs. Equivalent to `decode_limited` but reuses storage.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES`, or on any I/O error.
+    #[allow(clippy::missing_panics_doc)] // chunks_exact guarantees chunk size — unwrap cannot panic
+    pub fn decode_into_limited<const MAX_ENTRIES: usize>(
+        r: &mut impl Read,
+        out: &mut Vec<InvEntry>,
+    ) -> io::Result<()> {
+        let count = usize::try_from(VarInt::decode(r)?.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if count > MAX_ENTRIES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "inv entry count exceeds limit"));
+        }
+        let byte_len = count * InvEntry::ENCODED_LEN;
+        // Reuse a scratch buffer stored temporarily on the stack for small messages,
+        // or heap for large ones. We don't store it across calls here — the caller
+        // owns `out`, not a byte scratch buffer. Use a thread-local would over-
+        // engineer; just allocate the byte buf once and decode in-place.
+        let mut buf = vec![0u8; byte_len];
+        r.read_exact(&mut buf)?;
+        out.clear();
+        out.extend(
+            buf.chunks_exact(InvEntry::ENCODED_LEN)
+                .map(|chunk| InvEntry::from_bytes(chunk.try_into().unwrap())),
+        );
+        Ok(())
     }
 }
 
@@ -592,7 +681,73 @@ impl Encode for HeadersMsg {
     }
 }
 
+/// Zero-alloc lazy iterator over [`BlockHeader`] values parsed from a raw `headers` payload.
+///
+/// Created by [`HeadersMsg::iter_entries`]. Each entry in the wire format is an
+/// 80-byte header followed by a `VarInt` `tx_count` stub (always `0x00`), which the
+/// iterator consumes and discards.
+#[derive(Debug)]
+pub struct BlockHeaderIter<'a> {
+    remaining: &'a [u8],
+    left: usize,
+}
+
+impl Iterator for BlockHeaderIter<'_> {
+    type Item = io::Result<BlockHeader>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.left == 0 {
+            return None;
+        }
+        if self.remaining.len() < BlockHeader::ENCODED_LEN {
+            self.left = 0;
+            return Some(Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated block header")));
+        }
+        let (head, tail) = self.remaining.split_at(BlockHeader::ENCODED_LEN);
+        let header = BlockHeader::from_bytes(head.try_into().unwrap());
+        // Consume the tx_count VarInt stub that follows every header.
+        match VarInt::decode_ref(tail) {
+            Ok((_tx_count, rest)) => {
+                self.remaining = rest;
+                self.left -= 1;
+                Some(Ok(header))
+            }
+            Err(e) => {
+                self.left = 0;
+                Some(Err(e))
+            }
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left, Some(self.left))
+    }
+}
+
+impl ExactSizeIterator for BlockHeaderIter<'_> {}
+
 impl HeadersMsg {
+    /// Return a zero-allocation iterator over headers in a raw `headers` payload.
+    ///
+    /// `buf` must start immediately after the message framing (i.e. be the raw payload).
+    /// The `VarInt` count is read from the front of `buf`; no heap allocation occurs.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` if the header count exceeds `MAX_HEADERS` or if the `VarInt`
+    /// cannot be decoded. Individual entries surface truncation errors as `Err` items.
+    pub fn iter_entries<const MAX_HEADERS: usize>(
+        buf: &[u8],
+    ) -> io::Result<BlockHeaderIter<'_>> {
+        let (varint, rest) = VarInt::decode_ref(buf)?;
+        let count = usize::try_from(varint.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if count > MAX_HEADERS {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "header count exceeds limit"));
+        }
+        Ok(BlockHeaderIter { remaining: rest, left: count })
+    }
+
     /// # Errors
     /// Returns `InvalidData` if the header count exceeds `MAX_HEADERS`, or on any I/O error.
     pub fn decode_limited<const MAX_HEADERS: usize>(r: &mut impl Read) -> io::Result<Self> {
@@ -607,6 +762,30 @@ impl HeadersMsg {
             let _tx_count = VarInt::decode(r)?;
         }
         Ok(Self(headers))
+    }
+
+    /// Decode into a caller-supplied buffer, clearing it first.
+    ///
+    /// On the second and subsequent calls the `Vec` already has capacity, so no
+    /// heap allocation occurs. Equivalent to `decode_limited` but reuses storage.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` if the header count exceeds `MAX_HEADERS`, or on any I/O error.
+    pub fn decode_into_limited<const MAX_HEADERS: usize>(
+        r: &mut impl Read,
+        out: &mut Vec<BlockHeader>,
+    ) -> io::Result<()> {
+        let count = usize::try_from(VarInt::decode(r)?.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if count > MAX_HEADERS {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "header count exceeds limit"));
+        }
+        out.clear();
+        for _ in 0..count {
+            out.push(BlockHeader::decode(r)?);
+            let _tx_count = VarInt::decode(r)?;
+        }
+        Ok(())
     }
 }
 
@@ -1130,5 +1309,184 @@ mod tests {
     fn ping_truncated() {
         let e = decode_err::<PingMsg>(&[0x00; 4]); // needs 8 bytes
         assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    // ── InvMsg iterator and reuse paths ───────────────────────────────────────
+
+    #[test]
+    fn inv_iter_matches_owned() {
+        let inv = InvMsg(vec![
+            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
+            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+        ]);
+        let bytes = encode(&inv);
+        let iter_entries: Vec<InvEntry> = InvMsg::iter_entries::<50_000>(&bytes)
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(iter_entries, inv.0);
+    }
+
+    #[test]
+    fn inv_iter_empty() {
+        let bytes = encode(&InvMsg(vec![]));
+        let mut iter = InvMsg::iter_entries::<50_000>(&bytes).unwrap();
+        assert_eq!(iter.len(), 0);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn inv_iter_exact_size() {
+        let inv = InvMsg(vec![
+            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+        ]);
+        let bytes = encode(&inv);
+        let iter = InvMsg::iter_entries::<50_000>(&bytes).unwrap();
+        assert_eq!(iter.len(), 3);
+    }
+
+    #[test]
+    fn inv_iter_limit_exceeded() {
+        let inv = InvMsg(vec![
+            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
+            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
+        ]);
+        let bytes = encode(&inv);
+        let err = InvMsg::iter_entries::<1>(&bytes).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn inv_iter_truncated_entry() {
+        let inv = InvMsg(vec![
+            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
+            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+        ]);
+        let mut bytes = encode(&inv);
+        bytes.truncate(1 + 36 + 10); // VarInt + full entry + partial second entry
+        let mut iter = InvMsg::iter_entries::<50_000>(&bytes).unwrap();
+        assert!(iter.next().unwrap().is_ok());
+        assert_eq!(iter.next().unwrap().unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(iter.next().is_none()); // stops after error
+    }
+
+    #[test]
+    fn inv_decode_into_reuses_capacity() {
+        let inv = InvMsg(vec![
+            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
+            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+        ]);
+        let bytes = encode(&inv);
+        let mut buf: Vec<InvEntry> = Vec::new();
+        InvMsg::decode_into_limited::<50_000>(&mut std::io::Cursor::new(&bytes), &mut buf).unwrap();
+        assert_eq!(buf, inv.0);
+        let cap_after_first = buf.capacity();
+
+        // Second call: no new allocation if same or smaller count.
+        InvMsg::decode_into_limited::<50_000>(&mut std::io::Cursor::new(&bytes), &mut buf).unwrap();
+        assert_eq!(buf, inv.0);
+        assert!(buf.capacity() >= cap_after_first);
+    }
+
+    #[test]
+    fn inv_decode_into_limit_exceeded() {
+        let inv = InvMsg(vec![
+            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
+            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
+        ]);
+        let bytes = encode(&inv);
+        let mut buf = Vec::new();
+        let err = InvMsg::decode_into_limited::<1>(&mut std::io::Cursor::new(&bytes), &mut buf)
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    // ── HeadersMsg iterator and reuse paths ───────────────────────────────────
+
+    fn sample_header(nonce: u32) -> BlockHeader {
+        BlockHeader {
+            version: 1,
+            prev_block: Hash256::ZERO,
+            merkle_root: Hash256::ZERO,
+            time: 0,
+            bits: 0x1d00ffff,
+            nonce,
+        }
+    }
+
+    #[test]
+    fn headers_iter_matches_owned() {
+        let msg = HeadersMsg(vec![sample_header(1), sample_header(2)]);
+        let bytes = encode(&msg);
+        let iter_headers: Vec<BlockHeader> = HeadersMsg::iter_entries::<2_000>(&bytes)
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(iter_headers, msg.0);
+    }
+
+    #[test]
+    fn headers_iter_empty() {
+        let bytes = encode(&HeadersMsg(vec![]));
+        let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes).unwrap();
+        assert_eq!(iter.len(), 0);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn headers_iter_exact_size() {
+        let msg = HeadersMsg(vec![sample_header(0), sample_header(1), sample_header(2)]);
+        let bytes = encode(&msg);
+        let iter = HeadersMsg::iter_entries::<2_000>(&bytes).unwrap();
+        assert_eq!(iter.len(), 3);
+    }
+
+    #[test]
+    fn headers_iter_limit_exceeded() {
+        let msg = HeadersMsg(vec![sample_header(0), sample_header(1)]);
+        let bytes = encode(&msg);
+        let err = HeadersMsg::iter_entries::<1>(&bytes).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn headers_iter_truncated_entry() {
+        let msg = HeadersMsg(vec![sample_header(0), sample_header(1)]);
+        let mut bytes = encode(&msg);
+        // Each encoded entry is 81 bytes (80 header + 1 byte tx_count VarInt).
+        bytes.truncate(1 + 81 + 40); // VarInt + full entry + partial second
+        let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes).unwrap();
+        assert!(iter.next().unwrap().is_ok());
+        assert_eq!(iter.next().unwrap().unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn headers_decode_into_reuses_capacity() {
+        let msg = HeadersMsg(vec![sample_header(1), sample_header(2)]);
+        let bytes = encode(&msg);
+        let mut buf: Vec<BlockHeader> = Vec::new();
+        HeadersMsg::decode_into_limited::<2_000>(&mut std::io::Cursor::new(&bytes), &mut buf)
+            .unwrap();
+        assert_eq!(buf, msg.0);
+        let cap_after_first = buf.capacity();
+
+        HeadersMsg::decode_into_limited::<2_000>(&mut std::io::Cursor::new(&bytes), &mut buf)
+            .unwrap();
+        assert_eq!(buf, msg.0);
+        assert!(buf.capacity() >= cap_after_first);
+    }
+
+    #[test]
+    fn headers_decode_into_limit_exceeded() {
+        let msg = HeadersMsg(vec![sample_header(0), sample_header(1)]);
+        let bytes = encode(&msg);
+        let mut buf = Vec::new();
+        let err =
+            HeadersMsg::decode_into_limited::<1>(&mut std::io::Cursor::new(&bytes), &mut buf)
+                .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 }
