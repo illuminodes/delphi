@@ -19,8 +19,26 @@ harness = false
 name = "network"
 harness = false
 
+[[bench]]
+name = "primitives"
+harness = false
+
+[[bench]]
+name = "consensus"
+harness = false
+
+[[bin]]
+name = "dhat-profile"
+path = "src/dhat_profile.rs"
+
+[[bin]]
+name = "perf-driver"
+path = "src/perf_driver.rs"
+
 [dependencies]
 mantle = { path = "../core" }
+mantle-consensus = { path = "../consensus" }
+dhat = "0.3"
 
 [dev-dependencies]
 divan = "0.1"

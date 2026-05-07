@@ -1,43 +1,45 @@
 use mantle::hash::sha256d;
 use mantle::primitives::Hash256;
 
-/// Compute the merkle root for a list of txids.
+/// Compute the merkle root from a slice, cloning into a working buffer.
 ///
-/// Follows Bitcoin's algorithm exactly:
-/// - Single tx: root = txid (no hashing).
-/// - Odd number of leaves at any level: last element is duplicated.
-/// - Each pair is hashed as SHA256d(left || right).
-///
-/// Returns `None` only on an empty slice; callers that validated non-empty
-/// blocks can safely unwrap.
-///
-/// # Panics
-/// Never — the internal `unwrap` on `row.last()` is protected by the
-/// odd-length pad that runs immediately before it.
+/// Returns `None` only on an empty input.
 #[must_use]
 pub fn compute_merkle_root(txids: &[Hash256]) -> Option<Hash256> {
-    if txids.is_empty() {
+    merkle_root_owned(txids.to_vec())
+}
+
+/// Same as `compute_merkle_root` but consumes an already-owned Vec, avoiding
+/// the clone. Use this when you already hold ownership of the txid list.
+///
+/// # Panics
+/// Never — the internal `unwrap` on `last()` is protected by the odd-length
+/// pad that runs immediately before it.
+#[must_use]
+pub fn merkle_root_owned(mut row: Vec<Hash256>) -> Option<Hash256> {
+    if row.is_empty() {
         return None;
     }
-    let mut row: Vec<Hash256> = txids.to_vec();
+    let mut buf = [0u8; 64];
     while row.len() > 1 {
         // Pad odd row by duplicating the last element.
         if row.len() % 2 == 1 {
             let last = *row.last().unwrap();
             row.push(last);
         }
-        row = row
-            .chunks_exact(2)
-            .map(|pair| {
-                let mut buf = [0u8; 64];
-                buf[..32].copy_from_slice(&pair[0].0);
-                buf[32..].copy_from_slice(&pair[1].0);
-                Hash256(sha256d(&buf))
-            })
-            .collect();
+        // Fold pairs in-place: write each parent hash into the front half,
+        // then truncate. No allocations after the initial vec.
+        let parents = row.len() / 2;
+        for i in 0..parents {
+            buf[..32].copy_from_slice(&row[i * 2].0);
+            buf[32..].copy_from_slice(&row[i * 2 + 1].0);
+            row[i] = Hash256(sha256d(&buf));
+        }
+        row.truncate(parents);
     }
     Some(row[0])
 }
+
 
 #[cfg(test)]
 mod tests {

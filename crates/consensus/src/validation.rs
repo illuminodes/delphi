@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mantle::codec::Encode;
+use mantle::codec::{Encode, VarInt};
 use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction};
 
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
-use crate::merkle::compute_merkle_root;
+use crate::merkle::merkle_root_owned;
 
 // ── Clock ─────────────────────────────────────────────────────────────────────
 
@@ -89,8 +89,21 @@ const NULL_OUTPOINT: OutPoint = OutPoint {
 #[must_use]
 pub fn txid(tx: &Transaction) -> Hash256 {
     let mut buf = Vec::new();
-    tx.encode(&mut buf).expect("Vec<u8> write cannot fail");
+    txid_into(tx, &mut buf);
     Hash256(sha256d(&buf))
+}
+
+/// Like [`txid`] but reuses a caller-supplied buffer, avoiding a per-call allocation.
+///
+/// `buf` is cleared and refilled on every call; the caller should keep it alive
+/// across a loop to amortise the allocation across many transactions.
+///
+/// # Panics
+/// Never — encoding to a `Vec<u8>` cannot fail.
+pub fn txid_into(tx: &Transaction, buf: &mut Vec<u8>) {
+    buf.clear();
+    buf.reserve(tx.encoded_len());
+    tx.encode(buf).expect("Vec<u8> write cannot fail");
 }
 
 /// Stage 1: stateless structural validation.
@@ -99,12 +112,52 @@ pub fn txid(tx: &Transaction) -> Hash256 {
 /// first line of defence against malformed blocks from peers. All checks here
 /// are pure functions of the block bytes.
 ///
+/// Allocates fresh scratch buffers each call. For bulk processing use
+/// [`validate_block_structure_reusing`] to amortise those allocations across
+/// many blocks.
+///
 /// # Errors
 /// Returns the first `ValidationError` encountered.
 ///
 /// # Panics
 /// Never — the internal `expect` is guarded by the non-empty check above it.
 pub fn validate_block_structure(block: &Block) -> Result<(), ValidationError> {
+    validate_block_structure_reusing(
+        block,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+    )
+}
+
+/// Stage 1 with caller-supplied scratch buffers.
+///
+/// All four scratch containers are cleared before use; the caller just needs to
+/// keep them alive across calls to amortise allocations. Capacity is retained
+/// between calls so the buffers grow to the high-water mark and stay there.
+///
+/// - `serial_scratch` — byte buffer reused for tx serialisation (txid hashing).
+/// - `txids` — accumulator for per-block txid list fed into the merkle check.
+/// - `seen_inputs` — dedup set for inputs within a single transaction.
+/// - `seen_txids` — dedup set for CVE-2012-2459 check across all txids.
+///
+/// # Errors
+/// Returns the first `ValidationError` encountered.
+///
+/// # Panics
+/// Never.
+pub fn validate_block_structure_reusing<S1, S2>(
+    block: &Block,
+    serial_scratch: &mut Vec<u8>,
+    txids: &mut Vec<Hash256>,
+    seen_inputs: &mut HashSet<OutPoint, S1>,
+    seen_txids: &mut HashSet<Hash256, S2>,
+) -> Result<(), ValidationError>
+where
+    S1: std::hash::BuildHasher,
+    S2: std::hash::BuildHasher,
+{
     // Non-empty tx list.
     if block.transactions.is_empty() {
         return Err(ValidationError::EmptyBlock);
@@ -117,34 +170,36 @@ pub fn validate_block_structure(block: &Block) -> Result<(), ValidationError> {
     }
 
     // First tx must be coinbase; no subsequent tx may be coinbase.
+    seen_inputs.clear();
     for (i, tx) in block.transactions.iter().enumerate() {
-        let is_first = i == 0;
-        validate_transaction_structure(tx, i, is_first)?;
+        validate_transaction_structure(tx, i, i == 0, seen_inputs)?;
     }
 
-    // Block weight (base serialisation only — we have no witness data in the
-    // current Transaction type, so weight = base_size * 4).
+    // Block weight.
     let weight = block_weight(block);
     if weight > MAX_BLOCK_WEIGHT {
         return Err(ValidationError::BlockWeightExceeded { weight });
     }
 
-    // Merkle root.
-    let txids: Vec<Hash256> = block.transactions.iter().map(txid).collect();
+    // Merkle root — all txids hashed with a single reused serialisation buffer.
+    txids.clear();
+    txids.reserve(block.transactions.len());
+    for tx in &block.transactions {
+        txid_into(tx, serial_scratch);
+        txids.push(Hash256(sha256d(serial_scratch)));
+    }
 
-    // CVE-2012-2459: Bitcoin's merkle algorithm pads odd-length rows by
-    // duplicating the last entry, so a block whose transactions end in a
-    // duplicated tail can be reshaped without changing the root. The cheap
-    // defence — and the one Bitcoin Core ships in `CheckBlock` — is to
-    // reject any block whose txid set contains duplicates.
-    let mut seen_txids = HashSet::with_capacity(txids.len());
-    for &id in &txids {
+    // CVE-2012-2459: reject any block whose txid set contains duplicates.
+    seen_txids.clear();
+    seen_txids.reserve(txids.len());
+    for &id in txids.iter() {
         if !seen_txids.insert(id) {
             return Err(ValidationError::DuplicateTransaction);
         }
     }
 
-    let computed_root = compute_merkle_root(&txids).expect("non-empty; checked above");
+    let computed_root = merkle_root_owned(std::mem::take(txids))
+        .expect("non-empty; checked above");
     if computed_root != block.header.merkle_root {
         return Err(ValidationError::MerkleRootMismatch);
     }
@@ -225,10 +280,11 @@ pub fn validate_block_context_with_clock(
 
 // ── Per-transaction structural checks ────────────────────────────────────────
 
-fn validate_transaction_structure(
+fn validate_transaction_structure<S: std::hash::BuildHasher>(
     tx: &Transaction,
     tx_index: usize,
     expect_coinbase: bool,
+    seen_inputs: &mut HashSet<OutPoint, S>,
 ) -> Result<(), ValidationError> {
     if tx.inputs.is_empty() {
         return Err(ValidationError::EmptyInputs { tx_index });
@@ -270,9 +326,10 @@ fn validate_transaction_structure(
 
     // Duplicate inputs within a single transaction.
     if !expect_coinbase {
-        let mut seen = HashSet::new();
+        seen_inputs.clear();
+        seen_inputs.reserve(tx.inputs.len());
         for input in &tx.inputs {
-            if !seen.insert(input.previous_output) {
+            if !seen_inputs.insert(input.previous_output) {
                 return Err(ValidationError::DuplicateInput { tx_index });
             }
         }
@@ -288,9 +345,11 @@ fn validate_transaction_structure(
 /// We don't yet have witness data in our `Transaction` type; once segwit
 /// decoding is added this function will account for the witness discount.
 fn block_weight(block: &Block) -> u64 {
-    let mut buf = Vec::new();
-    block.encode(&mut buf).expect("Vec<u8> write cannot fail");
-    buf.len() as u64 * WITNESS_SCALE_FACTOR
+    let tx_count = block.transactions.len();
+    let base: usize = BlockHeader::ENCODED_LEN
+        + VarInt(tx_count as u64).encoded_len()
+        + block.transactions.iter().map(Transaction::encoded_len).sum::<usize>();
+    base as u64 * WITNESS_SCALE_FACTOR
 }
 
 // ── Proof of work ─────────────────────────────────────────────────────────────
@@ -652,6 +711,7 @@ fn validate_block_version(header: &BlockHeader, height: u32) -> Result<(), Valid
 mod tests {
     use super::*;
     use crate::chain_view::MemoryChainView;
+    use crate::merkle::compute_merkle_root;
     use mantle::primitives::{TxIn, TxOut};
 
     // ── Helpers ───────────────────────────────────────────────────────────────

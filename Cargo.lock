@@ -383,8 +383,10 @@ dependencies = [
 name = "mantle-bench"
 version = "0.1.0"
 dependencies = [
+ "dhat",
  "divan",
  "mantle",
+ "mantle-consensus",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-use mantle::codec::{Decode, DecodeRef, Encode, VarInt};
+use mantle::codec::{Decode, DecodeRef, Encode, VarInt, decode_bytes_limited, decode_string_limited};
 use std::io::Cursor;
 
 fn main() {
@@ -38,6 +38,89 @@ fn u32_decode_ref() -> (u32, &'static [u8]) {
 #[divan::bench]
 fn u64_decode_ref() -> (u64, &'static [u8]) {
     u64::decode_ref(&[0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]).unwrap()
+}
+
+// ── Integer primitives ────────────────────────────────────────────────────────
+
+#[divan::bench]
+fn u8_encode() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(1);
+    0xabu8.encode(&mut buf).unwrap();
+    buf
+}
+
+#[divan::bench]
+fn u16_encode() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(2);
+    0xabcdu16.encode(&mut buf).unwrap();
+    buf
+}
+
+#[divan::bench]
+fn u32_encode() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4);
+    0xdeadbeefu32.encode(&mut buf).unwrap();
+    buf
+}
+
+#[divan::bench]
+fn u64_encode() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(8);
+    0xdeadbeef_cafebabeu64.encode(&mut buf).unwrap();
+    buf
+}
+
+#[divan::bench]
+fn i32_encode() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4);
+    (-1i32).encode(&mut buf).unwrap();
+    buf
+}
+
+#[divan::bench]
+fn i64_encode() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(8);
+    i64::MIN.encode(&mut buf).unwrap();
+    buf
+}
+
+#[divan::bench]
+fn u8_decode_ref() -> (u8, &'static [u8]) {
+    u8::decode_ref(&[0xab]).unwrap()
+}
+
+#[divan::bench]
+fn u16_decode_ref() -> (u16, &'static [u8]) {
+    u16::decode_ref(&[0xcd, 0xab]).unwrap()
+}
+
+#[divan::bench]
+fn i32_decode_ref() -> (i32, &'static [u8]) {
+    i32::decode_ref(&[0xff, 0xff, 0xff, 0xff]).unwrap()
+}
+
+#[divan::bench]
+fn i64_decode_ref() -> (i64, &'static [u8]) {
+    i64::decode_ref(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80]).unwrap()
+}
+
+// ── decode_bytes_limited / decode_string_limited ──────────────────────────────
+
+#[divan::bench(args = [0usize, 16, 256])]
+fn decode_bytes_limited_bench(bencher: divan::Bencher, len: usize) {
+    let payload = vec![0xabu8; len];
+    let mut buf = Vec::new();
+    VarInt(len as u64).encode(&mut buf).unwrap();
+    buf.extend_from_slice(&payload);
+    bencher.bench(|| decode_bytes_limited::<{ 1 << 20 }>(&mut Cursor::new(buf.as_slice())).unwrap());
+}
+
+#[divan::bench(args = [0usize, 16, 256])]
+fn decode_string_limited_bench(bencher: divan::Bencher, len: usize) {
+    let s = "a".repeat(len);
+    let mut buf = Vec::new();
+    s.as_str().encode(&mut buf).unwrap();
+    bencher.bench(|| decode_string_limited::<{ 1 << 20 }>(&mut Cursor::new(buf.as_slice())).unwrap());
 }
 
 // ── VarStr ────────────────────────────────────────────────────────────────────

@@ -278,6 +278,30 @@ pub struct Transaction {
     pub locktime: u32,
 }
 
+impl Transaction {
+    /// Serialised byte length of this transaction, computed arithmetically
+    /// without allocating. Matches what `Encode::encode` would produce.
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        let inputs_len: usize = self
+            .inputs
+            .iter()
+            .map(|i| OutPoint::ENCODED_LEN + VarInt(i.script_sig.len() as u64).encoded_len() + i.script_sig.len() + 4)
+            .sum();
+        let outputs_len: usize = self
+            .outputs
+            .iter()
+            .map(|o| 8 + VarInt(o.script_pubkey.len() as u64).encoded_len() + o.script_pubkey.len())
+            .sum();
+        4 // version (i32)
+            + VarInt(self.inputs.len() as u64).encoded_len()
+            + inputs_len
+            + VarInt(self.outputs.len() as u64).encoded_len()
+            + outputs_len
+            + 4 // locktime (u32)
+    }
+}
+
 impl Encode for Transaction {
     fn encode(&self, w: &mut impl Write) -> io::Result<()> {
         self.version.encode(w)?;
