@@ -89,6 +89,28 @@ fn build_chain(n: u32, bits: mantle::primitives::CompactBits, base_time: u32) ->
     view
 }
 
+/// Build a chain whose tip is at `tip_height` by only storing the last 12
+/// headers. Validation only needs the parent + 11 ancestors for MTP.
+fn build_chain_at(tip_height: BlockHeight, bits: mantle::primitives::CompactBits, base_time: u32) -> MemoryChainView {
+    let window = 12u32;
+    let start = tip_height.0.saturating_sub(window - 1);
+    let mut view = MemoryChainView::with_height_base(BlockHeight(start));
+    let mut prev = Hash256::ZERO;
+    for i in 0..window {
+        let h = BlockHeader {
+            version: 4,
+            prev_block: prev,
+            merkle_root: Hash256::ZERO,
+            time: base_time + (start + i) * 600,
+            bits,
+            nonce: 0,
+        };
+        prev = h.hash();
+        view.push_header(h);
+    }
+    view
+}
+
 // ── Genesis block BIP vectors ─────────────────────────────────────────────────
 
 #[test]
@@ -500,8 +522,7 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
 
 #[test]
 fn stage2_bip34_height_missing_rejected() {
-    // Build a chain with BIP34_HEIGHT blocks (each header is cheap: 80 bytes).
-    let view = build_chain(BIP34_HEIGHT.0, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let view = build_chain_at(BIP34_HEIGHT - 1u32, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
     let tip = view.tip();
     assert_eq!(tip.height, BIP34_HEIGHT - 1u32);
 
@@ -539,7 +560,7 @@ fn stage2_bip34_height_missing_rejected() {
 
 #[test]
 fn stage2_bip34_correct_encoding_accepted() {
-    let view = build_chain(BIP34_HEIGHT.0, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let view = build_chain_at(BIP34_HEIGHT - 1u32, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
     let block = stage2_block_for_height(&view, BIP34_HEIGHT, 4);
     // Stage 1 uses easiest PoW so it passes; Stage 2 should also pass.
     validate_block_context(&block, &view)
@@ -548,8 +569,7 @@ fn stage2_bip34_correct_encoding_accepted() {
 
 #[test]
 fn stage2_block_version_too_low_rejected() {
-    // Build a chain at BIP65 activation height (388_381). Version must be ≥ 4.
-    let view = build_chain(388_381, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let view = build_chain_at(BlockHeight(388_381 - 1), mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
     let block = stage2_block_for_height(&view, BlockHeight(388_381), 3); // version 3 < required 4
     assert_eq!(
         validate_block_context(&block, &view),

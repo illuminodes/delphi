@@ -1060,7 +1060,30 @@ mod tests {
                 version: 4,
                 prev_block: prev,
                 merkle_root: Hash256::ZERO,
-                time: 1_296_688_602 + i * 600, // regtest-style spacing
+                time: 1_296_688_602 + i * 600,
+                bits: CompactBits(0x207f_ffff),
+                nonce: 0,
+            };
+            prev = h.hash();
+            view.push_header(h);
+        }
+        view
+    }
+
+    /// Like `build_view_with_chain` but starts at `base` and only stores 12
+    /// headers, so the tip is at `base + 11`. Validation only needs the parent
+    /// plus up to 11 ancestors for MTP.
+    fn build_view_at_height(tip_height: BlockHeight) -> MemoryChainView {
+        let window = 12u32;
+        let start = tip_height.0.saturating_sub(window - 1);
+        let mut view = MemoryChainView::with_height_base(BlockHeight(start));
+        let mut prev = Hash256::ZERO;
+        for i in 0..window {
+            let h = BlockHeader {
+                version: 4,
+                prev_block: prev,
+                merkle_root: Hash256::ZERO,
+                time: 1_296_688_602 + (start + i) * 600,
                 bits: CompactBits(0x207f_ffff),
                 nonce: 0,
             };
@@ -1161,7 +1184,7 @@ mod tests {
 
     #[test]
     fn bip34_missing_rejected() {
-        let view = build_view_with_chain(BIP34_HEIGHT.0);
+        let view = build_view_at_height(BIP34_HEIGHT - 1u32);
         let tip = view.tip();
         let mut tx = coinbase_tx(tip.height + 1, 5_000_000_000);
         // Replace BIP34 scriptSig with garbage that doesn't encode the height.

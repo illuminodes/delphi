@@ -95,11 +95,17 @@ pub trait ChainView {
 ///
 /// Headers are stored in a `Vec` indexed by height (canonical chain only).
 /// UTXOs are stored in a `HashMap`. Neither grows without bound in tests.
+///
+/// Use `with_height_base` to start the chain at an arbitrary height so tests
+/// that exercise height-gated rules (BIP34, version floors) don't need to push
+/// hundreds of thousands of dummy headers.
 #[derive(Debug, Default)]
 pub struct MemoryChainView {
-    /// Headers in chain order. `headers[0]` is genesis.
+    /// The block height of `headers[0]`.
+    height_base: u32,
+    /// Headers in insertion order. `headers[0]` is at height `height_base`.
     headers: Vec<BlockHeader>,
-    /// Hash → height in `headers`.
+    /// Hash → absolute height on the canonical chain.
     header_index: HashMap<Hash256, BlockHeight>,
     /// Live UTXO set.
     utxos: HashMap<OutPoint, Coin>,
@@ -111,12 +117,24 @@ impl MemoryChainView {
         Self::default()
     }
 
+    /// Create a view whose first pushed header will be treated as being at
+    /// `base_height`. Use this in tests that need to exercise height-gated
+    /// rules without building a full-length chain.
+    #[must_use]
+    pub fn with_height_base(base_height: BlockHeight) -> Self {
+        Self { height_base: base_height.0, ..Self::default() }
+    }
+
     /// Append a header to the canonical chain. Must be called in order.
     ///
     /// # Panics
     /// Panics if the chain grows beyond `u32::MAX` headers (impossible in practice).
     pub fn push_header(&mut self, header: BlockHeader) {
-        let height = BlockHeight(u32::try_from(self.headers.len()).expect("chain height exceeds u32"));
+        let height = BlockHeight(
+            self.height_base
+                .checked_add(u32::try_from(self.headers.len()).expect("chain height exceeds u32"))
+                .expect("chain height exceeds u32"),
+        );
         let hash = header.hash();
         self.header_index.insert(hash, height);
         self.headers.push(header);
@@ -142,12 +160,14 @@ impl ChainView for MemoryChainView {
         Ok(self
             .header_index
             .get(hash)
-            .and_then(|h| self.headers.get(usize::from(*h)))
+            .and_then(|h| h.0.checked_sub(self.height_base))
+            .and_then(|i| self.headers.get(i as usize))
             .copied())
     }
 
     fn get_header_at(&self, height: BlockHeight) -> Result<Option<BlockHeader>, ChainViewError> {
-        Ok(self.headers.get(usize::from(height)).copied())
+        let idx = height.0.checked_sub(self.height_base).map(|i| i as usize);
+        Ok(idx.and_then(|i| self.headers.get(i)).copied())
     }
 
     fn height_of(&self, hash: &Hash256) -> Result<Option<BlockHeight>, ChainViewError> {
@@ -166,10 +186,14 @@ impl ChainView for MemoryChainView {
             None => return Err(ChainViewError::NotFound),
         };
 
-        let ph = parent_height.0;
-        let count = (ph + 1).min(11) as usize;
-        let start = (ph + 1).saturating_sub(11) as usize;
-        let mut times: Vec<u32> = self.headers[start..=ph as usize]
+        // Convert absolute height to Vec index.
+        let ph_abs = parent_height.0;
+        let ph_idx = ph_abs.saturating_sub(self.height_base) as usize;
+
+        // Window of up to 11, but capped by how many headers we actually have.
+        let count = (ph_idx + 1).min(11);
+        let start = (ph_idx + 1).saturating_sub(11);
+        let mut times: Vec<u32> = self.headers[start..=ph_idx]
             .iter()
             .map(|h| h.time)
             .collect();
@@ -185,11 +209,9 @@ impl ChainView for MemoryChainView {
                 height: BlockHeight::ZERO,
             },
             Some(h) => {
-                let height = BlockHeight(u32::try_from(self.headers.len() - 1).expect("chain height exceeds u32"));
-                TipInfo {
-                    hash: h.hash(),
-                    height,
-                }
+                let idx = u32::try_from(self.headers.len() - 1).expect("chain height exceeds u32");
+                let height = BlockHeight(self.height_base.saturating_add(idx));
+                TipInfo { hash: h.hash(), height }
             }
         }
     }
