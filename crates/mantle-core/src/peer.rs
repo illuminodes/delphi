@@ -442,20 +442,26 @@ impl Node {
                     );
                 }
                 (HandshakeState::Ready, _) => {
-                    // Reserve a slot in the ring and write the InboundMsg
-                    // directly in place — avoids a stack construction + move.
+                    // Hand the payload bytes to InboundMsg without copying:
+                    // 1. drop the 24-byte framing header in-place
+                    // 2. split_off at payload_len — recv_buf becomes the payload,
+                    //    remainder owns everything after it
+                    // 3. replace recv_buf with remainder so it stays ready for
+                    //    the next message
+                    // Net result: zero copies, one pointer-swap.
+                    let payload_len = total - PeerState::HEADER_SIZE;
+                    peer.recv_buf.drain(..PeerState::HEADER_SIZE);
+                    let remainder = peer.recv_buf.split_off(payload_len);
+                    let payload = std::mem::replace(&mut peer.recv_buf, remainder);
                     if let Some(slot) = self.inbound_tx.reserve() {
-                        let payload = peer.recv_buf[PeerState::HEADER_SIZE..total].to_vec();
-                        peer.recv_buf.drain(..total);
                         slot.write(InboundMsg {
                             peer: id,
                             command: header.command.0,
                             payload,
                         }).commit();
-                    } else {
-                        // Ring full — drop the message.
-                        peer.recv_buf.drain(..total);
                     }
+                    // If the ring is full the payload is dropped here — same
+                    // behaviour as before (message silently discarded).
                 }
                 _ => {
                     peer.recv_buf.drain(..total);
