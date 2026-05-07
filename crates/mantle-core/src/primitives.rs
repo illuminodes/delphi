@@ -507,4 +507,260 @@ mod tests {
         let bytes = encode(&block);
         assert_eq!(decode::<Block>(&bytes), block);
     }
+
+    // ── Adversarial / edge-case tests ─────────────────────────────────────────
+
+    fn decode_err<T: Decode + std::fmt::Debug>(bytes: &[u8]) -> std::io::Error {
+        T::decode(&mut std::io::Cursor::new(bytes)).unwrap_err()
+    }
+
+    fn decode_ref_err<'a, T: DecodeRef<'a> + std::fmt::Debug>(buf: &'a [u8]) -> std::io::Error {
+        T::decode_ref(buf).unwrap_err()
+    }
+
+    // Hash256: fewer than 32 bytes must fail.
+    #[test]
+    fn hash256_truncated() {
+        let e = decode_err::<Hash256>(&[0u8; 31]);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn hash256_decode_ref_truncated() {
+        let e = decode_ref_err::<Hash256>(&[0u8; 16]);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    // Hash256: all-ones round-trips (not just the ZERO sentinel).
+    #[test]
+    fn hash256_all_ones_roundtrip() {
+        let h = Hash256([0xff; 32]);
+        let bytes = encode(&h);
+        assert_eq!(decode::<Hash256>(&bytes), h);
+    }
+
+    // Hash256 display: all-zero hash shows as 64 zeros.
+    #[test]
+    fn hash256_zero_display() {
+        assert_eq!(Hash256::ZERO.to_string(), "0".repeat(64));
+    }
+
+    // BlockHeader: truncated at every meaningful boundary.
+    #[test]
+    fn block_header_truncated_version() {
+        let e = decode_err::<BlockHeader>(&[0u8; 2]);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn block_header_truncated_prev_block() {
+        // version (4) + partial prev_block (10)
+        let e = decode_err::<BlockHeader>(&[0u8; 14]);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn block_header_truncated_nonce() {
+        // version(4) + prev_block(32) + merkle_root(32) + time(4) + bits(4) + partial nonce(2)
+        let e = decode_err::<BlockHeader>(&[0u8; 78]);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    // BlockHeader: negative version and extreme field values round-trip.
+    #[test]
+    fn block_header_extreme_fields() {
+        let h = BlockHeader {
+            version: i32::MIN,
+            prev_block: Hash256([0xff; 32]),
+            merkle_root: Hash256([0xab; 32]),
+            time: u32::MAX,
+            bits: u32::MAX,
+            nonce: u32::MAX,
+        };
+        let bytes = encode(&h);
+        assert_eq!(bytes.len(), BlockHeader::ENCODED_LEN);
+        assert_eq!(decode::<BlockHeader>(&bytes), h);
+    }
+
+    // OutPoint: vout = u32::MAX (used to mark coinbase inputs).
+    #[test]
+    fn outpoint_coinbase_vout() {
+        let op = OutPoint { txid: Hash256::ZERO, vout: u32::MAX };
+        let bytes = encode(&op);
+        assert_eq!(bytes.len(), OutPoint::ENCODED_LEN);
+        assert_eq!(decode::<OutPoint>(&bytes), op);
+    }
+
+    // OutPoint: truncated txid.
+    #[test]
+    fn outpoint_truncated_txid() {
+        let e = decode_err::<OutPoint>(&[0u8; 16]);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    // TxIn: empty script_sig (valid — e.g. native segwit inputs).
+    #[test]
+    fn txin_empty_script_sig() {
+        let txin = TxIn {
+            previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+            script_sig: vec![],
+            sequence: 0,
+        };
+        let bytes = encode(&txin);
+        assert_eq!(decode::<TxIn>(&bytes), txin);
+
+        // Zero-copy path.
+        let (r, tail) = decode_ref::<TxInRef>(&bytes);
+        assert!(r.script_sig.is_empty());
+        assert!(tail.is_empty());
+    }
+
+    // TxIn: truncated script_sig body.
+    #[test]
+    fn txin_truncated_script_sig() {
+        let txin = TxIn {
+            previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+            script_sig: vec![0x01, 0x02, 0x03, 0x04],
+            sequence: u32::MAX,
+        };
+        let mut bytes = encode(&txin);
+        bytes.truncate(bytes.len() - 6); // cut into script_sig + sequence
+        let e = decode_err::<TxIn>(&bytes);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    // TxOut: zero value (valid — OP_RETURN outputs often carry 0 satoshis).
+    #[test]
+    fn txout_zero_value() {
+        let txout = TxOut { value: 0, script_pubkey: vec![0x6a] }; // OP_RETURN
+        let bytes = encode(&txout);
+        assert_eq!(decode::<TxOut>(&bytes), txout);
+    }
+
+    // TxOut: value = u64::MAX round-trips (obviously invalid economically, but
+    // the codec must not panic or corrupt the field).
+    #[test]
+    fn txout_max_value() {
+        let txout = TxOut { value: u64::MAX, script_pubkey: vec![] };
+        let bytes = encode(&txout);
+        assert_eq!(decode::<TxOut>(&bytes), txout);
+    }
+
+    // TxOut: truncated script_pubkey.
+    #[test]
+    fn txout_truncated_script_pubkey() {
+        let txout = TxOut { value: 1000, script_pubkey: vec![0x76, 0xa9, 0x14] };
+        let mut bytes = encode(&txout);
+        bytes.truncate(bytes.len() - 2);
+        let e = decode_err::<TxOut>(&bytes);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    // Transaction: zero inputs and zero outputs is syntactically decodable.
+    #[test]
+    fn transaction_empty_inputs_outputs() {
+        let tx = Transaction { version: 1, inputs: vec![], outputs: vec![], locktime: 0 };
+        let bytes = encode(&tx);
+        assert_eq!(decode::<Transaction>(&bytes), tx);
+    }
+
+    // Transaction: negative version round-trips.
+    #[test]
+    fn transaction_negative_version() {
+        let tx = Transaction {
+            version: -1,
+            inputs: vec![],
+            outputs: vec![],
+            locktime: u32::MAX,
+        };
+        let bytes = encode(&tx);
+        assert_eq!(decode::<Transaction>(&bytes), tx);
+    }
+
+    // Transaction: truncated after the input-count VarInt.
+    #[test]
+    fn transaction_truncated_after_input_count() {
+        // version(4) + VarInt(1) then nothing.
+        let buf = [0x01, 0x00, 0x00, 0x00, 0x01];
+        let e = decode_err::<Transaction>(&buf);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    // Transaction: input-count VarInt claims more entries than bytes available.
+    #[test]
+    fn transaction_input_count_exceeds_data() {
+        // version(4) + VarInt(100) + no actual inputs.
+        let mut buf = vec![0x01, 0x00, 0x00, 0x00]; // version = 1
+        buf.push(0x64); // VarInt(100)
+        let e = decode_err::<Transaction>(&buf);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    // Block: zero transactions is valid (header-only, used in `headers` messages
+    // before the tx_count placeholder was separated).
+    #[test]
+    fn block_zero_transactions() {
+        let block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block: Hash256::ZERO,
+                merkle_root: Hash256::ZERO,
+                time: 0,
+                bits: 0,
+                nonce: 0,
+            },
+            transactions: vec![],
+        };
+        let bytes = encode(&block);
+        assert_eq!(decode::<Block>(&bytes), block);
+    }
+
+    // Block: truncated after the tx-count VarInt.
+    #[test]
+    fn block_truncated_after_tx_count() {
+        let block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block: Hash256::ZERO,
+                merkle_root: Hash256::ZERO,
+                time: 0,
+                bits: 0,
+                nonce: 0,
+            },
+            transactions: vec![],
+        };
+        let mut bytes = encode(&block);
+        // Overwrite tx_count to claim 5 transactions, then provide none.
+        let tx_count_offset = BlockHeader::ENCODED_LEN;
+        bytes[tx_count_offset] = 0x05;
+        let e = decode_err::<Block>(&bytes);
+        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    // Block: tx-count VarInt uses 0xfd-prefix (3-byte encoding) and round-trips.
+    #[test]
+    fn block_tx_count_varint_3byte_encoding() {
+        // Build a block with 253 (0xfd) transactions to force a 3-byte VarInt.
+        let dummy_tx = Transaction {
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            locktime: 0,
+        };
+        let block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block: Hash256::ZERO,
+                merkle_root: Hash256::ZERO,
+                time: 0,
+                bits: 0,
+                nonce: 0,
+            },
+            transactions: vec![dummy_tx; 253],
+        };
+        let bytes = encode(&block);
+        // tx_count byte at offset 80 must be 0xfd (3-byte VarInt marker).
+        assert_eq!(bytes[BlockHeader::ENCODED_LEN], 0xfd);
+        assert_eq!(decode::<Block>(&bytes), block);
+    }
 }

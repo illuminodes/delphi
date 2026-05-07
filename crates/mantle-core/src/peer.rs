@@ -10,6 +10,66 @@ use crate::codec::{Decode, Encode};
 use crate::hash::checksum;
 use crate::network::{Command, Magic, MessageHeader, VersionMsg};
 
+// ── Error ─────────────────────────────────────────────────────────────────────
+
+/// All failure modes that can occur in the peer I/O layer.
+#[derive(Debug)]
+pub enum Error {
+    /// The `io_uring` instance could not be created.
+    RingCreate(String),
+    /// A non-blocking TCP socket could not be created.
+    SocketCreate(String),
+    /// A submission queue entry could not be pushed to the ring.
+    RingPush(String),
+    /// The ring's submission queue could not be submitted to the kernel.
+    RingSubmit(String),
+    /// An operation was requested for a peer that is not tracked by this node.
+    PeerNotFound(PeerId),
+    /// The kernel returned a negative result code for a completed I/O operation.
+    CqeError {
+        peer: PeerId,
+        op: u32,
+        /// Negated `errno` value returned by the kernel.
+        code: i32,
+    },
+    /// The received message's checksum did not match its payload.
+    ChecksumMismatch { peer: PeerId },
+    /// An encode/decode step inside the peer layer failed.
+    Codec(std::io::Error),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RingCreate(msg) => write!(f, "io_uring create failed: {msg}"),
+            Self::SocketCreate(msg) => write!(f, "socket create failed: {msg}"),
+            Self::RingPush(msg) => write!(f, "ring push failed: {msg}"),
+            Self::RingSubmit(msg) => write!(f, "ring submit failed: {msg}"),
+            Self::PeerNotFound(id) => write!(f, "peer {id:?} not found"),
+            Self::CqeError { peer, op, code } => {
+                write!(f, "peer {peer:?} op {op} kernel error: {code}")
+            }
+            Self::ChecksumMismatch { peer } => write!(f, "checksum mismatch from peer {peer:?}"),
+            Self::Codec(e) => write!(f, "codec error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Codec(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<Error> for std::io::Error {
+    fn from(e: Error) -> Self {
+        std::io::Error::other(e.to_string())
+    }
+}
+
 // ── PeerId ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -116,10 +176,10 @@ pub struct Node {
 
 impl Node {
     /// # Errors
-    /// Returns an error if the `io_uring` instance cannot be created.
-    pub fn new(magic: Magic, ring_size: u32, our_version: VersionMsg) -> std::io::Result<Self> {
+    /// Returns [`Error::RingCreate`] if the `io_uring` instance cannot be created.
+    pub fn new(magic: Magic, ring_size: u32, our_version: VersionMsg) -> Result<Self, Error> {
         let ring = IoUring::new(ring_size)
-            .map_err(|e| std::io::Error::other(format!("io_uring: {e:?}")))?;
+            .map_err(|e| Error::RingCreate(format!("{e:?}")))?;
 
         let (outbound_tx, outbound_rx) = MpscRing::new(Capacity::exact(CHANNEL_CAP)).split();
         let (inbound_tx, inbound_rx) = SpmcRing::new(Capacity::exact(CHANNEL_CAP)).split();
@@ -142,19 +202,21 @@ impl Node {
     /// next call(s) to [`Node::poll`].
     ///
     /// # Errors
-    /// Returns an error if the socket or ring submission fails.
+    /// Returns [`Error::SocketCreate`], [`Error::RingPush`], or [`Error::RingSubmit`]
+    /// if the underlying system calls fail.
     ///
     /// # Panics
-    /// Never in practice — `AF_INET` always fits in `u16`.
-    pub fn connect(&mut self, addr: std::net::SocketAddrV4) -> std::io::Result<PeerId> {
+    /// Never — `AF_INET` is the POSIX constant `2` and always fits in `u16`.
+    pub fn connect(&mut self, addr: std::net::SocketAddrV4) -> Result<PeerId, Error> {
         let id = PeerId(self.next_id);
         self.next_id += 1;
 
         let sock = Socket::new(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
-            .map_err(|e| std::io::Error::other(format!("socket: {e:?}")))?;
+            .map_err(|e| Error::SocketCreate(format!("{e:?}")))?;
         let fd = sock.into_fd();
 
         let sockaddr = SockAddrIn {
+            // AF_INET is defined as 2 by POSIX and always fits in u16.
             sin_family: u16::try_from(AF_INET).expect("AF_INET fits in u16"),
             sin_port: addr.port().to_be(),
             sin_addr: u32::from_ne_bytes(addr.ip().octets()),
@@ -169,22 +231,18 @@ impl Node {
 
         self.ring
             .push(Sqe::connect(fd, addr_bytes).user_data(make_tag(id, OP_CONNECT)))
-            .map_err(|e| std::io::Error::other(format!("push: {e:?}")))?;
+            .map_err(|e| Error::RingPush(format!("{e:?}")))?;
 
         self.ring
             .submit()
-            .map_err(|e| std::io::Error::other(format!("submit: {e:?}")))?;
+            .map_err(|e| Error::RingSubmit(format!("{e:?}")))?;
 
-        let state = PeerState::new(id, fd);
         self.recv_chunks.insert(id, Box::new([0u8; RECV_CHUNK]));
-        self.peers.insert(id, state);
+        self.peers.insert(id, PeerState::new(id, fd));
 
         Ok(id)
     }
 
-    /// Drive the event loop once — submit pending sends, drain CQEs, advance
-    /// handshakes, dispatch inbound messages. Call in a loop from the I/O
-    /// thread.
     /// Returns the handshake state for a peer, or `None` if it has disconnected.
     pub fn peer_handshake(&self, id: PeerId) -> Option<HandshakeState> {
         self.peers.get(&id).map(|p| p.handshake)
@@ -194,57 +252,61 @@ impl Node {
     /// channel. Use when ordering relative to the current poll tick matters.
     ///
     /// # Errors
-    /// Returns an error if the peer is not found or the ring submission fails.
+    /// Returns [`Error::PeerNotFound`], [`Error::Codec`], [`Error::RingPush`],
+    /// or [`Error::RingSubmit`] on failure.
     pub fn send_direct(
         &mut self,
         peer: PeerId,
         command: Command,
         payload: &[u8],
-    ) -> std::io::Result<()> {
+    ) -> Result<(), Error> {
         let fd = self
             .peers
             .get(&peer)
             .map(|p| p.fd)
-            .ok_or_else(|| std::io::Error::other("peer not found"))?;
+            .ok_or(Error::PeerNotFound(peer))?;
 
         let mut framed = Vec::new();
-        crate::network::encode_message(self.magic, command, payload, &mut framed)?;
+        crate::network::encode_message(self.magic, command, payload, &mut framed)
+            .map_err(Error::Codec)?;
 
-        let sqe =
-            Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(make_tag(peer, OP_SEND));
         self.ring
-            .push(sqe)
-            .map_err(|e| std::io::Error::other(format!("push: {e:?}")))?;
+            .push(Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(make_tag(peer, OP_SEND)))
+            .map_err(|e| Error::RingPush(format!("{e:?}")))?;
         self.ring
             .submit()
-            .map_err(|e| std::io::Error::other(format!("submit: {e:?}")))?;
+            .map_err(|e| Error::RingSubmit(format!("{e:?}")))?;
         Ok(())
     }
 
+    /// Drive the event loop once — submit pending sends, drain CQEs, advance
+    /// handshakes, and dispatch inbound messages. Call in a loop from the I/O thread.
+    ///
     /// # Errors
-    /// Returns an error if ring submission or message handling fails.
-    pub fn poll(&mut self) -> std::io::Result<()> {
+    /// Returns [`Error::RingSubmit`] if the submission queue cannot be flushed,
+    /// or propagates errors from [`on_connected`](Self::on_connected) /
+    /// [`on_recv`](Self::on_recv).
+    pub fn poll(&mut self) -> Result<(), Error> {
         self.flush_outbound();
         self.ring
             .submit()
-            .map_err(|e| std::io::Error::other(format!("submit: {e:?}")))?;
+            .map_err(|e| Error::RingSubmit(format!("{e:?}")))?;
 
         while let Some(cqe) = self.ring.complete() {
+            let (peer_id, op) = decode_tag(cqe.user_data);
             if cqe.result < 0 {
-                let (peer_id, op) = decode_tag(cqe.user_data);
-                eprintln!("peer {:?} op {op} error: {}", peer_id, cqe.result);
+                eprintln!("{}", Error::CqeError { peer: peer_id, op, code: cqe.result });
                 self.peers.remove(&peer_id);
                 continue;
             }
 
-            let (peer_id, op) = decode_tag(cqe.user_data);
             match op {
                 OP_CONNECT => self.on_connected(peer_id)?,
-                OP_RECV => self.on_recv(
-                    peer_id,
-                    usize::try_from(cqe.result)
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-                )?,
+                OP_RECV => {
+                    // cqe.result is non-negative here (checked above).
+                    #[allow(clippy::cast_sign_loss)]
+                    self.on_recv(peer_id, cqe.result as usize)?;
+                }
                 _ => {}
             }
         }
@@ -269,7 +331,7 @@ impl Node {
         }
     }
 
-    fn on_connected(&mut self, id: PeerId) -> std::io::Result<()> {
+    fn on_connected(&mut self, id: PeerId) -> Result<(), Error> {
         let fd = match self.peers.get(&id) {
             Some(p) => p.fd,
             None => return Ok(()),
@@ -277,14 +339,14 @@ impl Node {
 
         // Send our version message — borrow of peers ends here.
         let mut payload = Vec::new();
-        self.our_version.encode(&mut payload).unwrap();
+        self.our_version.encode(&mut payload).map_err(Error::Codec)?;
         let mut framed = Vec::new();
         crate::network::encode_message(self.magic, Command::Version, &payload, &mut framed)
-            .unwrap();
+            .map_err(Error::Codec)?;
 
-        let sqe =
-            Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(make_tag(id, OP_SEND));
-        let _ = self.ring.push(sqe);
+        let _ = self.ring.push(
+            Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(make_tag(id, OP_SEND)),
+        );
 
         // submit_recv takes &mut self — safe now, peers borrow is released.
         self.submit_recv(id)?;
@@ -295,7 +357,7 @@ impl Node {
         Ok(())
     }
 
-    fn submit_recv(&mut self, id: PeerId) -> std::io::Result<()> {
+    fn submit_recv(&mut self, id: PeerId) -> Result<(), Error> {
         let Some(peer) = self.peers.get(&id) else {
             return Ok(());
         };
@@ -305,11 +367,11 @@ impl Node {
             .user_data(make_tag(id, OP_RECV));
         self.ring
             .push(sqe)
-            .map_err(|e| std::io::Error::other(format!("push: {e:?}")))?;
+            .map_err(|e| Error::RingPush(format!("{e:?}")))?;
         Ok(())
     }
 
-    fn on_recv(&mut self, id: PeerId, n: usize) -> std::io::Result<()> {
+    fn on_recv(&mut self, id: PeerId, n: usize) -> Result<(), Error> {
         if n == 0 {
             // Peer closed the connection.
             self.peers.remove(&id);
@@ -341,9 +403,8 @@ impl Node {
             let payload = peer.recv_buf[PeerState::HEADER_SIZE..total].to_vec();
 
             // Validate checksum.
-            let expected = checksum(&payload);
-            if expected != header.checksum {
-                eprintln!("peer {id:?} checksum mismatch — dropping");
+            if checksum(&payload) != header.checksum {
+                eprintln!("{}", Error::ChecksumMismatch { peer: id });
                 self.peers.remove(&id);
                 return Ok(());
             }
@@ -358,10 +419,11 @@ impl Node {
                     // Send verack.
                     let mut framed = Vec::new();
                     crate::network::encode_message(self.magic, Command::Verack, &[], &mut framed)
-                        .unwrap();
-                    let sqe = Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
-                        .user_data(make_tag(id, OP_SEND));
-                    let _ = self.ring.push(sqe);
+                        .map_err(Error::Codec)?;
+                    let _ = self.ring.push(
+                        Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
+                            .user_data(make_tag(id, OP_SEND)),
+                    );
                     peer.handshake = HandshakeState::VerackSent;
                 }
                 (HandshakeState::VerackSent | HandshakeState::VersionSent, "verack") => {
@@ -371,16 +433,12 @@ impl Node {
                     // Reflect the nonce back as a pong — handled transparently,
                     // never forwarded to the app layer.
                     let mut framed = Vec::new();
-                    crate::network::encode_message(
-                        self.magic,
-                        Command::Pong,
-                        &payload,
-                        &mut framed,
-                    )
-                    .unwrap();
-                    let sqe = Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
-                        .user_data(make_tag(id, OP_SEND));
-                    let _ = self.ring.push(sqe);
+                    crate::network::encode_message(self.magic, Command::Pong, &payload, &mut framed)
+                        .map_err(Error::Codec)?;
+                    let _ = self.ring.push(
+                        Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
+                            .user_data(make_tag(id, OP_SEND)),
+                    );
                 }
                 (HandshakeState::Ready, _) => {
                     let _ = self.inbound_tx.push(InboundMsg {

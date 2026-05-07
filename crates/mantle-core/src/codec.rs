@@ -1,4 +1,75 @@
 use std::io::{self, Read, Write};
+use std::str::Utf8Error;
+
+// ── Error ─────────────────────────────────────────────────────────────────────
+
+/// All failure modes that can occur during Bitcoin wire-format encoding or decoding.
+#[derive(Debug)]
+pub enum Error {
+    /// The input ended before all required bytes were read.
+    UnexpectedEof,
+    /// A `VarInt` length field claimed a size that exceeds `usize::MAX` on this
+    /// platform and therefore cannot be used to allocate a buffer.
+    LengthOverflow(u64),
+    /// A byte sequence that was required to be valid UTF-8 was not.
+    InvalidUtf8(Utf8Error),
+    /// An underlying I/O operation failed for a reason unrelated to the data
+    /// format (e.g. a real write error on a `Vec<u8>` is impossible, but a
+    /// network stream could return one).
+    Io(io::Error),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnexpectedEof => f.write_str("unexpected end of input"),
+            Self::LengthOverflow(n) => {
+                write!(f, "VarInt length {n} overflows usize on this platform")
+            }
+            Self::InvalidUtf8(e) => write!(f, "invalid UTF-8: {e}"),
+            Self::Io(e) => write!(f, "I/O error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidUtf8(e) => Some(e),
+            Self::Io(e) => Some(e),
+            Self::UnexpectedEof | Self::LengthOverflow(_) => None,
+        }
+    }
+}
+
+impl From<Error> for io::Error {
+    fn from(e: Error) -> Self {
+        match e {
+            Error::UnexpectedEof => io::Error::new(io::ErrorKind::UnexpectedEof, e.to_string()),
+            Error::LengthOverflow(_) | Error::InvalidUtf8(_) => {
+                io::Error::new(io::ErrorKind::InvalidData, e.to_string())
+            }
+            Error::Io(inner) => inner,
+        }
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Self {
+        match e.kind() {
+            io::ErrorKind::UnexpectedEof => Self::UnexpectedEof,
+            _ => Self::Io(e),
+        }
+    }
+}
+
+impl From<Utf8Error> for Error {
+    fn from(e: Utf8Error) -> Self {
+        Self::InvalidUtf8(e)
+    }
+}
+
+// ── Traits ────────────────────────────────────────────────────────────────────
 
 pub trait Encode {
     /// # Errors
@@ -45,10 +116,7 @@ macro_rules! impl_codec_int {
             fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
                 const N: usize = size_of::<$t>();
                 if buf.len() < N {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "not enough bytes",
-                    ));
+                    return Err(Error::UnexpectedEof.into());
                 }
                 let (head, tail) = buf.split_at(N);
                 Ok((<$t>::from_le_bytes(head.try_into().unwrap()), tail))
@@ -133,7 +201,7 @@ impl<'a> DecodeRef<'a> for VarInt {
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
         let (&tag, rest) = buf
             .split_first()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "not enough bytes"))?;
+            .ok_or_else(|| io::Error::from(Error::UnexpectedEof))?;
         let (value, tail) = match tag {
             0xff => {
                 let (v, tail) = u64::decode_ref(rest)?;
@@ -175,10 +243,7 @@ impl<'a, const N: usize> DecodeRef<'a> for [u8; N] {
     #[inline]
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
         if buf.len() < N {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "not enough bytes",
-            ));
+            return Err(Error::UnexpectedEof.into());
         }
         let (head, tail) = buf.split_at(N);
         Ok((head.try_into().unwrap(), tail))
@@ -187,29 +252,25 @@ impl<'a, const N: usize> DecodeRef<'a> for [u8; N] {
 
 // ── Borrowed byte slice (zero-copy) ──────────────────────────────────────────
 
-/// Zero-copy view into a VarInt-prefixed byte field.
+/// Zero-copy view into a `VarInt`-prefixed byte field.
 impl<'a> DecodeRef<'a> for &'a [u8] {
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
         let (VarInt(len), rest) = VarInt::decode_ref(buf)?;
-        let len =
-            usize::try_from(len).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let len = usize::try_from(len).map_err(|_| io::Error::from(Error::LengthOverflow(len)))?;
         if rest.len() < len {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "not enough bytes",
-            ));
+            return Err(Error::UnexpectedEof.into());
         }
         let (data, tail) = rest.split_at(len);
         Ok((data, tail))
     }
 }
 
-/// Zero-copy view into a VarInt-prefixed UTF-8 string field.
+/// Zero-copy view into a `VarInt`-prefixed UTF-8 string field.
 impl<'a> DecodeRef<'a> for &'a str {
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
         let (bytes, tail) = <&'a [u8]>::decode_ref(buf)?;
         let s = std::str::from_utf8(bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| io::Error::from(Error::InvalidUtf8(e)))?;
         Ok((s, tail))
     }
 }
@@ -231,11 +292,11 @@ impl Encode for String {
 
 impl Decode for String {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let len = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let VarInt(len) = VarInt::decode(r)?;
+        let len = usize::try_from(len).map_err(|_| io::Error::from(Error::LengthOverflow(len)))?;
         let mut buf = vec![0u8; len];
         r.read_exact(&mut buf)?;
-        String::from_utf8(buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        String::from_utf8(buf).map_err(|e| io::Error::from(Error::InvalidUtf8(e.utf8_error())))
     }
 }
 
@@ -248,8 +309,8 @@ impl Encode for Vec<u8> {
 
 impl Decode for Vec<u8> {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let len = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let VarInt(len) = VarInt::decode(r)?;
+        let len = usize::try_from(len).map_err(|_| io::Error::from(Error::LengthOverflow(len)))?;
         let mut buf = vec![0u8; len];
         r.read_exact(&mut buf)?;
         Ok(buf)
@@ -275,6 +336,14 @@ mod tests {
 
     fn decode_ref<'a, T: DecodeRef<'a>>(buf: &'a [u8]) -> (T, &'a [u8]) {
         T::decode_ref(buf).unwrap()
+    }
+
+    fn decode_err<T: Decode + std::fmt::Debug>(bytes: &[u8]) -> io::Error {
+        T::decode(&mut Cursor::new(bytes)).unwrap_err()
+    }
+
+    fn decode_ref_err<'a, T: DecodeRef<'a> + std::fmt::Debug>(buf: &'a [u8]) -> io::Error {
+        T::decode_ref(buf).unwrap_err()
     }
 
     #[test]
@@ -379,5 +448,151 @@ mod tests {
         let bytes = roundtrip_encode(&v);
         assert_eq!(bytes[0], 4);
         assert_eq!(roundtrip_decode::<Vec<u8>>(&bytes), v);
+    }
+
+    // ── Adversarial / edge-case tests ─────────────────────────────────────────
+
+    // VarInt: truncated body after 0xfd tag must fail, not panic.
+    #[test]
+    fn varint_truncated_3byte_body() {
+        let e = decode_err::<VarInt>(&[0xfd, 0x01]); // needs 2 more bytes, only 1
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    // VarInt: only the tag byte present for a 9-byte encoding.
+    #[test]
+    fn varint_truncated_9byte_body() {
+        let e = decode_err::<VarInt>(&[0xff, 0x00, 0x00, 0x00]); // needs 8, has 3
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    // VarInt: completely empty input.
+    #[test]
+    fn varint_empty_input() {
+        let e = decode_err::<VarInt>(&[]);
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    // VarInt decode_ref: same truncation cases via the zero-copy path.
+    #[test]
+    fn varint_decode_ref_truncated() {
+        let e = decode_ref_err::<VarInt>(&[0xfe, 0x00]); // needs 4 body bytes, has 1
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    // VarInt: boundary values round-trip correctly.
+    #[test]
+    fn varint_boundary_values() {
+        for val in [0u64, 0xfc, 0xfd, 0xffff, 0x10000, 0xffff_ffff, 0x1_0000_0000, u64::MAX] {
+            let v = VarInt(val);
+            let encoded = roundtrip_encode(&v);
+            assert_eq!(roundtrip_decode::<VarInt>(&encoded), v, "VarInt({val})");
+        }
+    }
+
+    // VarInt encoded_len matches the actual encoded byte count.
+    #[test]
+    fn varint_encoded_len_matches_actual() {
+        for val in [0u64, 0xfc, 0xfd, 0xffff, 0x10000, 0xffff_ffff, u64::MAX] {
+            let v = VarInt(val);
+            assert_eq!(v.encoded_len(), roundtrip_encode(&v).len(), "VarInt({val})");
+        }
+    }
+
+    // Primitive int: truncated input must fail.
+    #[test]
+    fn primitive_truncated_u32() {
+        let e = decode_err::<u32>(&[0x01, 0x02]); // needs 4, has 2
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn primitive_truncated_u64() {
+        let e = decode_err::<u64>(&[0xff; 7]); // needs 8, has 7
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    // decode_ref on an empty slice for fixed arrays.
+    #[test]
+    fn fixed_array_decode_ref_empty() {
+        let e = decode_ref_err::<[u8; 4]>(&[]);
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    // &[u8] DecodeRef: length prefix claims more bytes than available.
+    #[test]
+    fn slice_decode_ref_claims_too_many_bytes() {
+        // VarInt(10) followed by only 3 bytes.
+        let buf = [0x0a, 0x01, 0x02, 0x03];
+        let e = decode_ref_err::<&[u8]>(&buf);
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    // &str DecodeRef: invalid UTF-8 must return InvalidData, not panic.
+    #[test]
+    fn str_decode_ref_invalid_utf8() {
+        let buf = [0x02, 0xff, 0xfe]; // 2-byte "string" with invalid UTF-8
+        let e = decode_ref_err::<&str>(&buf);
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    }
+
+    // String Decode (stream): invalid UTF-8 must return InvalidData.
+    #[test]
+    fn string_decode_invalid_utf8() {
+        let buf = [0x02, 0xff, 0xfe];
+        let e = decode_err::<String>(&buf);
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    }
+
+    // String Decode: empty string round-trips correctly.
+    #[test]
+    fn string_empty_roundtrip() {
+        let s = String::new();
+        let bytes = roundtrip_encode(&s);
+        assert_eq!(bytes, [0x00]);
+        assert_eq!(roundtrip_decode::<String>(&bytes), s);
+    }
+
+    // Vec<u8> Decode: length of zero is valid.
+    #[test]
+    fn vec_u8_empty() {
+        let bytes = roundtrip_encode(&Vec::<u8>::new());
+        assert_eq!(bytes, [0x00]);
+        assert_eq!(roundtrip_decode::<Vec<u8>>(&bytes), Vec::<u8>::new());
+    }
+
+    // Vec<u8> Decode: VarInt length exceeding usize::MAX (on 32-bit targets this
+    // would be a u64 that doesn't fit; on 64-bit we settle for a truncated body).
+    // On all targets: a length larger than the remaining data must fail gracefully.
+    #[test]
+    fn vec_u8_length_exceeds_available_data() {
+        // VarInt(0xfd, 0x00, 0x04) = length 1024, followed by no data.
+        let buf = [0xfd, 0x00, 0x04];
+        let e = decode_err::<Vec<u8>>(&buf);
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    // decode_ref on a primitive with exactly the right number of bytes leaves an
+    // empty tail (no off-by-one).
+    #[test]
+    fn primitive_decode_ref_exact_fit() {
+        let buf = [0x01, 0x00, 0x00, 0x00];
+        let (val, tail) = decode_ref::<u32>(&buf);
+        assert_eq!(val, 1u32);
+        assert!(tail.is_empty());
+    }
+
+    // Encoding extreme integer values must not panic.
+    #[test]
+    fn encode_extreme_integers() {
+        for v in [i32::MIN, i32::MAX, 0i32] {
+            roundtrip_encode(&v);
+        }
+        for v in [i64::MIN, i64::MAX, 0i64] {
+            roundtrip_encode(&v);
+        }
+        for v in [u64::MIN, u64::MAX] {
+            roundtrip_encode(&v);
+        }
     }
 }

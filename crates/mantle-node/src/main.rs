@@ -79,7 +79,7 @@ fn main() {
     eprintln!("all seed peers exhausted");
 }
 
-fn try_peer(addr: SocketAddrV4) -> std::io::Result<bool> {
+fn try_peer(addr: SocketAddrV4) -> Result<bool, mantle_core::Error> {
     let mut node = Node::new(Magic::Mainnet, 64, our_version())?;
     let peer_id = node.connect(addr)?;
     let inbound = node.inbound_rx.clone();
