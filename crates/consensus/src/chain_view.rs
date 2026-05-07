@@ -254,7 +254,7 @@ mod tests {
         let op = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
         let coin = Coin {
             value: Satoshi::new(5_000_000_000),
-            script_pubkey: vec![0xac],
+            script_pubkey: vec![0xac].into(),
             height: BlockHeight(100),
             coinbase: false,
         };
@@ -303,7 +303,7 @@ mod tests {
         let mut view = MemoryChainView::new();
         let op1 = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
         let op2 = OutPoint { txid: Hash256([2u8; 32]), vout: 0 };
-        let coin = Coin { value: Satoshi::new(1000), script_pubkey: vec![], height: BlockHeight(1), coinbase: false };
+        let coin = Coin { value: Satoshi::new(1000), script_pubkey: vec![].into(), height: BlockHeight(1), coinbase: false };
         view.insert_coin(op1, coin.clone());
 
         let results = view.get_coins(&[op1, op2]).expect("get_coins must succeed");

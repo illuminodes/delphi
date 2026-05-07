@@ -25,14 +25,14 @@ fn hash_to_hex_display(hash: Hash256) -> String {
 fn coinbase_input(script_sig: Vec<u8>) -> TxIn {
     TxIn {
         previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
-        script_sig,
+        script_sig: script_sig.into(),
         sequence: u32::MAX,
     }
 }
 
 
 fn make_output(value: u64) -> TxOut {
-    TxOut { value: mantle::primitives::Satoshi::new(value), script_pubkey: vec![0x51] } // OP_1 (trivial P2PK stand-in)
+    TxOut { value: mantle::primitives::Satoshi::new(value), script_pubkey: vec![0x51].into() } // OP_1 (trivial P2PK stand-in)
 }
 
 /// Build a minimal valid block whose Stage 1 checks pass.
@@ -145,7 +145,7 @@ fn stage1_first_tx_not_coinbase_rejected() {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: u32::MAX,
         }],
         outputs: vec![make_output(1000)],
@@ -252,7 +252,7 @@ fn stage1_output_value_over_max_money_rejected() {
     let coinbase = Transaction {
         version: 1,
         inputs: vec![coinbase_input(vec![0x51, 0x52])],
-        outputs: vec![TxOut { value: too_much, script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: too_much, script_pubkey: vec![0x51].into() }].into(),
         locktime: 0,
     };
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
@@ -280,8 +280,8 @@ fn stage1_duplicate_inputs_rejected() {
     let tx = Transaction {
         version: 1,
         inputs: vec![
-            TxIn { previous_output: outpoint, script_sig: vec![], sequence: u32::MAX },
-            TxIn { previous_output: outpoint, script_sig: vec![], sequence: u32::MAX }, // dup
+            TxIn { previous_output: outpoint, script_sig: vec![].into(), sequence: u32::MAX },
+            TxIn { previous_output: outpoint, script_sig: vec![].into(), sequence: u32::MAX }, // dup
         ],
         outputs: vec![make_output(1000)],
         locktime: 0,
@@ -665,7 +665,7 @@ fn sequence_field_roundtrip() {
             version: 1,
             inputs: vec![TxIn {
                 previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
-                script_sig: vec![],
+                script_sig: vec![].into(),
                 sequence: seq,
             }],
             outputs: vec![make_output(1000)],
@@ -687,7 +687,7 @@ fn memory_chain_view_utxo_insert_lookup_spend() {
     let op = OutPoint { txid: Hash256([0x12; 32]), vout: 3 };
     let coin = Coin {
         value: mantle::primitives::Satoshi::new(100_000),
-        script_pubkey: vec![0x76, 0xa9, 0x14], // OP_DUP OP_HASH160 OP_DATA14
+        script_pubkey: vec![0x76, 0xa9, 0x14].into(), // OP_DUP OP_HASH160 OP_DATA14
         height: BlockHeight(500_000),
         coinbase: false,
     };
@@ -706,7 +706,7 @@ fn memory_chain_view_coinbase_flag_preserved() {
     let op = OutPoint { txid: Hash256([0x99; 32]), vout: 0 };
     let coin = Coin {
         value: mantle::primitives::Satoshi::new(50_0000_0000),
-        script_pubkey: vec![0x51],
+        script_pubkey: vec![0x51].into(),
         height: BlockHeight::ZERO,
         coinbase: true,
     };
@@ -805,7 +805,7 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
                 version: 1,
                 inputs: vec![TxIn {
                     previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
-                    script_sig: vec![0x51],
+                    script_sig: vec![0x51].into(),
                     sequence: u32::MAX,
                 }],
                 outputs: vec![make_output(1000)],
@@ -827,7 +827,7 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
             let coinbase = Transaction {
                 version: 1,
                 inputs: vec![coinbase_input(vec![0x03, 0x01, 0x00, 0x00])],
-                outputs: vec![TxOut { value: mantle::primitives::Satoshi::new(u64::MAX), script_pubkey: vec![0x51] }],
+                outputs: vec![TxOut { value: mantle::primitives::Satoshi::new(u64::MAX), script_pubkey: vec![0x51].into() }].into(),
                 locktime: 0,
             };
             let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];

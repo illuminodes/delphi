@@ -19,10 +19,10 @@ fn coinbase(script: Vec<u8>, value: u64) -> Transaction {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
-            script_sig: script,
+            script_sig: script.into(),
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }].into(),
         locktime: 0,
     }
 }
@@ -32,10 +32,10 @@ fn regular(prev: Hash256, vout: u32, value: u64) -> Transaction {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint { txid: prev, vout },
-            script_sig: vec![0x51; 20],
+            script_sig: vec![0x51; 20].into(),
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }].into(),
         locktime: 0,
     }
 }
@@ -92,10 +92,10 @@ fn main() {
             version: 1,
             inputs: (0..16u8).map(|i| TxIn {
                 previous_output: OutPoint { txid: Hash256([i; 32]), vout: u32::from(i) },
-                script_sig: vec![0x51; 20],
+                script_sig: vec![0x51; 20].into(),
                 sequence: u32::MAX,
             }).collect(),
-            outputs: vec![TxOut { value: Satoshi::new(1000), script_pubkey: vec![0x51] }],
+            outputs: vec![TxOut { value: Satoshi::new(1000), script_pubkey: vec![0x51].into() }].into(),
             locktime: 0,
         };
         let n = run_for(secs, || {

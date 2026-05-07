@@ -30,14 +30,14 @@ fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
         inputs: (0..n_inputs)
             .map(|i| TxIn {
                 previous_output: OutPoint { txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), vout: u32::try_from(i).expect("bench index fits u32") },
-                script_sig: vec![0x51; 20],
+                script_sig: vec![0x51; 20].into(),
                 sequence: u32::MAX,
             })
             .collect(),
         outputs: (0..n_outputs)
             .map(|i| TxOut {
                 value: Satoshi::new((i as u64 + 1) * 1000),
-                script_pubkey: vec![0x76, 0xa9, 0x14],
+                script_pubkey: vec![0x76, 0xa9, 0x14].into(),
             })
             .collect(),
         locktime: 0,
@@ -116,7 +116,7 @@ fn outpoint_decode_ref(bencher: divan::Bencher) {
 fn txin_encode() -> Vec<u8> {
     encode_bytes(&TxIn {
         previous_output: OutPoint { txid: Hash256([0xabu8; 32]), vout: 0 },
-        script_sig: vec![0x76; 25],
+        script_sig: vec![0x76; 25].into(),
         sequence: u32::MAX,
     })
 }
@@ -125,7 +125,7 @@ fn txin_encode() -> Vec<u8> {
 fn txin_decode(bencher: divan::Bencher) {
     let txin = TxIn {
         previous_output: OutPoint { txid: Hash256([0xabu8; 32]), vout: 0 },
-        script_sig: vec![0x76; 25],
+        script_sig: vec![0x76; 25].into(),
         sequence: u32::MAX,
     };
     let bytes = encode_bytes(&txin);
@@ -136,7 +136,7 @@ fn txin_decode(bencher: divan::Bencher) {
 fn txin_decode_ref(bencher: divan::Bencher) {
     let txin = TxIn {
         previous_output: OutPoint { txid: Hash256([0xabu8; 32]), vout: 0 },
-        script_sig: vec![0x76; 25],
+        script_sig: vec![0x76; 25].into(),
         sequence: u32::MAX,
     };
     let bytes = encode_bytes(&txin);
@@ -150,18 +150,18 @@ fn txin_decode_ref(bencher: divan::Bencher) {
 
 #[divan::bench]
 fn txout_encode() -> Vec<u8> {
-    encode_bytes(&TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x76, 0xa9, 0x14] })
+    encode_bytes(&TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x76, 0xa9, 0x14].into() })
 }
 
 #[divan::bench]
 fn txout_decode(bencher: divan::Bencher) {
-    let bytes = encode_bytes(&TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x76, 0xa9, 0x14] });
+    let bytes = encode_bytes(&TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x76, 0xa9, 0x14].into() });
     bencher.bench(|| TxOut::decode(&mut Cursor::new(bytes.as_slice())).expect("TxOut decode cannot fail on valid bytes"));
 }
 
 #[divan::bench]
 fn txout_decode_ref(bencher: divan::Bencher) {
-    let bytes = encode_bytes(&TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x76, 0xa9, 0x14] });
+    let bytes = encode_bytes(&TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x76, 0xa9, 0x14].into() });
     bencher.bench(|| {
         let (r, _) = TxOutRef::decode_ref(bytes.as_slice()).expect("TxOutRef decode_ref cannot fail on valid bytes");
         black_box(r.value)

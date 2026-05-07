@@ -19,10 +19,10 @@ fn coinbase_tx(value: u64) -> Transaction {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
-            script_sig: vec![0x03, 0x01, 0x00, 0x00], // BIP34 height=1
+            script_sig: vec![0x03, 0x01, 0x00, 0x00].into(), // BIP34 height=1
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }].into(),
         locktime: 0,
     }
 }
@@ -32,10 +32,10 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint { txid: prev, vout },
-            script_sig: vec![0x51],
+            script_sig: vec![0x51].into(),
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }].into(),
         locktime: 0,
     }
 }
@@ -104,7 +104,7 @@ fn txid_regular(bencher: divan::Bencher, n_inputs: usize) {
         inputs: (0..n_inputs)
             .map(|i| TxIn {
                 previous_output: OutPoint { txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), vout: u32::try_from(i).expect("bench index fits u32") },
-                script_sig: vec![0x51; 20],
+                script_sig: vec![0x51; 20].into(),
                 sequence: u32::MAX,
             })
             .collect(),
@@ -194,10 +194,10 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
         version: 4,
         inputs: vec![TxIn {
             previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
-            script_sig: vec![0x03, 0x0d, 0x00, 0x00], // height=13
+            script_sig: vec![0x03, 0x0d, 0x00, 0x00].into(), // height=13
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x51].into() }].into(),
         locktime: 0,
     };
     let merkle_root = compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")]).expect("single-tx merkle root must exist");
@@ -258,7 +258,7 @@ fn chain_view_tip(bencher: divan::Bencher) {
 fn chain_view_get_coin_hit(bencher: divan::Bencher) {
     let mut view = MemoryChainView::new();
     let op = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
-    view.insert_coin(op, Coin { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x51], height: BlockHeight(1), coinbase: false });
+    view.insert_coin(op, Coin { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x51].into(), height: BlockHeight(1), coinbase: false });
     bencher.bench(|| view.get_coin(black_box(&op)).expect("storage error"));
 }
 
@@ -276,7 +276,7 @@ fn chain_view_get_coins_batch(bencher: divan::Bencher, n: usize) {
         .map(|i| OutPoint { txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), vout: 0 })
         .collect();
     for &op in &ops {
-        view.insert_coin(op, Coin { value: Satoshi::new(1000), script_pubkey: vec![], height: BlockHeight(1), coinbase: false });
+        view.insert_coin(op, Coin { value: Satoshi::new(1000), script_pubkey: vec![].into(), height: BlockHeight(1), coinbase: false });
     }
     bencher.bench(|| view.get_coins(black_box(&ops)).expect("storage error"));
 }

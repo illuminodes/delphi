@@ -19,10 +19,10 @@ fn coinbase_tx(height_script: Vec<u8>, value: u64) -> Transaction {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
-            script_sig: height_script,
+            script_sig: height_script.into(),
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }].into(),
         locktime: 0,
     }
 }
@@ -32,10 +32,10 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint { txid: prev, vout },
-            script_sig: vec![0x51; 20],
+            script_sig: vec![0x51; 20].into(),
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }].into(),
         locktime: 0,
     }
 }
@@ -162,7 +162,7 @@ fn main() {
         let mut view = MemoryChainView::new();
         for i in 0..5000u32 {
             let op = OutPoint { txid: Hash256(sha256d(&i.to_le_bytes())), vout: 0 };
-            view.insert_coin(op, Coin { value: Satoshi::new(1000), script_pubkey: vec![0x51], height: BlockHeight(i), coinbase: false });
+            view.insert_coin(op, Coin { value: Satoshi::new(1000), script_pubkey: vec![0x51].into(), height: BlockHeight(i), coinbase: false });
             let _ = view.get_coin(&op).expect("storage error");
             view.spend_coin(&op);
         }

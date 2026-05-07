@@ -474,13 +474,152 @@ impl<'a> DecodeRef<'a> for OutPoint {
     }
 }
 
+// ── ScriptBuf ─────────────────────────────────────────────────────────────────
+
+/// Inline-optimised byte buffer for Bitcoin scripts.
+///
+/// Stores scripts up to `N` bytes on the stack; falls back to heap for longer
+/// ones. `N` is chosen per field: 128 for `ScriptSig` (covers all coinbase and
+/// standard legacy inputs), 36 for `ScriptPubKey` (covers every standard output
+/// type including P2WSH at 34 bytes).
+#[derive(Clone)]
+pub enum ScriptBuf<const N: usize> {
+    Inline { len: u8, data: Box<[u8; N]> },
+    Heap(Vec<u8>),
+}
+
+impl<const N: usize> ScriptBuf<N> {
+    /// Construct from a byte slice, choosing inline or heap automatically.
+    ///
+    /// # Panics
+    /// Never in practice — `N` is always ≤ 255 (128 or 36), so `s.len() <= N`
+    /// implies `s.len()` fits in `u8`.
+    #[must_use]
+    pub fn from_slice(s: &[u8]) -> Self {
+        if s.len() <= N {
+            let mut data = Box::new([0u8; N]);
+            data[..s.len()].copy_from_slice(s);
+            #[allow(clippy::cast_possible_truncation)] // N <= 255, so len <= N fits u8
+            Self::Inline { len: s.len() as u8, data }
+        } else {
+            Self::Heap(s.to_vec())
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Inline { len, data } => &data[..*len as usize],
+            Self::Heap(v) => v.as_slice(),
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Inline { len, .. } => *len as usize,
+            Self::Heap(v) => v.len(),
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.as_slice().to_vec()
+    }
+}
+
+impl<const N: usize> std::ops::Deref for ScriptBuf<N> {
+    type Target = [u8];
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl<const N: usize> From<Vec<u8>> for ScriptBuf<N> {
+    fn from(v: Vec<u8>) -> Self {
+        if v.len() <= N {
+            Self::from_slice(&v)
+        } else {
+            Self::Heap(v)
+        }
+    }
+}
+
+impl<const N: usize> From<&[u8]> for ScriptBuf<N> {
+    fn from(s: &[u8]) -> Self {
+        Self::from_slice(s)
+    }
+}
+
+impl<const N: usize> PartialEq for ScriptBuf<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl<const N: usize> Eq for ScriptBuf<N> {}
+
+impl<const N: usize> PartialEq<[u8]> for ScriptBuf<N> {
+    fn eq(&self, other: &[u8]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl<const N: usize> PartialEq<Vec<u8>> for ScriptBuf<N> {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl<const N: usize> fmt::Debug for ScriptBuf<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ScriptBuf({:?})", self.as_slice())
+    }
+}
+
+impl<const N: usize> Encode for ScriptBuf<N> {
+    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+        let s = self.as_slice();
+        VarInt(s.len() as u64).encode(w)?;
+        w.write_all(s)
+    }
+}
+
+impl<const N: usize> Decode for ScriptBuf<N> {
+    fn decode(r: &mut impl Read) -> io::Result<Self> {
+        decode_bytes_limited::<10_000>(r).map(Self::from)
+    }
+}
+
+// ── ScriptSig / ScriptPubKey ──────────────────────────────────────────────────
+
+/// Input script (scriptSig). Inline up to 128 bytes; heap beyond that.
+///
+/// 128 bytes covers all standard legacy inputs (P2PKH scriptSig is 107 bytes)
+/// and the consensus coinbase maximum (100 bytes).
+pub type ScriptSig = ScriptBuf<128>;
+
+/// Output script (scriptPubKey). Inline up to 36 bytes; heap beyond that.
+///
+/// 36 bytes covers every standard output type: P2PKH (25), P2SH (23),
+/// P2WPKH (22), P2WSH (34), `OP_RETURN` bare (1+).
+pub type ScriptPubKey = ScriptBuf<36>;
+
 // ── TxIn ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxIn {
     pub previous_output: OutPoint,
-    /// Serialized script or witness program.
-    pub script_sig: Vec<u8>,
+    pub script_sig: ScriptSig,
     pub sequence: u32,
 }
 
@@ -496,7 +635,7 @@ impl Decode for TxIn {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
         Ok(Self {
             previous_output: OutPoint::decode(r)?,
-            script_sig: decode_bytes_limited::<10_000>(r)?,
+            script_sig: ScriptSig::decode(r)?,
             sequence: u32::decode(r)?,
         })
     }
@@ -531,7 +670,7 @@ impl<'a> DecodeRef<'a> for TxInRef<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxOut {
     pub value: Satoshi,
-    pub script_pubkey: Vec<u8>,
+    pub script_pubkey: ScriptPubKey,
 }
 
 impl Encode for TxOut {
@@ -545,7 +684,7 @@ impl Decode for TxOut {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
         Ok(Self {
             value: Satoshi::decode(r)?,
-            script_pubkey: decode_bytes_limited::<10_000>(r)?,
+            script_pubkey: ScriptPubKey::decode(r)?,
         })
     }
 }
@@ -860,7 +999,7 @@ impl<'a> TransactionRef<'a> {
             .map(|r| {
                 r.map(|i| TxIn {
                     previous_output: i.previous_output,
-                    script_sig: i.script_sig.to_vec(),
+                    script_sig: i.script_sig.to_vec().into(),
                     sequence: i.sequence,
                 })
             })
@@ -870,7 +1009,7 @@ impl<'a> TransactionRef<'a> {
             .map(|r| {
                 r.map(|o| TxOut {
                     value: o.value,
-                    script_pubkey: o.script_pubkey.to_vec(),
+                    script_pubkey: o.script_pubkey.to_vec().into(),
                 })
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -1069,7 +1208,7 @@ mod tests {
                 txid: Hash256::ZERO,
                 vout: 0,
             },
-            script_sig: vec![0x01, 0x02, 0x03],
+            script_sig: vec![0x01, 0x02, 0x03].into(),
             sequence: u32::MAX,
         };
         let bytes = encode(&txin);
@@ -1088,7 +1227,7 @@ mod tests {
     fn txout_ref_zero_copy() {
         let txout = TxOut {
             value: Satoshi::new(5_000_000_000),
-            script_pubkey: vec![0xac, 0xbd],
+            script_pubkey: vec![0xac, 0xbd].into(),
         };
         let bytes = encode(&txout);
         let (txout_ref, tail) = decode_ref::<TxOutRef>(&bytes);
@@ -1106,12 +1245,12 @@ mod tests {
                     txid: Hash256::ZERO,
                     vout: 0xffff_ffff,
                 },
-                script_sig: vec![0x04, 0xff, 0xff, 0x00, 0x1d, 0x01, 0x04],
+                script_sig: vec![0x04, 0xff, 0xff, 0x00, 0x1d, 0x01, 0x04].into(),
                 sequence: u32::MAX,
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(5_000_000_000),
-                script_pubkey: vec![0x41, 0xac],
+                script_pubkey: vec![0x41, 0xac].into(),
             }],
             locktime: 0,
         };
@@ -1137,12 +1276,12 @@ mod tests {
                         txid: Hash256::ZERO,
                         vout: 0xffff_ffff,
                     },
-                    script_sig: vec![0x04],
+                    script_sig: vec![0x04].into(),
                     sequence: u32::MAX,
                 }],
                 outputs: vec![TxOut {
                     value: Satoshi::new(5_000_000_000),
-                    script_pubkey: vec![0xac],
+                    script_pubkey: vec![0xac].into(),
                 }],
                 locktime: 0,
             }],
@@ -1246,7 +1385,7 @@ mod tests {
     fn txin_empty_script_sig() {
         let txin = TxIn {
             previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
-            script_sig: vec![],
+            script_sig: vec![].into(),
             sequence: 0,
         };
         let bytes = encode(&txin);
@@ -1263,7 +1402,7 @@ mod tests {
     fn txin_truncated_script_sig() {
         let txin = TxIn {
             previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
-            script_sig: vec![0x01, 0x02, 0x03, 0x04],
+            script_sig: vec![0x01, 0x02, 0x03, 0x04].into(),
             sequence: u32::MAX,
         };
         let mut bytes = encode(&txin);
@@ -1275,7 +1414,7 @@ mod tests {
     // TxOut: zero value (valid — OP_RETURN outputs often carry 0 satoshis).
     #[test]
     fn txout_zero_value() {
-        let txout = TxOut { value: Satoshi::ZERO, script_pubkey: vec![0x6a] }; // OP_RETURN
+        let txout = TxOut { value: Satoshi::ZERO, script_pubkey: vec![0x6a].into() }; // OP_RETURN
         let bytes = encode(&txout);
         assert_eq!(decode::<TxOut>(&bytes), txout);
     }
@@ -1284,7 +1423,7 @@ mod tests {
     // the codec must not panic or corrupt the field).
     #[test]
     fn txout_max_value() {
-        let txout = TxOut { value: Satoshi::new(u64::MAX), script_pubkey: vec![] };
+        let txout = TxOut { value: Satoshi::new(u64::MAX), script_pubkey: vec![].into() };
         let bytes = encode(&txout);
         assert_eq!(decode::<TxOut>(&bytes), txout);
     }
@@ -1292,7 +1431,7 @@ mod tests {
     // TxOut: truncated script_pubkey.
     #[test]
     fn txout_truncated_script_pubkey() {
-        let txout = TxOut { value: Satoshi::new(1000), script_pubkey: vec![0x76, 0xa9, 0x14] };
+        let txout = TxOut { value: Satoshi::new(1000), script_pubkey: vec![0x76, 0xa9, 0x14].into() };
         let mut bytes = encode(&txout);
         bytes.truncate(bytes.len() - 2);
         let e = decode_err::<TxOut>(&bytes);
@@ -1415,18 +1554,18 @@ mod tests {
             inputs: vec![
                 TxIn {
                     previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 1 },
-                    script_sig: vec![0x01, 0x02, 0x03],
+                    script_sig: vec![0x01, 0x02, 0x03].into(),
                     sequence: 0xffff_fffe,
                 },
                 TxIn {
                     previous_output: OutPoint { txid: Hash256([0xcd; 32]), vout: 0 },
-                    script_sig: vec![],
+                    script_sig: vec![].into(),
                     sequence: 0,
                 },
             ],
             outputs: vec![
-                TxOut { value: Satoshi::new(50_000), script_pubkey: vec![0x76, 0xa9] },
-                TxOut { value: Satoshi::ZERO, script_pubkey: vec![] },
+                TxOut { value: Satoshi::new(50_000), script_pubkey: vec![0x76, 0xa9].into() },
+                TxOut { value: Satoshi::ZERO, script_pubkey: vec![].into() },
             ],
             locktime: 800_000,
         }

@@ -822,12 +822,12 @@ mod tests {
             version: 1,
             inputs: vec![TxIn {
                 previous_output: NULL_OUTPOINT,
-                script_sig: Transaction::bip34_height_script(height),
+                script_sig: Transaction::bip34_height_script(height).into(),
                 sequence: u32::MAX,
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(value),
-                script_pubkey: vec![0x51], // OP_1
+                script_pubkey: vec![0x51].into(), // OP_1
             }],
             locktime: 0,
         }
@@ -838,12 +838,12 @@ mod tests {
             version: 1,
             inputs: vec![TxIn {
                 previous_output: OutPoint { txid: prev_txid, vout },
-                script_sig: vec![0x00],
+                script_sig: vec![0x00].into(),
                 sequence: u32::MAX,
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(value),
-                script_pubkey: vec![0x51],
+                script_pubkey: vec![0x51].into(),
             }],
             locktime: 0,
         }
@@ -924,7 +924,7 @@ mod tests {
     #[test]
     fn coinbase_script_too_short() {
         let mut tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
-        tx.inputs[0].script_sig = vec![0x01]; // 1 byte < MIN (2)
+        tx.inputs[0].script_sig = vec![0x01].into(); // 1 byte < MIN (2)
         let block = make_block(vec![tx], CompactBits(0x207f_ffff));
         assert_eq!(
             validate_block_structure(&block),
@@ -935,7 +935,7 @@ mod tests {
     #[test]
     fn coinbase_script_too_long() {
         let mut tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
-        tx.inputs[0].script_sig = vec![0x00; 101]; // 101 > MAX (100)
+        tx.inputs[0].script_sig = vec![0x00; 101].into(); // 101 > MAX (100)
         let block = make_block(vec![tx], CompactBits(0x207f_ffff));
         assert_eq!(
             validate_block_structure(&block),
@@ -1165,7 +1165,7 @@ mod tests {
         let tip = view.tip();
         let mut tx = coinbase_tx(tip.height + 1, 5_000_000_000);
         // Replace BIP34 scriptSig with garbage that doesn't encode the height.
-        tx.inputs[0].script_sig = vec![0x02, 0x00, 0x00];
+        tx.inputs[0].script_sig = vec![0x02, 0x00, 0x00].into();
         let block = Block {
             header: BlockHeader {
                 version: 4,

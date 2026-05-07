@@ -41,7 +41,7 @@ fn arb_block_header() -> impl Strategy<Value = BlockHeader> {
 
 fn arb_txout() -> impl Strategy<Value = TxOut> {
     (any::<u64>(), prop::collection::vec(any::<u8>(), 0..=256_usize)).prop_map(
-        |(value, script_pubkey)| TxOut { value: mantle::primitives::Satoshi::new(value), script_pubkey },
+        |(value, script_pubkey)| TxOut { value: mantle::primitives::Satoshi::new(value), script_pubkey: script_pubkey.into() },
     )
 }
 
@@ -54,7 +54,7 @@ fn arb_txin() -> impl Strategy<Value = TxIn> {
     )
         .prop_map(|(txid, vout, script_sig, sequence)| TxIn {
             previous_output: OutPoint { txid, vout },
-            script_sig,
+            script_sig: script_sig.into(),
             sequence,
         })
 }
