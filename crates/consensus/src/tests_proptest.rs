@@ -41,7 +41,7 @@ fn arb_block_header() -> impl Strategy<Value = BlockHeader> {
 
 fn arb_txout() -> impl Strategy<Value = TxOut> {
     (any::<u64>(), prop::collection::vec(any::<u8>(), 0..=256_usize)).prop_map(
-        |(value, script_pubkey)| TxOut { value, script_pubkey },
+        |(value, script_pubkey)| TxOut { value: mantle::primitives::Satoshi::new(value), script_pubkey },
     )
 }
 

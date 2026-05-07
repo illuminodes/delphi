@@ -28,7 +28,7 @@ pub enum Error {
     /// The kernel returned a negative result code for a completed I/O operation.
     CqeError {
         peer: PeerId,
-        op: u32,
+        op: Op,
         /// Negated `errno` value returned by the kernel.
         code: i32,
     },
@@ -47,7 +47,7 @@ impl std::fmt::Display for Error {
             Self::RingSubmit(msg) => write!(f, "ring submit failed: {msg}"),
             Self::PeerNotFound(id) => write!(f, "peer {id:?} not found"),
             Self::CqeError { peer, op, code } => {
-                write!(f, "peer {peer:?} op {op} kernel error: {code}")
+                write!(f, "peer {peer:?} op {op:?} kernel error: {code}")
             }
             Self::ChecksumMismatch { peer } => write!(f, "checksum mismatch from peer {peer:?}"),
             Self::Codec(e) => write!(f, "codec error: {e}"),
@@ -85,21 +85,72 @@ pub struct PeerId(pub u32);
 //
 // Layout: upper 32 bits = peer_id, lower 32 bits = op type.
 
-const OP_CONNECT: u32 = 0;
-const OP_SEND: u32 = 1;
-const OP_RECV: u32 = 2;
-
-// Sentinel user_data for timeout SQEs — no valid peer tag can equal this.
-const TAG_TIMEOUT: u64 = u64::MAX;
-
-#[inline]
-fn make_tag(peer: PeerId, op: u32) -> u64 {
-    (u64::from(peer.0) << 32) | u64::from(op)
+/// The kind of `io_uring` operation a CQE refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Op {
+    Connect,
+    Send,
+    Recv,
+    /// A code received from a CQE that does not match a known op.
+    Unknown(u32),
 }
 
-#[inline]
-fn decode_tag(tag: u64) -> (PeerId, u32) {
-    (PeerId((tag >> 32) as u32), (tag & 0xffff_ffff) as u32)
+impl Op {
+    fn as_u32(self) -> u32 {
+        match self {
+            Self::Connect => 0,
+            Self::Send => 1,
+            Self::Recv => 2,
+            Self::Unknown(n) => n,
+        }
+    }
+
+    fn from_u32(n: u32) -> Self {
+        match n {
+            0 => Self::Connect,
+            1 => Self::Send,
+            2 => Self::Recv,
+            n => Self::Unknown(n),
+        }
+    }
+}
+
+/// Encoded `io_uring` `user_data` tag — peer id in the upper 32 bits, op in the lower.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserDataTag(u64);
+
+impl UserDataTag {
+    /// Sentinel tag used for timeout SQEs; no valid peer/op encoding produces this value.
+    pub const TIMEOUT: Self = Self(u64::MAX);
+
+    #[inline]
+    #[must_use]
+    pub fn new(peer: PeerId, op: Op) -> Self {
+        Self((u64::from(peer.0) << 32) | u64::from(op.as_u32()))
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn parts(self) -> (PeerId, Op) {
+        #[allow(clippy::cast_possible_truncation)] // intentional: low 32 bits
+        let op = Op::from_u32(self.0 as u32);
+        #[allow(clippy::cast_possible_truncation)] // intentional: high 32 bits
+        let peer = PeerId((self.0 >> 32) as u32);
+        (peer, op)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for UserDataTag {
+    #[inline]
+    fn from(raw: u64) -> Self {
+        Self(raw)
+    }
 }
 
 // ── Handshake state ───────────────────────────────────────────────────────────
@@ -239,7 +290,7 @@ impl Node {
         };
 
         self.ring
-            .push(Sqe::connect(fd, addr_bytes).user_data(make_tag(id, OP_CONNECT)))
+            .push(Sqe::connect(fd, addr_bytes).user_data(UserDataTag::new(id, Op::Connect).raw()))
             .map_err(|e| Error::RingPush(format!("{e:?}")))?;
 
         self.ring
@@ -276,11 +327,10 @@ impl Node {
             .ok_or(Error::PeerNotFound(peer))?;
 
         let mut framed = Vec::new();
-        crate::network::encode_message(self.magic, command, payload, &mut framed)
-            .map_err(Error::Codec)?;
+        self.magic.frame(command, payload, &mut framed).map_err(Error::Codec)?;
 
         self.ring
-            .push(Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(make_tag(peer, OP_SEND)))
+            .push(Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(UserDataTag::new(peer, Op::Send).raw()))
             .map_err(|e| Error::RingPush(format!("{e:?}")))?;
         self.ring
             .submit()
@@ -326,7 +376,7 @@ impl Node {
 
         let ts = Timespec::from_millis(timeout_ms);
         self.ring
-            .push(Sqe::timeout(&ts, 1, TimeoutFlags::default()).user_data(TAG_TIMEOUT))
+            .push(Sqe::timeout(&ts, 1, TimeoutFlags::default()).user_data(UserDataTag::TIMEOUT.raw()))
             .map_err(|e| Error::RingPush(format!("{e:?}")))?;
 
         // Block until ≥1 CQE (the timeout itself counts as one).
@@ -336,7 +386,7 @@ impl Node {
 
         let mut io_work = false;
         while let Some(cqe) = self.ring.complete() {
-            if cqe.user_data == TAG_TIMEOUT {
+            if cqe.user_data == UserDataTag::TIMEOUT.raw() {
                 // -ETIME on normal expiry, 0 if count was satisfied first.
                 // Either way just skip — not an I/O error.
                 continue;
@@ -351,19 +401,19 @@ impl Node {
     // ── Internal ──────────────────────────────────────────────────────────────
 
     fn dispatch_cqe(&mut self, cqe: ququmatz::Completion) -> Result<(), Error> {
-        let (peer_id, op) = decode_tag(cqe.user_data);
+        let (peer_id, op) = UserDataTag::from(cqe.user_data).parts();
         if cqe.result < 0 {
             eprintln!("{}", Error::CqeError { peer: peer_id, op, code: cqe.result });
             self.peers.remove(&peer_id);
             return Ok(());
         }
         match op {
-            OP_CONNECT => self.on_connected(peer_id)?,
-            OP_RECV => {
+            Op::Connect => self.on_connected(peer_id)?,
+            Op::Recv => {
                 #[allow(clippy::cast_sign_loss)]
                 self.on_recv(peer_id, cqe.result as usize)?;
             }
-            _ => {}
+            Op::Send | Op::Unknown(_) => {}
         }
         Ok(())
     }
@@ -377,7 +427,7 @@ impl Node {
                 // A production implementation would track in-flight sends.
                 let bytes = msg.bytes.leak();
                 let sqe = Sqe::send(fd, bytes, MsgFlags::default())
-                    .user_data(make_tag(msg.peer, OP_SEND));
+                    .user_data(UserDataTag::new(msg.peer, Op::Send).raw());
                 let _ = self.ring.push(sqe);
             }
         }
@@ -393,11 +443,10 @@ impl Node {
         let mut payload = Vec::new();
         self.our_version.encode(&mut payload).map_err(Error::Codec)?;
         let mut framed = Vec::new();
-        crate::network::encode_message(self.magic, Command::Version, &payload, &mut framed)
-            .map_err(Error::Codec)?;
+        self.magic.frame(Command::Version, &payload, &mut framed).map_err(Error::Codec)?;
 
         let _ = self.ring.push(
-            Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(make_tag(id, OP_SEND)),
+            Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(UserDataTag::new(id, Op::Send).raw()),
         );
 
         // submit_recv takes &mut self — safe now, peers borrow is released.
@@ -416,7 +465,7 @@ impl Node {
         let fd = peer.fd;
         let chunk = self.recv_chunks.get_mut(&id).expect("recv_chunks entry exists for every connected peer");
         let sqe = Sqe::recv(fd, chunk.as_mut_slice(), MsgFlags::default())
-            .user_data(make_tag(id, OP_RECV));
+            .user_data(UserDataTag::new(id, Op::Recv).raw());
         self.ring
             .push(sqe)
             .map_err(|e| Error::RingPush(format!("{e:?}")))?;
@@ -455,7 +504,7 @@ impl Node {
 
             // Validate checksum directly against recv_buf — no copy needed.
             let payload_slice = &peer.recv_buf[PeerState::HEADER_SIZE..total];
-            if checksum(payload_slice)? != header.checksum {
+            if checksum(payload_slice) != header.checksum {
                 eprintln!("{}", Error::ChecksumMismatch { peer: id });
                 self.peers.remove(&id);
                 return Ok(());
@@ -469,11 +518,10 @@ impl Node {
                     peer.recv_buf.drain(..total);
                     // Send verack.
                     let mut framed = Vec::new();
-                    crate::network::encode_message(self.magic, Command::Verack, &[], &mut framed)
-                        .map_err(Error::Codec)?;
+                    self.magic.frame(Command::Verack, &[], &mut framed).map_err(Error::Codec)?;
                     let _ = self.ring.push(
                         Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
-                            .user_data(make_tag(id, OP_SEND)),
+                            .user_data(UserDataTag::new(id, Op::Send).raw()),
                     );
                     peer.handshake = HandshakeState::VerackSent;
                 }
@@ -485,12 +533,11 @@ impl Node {
                     // Reflect the nonce back as a pong — borrow payload_slice
                     // before draining so we don't need to copy it.
                     let mut framed = Vec::new();
-                    crate::network::encode_message(self.magic, Command::Pong, payload_slice, &mut framed)
-                        .map_err(Error::Codec)?;
+                    self.magic.frame(Command::Pong, payload_slice, &mut framed).map_err(Error::Codec)?;
                     peer.recv_buf.drain(..total);
                     let _ = self.ring.push(
                         Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
-                            .user_data(make_tag(id, OP_SEND)),
+                            .user_data(UserDataTag::new(id, Op::Send).raw()),
                     );
                 }
                 (HandshakeState::Ready, _) => {

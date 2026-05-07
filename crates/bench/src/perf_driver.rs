@@ -2,7 +2,7 @@
 /// so `perf record` accumulates a statistically meaningful sample set.
 use mantle::codec::Encode;
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut};
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::validation::{validate_block_structure, validate_block_wire};
 use std::hint::black_box;
@@ -22,7 +22,7 @@ fn coinbase(script: Vec<u8>, value: u64) -> Transaction {
             script_sig: script,
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value, script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
         locktime: 0,
     }
 }
@@ -35,7 +35,7 @@ fn regular(prev: Hash256, vout: u32, value: u64) -> Transaction {
             script_sig: vec![0x51; 20],
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value, script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
         locktime: 0,
     }
 }
@@ -95,7 +95,7 @@ fn main() {
                 script_sig: vec![0x51; 20],
                 sequence: u32::MAX,
             }).collect(),
-            outputs: vec![TxOut { value: 1000, script_pubkey: vec![0x51] }],
+            outputs: vec![TxOut { value: Satoshi::new(1000), script_pubkey: vec![0x51] }],
             locktime: 0,
         };
         let n = run_for(secs, || {

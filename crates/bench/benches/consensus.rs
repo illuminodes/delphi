@@ -1,5 +1,5 @@
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle::codec::Encode;
@@ -22,7 +22,7 @@ fn coinbase_tx(value: u64) -> Transaction {
             script_sig: vec![0x03, 0x01, 0x00, 0x00], // BIP34 height=1
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value, script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
         locktime: 0,
     }
 }
@@ -35,7 +35,7 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
             script_sig: vec![0x51],
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value, script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
         locktime: 0,
     }
 }
@@ -83,7 +83,7 @@ fn build_chain(len: u32) -> MemoryChainView {
             bits: EASY_BITS,
             nonce: 0,
         };
-        prev = Hash256(sha256d(&h.to_bytes()));
+        prev = h.hash();
         view.push_header(h);
     }
     view
@@ -190,7 +190,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
             script_sig: vec![0x03, 0x0d, 0x00, 0x00], // height=13
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value: 5_000_000_000, script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x51] }],
         locktime: 0,
     };
     let merkle_root = compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")]).expect("single-tx merkle root must exist");
@@ -251,7 +251,7 @@ fn chain_view_tip(bencher: divan::Bencher) {
 fn chain_view_get_coin_hit(bencher: divan::Bencher) {
     let mut view = MemoryChainView::new();
     let op = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
-    view.insert_coin(op, Coin { value: 5_000_000_000, script_pubkey: vec![0x51], height: BlockHeight(1), coinbase: false });
+    view.insert_coin(op, Coin { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x51], height: BlockHeight(1), coinbase: false });
     bencher.bench(|| view.get_coin(black_box(&op)).expect("storage error"));
 }
 
@@ -269,7 +269,7 @@ fn chain_view_get_coins_batch(bencher: divan::Bencher, n: usize) {
         .map(|i| OutPoint { txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]), vout: 0 })
         .collect();
     for &op in &ops {
-        view.insert_coin(op, Coin { value: 1000, script_pubkey: vec![], height: BlockHeight(1), coinbase: false });
+        view.insert_coin(op, Coin { value: Satoshi::new(1000), script_pubkey: vec![], height: BlockHeight(1), coinbase: false });
     }
     bencher.bench(|| view.get_coins(black_box(&ops)).expect("storage error"));
 }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint};
+use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi};
 
 use crate::error::ChainViewError;
 
@@ -9,7 +9,7 @@ use crate::error::ChainViewError;
 /// A spendable output in the UTXO set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Coin {
-    pub value: u64,
+    pub value: Satoshi,
     pub script_pubkey: Vec<u8>,
     /// Height at which this output was created.
     pub height: BlockHeight,
@@ -117,7 +117,7 @@ impl MemoryChainView {
     /// Panics if the chain grows beyond `u32::MAX` headers (impossible in practice).
     pub fn push_header(&mut self, header: BlockHeader) {
         let height = BlockHeight(u32::try_from(self.headers.len()).expect("chain height exceeds u32"));
-        let hash = Hash256(mantle::hash::sha256d(&header.to_bytes()));
+        let hash = header.hash();
         self.header_index.insert(hash, height);
         self.headers.push(header);
     }
@@ -187,7 +187,7 @@ impl ChainView for MemoryChainView {
             Some(h) => {
                 let height = BlockHeight(u32::try_from(self.headers.len() - 1).expect("chain height exceeds u32"));
                 TipInfo {
-                    hash: Hash256(mantle::hash::sha256d(&h.to_bytes())),
+                    hash: h.hash(),
                     height,
                 }
             }
@@ -216,7 +216,7 @@ mod tests {
         let mut prev = Hash256::ZERO;
         for &t in times {
             let h = header(t, prev);
-            prev = Hash256(mantle::hash::sha256d(&h.to_bytes()));
+            prev = h.hash();
             view.push_header(h);
         }
     }
@@ -243,7 +243,7 @@ mod tests {
         let mut view = MemoryChainView::new();
         let h = header(9_999, Hash256::ZERO);
         view.push_header(h);
-        let hash = Hash256(mantle::hash::sha256d(&h.to_bytes()));
+        let hash = h.hash();
         assert_eq!(view.get_header(&hash).expect("no error").expect("header exists").time, 9_999);
         assert!(view.get_header(&Hash256::ZERO).expect("no error").is_none());
     }
@@ -253,7 +253,7 @@ mod tests {
         let mut view = MemoryChainView::new();
         let op = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
         let coin = Coin {
-            value: 5_000_000_000,
+            value: Satoshi::new(5_000_000_000),
             script_pubkey: vec![0xac],
             height: BlockHeight(100),
             coinbase: false,
@@ -303,7 +303,7 @@ mod tests {
         let mut view = MemoryChainView::new();
         let op1 = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
         let op2 = OutPoint { txid: Hash256([2u8; 32]), vout: 0 };
-        let coin = Coin { value: 1000, script_pubkey: vec![], height: BlockHeight(1), coinbase: false };
+        let coin = Coin { value: Satoshi::new(1000), script_pubkey: vec![], height: BlockHeight(1), coinbase: false };
         view.insert_coin(op1, coin.clone());
 
         let results = view.get_coins(&[op1, op2]).expect("get_coins must succeed");

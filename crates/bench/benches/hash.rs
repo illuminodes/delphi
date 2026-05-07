@@ -11,6 +11,6 @@ fn sha256d_bench(bencher: divan::Bencher, len: usize) {
 }
 
 #[divan::bench]
-fn checksum_32b() -> std::io::Result<[u8; 4]> {
+fn checksum_32b() -> [u8; 4] {
     checksum(b"a typical ping payload with nonce")
 }

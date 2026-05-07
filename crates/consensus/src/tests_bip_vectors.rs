@@ -32,7 +32,7 @@ fn coinbase_input(script_sig: Vec<u8>) -> TxIn {
 
 
 fn make_output(value: u64) -> TxOut {
-    TxOut { value, script_pubkey: vec![0x51] } // OP_1 (trivial P2PK stand-in)
+    TxOut { value: mantle::primitives::Satoshi::new(value), script_pubkey: vec![0x51] } // OP_1 (trivial P2PK stand-in)
 }
 
 /// Build a minimal valid block whose Stage 1 checks pass.
@@ -83,7 +83,7 @@ fn build_chain(n: u32, bits: mantle::primitives::CompactBits, base_time: u32) ->
             bits,
             nonce: 0,
         };
-        prev = Hash256(sha256d(&h.to_bytes()));
+        prev = h.hash();
         view.push_header(h);
     }
     view
@@ -248,7 +248,7 @@ fn stage1_coinbase_script_boundary_values_accepted() {
 
 #[test]
 fn stage1_output_value_over_max_money_rejected() {
-    let too_much = MAX_MONEY + 1;
+    let too_much = mantle::primitives::Satoshi::new(MAX_MONEY.to_u64() + 1);
     let coinbase = Transaction {
         version: 1,
         inputs: vec![coinbase_input(vec![0x51, 0x52])],
@@ -623,7 +623,7 @@ fn genesis_coinbase_decode_roundtrip() {
     assert_eq!(tx.version, 1);
     assert_eq!(tx.inputs.len(), 1);
     assert_eq!(tx.outputs.len(), 1);
-    assert_eq!(tx.outputs[0].value, 50_0000_0000);
+    assert_eq!(tx.outputs[0].value, mantle::primitives::Satoshi::new(50_0000_0000));
     assert_eq!(tx.locktime, 0);
 
     // Re-encode must produce identical bytes.
@@ -686,7 +686,7 @@ fn memory_chain_view_utxo_insert_lookup_spend() {
     let mut view = MemoryChainView::new();
     let op = OutPoint { txid: Hash256([0x12; 32]), vout: 3 };
     let coin = Coin {
-        value: 100_000,
+        value: mantle::primitives::Satoshi::new(100_000),
         script_pubkey: vec![0x76, 0xa9, 0x14], // OP_DUP OP_HASH160 OP_DATA14
         height: BlockHeight(500_000),
         coinbase: false,
@@ -705,7 +705,7 @@ fn memory_chain_view_coinbase_flag_preserved() {
     let mut view = MemoryChainView::new();
     let op = OutPoint { txid: Hash256([0x99; 32]), vout: 0 };
     let coin = Coin {
-        value: 50_0000_0000,
+        value: mantle::primitives::Satoshi::new(50_0000_0000),
         script_pubkey: vec![0x51],
         height: BlockHeight::ZERO,
         coinbase: true,
@@ -714,7 +714,7 @@ fn memory_chain_view_coinbase_flag_preserved() {
     let retrieved = view.get_coin(&op).expect("storage error").expect("coin must exist after insert");
     assert!(retrieved.coinbase, "coinbase flag must survive round-trip through MemoryChainView");
     assert_eq!(retrieved.height, BlockHeight::ZERO);
-    assert_eq!(retrieved.value, 50_0000_0000);
+    assert_eq!(retrieved.value, mantle::primitives::Satoshi::new(50_0000_0000));
 }
 
 // ── validate_block_wire ───────────────────────────────────────────────────────
@@ -827,7 +827,7 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
             let coinbase = Transaction {
                 version: 1,
                 inputs: vec![coinbase_input(vec![0x03, 0x01, 0x00, 0x00])],
-                outputs: vec![TxOut { value: u64::MAX, script_pubkey: vec![0x51] }],
+                outputs: vec![TxOut { value: mantle::primitives::Satoshi::new(u64::MAX), script_pubkey: vec![0x51] }],
                 locktime: 0,
             };
             let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];

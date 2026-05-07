@@ -43,10 +43,10 @@ fn make_version_msg() -> VersionMsg {
 fn message_header_decode(bencher: divan::Bencher) {
     let payload = b"nonce_8_bytes___";
     let bytes = encode_bytes(&MessageHeader {
-        magic: Magic::Mainnet.bytes(),
+        magic: Magic::Mainnet,
         command: CommandName::new("ping"),
         length: u32::try_from(payload.len()).expect("payload fits u32"),
-        checksum: checksum(payload).expect("checksum cannot fail"),
+        checksum: checksum(payload),
     });
     bencher.bench(|| MessageHeader::decode(&mut Cursor::new(bytes.as_slice())).expect("MessageHeader decode cannot fail on valid bytes"));
 }

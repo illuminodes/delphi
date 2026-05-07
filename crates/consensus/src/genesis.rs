@@ -58,7 +58,7 @@ mod tests {
         assert_eq!(tx.version, 1);
         assert_eq!(tx.inputs.len(), 1);
         assert_eq!(tx.outputs.len(), 1);
-        assert_eq!(tx.outputs[0].value, 50_0000_0000); // 50 BTC in satoshis
+        assert_eq!(tx.outputs[0].value, mantle::primitives::Satoshi::new(50_0000_0000)); // 50 BTC in satoshis
     }
 
     #[test]

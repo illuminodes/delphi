@@ -51,9 +51,10 @@ fn our_version() -> VersionMsg {
 
 fn getheaders_payload() -> Vec<u8> {
     // Locator: genesis hash → asks for everything from block 1 onward.
-    let genesis = Hash256(hex_to_bytes32(
+    let genesis = Hash256::from_display_hex(
         "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
-    ));
+    )
+    .expect("hardcoded genesis hash must parse");
     let msg = GetHeadersMsg {
         version: 70015,
         locator_hashes: vec![genesis],
@@ -147,15 +148,7 @@ fn handle_message(msg: &InboundMsg) -> bool {
                         Ok(h) => h,
                         Err(e) => { eprintln!("  failed to decode header: {e}"); break; }
                     };
-                    let raw = h.to_bytes();
-                    let hash = mantle::hash::sha256d(&raw);
-                    let mut rev = hash;
-                    rev.reverse();
-                    let hex: String = rev.iter().fold(String::new(), |mut s, b| {
-                        use std::fmt::Write;
-                        write!(s, "{b:02x}").expect("fmt::Write on String cannot fail");
-                        s
-                    });
+                    let hex = h.hash().to_display_hex();
                     println!(
                         "  [{i}] hash={hex}  version={}  time={}  nonce={}",
                         h.version, h.time, h.nonce
@@ -171,15 +164,4 @@ fn handle_message(msg: &InboundMsg) -> bool {
     }
 
     false
-}
-
-/// Parse a display-order (reversed) hex block hash into raw internal bytes.
-fn hex_to_bytes32(s: &str) -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    for i in 0..32 {
-        bytes[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
-            .unwrap_or_else(|_| panic!("invalid hex at offset {}", i * 2));
-    }
-    bytes.reverse();
-    bytes
 }

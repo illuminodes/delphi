@@ -12,6 +12,8 @@ pub enum Magic {
     Testnet3,
     Testnet4,
     Signet,
+    /// A 4-byte magic value that does not match any known network.
+    Unknown([u8; 4]),
 }
 
 impl Magic {
@@ -22,18 +24,61 @@ impl Magic {
             Self::Testnet3 => [0x0b, 0x11, 0x09, 0x07],
             Self::Testnet4 => [0x1c, 0x16, 0x3f, 0x28],
             Self::Signet => [0x0a, 0x03, 0xcf, 0x40],
+            Self::Unknown(b) => b,
         }
     }
 
+    /// Classify a 4-byte magic value. Returns `Magic::Unknown` if the bytes
+    /// don't match any known network.
+    #[must_use]
+    pub fn classify(b: [u8; 4]) -> Self {
+        match b {
+            [0xf9, 0xbe, 0xb4, 0xd9] => Self::Mainnet,
+            [0x0b, 0x11, 0x09, 0x07] => Self::Testnet3,
+            [0x1c, 0x16, 0x3f, 0x28] => Self::Testnet4,
+            [0x0a, 0x03, 0xcf, 0x40] => Self::Signet,
+            other => Self::Unknown(other),
+        }
+    }
+
+    /// Returns `Some(self)` if the magic is a known network, else `None`.
     #[must_use]
     pub fn from_bytes(b: [u8; 4]) -> Option<Self> {
-        match b {
-            [0xf9, 0xbe, 0xb4, 0xd9] => Some(Self::Mainnet),
-            [0x0b, 0x11, 0x09, 0x07] => Some(Self::Testnet3),
-            [0x1c, 0x16, 0x3f, 0x28] => Some(Self::Testnet4),
-            [0x0a, 0x03, 0xcf, 0x40] => Some(Self::Signet),
-            _ => None,
+        match Self::classify(b) {
+            Self::Unknown(_) => None,
+            known => Some(known),
         }
+    }
+
+    /// Frame a P2P message: writes a 24-byte header plus payload to `w`.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` if the payload exceeds `u32::MAX` bytes, or any
+    /// I/O error from writing to `w`.
+    pub fn frame(self, command: Command, payload: &[u8], w: &mut impl Write) -> io::Result<()> {
+        encode_message(self, command, payload, w)
+    }
+}
+
+impl Encode for Magic {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+        w.write_all(&self.bytes())
+    }
+}
+
+impl Decode for Magic {
+    #[inline]
+    fn decode(r: &mut impl Read) -> io::Result<Self> {
+        Ok(Self::classify(<[u8; 4]>::decode(r)?))
+    }
+}
+
+impl<'a> DecodeRef<'a> for Magic {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+        let (b, tail) = <[u8; 4]>::decode_ref(buf)?;
+        Ok((Self::classify(b), tail))
     }
 }
 
@@ -192,7 +237,7 @@ impl std::fmt::Display for Command {
 /// 24-byte message header that wraps every Bitcoin P2P message.
 #[derive(Debug, Clone)]
 pub struct MessageHeader {
-    pub magic: [u8; 4],
+    pub magic: Magic,
     pub command: CommandName,
     pub length: u32,
     pub checksum: [u8; 4],
@@ -204,7 +249,7 @@ impl MessageHeader {
 
 impl Encode for MessageHeader {
     fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(&self.magic)?;
+        self.magic.encode(w)?;
         w.write_all(&self.command.0)?;
         self.length.encode(w)?;
         w.write_all(&self.checksum)
@@ -213,7 +258,7 @@ impl Encode for MessageHeader {
 
 impl Decode for MessageHeader {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let magic = <[u8; 4]>::decode(r)?;
+        let magic = Magic::decode(r)?;
         let command = CommandName(<[u8; 12]>::decode(r)?);
         let length = u32::decode(r)?;
         let checksum = <[u8; 4]>::decode(r)?;
@@ -228,7 +273,7 @@ impl Decode for MessageHeader {
 
 impl<'a> DecodeRef<'a> for MessageHeader {
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
-        let (magic, buf) = <[u8; 4]>::decode_ref(buf)?;
+        let (magic, buf) = Magic::decode_ref(buf)?;
         let (cmd, buf) = <[u8; 12]>::decode_ref(buf)?;
         let (length, buf) = u32::decode_ref(buf)?;
         let (checksum, buf) = <[u8; 4]>::decode_ref(buf)?;
@@ -255,11 +300,11 @@ pub fn encode_message(
     w: &mut impl Write,
 ) -> io::Result<()> {
     let header = MessageHeader {
-        magic: magic.bytes(),
+        magic,
         command: CommandName::from(command),
         length: u32::try_from(payload.len())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
-        checksum: checksum(payload)?,
+        checksum: checksum(payload),
     };
     header.encode(w)?;
     w.write_all(payload)
@@ -891,13 +936,13 @@ mod tests {
     }
 
     #[test]
-    fn message_header_roundtrip() -> std::io::Result<()> {
+    fn message_header_roundtrip() {
         let payload = b"hello";
         let header = MessageHeader {
-            magic: Magic::Mainnet.bytes(),
+            magic: Magic::Mainnet,
             command: CommandName::new("version"),
             length: u32::try_from(payload.len()).expect("payload fits u32"),
-            checksum: checksum(payload)?,
+            checksum: checksum(payload),
         };
         let bytes = encode(&header);
         assert_eq!(bytes.len(), MessageHeader::ENCODED_LEN);
@@ -906,34 +951,31 @@ mod tests {
         assert_eq!(decoded.command, header.command);
         assert_eq!(decoded.length, header.length);
         assert_eq!(decoded.checksum, header.checksum);
-        Ok(())
     }
 
     #[test]
-    fn message_header_decode_ref() -> std::io::Result<()> {
+    fn message_header_decode_ref() {
         let payload = b"test";
         let mut bytes = encode(&MessageHeader {
-            magic: Magic::Mainnet.bytes(),
+            magic: Magic::Mainnet,
             command: CommandName::new("ping"),
             length: u32::try_from(payload.len()).expect("payload fits u32"),
-            checksum: checksum(payload)?,
+            checksum: checksum(payload),
         });
         bytes.push(0xab); // sentinel
         let (h, tail) = decode_ref::<MessageHeader>(&bytes);
         assert_eq!(h.command.as_str(), "ping");
         assert_eq!(tail, &[0xab]);
-        Ok(())
     }
 
     #[test]
-    fn encode_message_checksum() -> std::io::Result<()> {
+    fn encode_message_checksum() {
         let payload = b"payload";
         let mut buf = Vec::new();
         encode_message(Magic::Mainnet, Command::Ping, payload, &mut buf).expect("encode_message cannot fail writing to Vec");
         let header = decode::<MessageHeader>(&buf[..24]);
-        assert_eq!(header.checksum, checksum(payload)?);
+        assert_eq!(header.checksum, checksum(payload));
         assert_eq!(&buf[24..], payload);
-        Ok(())
     }
 
     #[test]

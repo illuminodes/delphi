@@ -13,7 +13,54 @@ pub struct Hash256(pub [u8; 32]);
 
 impl Hash256 {
     pub const ZERO: Self = Self([0u8; 32]);
+
+    /// Parse a 64-character hex string in display order (reversed from internal storage,
+    /// per Bitcoin convention).
+    ///
+    /// # Errors
+    /// Returns `Err` if the input is not exactly 64 hex characters.
+    pub fn from_display_hex(s: &str) -> Result<Self, HexError> {
+        if s.len() != 64 {
+            return Err(HexError::Length(s.len()));
+        }
+        let mut bytes = [0u8; 32];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            let pair = &s[i * 2..i * 2 + 2];
+            *byte = u8::from_str_radix(pair, 16)
+                .map_err(|_| HexError::InvalidChar { offset: i * 2 })?;
+        }
+        bytes.reverse();
+        Ok(Self(bytes))
+    }
+
+    /// Format the hash as a 64-character hex string in display order
+    /// (reversed from internal storage, per Bitcoin convention).
+    #[must_use]
+    pub fn to_display_hex(self) -> String {
+        // Display already produces this format; reuse it.
+        self.to_string()
+    }
 }
+
+/// Errors returned by [`Hash256::from_display_hex`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HexError {
+    /// The input string was not 64 characters long.
+    Length(usize),
+    /// A character at the given byte offset was not a valid hex digit.
+    InvalidChar { offset: usize },
+}
+
+impl fmt::Display for HexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Length(n) => write!(f, "expected 64 hex characters, got {n}"),
+            Self::InvalidChar { offset } => write!(f, "invalid hex character at offset {offset}"),
+        }
+    }
+}
+
+impl std::error::Error for HexError {}
 
 impl fmt::Debug for Hash256 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -226,6 +273,89 @@ impl CompactBits {
     }
 }
 
+// ── Satoshi ───────────────────────────────────────────────────────────────────
+
+/// A monetary value in satoshis (1 BTC = 100,000,000 satoshis).
+///
+/// Distinct from a plain `u64` so that values, fees, and counts cannot be
+/// accidentally interchanged. Construct with [`Satoshi::new`]; extract with
+/// [`Satoshi::to_u64`] or `u64::from`. The inner representation is hidden so
+/// the type stays a single source of truth for "this u64 is money."
+///
+/// Note: any `u64` is a representable `Satoshi` — the consensus rule that
+/// values must be at or below [`MAX_MONEY`](Self::MAX_MONEY) is enforced by
+/// the validator, not the type. This matches Bitcoin Core's `CAmount`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Satoshi(u64);
+
+impl Satoshi {
+    pub const ZERO: Self = Self(0);
+
+    /// Maximum money supply: 21,000,000 BTC expressed in satoshis.
+    pub const MAX_MONEY: Self = Self(21_000_000 * 100_000_000);
+
+    /// Construct from a raw `u64` count of satoshis.
+    #[inline]
+    #[must_use]
+    pub const fn new(sats: u64) -> Self {
+        Self(sats)
+    }
+
+    /// Extract the underlying `u64` count of satoshis.
+    #[inline]
+    #[must_use]
+    pub const fn to_u64(self) -> u64 {
+        self.0
+    }
+
+    /// `self + rhs`, returning `None` on overflow.
+    #[must_use]
+    pub fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.0.checked_add(rhs.0).map(Self)
+    }
+}
+
+impl From<u64> for Satoshi {
+    #[inline]
+    fn from(v: u64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<Satoshi> for u64 {
+    #[inline]
+    fn from(v: Satoshi) -> Self {
+        v.0
+    }
+}
+
+impl fmt::Display for Satoshi {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl Encode for Satoshi {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for Satoshi {
+    #[inline]
+    fn decode(r: &mut impl Read) -> io::Result<Self> {
+        u64::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for Satoshi {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+        u64::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}
+
 // ── BlockHeader ───────────────────────────────────────────────────────────────
 
 /// 80-byte fixed-size block header. No heap allocation.
@@ -251,6 +381,12 @@ impl BlockHeader {
         let mut buf = [0u8; Self::ENCODED_LEN];
         self.encode(&mut buf.as_mut_slice()).expect("fixed-size write cannot fail");
         buf
+    }
+
+    /// `SHA256d` of the 80-byte serialised header — the canonical block hash.
+    #[must_use]
+    pub fn hash(&self) -> Hash256 {
+        Hash256(sha256d(&self.to_bytes()))
     }
 
     /// Deserialize from a fixed 80-byte slice.
@@ -394,8 +530,7 @@ impl<'a> DecodeRef<'a> for TxInRef<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxOut {
-    /// Value in satoshis.
-    pub value: u64,
+    pub value: Satoshi,
     pub script_pubkey: Vec<u8>,
 }
 
@@ -409,7 +544,7 @@ impl Encode for TxOut {
 impl Decode for TxOut {
     fn decode(r: &mut impl Read) -> io::Result<Self> {
         Ok(Self {
-            value: u64::decode(r)?,
+            value: Satoshi::decode(r)?,
             script_pubkey: decode_bytes_limited::<10_000>(r)?,
         })
     }
@@ -418,13 +553,13 @@ impl Decode for TxOut {
 /// Borrowed view of a `TxOut` — `script_pubkey` is a slice into the source buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TxOutRef<'a> {
-    pub value: u64,
+    pub value: Satoshi,
     pub script_pubkey: &'a [u8],
 }
 
 impl<'a> DecodeRef<'a> for TxOutRef<'a> {
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
-        let (value, buf) = u64::decode_ref(buf)?;
+        let (value, buf) = Satoshi::decode_ref(buf)?;
         let (script_pubkey, buf) = <&'a [u8]>::decode_ref(buf)?;
         Ok((
             Self {
@@ -973,12 +1108,12 @@ mod tests {
     #[test]
     fn txout_ref_zero_copy() {
         let txout = TxOut {
-            value: 5_000_000_000,
+            value: Satoshi::new(5_000_000_000),
             script_pubkey: vec![0xac, 0xbd],
         };
         let bytes = encode(&txout);
         let (txout_ref, tail) = decode_ref::<TxOutRef>(&bytes);
-        assert_eq!(txout_ref.value, 5_000_000_000);
+        assert_eq!(txout_ref.value, Satoshi::new(5_000_000_000));
         assert_eq!(txout_ref.script_pubkey, &[0xac, 0xbd]);
         assert!(tail.is_empty());
     }
@@ -996,7 +1131,7 @@ mod tests {
                 sequence: u32::MAX,
             }],
             outputs: vec![TxOut {
-                value: 5_000_000_000,
+                value: Satoshi::new(5_000_000_000),
                 script_pubkey: vec![0x41, 0xac],
             }],
             locktime: 0,
@@ -1027,7 +1162,7 @@ mod tests {
                     sequence: u32::MAX,
                 }],
                 outputs: vec![TxOut {
-                    value: 5_000_000_000,
+                    value: Satoshi::new(5_000_000_000),
                     script_pubkey: vec![0xac],
                 }],
                 locktime: 0,
@@ -1161,7 +1296,7 @@ mod tests {
     // TxOut: zero value (valid — OP_RETURN outputs often carry 0 satoshis).
     #[test]
     fn txout_zero_value() {
-        let txout = TxOut { value: 0, script_pubkey: vec![0x6a] }; // OP_RETURN
+        let txout = TxOut { value: Satoshi::ZERO, script_pubkey: vec![0x6a] }; // OP_RETURN
         let bytes = encode(&txout);
         assert_eq!(decode::<TxOut>(&bytes), txout);
     }
@@ -1170,7 +1305,7 @@ mod tests {
     // the codec must not panic or corrupt the field).
     #[test]
     fn txout_max_value() {
-        let txout = TxOut { value: u64::MAX, script_pubkey: vec![] };
+        let txout = TxOut { value: Satoshi::new(u64::MAX), script_pubkey: vec![] };
         let bytes = encode(&txout);
         assert_eq!(decode::<TxOut>(&bytes), txout);
     }
@@ -1178,7 +1313,7 @@ mod tests {
     // TxOut: truncated script_pubkey.
     #[test]
     fn txout_truncated_script_pubkey() {
-        let txout = TxOut { value: 1000, script_pubkey: vec![0x76, 0xa9, 0x14] };
+        let txout = TxOut { value: Satoshi::new(1000), script_pubkey: vec![0x76, 0xa9, 0x14] };
         let mut bytes = encode(&txout);
         bytes.truncate(bytes.len() - 2);
         let e = decode_err::<TxOut>(&bytes);
@@ -1311,8 +1446,8 @@ mod tests {
                 },
             ],
             outputs: vec![
-                TxOut { value: 50_000, script_pubkey: vec![0x76, 0xa9] },
-                TxOut { value: 0, script_pubkey: vec![] },
+                TxOut { value: Satoshi::new(50_000), script_pubkey: vec![0x76, 0xa9] },
+                TxOut { value: Satoshi::ZERO, script_pubkey: vec![] },
             ],
             locktime: 800_000,
         }

@@ -9,14 +9,11 @@ pub fn sha256d(data: &[u8]) -> [u8; 32] {
 }
 
 /// First 4 bytes of `SHA256d` — used as the P2P message checksum.
-///
-/// # Errors
-/// Never returns `Err` in practice; the `Result` type allows callers to
-/// propagate it uniformly with `?` without unwrapping.
 #[inline]
-pub fn checksum(data: &[u8]) -> std::io::Result<[u8; 4]> {
+#[must_use]
+pub fn checksum(data: &[u8]) -> [u8; 4] {
     let [a, b, c, d, ..] = sha256d(data);
-    Ok([a, b, c, d])
+    [a, b, c, d]
 }
 
 #[cfg(test)]
@@ -41,6 +38,6 @@ mod tests {
     fn checksum_is_first_4_bytes() {
         let data = b"hello";
         let full = sha256d(data);
-        assert_eq!(checksum(data).expect("checksum cannot fail"), [full[0], full[1], full[2], full[3]]);
+        assert_eq!(checksum(data), [full[0], full[1], full[2], full[3]]);
     }
 }

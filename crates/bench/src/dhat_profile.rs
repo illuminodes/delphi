@@ -1,6 +1,6 @@
 use mantle::codec::Encode;
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::merkle_root_owned;
 use mantle_consensus::validation::{validate_block_structure_reusing, validate_block_wire};
@@ -22,7 +22,7 @@ fn coinbase_tx(height_script: Vec<u8>, value: u64) -> Transaction {
             script_sig: height_script,
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value, script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
         locktime: 0,
     }
 }
@@ -35,7 +35,7 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
             script_sig: vec![0x51; 20],
             sequence: u32::MAX,
         }],
-        outputs: vec![TxOut { value, script_pubkey: vec![0x51] }],
+        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51] }],
         locktime: 0,
     }
 }
@@ -52,7 +52,7 @@ fn build_chain(len: u32) -> MemoryChainView {
             bits: CompactBits(0x207f_ffff),
             nonce: 0,
         };
-        prev = Hash256(sha256d(&h.to_bytes()));
+        prev = h.hash();
         view.push_header(h);
     }
     view
@@ -159,7 +159,7 @@ fn main() {
         let mut view = MemoryChainView::new();
         for i in 0..5000u32 {
             let op = OutPoint { txid: Hash256(sha256d(&i.to_le_bytes())), vout: 0 };
-            view.insert_coin(op, Coin { value: 1000, script_pubkey: vec![0x51], height: BlockHeight(i), coinbase: false });
+            view.insert_coin(op, Coin { value: Satoshi::new(1000), script_pubkey: vec![0x51], height: BlockHeight(i), coinbase: false });
             let _ = view.get_coin(&op).expect("storage error");
             view.spend_coin(&op);
         }

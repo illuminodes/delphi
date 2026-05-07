@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mantle::codec::DecodeRef;
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Transaction, TransactionRef, TxHash};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, TxHash};
 
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
@@ -50,7 +50,7 @@ impl Clock for FixedClock {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Maximum money supply in satoshis (21 million BTC).
-pub const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
+pub const MAX_MONEY: Satoshi = Satoshi::MAX_MONEY;
 
 /// Maximum block weight in weight units (BIP141).
 pub const MAX_BLOCK_WEIGHT: u64 = 4_000_000;
@@ -146,7 +146,7 @@ where
     // First tx must be coinbase; no subsequent tx may be coinbase.
     seen_inputs.clear();
     for (i, tx) in block.transactions.iter().enumerate() {
-        validate_transaction_structure(tx, i, i == 0, seen_inputs)?;
+        check_tx_structure(tx, i, i == 0, seen_inputs)?;
     }
 
     // Block weight.
@@ -179,7 +179,7 @@ where
     }
 
     // PoW: header hash must be ≤ target encoded in nBits.
-    validate_proof_of_work(&block.header)?;
+    block.header.check_pow()?;
 
     Ok(())
 }
@@ -244,7 +244,7 @@ where
         let tx_wire = &tx_start[..tx_start.len() - remaining.len()];
         rest = remaining;
 
-        validate_transaction_ref_structure(tx, tx_index, tx_index == 0, seen_inputs)?;
+        check_tx_structure(&tx, tx_index, tx_index == 0, seen_inputs)?;
 
         base_size += tx_wire.len();
 
@@ -271,7 +271,7 @@ where
         return Err(ValidationError::MerkleRootMismatch);
     }
 
-    validate_proof_of_work(&header)?;
+    header.check_pow()?;
 
     Ok(())
 }
@@ -339,77 +339,136 @@ pub fn validate_block_context_with_clock(
 
     // Block version lower bound per BIP9/BIP8 deployment state.
     // For v1: enforce the historical minimums only.
-    validate_block_version(header, this_height)?;
+    header.check_version(this_height)?;
 
     Ok(())
 }
 
 // ── Per-transaction structural checks ────────────────────────────────────────
 
-fn validate_transaction_structure<S: std::hash::BuildHasher>(
-    tx: &Transaction,
-    tx_index: usize,
-    expect_coinbase: bool,
-    seen_inputs: &mut HashSet<OutPoint, S>,
-) -> Result<(), ValidationError> {
-    if tx.inputs.is_empty() {
-        return Err(ValidationError::EmptyInputs { tx_index });
-    }
-    if tx.outputs.is_empty() {
-        return Err(ValidationError::EmptyOutputs { tx_index });
-    }
-
-    let first_is_coinbase = tx.inputs[0].previous_output == NULL_OUTPOINT;
-
-    if expect_coinbase && !first_is_coinbase {
-        return Err(ValidationError::FirstTxNotCoinbase);
-    }
-    if !expect_coinbase && first_is_coinbase {
-        return Err(ValidationError::UnexpectedCoinbaseInput { tx_index });
-    }
-
-    if expect_coinbase {
-        let script_len = tx.inputs[0].script_sig.len();
-        if !(MIN_COINBASE_SCRIPTSIG_LEN..=MAX_COINBASE_SCRIPTSIG_LEN).contains(&script_len) {
-            return Err(ValidationError::CoinbaseScriptSigLength { len: script_len });
-        }
-    }
-
-    // Output value bounds.
-    let mut total: u64 = 0;
-    for (i, out) in tx.outputs.iter().enumerate() {
-        if out.value > MAX_MONEY {
-            return Err(ValidationError::OutputValueOutOfRange {
-                tx_index,
-                output_index: i,
-            });
-        }
-        total = total
-            .checked_add(out.value)
-            .filter(|&s| s <= MAX_MONEY)
-            .ok_or(ValidationError::TotalOutputValueOverflow { tx_index })?;
-    }
-
-    // Duplicate inputs within a single transaction.
-    if !expect_coinbase {
-        seen_inputs.clear();
-        seen_inputs.reserve(tx.inputs.len());
-        for input in &tx.inputs {
-            if !seen_inputs.insert(input.previous_output) {
-                return Err(ValidationError::DuplicateInput { tx_index });
-            }
-        }
-    }
-
-    Ok(())
+/// Minimal view a transaction must expose to be structurally validated.
+///
+/// Implemented for both owned `Transaction` and zero-copy `TransactionRef<'_>`
+/// so the check is written once and reused on either path. Iterators yield
+/// `io::Result<_>` to handle truncated wire bytes uniformly; owned txs simply
+/// produce `Ok` items unconditionally.
+trait TxStructureView {
+    fn input_count(&self) -> usize;
+    fn output_count(&self) -> usize;
+    fn first_input(&self) -> std::io::Result<(OutPoint, usize)>;
+    fn for_each_output<E>(
+        &self,
+        f: impl FnMut(usize, Satoshi) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<std::io::Error>;
+    fn for_each_input_outpoint<E>(
+        &self,
+        f: impl FnMut(OutPoint) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<std::io::Error>;
 }
 
-fn validate_transaction_ref_structure<S: std::hash::BuildHasher>(
-    tx: TransactionRef<'_>,
+impl TxStructureView for Transaction {
+    fn input_count(&self) -> usize {
+        self.inputs.len()
+    }
+
+    fn output_count(&self) -> usize {
+        self.outputs.len()
+    }
+
+    fn first_input(&self) -> std::io::Result<(OutPoint, usize)> {
+        let i = &self.inputs[0];
+        Ok((i.previous_output, i.script_sig.len()))
+    }
+
+    fn for_each_output<E>(
+        &self,
+        mut f: impl FnMut(usize, Satoshi) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<std::io::Error>,
+    {
+        for (i, o) in self.outputs.iter().enumerate() {
+            f(i, o.value)?;
+        }
+        Ok(())
+    }
+
+    fn for_each_input_outpoint<E>(
+        &self,
+        mut f: impl FnMut(OutPoint) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<std::io::Error>,
+    {
+        for input in &self.inputs {
+            f(input.previous_output)?;
+        }
+        Ok(())
+    }
+}
+
+impl TxStructureView for TransactionRef<'_> {
+    fn input_count(&self) -> usize {
+        TransactionRef::input_count(self)
+    }
+
+    fn output_count(&self) -> usize {
+        TransactionRef::output_count(self)
+    }
+
+    fn first_input(&self) -> std::io::Result<(OutPoint, usize)> {
+        let r = self
+            .inputs()
+            .next()
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))??;
+        Ok((r.previous_output, r.script_sig.len()))
+    }
+
+    fn for_each_output<E>(
+        &self,
+        mut f: impl FnMut(usize, Satoshi) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<std::io::Error>,
+    {
+        for (i, r) in self.outputs().enumerate() {
+            let o = r.map_err(E::from)?;
+            f(i, o.value)?;
+        }
+        Ok(())
+    }
+
+    fn for_each_input_outpoint<E>(
+        &self,
+        mut f: impl FnMut(OutPoint) -> Result<(), E>,
+    ) -> Result<(), E>
+    where
+        E: From<std::io::Error>,
+    {
+        for r in self.inputs() {
+            let input = r.map_err(E::from)?;
+            f(input.previous_output)?;
+        }
+        Ok(())
+    }
+}
+
+fn check_tx_structure<T, S>(
+    tx: &T,
     tx_index: usize,
     expect_coinbase: bool,
     seen_inputs: &mut HashSet<OutPoint, S>,
-) -> Result<(), ValidationError> {
+) -> Result<(), ValidationError>
+where
+    T: TxStructureView,
+    S: std::hash::BuildHasher,
+{
+    let malformed = |_| ValidationError::MalformedTransaction { tx_index };
+
     if tx.input_count() == 0 {
         return Err(ValidationError::EmptyInputs { tx_index });
     }
@@ -417,13 +476,8 @@ fn validate_transaction_ref_structure<S: std::hash::BuildHasher>(
         return Err(ValidationError::EmptyOutputs { tx_index });
     }
 
-    let malformed = |_| ValidationError::MalformedTransaction { tx_index };
-
-    // Decode only the first input for the coinbase check — no full iteration.
-    let first_input = tx.inputs().next()
-        .ok_or(ValidationError::MalformedTransaction { tx_index })?
-        .map_err(malformed)?;
-    let first_is_coinbase = first_input.previous_output == NULL_OUTPOINT;
+    let (first_outpoint, first_script_len) = tx.first_input().map_err(malformed)?;
+    let first_is_coinbase = first_outpoint == NULL_OUTPOINT;
 
     if expect_coinbase && !first_is_coinbase {
         return Err(ValidationError::FirstTxNotCoinbase);
@@ -432,59 +486,99 @@ fn validate_transaction_ref_structure<S: std::hash::BuildHasher>(
         return Err(ValidationError::UnexpectedCoinbaseInput { tx_index });
     }
 
-    if expect_coinbase {
-        let script_len = first_input.script_sig.len();
-        if !(MIN_COINBASE_SCRIPTSIG_LEN..=MAX_COINBASE_SCRIPTSIG_LEN).contains(&script_len) {
-            return Err(ValidationError::CoinbaseScriptSigLength { len: script_len });
-        }
+    if expect_coinbase
+        && !(MIN_COINBASE_SCRIPTSIG_LEN..=MAX_COINBASE_SCRIPTSIG_LEN).contains(&first_script_len)
+    {
+        return Err(ValidationError::CoinbaseScriptSigLength { len: first_script_len });
     }
 
     // Output value bounds.
-    let mut total: u64 = 0;
-    for (i, r) in tx.outputs().enumerate() {
-        let out = r.map_err(malformed)?;
-        if out.value > MAX_MONEY {
+    let mut total = Satoshi::ZERO;
+    tx.for_each_output(|i, value| -> Result<(), ValidationError> {
+        if value > MAX_MONEY {
             return Err(ValidationError::OutputValueOutOfRange {
                 tx_index,
                 output_index: i,
             });
         }
         total = total
-            .checked_add(out.value)
+            .checked_add(value)
             .filter(|&s| s <= MAX_MONEY)
             .ok_or(ValidationError::TotalOutputValueOverflow { tx_index })?;
-    }
+        Ok(())
+    })?;
 
     // Duplicate inputs within a single transaction.
     if !expect_coinbase {
         seen_inputs.clear();
         seen_inputs.reserve(tx.input_count());
-        for r in tx.inputs() {
-            let input = r.map_err(malformed)?;
-            if !seen_inputs.insert(input.previous_output) {
+        tx.for_each_input_outpoint(|outpoint| -> Result<(), ValidationError> {
+            if !seen_inputs.insert(outpoint) {
                 return Err(ValidationError::DuplicateInput { tx_index });
             }
-        }
+            Ok(())
+        })?;
     }
 
     Ok(())
 }
 
-// ── Proof of work ─────────────────────────────────────────────────────────────
+// ── Proof of work / version ──────────────────────────────────────────────────
 
-/// Check that the block header hash satisfies the claimed nBits target.
-fn validate_proof_of_work(header: &BlockHeader) -> Result<(), ValidationError> {
-    let target = header.bits.to_target().ok_or(ValidationError::InvalidBits)?;
+/// Header-level checks expressed as methods on `BlockHeader`.
+///
+/// Lives in the consensus crate because the rules (`PoW` satisfaction, version
+/// floor per BIP34/65/66) are consensus-defined; the type itself stays in
+/// core so wire decoding doesn't pull in the consensus crate.
+pub trait HeaderValidationExt {
+    /// Check that the header hash satisfies the claimed nBits target.
+    ///
+    /// # Errors
+    /// Returns `InvalidBits` if nBits is malformed or `InsufficientProofOfWork`
+    /// if the hash exceeds the target.
+    fn check_pow(&self) -> Result<(), ValidationError>;
 
-    // Header hash in big-endian (reversed from internal storage).
-    let raw_hash = sha256d(&header.to_bytes());
-    let mut hash_be = raw_hash;
-    hash_be.reverse();
+    /// Enforce historical block-version minimums (BIP34/65/66).
+    ///
+    /// # Errors
+    /// Returns `BlockVersionTooLow` if the header's version is below the floor
+    /// for the supplied height.
+    fn check_version(&self, height: BlockHeight) -> Result<(), ValidationError>;
+}
 
-    if hash_be > target {
-        return Err(ValidationError::InsufficientProofOfWork);
+impl HeaderValidationExt for BlockHeader {
+    fn check_pow(&self) -> Result<(), ValidationError> {
+        let target = self.bits.to_target().ok_or(ValidationError::InvalidBits)?;
+
+        // Header hash in big-endian (reversed from internal storage).
+        let mut hash_be = sha256d(&self.to_bytes());
+        hash_be.reverse();
+
+        if hash_be > target {
+            return Err(ValidationError::InsufficientProofOfWork);
+        }
+        Ok(())
     }
-    Ok(())
+
+    fn check_version(&self, height: BlockHeight) -> Result<(), ValidationError> {
+        let required: i32 = if height >= BlockHeight(388_381) {
+            4
+        } else if height >= BlockHeight(363_725) {
+            3
+        } else if height >= BIP34_HEIGHT {
+            2
+        } else {
+            1
+        };
+
+        if self.version < required {
+            return Err(ValidationError::BlockVersionTooLow {
+                version: self.version,
+                required,
+            });
+        }
+        Ok(())
+    }
 }
 
 // ── Difficulty ────────────────────────────────────────────────────────────────
@@ -499,6 +593,28 @@ const TARGET_TIMESPAN: u64 = RETARGET_INTERVAL as u64 * TARGET_SPACING;
 const MIN_TIMESPAN: u64 = TARGET_TIMESPAN / 4;
 /// Maximum timespan (target timespan × 4, to prevent too-hard mining).
 const MAX_TIMESPAN: u64 = TARGET_TIMESPAN * 4;
+
+/// Retarget arithmetic exposed as a method on `CompactBits`.
+///
+/// Lives in the consensus crate because the powLimit and timespan clamps are
+/// consensus rules; the type itself stays in core.
+pub trait RetargetExt: Sized {
+    /// Compute the next nBits given the actual and expected timespans, clamped
+    /// against `pow_limit`. Returns `None` if either nBits decoding fails.
+    fn retarget(self, actual: u64, expected: u64, pow_limit: Self) -> Option<Self>;
+}
+
+impl RetargetExt for CompactBits {
+    fn retarget(self, actual: u64, expected: u64, pow_limit: Self) -> Option<Self> {
+        let old_target = self.to_target()?;
+        let pow_limit_target = pow_limit.to_target()?;
+        let scaled = U256::from_be_bytes(old_target)
+            .saturating_mul_u64(actual)
+            .div_u64(expected);
+        let limit = U256::from_be_bytes(pow_limit_target);
+        Self::from_target(scaled.min(limit).to_be_bytes())
+    }
+}
 
 /// Compute the expected nBits for the block at `parent_height + 1`.
 fn expected_nbits(
@@ -522,11 +638,10 @@ fn expected_nbits(
     let actual_timespan = u64::from(parent.time).saturating_sub(u64::from(retarget_header.time));
     let clamped = actual_timespan.clamp(MIN_TIMESPAN, MAX_TIMESPAN);
 
-    // Decode parent nBits to a big-integer target, scale, re-encode.
-    let old_target = parent.bits.to_target().ok_or(ValidationError::InvalidBits)?;
-    let new_target = scale_target(old_target, clamped, TARGET_TIMESPAN)
-        .ok_or(ValidationError::InvalidBits)?;
-    CompactBits::from_target(new_target).ok_or(ValidationError::InvalidBits)
+    parent
+        .bits
+        .retarget(clamped, TARGET_TIMESPAN, POW_LIMIT_BITS)
+        .ok_or(ValidationError::InvalidBits)
 }
 
 /// Mainnet powLimit (the maximum permitted target). Equal to the target encoded
@@ -683,6 +798,9 @@ impl PartialOrd for U256 {
 /// Computes `floor(target * actual / expected)` exactly in 256-bit arithmetic,
 /// then clamps against the powLimit. Matches Bitcoin Core's behaviour in
 /// `pow.cpp::CalculateNextWorkRequired`.
+///
+/// Test-only: production code uses [`RetargetExt::retarget`] on `CompactBits`.
+#[cfg(test)]
 fn scale_target(target: [u8; 32], actual: u64, expected: u64) -> Option<[u8; 32]> {
     let scaled = U256::from_be_bytes(target)
         .saturating_mul_u64(actual)
@@ -690,33 +808,6 @@ fn scale_target(target: [u8; 32], actual: u64, expected: u64) -> Option<[u8; 32]
 
     let pow_limit = U256::from_be_bytes(POW_LIMIT_BITS.to_target()?);
     Some(scaled.min(pow_limit).to_be_bytes())
-}
-
-// ── Block version ─────────────────────────────────────────────────────────────
-
-/// Enforce historical block version minimums.
-///
-/// BIP34 (height ≥ 227,931): version ≥ 2
-/// BIP66 (height ≥ 363,725): version ≥ 3
-/// BIP65 (height ≥ 388,381): version ≥ 4
-fn validate_block_version(header: &BlockHeader, height: BlockHeight) -> Result<(), ValidationError> {
-    let required: i32 = if height >= BlockHeight(388_381) {
-        4
-    } else if height >= BlockHeight(363_725) {
-        3
-    } else if height >= BIP34_HEIGHT {
-        2
-    } else {
-        1
-    };
-
-    if header.version < required {
-        return Err(ValidationError::BlockVersionTooLow {
-            version: header.version,
-            required,
-        });
-    }
-    Ok(())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -739,7 +830,7 @@ mod tests {
                 sequence: u32::MAX,
             }],
             outputs: vec![TxOut {
-                value,
+                value: Satoshi::new(value),
                 script_pubkey: vec![0x51], // OP_1
             }],
             locktime: 0,
@@ -755,7 +846,7 @@ mod tests {
                 sequence: u32::MAX,
             }],
             outputs: vec![TxOut {
-                value,
+                value: Satoshi::new(value),
                 script_pubkey: vec![0x51],
             }],
             locktime: 0,
@@ -858,8 +949,8 @@ mod tests {
 
     #[test]
     fn output_value_out_of_range() {
-        let mut tx = coinbase_tx(BlockHeight(1), MAX_MONEY + 1);
-        tx.outputs[0].value = MAX_MONEY + 1;
+        let mut tx = coinbase_tx(BlockHeight(1), MAX_MONEY.to_u64() + 1);
+        tx.outputs[0].value = Satoshi::new(MAX_MONEY.to_u64() + 1);
         // Re-encode the block with the bad tx — merkle root will be recomputed.
         let block = make_block(vec![tx], CompactBits(0x207f_ffff));
         assert_eq!(
@@ -977,7 +1068,7 @@ mod tests {
                 bits: CompactBits(0x207f_ffff),
                 nonce: 0,
             };
-            prev = Hash256(sha256d(&h.to_bytes()));
+            prev = h.hash();
             view.push_header(h);
         }
         view
@@ -1205,17 +1296,16 @@ mod tests {
     /// records.
     #[test]
     fn first_mainnet_retarget_matches_core() {
-        let old_target = CompactBits(0x1d00_ffff).to_target().expect("genesis nBits must decode");
+        let old_bits = CompactBits(0x1d00_ffff);
         let actual = 1_262_152_739_u64 - 1_231_006_505_u64;
         assert_eq!(actual, 31_146_234, "raw timespan from block headers");
 
         let clamped = actual.clamp(MIN_TIMESPAN, MAX_TIMESPAN);
         assert_eq!(clamped, MAX_TIMESPAN, "timespan must clamp to MAX_TIMESPAN");
 
-        let new_target = scale_target(old_target, clamped, TARGET_TIMESPAN)
-            .expect("scale_target must succeed for valid inputs");
-        let new_bits = CompactBits::from_target(new_target)
-            .expect("from_target must succeed for valid target");
+        let new_bits = old_bits
+            .retarget(clamped, TARGET_TIMESPAN, POW_LIMIT_BITS)
+            .expect("retarget must succeed for valid inputs");
 
         assert_eq!(
             new_bits, CompactBits(0x1d00_ffff),

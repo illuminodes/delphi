@@ -1,5 +1,5 @@
 use mantle::codec::{Decode, DecodeRef, Encode};
-use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Transaction, TransactionRef, TxIn, TxInRef, TxOut, TxOutRef};
+use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, TxIn, TxInRef, TxOut, TxOutRef};
 use std::hint::black_box;
 use std::io::Cursor;
 
@@ -36,7 +36,7 @@ fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
             .collect(),
         outputs: (0..n_outputs)
             .map(|i| TxOut {
-                value: (i as u64 + 1) * 1000,
+                value: Satoshi::new((i as u64 + 1) * 1000),
                 script_pubkey: vec![0x76, 0xa9, 0x14],
             })
             .collect(),
@@ -150,18 +150,18 @@ fn txin_decode_ref(bencher: divan::Bencher) {
 
 #[divan::bench]
 fn txout_encode() -> Vec<u8> {
-    encode_bytes(&TxOut { value: 5_000_000_000, script_pubkey: vec![0x76, 0xa9, 0x14] })
+    encode_bytes(&TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x76, 0xa9, 0x14] })
 }
 
 #[divan::bench]
 fn txout_decode(bencher: divan::Bencher) {
-    let bytes = encode_bytes(&TxOut { value: 5_000_000_000, script_pubkey: vec![0x76, 0xa9, 0x14] });
+    let bytes = encode_bytes(&TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x76, 0xa9, 0x14] });
     bencher.bench(|| TxOut::decode(&mut Cursor::new(bytes.as_slice())).expect("TxOut decode cannot fail on valid bytes"));
 }
 
 #[divan::bench]
 fn txout_decode_ref(bencher: divan::Bencher) {
-    let bytes = encode_bytes(&TxOut { value: 5_000_000_000, script_pubkey: vec![0x76, 0xa9, 0x14] });
+    let bytes = encode_bytes(&TxOut { value: Satoshi::new(5_000_000_000), script_pubkey: vec![0x76, 0xa9, 0x14] });
     bencher.bench(|| {
         let (r, _) = TxOutRef::decode_ref(bytes.as_slice()).expect("TxOutRef decode_ref cannot fail on valid bytes");
         black_box(r.value)
@@ -201,7 +201,7 @@ fn transaction_ref_iter(bencher: divan::Bencher, n: usize) {
     bencher.bench(|| {
         let mut sum = 0u64;
         for r in tx_ref.inputs() { sum += u64::from(r.expect("input decode cannot fail on valid bytes").sequence); }
-        for r in tx_ref.outputs() { sum += r.expect("output decode cannot fail on valid bytes").value; }
+        for r in tx_ref.outputs() { sum += u64::from(r.expect("output decode cannot fail on valid bytes").value); }
         black_box(sum)
     });
 }

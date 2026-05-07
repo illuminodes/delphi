@@ -15,9 +15,7 @@ pub(crate) mod test_helpers {
     }
 
     pub fn hash_to_hex(hash: [u8; 32]) -> String {
-        let mut rev = hash;
-        rev.reverse();
-        rev.iter().fold(String::with_capacity(64), |mut s, b| { use std::fmt::Write; write!(s, "{b:02x}").unwrap(); s })
+        mantle::primitives::Hash256(hash).to_display_hex()
     }
 }
 
