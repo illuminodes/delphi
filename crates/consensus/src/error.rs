@@ -39,6 +39,23 @@ pub enum ValidationError {
     /// nBits field encodes a target of zero or has invalid format.
     InvalidBits,
 
+    // ── Stage 3: connect (UTXO) ──────────────────────────────────────────────
+    /// BIP30: a transaction in this block has the same txid as an unspent
+    /// coinbase already in the UTXO set.
+    Bip30Violation { tx_index: usize },
+    /// A non-coinbase input spends an outpoint that does not exist in the UTXO set.
+    MissingInput { tx_index: usize, input_index: usize },
+    /// A coinbase input is spent before it has 100 confirmations.
+    CoinbaseMaturityViolation { tx_index: usize, input_index: usize },
+    /// Sum of input values overflows `u64` or exceeds `MAX_MONEY`.
+    InputValueOverflow { tx_index: usize },
+    /// A transaction's outputs exceed its inputs (negative fee).
+    NegativeFee { tx_index: usize },
+    /// The coinbase output value exceeds the block subsidy plus collected fees.
+    CoinbaseRewardExceedsSubsidy,
+    /// Legacy sigops across the block exceed the 20,000 limit.
+    SigopsLimitExceeded { count: u32 },
+
     // ── Stage 2: contextual ───────────────────────────────────────────────────
     /// nBits does not match the expected difficulty for this block's height.
     UnexpectedDifficulty,

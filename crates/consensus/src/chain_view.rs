@@ -1,5 +1,5 @@
 use mantle::collections::PrehashedMap;
-use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi};
+use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi, ScriptPubKey};
 
 use crate::error::ChainViewError;
 
@@ -9,11 +9,35 @@ use crate::error::ChainViewError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Coin {
     pub value: Satoshi,
-    pub script_pubkey: Vec<u8>,
+    pub script_pubkey: ScriptPubKey,
     /// Height at which this output was created.
     pub height: BlockHeight,
     /// True if this output was created by a coinbase transaction.
     pub coinbase: bool,
+}
+
+// ── ConnectResult ─────────────────────────────────────────────────────────────
+
+/// A new unspent output created by a connected block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCoin {
+    pub outpoint: OutPoint,
+    pub value: Satoshi,
+    pub script_pubkey: ScriptPubKey,
+    pub coinbase: bool,
+    pub height: BlockHeight,
+}
+
+/// Output of [`connect_block`](crate::validation::connect_block): the UTXO
+/// delta and fee total needed by the storage layer to apply the block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectResult {
+    /// Outputs created by this block (to insert into the UTXO set).
+    pub created: Vec<NewCoin>,
+    /// Inputs consumed by this block (to remove from the UTXO set).
+    pub spent: Vec<OutPoint>,
+    /// Total fees collected (sum of inputs minus sum of outputs, excluding coinbase).
+    pub fees: Satoshi,
 }
 
 // ── TipInfo ───────────────────────────────────────────────────────────────────

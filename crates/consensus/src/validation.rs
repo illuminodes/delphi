@@ -6,6 +6,8 @@ use mantle::collections::PrehashedSet;
 use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, TxHash, TxInRef, TxOutRef};
 
+use crate::chain_view::{ConnectResult, NewCoin};
+
 
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
@@ -900,12 +902,259 @@ fn scale_target(target: [u8; 32], actual: u64, expected: u64) -> Option<[u8; 32]
     Some(scaled.min(pow_limit).to_be_bytes())
 }
 
+// ── Stage 3: connect ──────────────────────────────────────────────────────────
+
+/// Block reward subsidy in satoshis at a given height.
+///
+/// Halves every 210,000 blocks starting from 5,000,000,000 sat (50 BTC).
+/// Returns zero once the shift reaches 64+ bits (past the last halving).
+const INITIAL_SUBSIDY: u64 = 50 * 100_000_000;
+const HALVING_INTERVAL: u32 = 210_000;
+
+/// Maximum legacy sigops per block.
+const MAX_BLOCK_SIGOPS: u32 = 20_000;
+
+/// Heights of the two historical BIP30 exception blocks on mainnet.
+/// These coinbase txids collide with earlier unspent coinbases but were
+/// accepted by Core before BIP30 enforcement began.
+const BIP30_EXCEPTION_HEIGHTS: [u32; 2] = [91_842, 91_880];
+
+/// Stage 3: connect a block to the chain, checking UTXO-dependent rules.
+///
+/// Assumes Stage 1 and Stage 2 have already passed. Checks:
+/// - BIP30: no tx shares a txid with an existing unspent coinbase
+/// - Every non-coinbase input exists in the UTXO set
+/// - Coinbase maturity (100 blocks)
+/// - Fee math: sum(inputs) >= sum(outputs) per tx; coinbase <= subsidy + fees
+/// - Legacy sigops budget (<= 20,000 per block)
+///
+/// Returns a [`ConnectResult`] carrying the UTXO delta for the storage layer.
+///
+/// `scratch` is reused across txid computations to avoid repeated allocation.
+///
+/// # Errors
+/// Returns the first [`ValidationError`] encountered.
+pub fn connect_block<V: ChainView>(
+    block: &Block,
+    height: BlockHeight,
+    view: &V,
+    scratch: &mut Vec<u8>,
+) -> Result<ConnectResult, ValidationError> {
+    let is_bip30_exception = BIP30_EXCEPTION_HEIGHTS.contains(&height.0);
+    let subsidy = block_subsidy(height);
+
+    // Pre-size the output vecs. Most blocks have O(thousands) of inputs/outputs.
+    let total_inputs: usize = block.transactions.iter().map(|tx| tx.inputs.len()).sum();
+    let total_outputs: usize = block.transactions.iter().map(|tx| tx.outputs.len()).sum();
+    let mut created: Vec<NewCoin> = Vec::with_capacity(total_outputs);
+    let mut spent: Vec<OutPoint> = Vec::with_capacity(total_inputs);
+
+    let mut total_fees = Satoshi::ZERO;
+    let mut total_sigops: u32 = 0;
+
+    for (tx_index, tx) in block.transactions.iter().enumerate() {
+        let is_coinbase = tx_index == 0;
+        let txid = tx.txid_into(scratch)?;
+
+        // BIP30: if any output of this tx is at a txid that already has an
+        // unspent coinbase in the UTXO set, reject (unless this is an exception height).
+        if !is_bip30_exception {
+            let bip30_probe = OutPoint { txid, vout: 0 };
+            if let Some(coin) = view.get_coin(&bip30_probe)?
+                && coin.coinbase
+            {
+                return Err(ValidationError::Bip30Violation { tx_index });
+            }
+        }
+
+        // Legacy sigops: count OP_CHECKSIG / OP_CHECKMULTISIG in scriptSig and
+        // scriptPubKey. Each OP_CHECKMULTISIG counts as 20 (MAX_PUBKEYS_PER_MULTISIG).
+        for input in &tx.inputs {
+            total_sigops = total_sigops
+                .saturating_add(count_legacy_sigops(input.script_sig.as_slice()));
+        }
+        for output in &tx.outputs {
+            total_sigops = total_sigops
+                .saturating_add(count_legacy_sigops(output.script_pubkey.as_slice()));
+        }
+        if total_sigops > MAX_BLOCK_SIGOPS {
+            return Err(ValidationError::SigopsLimitExceeded { count: total_sigops });
+        }
+
+        if is_coinbase {
+            // Coinbase outputs go straight into created; no input lookup needed.
+            for (vout, output) in tx.outputs.iter().enumerate() {
+                #[allow(clippy::cast_possible_truncation)]
+                created.push(NewCoin {
+                    outpoint: OutPoint { txid, vout: vout as u32 },
+                    value: output.value,
+                    script_pubkey: output.script_pubkey.clone(),
+                    coinbase: true,
+                    height,
+                });
+            }
+            // Coinbase reward is validated after we know total_fees (below).
+            continue;
+        }
+
+        // Non-coinbase: look up every input in the UTXO set.
+        let outpoints: Vec<OutPoint> = tx.inputs.iter().map(|i| i.previous_output).collect();
+        let coins = view.get_coins(&outpoints)?;
+
+        let mut input_total = Satoshi::ZERO;
+        for (input_index, (input, coin_opt)) in tx.inputs.iter().zip(coins.iter()).enumerate() {
+            let coin = coin_opt.as_ref().ok_or(ValidationError::MissingInput {
+                tx_index,
+                input_index,
+            })?;
+
+            // Coinbase maturity: coinbase outputs must be 100 blocks deep.
+            if coin.coinbase {
+                let depth = height.0.saturating_sub(coin.height.0);
+                if depth < 100 {
+                    return Err(ValidationError::CoinbaseMaturityViolation {
+                        tx_index,
+                        input_index,
+                    });
+                }
+            }
+
+            input_total = input_total
+                .checked_add(coin.value)
+                .ok_or(ValidationError::InputValueOverflow { tx_index })?;
+
+            spent.push(input.previous_output);
+        }
+
+        let output_total = tx
+            .outputs
+            .iter()
+            .try_fold(Satoshi::ZERO, |acc, o| acc.checked_add(o.value))
+            .ok_or(ValidationError::InputValueOverflow { tx_index })?;
+
+        if output_total.to_u64() > input_total.to_u64() {
+            return Err(ValidationError::NegativeFee { tx_index });
+        }
+
+        let fee = Satoshi::new(input_total.to_u64() - output_total.to_u64());
+        total_fees = total_fees
+            .checked_add(fee)
+            .ok_or(ValidationError::InputValueOverflow { tx_index })?;
+
+        for (vout, output) in tx.outputs.iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            created.push(NewCoin {
+                outpoint: OutPoint { txid, vout: vout as u32 },
+                value: output.value,
+                script_pubkey: output.script_pubkey.clone(),
+                coinbase: false,
+                height,
+            });
+        }
+    }
+
+    // Validate coinbase reward against subsidy + fees.
+    let coinbase_output_total = block.transactions[0]
+        .outputs
+        .iter()
+        .try_fold(Satoshi::ZERO, |acc, o| acc.checked_add(o.value))
+        .ok_or(ValidationError::CoinbaseRewardExceedsSubsidy)?;
+
+    let max_coinbase = subsidy
+        .checked_add(total_fees)
+        .ok_or(ValidationError::CoinbaseRewardExceedsSubsidy)?;
+
+    if coinbase_output_total.to_u64() > max_coinbase.to_u64() {
+        return Err(ValidationError::CoinbaseRewardExceedsSubsidy);
+    }
+
+    Ok(ConnectResult { created, spent, fees: total_fees })
+}
+
+/// Extension trait that adds `subsidy()` to [`BlockHeight`].
+pub trait BlockHeightExt {
+    /// Block reward subsidy in satoshis at this height.
+    fn subsidy(self) -> Satoshi;
+}
+
+impl BlockHeightExt for BlockHeight {
+    fn subsidy(self) -> Satoshi {
+        block_subsidy(self)
+    }
+}
+
+fn block_subsidy(height: BlockHeight) -> Satoshi {
+    let halvings = height.0 / HALVING_INTERVAL;
+    if halvings >= 64 {
+        return Satoshi::ZERO;
+    }
+    Satoshi::new(INITIAL_SUBSIDY >> halvings)
+}
+
+/// Count legacy sigops (`OP_CHECKSIG` + `OP_CHECKSIGVERIFY` + `OP_CHECKMULTISIG` family)
+/// in a raw script byte slice.
+///
+/// `OP_CHECKMULTISIG` / `OP_CHECKMULTISIGVERIFY` each count as 20 (the maximum
+/// allowed pubkeys per multisig), matching Core's pre-segwit counting rule.
+fn count_legacy_sigops(script: &[u8]) -> u32 {
+    const OP_CHECKSIG: u8 = 0xac;
+    const OP_CHECKSIGVERIFY: u8 = 0xad;
+    const OP_CHECKMULTISIG: u8 = 0xae;
+    const OP_CHECKMULTISIGVERIFY: u8 = 0xaf;
+
+    let mut count: u32 = 0;
+    let mut i = 0;
+    while i < script.len() {
+        let op = script[i];
+        match op {
+            OP_CHECKSIG | OP_CHECKSIGVERIFY => count += 1,
+            OP_CHECKMULTISIG | OP_CHECKMULTISIGVERIFY => count += 20,
+            // Push data opcodes: skip the pushed bytes.
+            0x01..=0x4b => i += op as usize,
+            0x4c => {
+                // OP_PUSHDATA1: next byte is length
+                if let Some(&len) = script.get(i + 1) {
+                    i += 1 + len as usize;
+                } else {
+                    break;
+                }
+            }
+            0x4d => {
+                // OP_PUSHDATA2: next 2 bytes are little-endian length
+                if i + 2 < script.len() {
+                    let len = u16::from_le_bytes([script[i + 1], script[i + 2]]) as usize;
+                    i += 2 + len;
+                } else {
+                    break;
+                }
+            }
+            0x4e => {
+                // OP_PUSHDATA4: next 4 bytes are little-endian length
+                if i + 4 < script.len() {
+                    let len = u32::from_le_bytes([
+                        script[i + 1],
+                        script[i + 2],
+                        script[i + 3],
+                        script[i + 4],
+                    ]) as usize;
+                    i += 4 + len;
+                } else {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    count
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chain_view::MemoryChainView;
+    use crate::chain_view::{Coin, MemoryChainView};
     use crate::merkle::compute_merkle_root;
     use mantle::primitives::{TxIn, TxOut};
 
@@ -1475,6 +1724,230 @@ mod tests {
         assert_eq!(
             new_bits, POW_LIMIT_BITS,
             "target above powLimit must clamp back, got {:#010x}", new_bits.0,
+        );
+    }
+
+    // ── Stage 3: connect_block tests ─────────────────────────────────────────
+
+    /// Build a minimal view + block pair ready for `connect_block`.
+    ///
+    /// Returns `(view, block, coinbase_txid)`. The view has `height` headers
+    /// pushed (so the block will be at height+1, but we pass `height` as the
+    /// connect height for simplicity in most tests). The UTXO set is empty;
+    /// callers insert coins as needed.
+    fn connect_setup(height: u32) -> (MemoryChainView, Block, Hash256) {
+        let mut view = MemoryChainView::new();
+        let mut prev = Hash256::ZERO;
+        for i in 0..height {
+            let h = BlockHeader {
+                version: 1,
+                prev_block: prev,
+                merkle_root: Hash256::ZERO,
+                time: 1_231_006_505 + i * 600,
+                bits: CompactBits(0x207f_ffff),
+                nonce: 0,
+            };
+            prev = h.hash();
+            view.push_header(h);
+        }
+        let h = BlockHeight(height);
+        let cb = coinbase_tx(h, block_subsidy(h).to_u64());
+        let txid = cb.txid().expect("txid encoding cannot fail");
+        let block = make_block(vec![cb], CompactBits(0x207f_ffff));
+        (view, block, txid)
+    }
+
+    #[test]
+    fn connect_coinbase_only_block() {
+        let (view, block, coinbase_txid) = connect_setup(1);
+        let mut scratch = Vec::new();
+        let result = connect_block(&block, BlockHeight(1), &view, &mut scratch)
+            .expect("coinbase-only block must connect");
+        assert_eq!(result.fees, Satoshi::ZERO);
+        assert!(result.spent.is_empty());
+        assert_eq!(result.created.len(), 1);
+        assert_eq!(result.created[0].outpoint, OutPoint { txid: coinbase_txid, vout: 0 });
+        assert!(result.created[0].coinbase);
+    }
+
+    #[test]
+    fn connect_block_with_spend() {
+        let (mut view, _, _) = connect_setup(200);
+        // Insert a mature non-coinbase coin to spend.
+        let prev_op = OutPoint { txid: Hash256([0xab; 32]), vout: 0 };
+        view.insert_coin(prev_op, Coin {
+            value: Satoshi::new(50_000),
+            script_pubkey: vec![0x51].into(),
+            height: BlockHeight(1),
+            coinbase: false,
+        });
+        let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+        let spend = regular_tx(prev_op.txid, 0, 40_000); // 10_000 fee
+        let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
+        let mut scratch = Vec::new();
+        let result = connect_block(&block, BlockHeight(200), &view, &mut scratch)
+            .expect("block with valid spend must connect");
+        assert_eq!(result.fees, Satoshi::new(10_000));
+        assert_eq!(result.spent, vec![prev_op]);
+        // created: coinbase output + spend output
+        assert_eq!(result.created.len(), 2);
+    }
+
+    #[test]
+    fn connect_missing_input_rejected() {
+        let (view, _, _) = connect_setup(200);
+        let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+        // Spend a coin that doesn't exist in the view.
+        let ghost = regular_tx(Hash256([0xff; 32]), 0, 1_000);
+        let block = make_block(vec![cb, ghost], CompactBits(0x207f_ffff));
+        let mut scratch = Vec::new();
+        assert_eq!(
+            connect_block(&block, BlockHeight(200), &view, &mut scratch),
+            Err(ValidationError::MissingInput { tx_index: 1, input_index: 0 })
+        );
+    }
+
+    #[test]
+    fn connect_coinbase_maturity_rejected() {
+        let (mut view, _, _) = connect_setup(50);
+        // Insert a coinbase coin that is only 49 blocks deep (height 1, connect at 50).
+        let prev_op = OutPoint { txid: Hash256([0xcc; 32]), vout: 0 };
+        view.insert_coin(prev_op, Coin {
+            value: Satoshi::new(100_000),
+            script_pubkey: vec![0x51].into(),
+            height: BlockHeight(1),
+            coinbase: true, // coinbase output, immature at height 50
+        });
+        let cb = coinbase_tx(BlockHeight(50), block_subsidy(BlockHeight(50)).to_u64());
+        let spend = regular_tx(prev_op.txid, 0, 90_000);
+        let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
+        let mut scratch = Vec::new();
+        assert_eq!(
+            connect_block(&block, BlockHeight(50), &view, &mut scratch),
+            Err(ValidationError::CoinbaseMaturityViolation { tx_index: 1, input_index: 0 })
+        );
+    }
+
+    #[test]
+    fn connect_negative_fee_rejected() {
+        let (mut view, _, _) = connect_setup(200);
+        let prev_op = OutPoint { txid: Hash256([0xdd; 32]), vout: 0 };
+        view.insert_coin(prev_op, Coin {
+            value: Satoshi::new(1_000),
+            script_pubkey: vec![0x51].into(),
+            height: BlockHeight(1),
+            coinbase: false,
+        });
+        let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+        // Output exceeds input value.
+        let overspend = regular_tx(prev_op.txid, 0, 2_000);
+        let block = make_block(vec![cb, overspend], CompactBits(0x207f_ffff));
+        let mut scratch = Vec::new();
+        assert_eq!(
+            connect_block(&block, BlockHeight(200), &view, &mut scratch),
+            Err(ValidationError::NegativeFee { tx_index: 1 })
+        );
+    }
+
+    #[test]
+    fn connect_coinbase_reward_exceeds_subsidy_rejected() {
+        let (view, _, _) = connect_setup(1);
+        // Coinbase claims more than the 50 BTC subsidy at height 1.
+        let greedy_cb = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: NULL_OUTPOINT,
+                script_sig: Transaction::bip34_height_script(BlockHeight(1)).into(),
+                sequence: u32::MAX,
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(50 * 100_000_000 + 1), // one satoshi over
+                script_pubkey: vec![0x51].into(),
+            }],
+            locktime: 0,
+        };
+        let block = make_block(vec![greedy_cb], CompactBits(0x207f_ffff));
+        let mut scratch = Vec::new();
+        assert_eq!(
+            connect_block(&block, BlockHeight(1), &view, &mut scratch),
+            Err(ValidationError::CoinbaseRewardExceedsSubsidy)
+        );
+    }
+
+    #[test]
+    fn block_subsidy_halvings() {
+        // Genesis era: 50 BTC
+        assert_eq!(block_subsidy(BlockHeight(0)).to_u64(), 50 * 100_000_000);
+        // First halving at 210,000
+        assert_eq!(block_subsidy(BlockHeight(210_000)).to_u64(), 25 * 100_000_000);
+        // Second halving at 420,000
+        assert_eq!(block_subsidy(BlockHeight(420_000)).to_u64(), 1_250_000_000);
+        // After 64 halvings: zero
+        assert_eq!(block_subsidy(BlockHeight(64 * 210_000)).to_u64(), 0);
+    }
+
+    #[test]
+    fn sigops_checksig_and_multisig() {
+        assert_eq!(count_legacy_sigops(&[0xac]), 1); // OP_CHECKSIG
+        assert_eq!(count_legacy_sigops(&[0xad]), 1); // OP_CHECKSIGVERIFY
+        assert_eq!(count_legacy_sigops(&[0xae]), 20); // OP_CHECKMULTISIG
+        assert_eq!(count_legacy_sigops(&[0xaf]), 20); // OP_CHECKMULTISIGVERIFY
+        // push 1 byte then OP_CHECKSIG — push skips the data byte
+        assert_eq!(count_legacy_sigops(&[0x01, 0xac, 0xac]), 1);
+        // empty script
+        assert_eq!(count_legacy_sigops(&[]), 0);
+    }
+
+    #[test]
+    fn connect_sigops_limit_exceeded() {
+        let (view, _, _) = connect_setup(1);
+        // Each OP_CHECKMULTISIG in a scriptPubKey counts as 20.
+        // 1001 × OP_CHECKMULTISIG = 20,020 sigops > 20,000 limit.
+        let many_sigops: Vec<u8> = std::iter::repeat(0xae_u8).take(1001).collect();
+        let cb = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: NULL_OUTPOINT,
+                script_sig: Transaction::bip34_height_script(BlockHeight(1)).into(),
+                sequence: u32::MAX,
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(block_subsidy(BlockHeight(1)).to_u64()),
+                script_pubkey: many_sigops.into(),
+            }],
+            locktime: 0,
+        };
+        let block = make_block(vec![cb], CompactBits(0x207f_ffff));
+        let mut scratch = Vec::new();
+        let err = connect_block(&block, BlockHeight(1), &view, &mut scratch)
+            .expect_err("block with too many sigops must be rejected");
+        assert!(matches!(err, ValidationError::SigopsLimitExceeded { .. }));
+    }
+
+    #[test]
+    fn connect_bip30_violation_rejected() {
+        let (mut view, _, _prior_coinbase_txid) = connect_setup(200);
+        // Re-use the identical coinbase tx at the same height so its txid is
+        // deterministic and we can pre-populate the UTXO set with a collision.
+        let collision_txid = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64())
+            .txid()
+            .expect("txid encoding cannot fail");
+        view.insert_coin(
+            OutPoint { txid: collision_txid, vout: 0 },
+            Coin {
+                value: Satoshi::new(1_000),
+                script_pubkey: vec![0x51].into(),
+                height: BlockHeight(1),
+                coinbase: true,
+            },
+        );
+        // Build a block with the identical coinbase tx — same txid, guaranteed collision.
+        let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+        let block = make_block(vec![cb], CompactBits(0x207f_ffff));
+        let mut scratch = Vec::new();
+        assert_eq!(
+            connect_block(&block, BlockHeight(200), &view, &mut scratch),
+            Err(ValidationError::Bip30Violation { tx_index: 0 })
         );
     }
 
