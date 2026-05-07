@@ -152,44 +152,56 @@ impl VarInt {
 }
 
 impl Encode for VarInt {
+    #[inline]
+    #[allow(clippy::cast_possible_truncation)] // match arms prove range
     fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        match self.0 {
-            n @ 0..=0xfc => w.write_all(&[u8::try_from(n).unwrap()]),
+        // Build into a stack buffer and emit in one write_all to avoid
+        // paying two virtual-dispatch calls for multi-byte forms.
+        let mut buf = [0u8; 9];
+        let slice = match self.0 {
+            n @ 0..=0xfc => {
+                buf[0] = n as u8;
+                &buf[..1]
+            }
             n @ 0xfd..=0xffff => {
-                w.write_all(&[0xfd])?;
-                w.write_all(&u16::try_from(n).unwrap().to_le_bytes())
+                buf[0] = 0xfd;
+                buf[1..3].copy_from_slice(&(n as u16).to_le_bytes());
+                &buf[..3]
             }
             n @ 0x10000..=0xffff_ffff => {
-                w.write_all(&[0xfe])?;
-                w.write_all(&u32::try_from(n).unwrap().to_le_bytes())
+                buf[0] = 0xfe;
+                buf[1..5].copy_from_slice(&(n as u32).to_le_bytes());
+                &buf[..5]
             }
             n => {
-                w.write_all(&[0xff])?;
-                w.write_all(&n.to_le_bytes())
+                buf[0] = 0xff;
+                buf[1..9].copy_from_slice(&n.to_le_bytes());
+                &buf[..9]
             }
-        }
+        };
+        w.write_all(slice)
     }
 }
 
 impl Decode for VarInt {
+    #[inline]
     fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let mut tag = [0u8; 1];
-        r.read_exact(&mut tag)?;
-        let value = match tag[0] {
+        // Read up to 9 bytes in one shot: tag byte + up to 8 body bytes.
+        // We only consume as many bytes as the tag demands.
+        let mut buf = [0u8; 9];
+        r.read_exact(&mut buf[..1])?;
+        let value = match buf[0] {
             0xff => {
-                let mut buf = [0u8; 8];
-                r.read_exact(&mut buf)?;
-                u64::from_le_bytes(buf)
+                r.read_exact(&mut buf[1..9])?;
+                u64::from_le_bytes(buf[1..9].try_into().unwrap())
             }
             0xfe => {
-                let mut buf = [0u8; 4];
-                r.read_exact(&mut buf)?;
-                u64::from(u32::from_le_bytes(buf))
+                r.read_exact(&mut buf[1..5])?;
+                u64::from(u32::from_le_bytes(buf[1..5].try_into().unwrap()))
             }
             0xfd => {
-                let mut buf = [0u8; 2];
-                r.read_exact(&mut buf)?;
-                u64::from(u16::from_le_bytes(buf))
+                r.read_exact(&mut buf[1..3])?;
+                u64::from(u16::from_le_bytes(buf[1..3].try_into().unwrap()))
             }
             n => u64::from(n),
         };
@@ -198,23 +210,26 @@ impl Decode for VarInt {
 }
 
 impl<'a> DecodeRef<'a> for VarInt {
+    #[inline]
+    #[allow(clippy::cast_possible_truncation)] // match arms prove range
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
         let (&tag, rest) = buf
             .split_first()
             .ok_or_else(|| io::Error::from(Error::UnexpectedEof))?;
         let (value, tail) = match tag {
-            0xff => {
-                let (v, tail) = u64::decode_ref(rest)?;
-                (v, tail)
-            }
-            0xfe => {
-                let (v, tail) = u32::decode_ref(rest)?;
-                (u64::from(v), tail)
-            }
-            0xfd => {
-                let (v, tail) = u16::decode_ref(rest)?;
-                (u64::from(v), tail)
-            }
+            0xff if rest.len() >= 8 => (
+                u64::from_le_bytes(rest[..8].try_into().unwrap()),
+                &rest[8..],
+            ),
+            0xfe if rest.len() >= 4 => (
+                u64::from(u32::from_le_bytes(rest[..4].try_into().unwrap())),
+                &rest[4..],
+            ),
+            0xfd if rest.len() >= 2 => (
+                u64::from(u16::from_le_bytes(rest[..2].try_into().unwrap())),
+                &rest[2..],
+            ),
+            0xfd..=0xff => return Err(io::Error::from(Error::UnexpectedEof)),
             n => (u64::from(n), rest),
         };
         Ok((VarInt(value), tail))

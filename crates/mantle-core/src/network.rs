@@ -563,7 +563,7 @@ impl Encode for HeadersMsg {
         VarInt(self.0.len() as u64).encode(w)?;
         for header in &self.0 {
             header.encode(w)?;
-            VarInt(0).encode(w)?; // tx_count placeholder
+            w.write_all(&[0x00])?; // tx_count placeholder (always zero)
         }
         Ok(())
     }
