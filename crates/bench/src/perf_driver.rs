@@ -4,6 +4,7 @@ use mantle::codec::Encode;
 use mantle::hash::sha256d;
 use mantle::primitives::{Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut};
 use mantle_consensus::merkle::compute_merkle_root;
+use mantle_consensus::script::{Interpreter, NopSigChecker, ScriptFlags, SigVersion};
 use mantle_consensus::validation::{validate_block_structure, validate_block_wire};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -140,5 +141,35 @@ fn main() {
             black_box(());
         });
         eprintln!("validate_wire(100tx):   {n} iters");
+    }
+
+    // ── workload F: script Interpreter::eval, P2PKH-shape mix ────────────────
+    // P2PKH-ish script (OP_0 OP_DUP OP_HASH160 PUSHBYTES_20 <hash> OP_EQUALVERIFY)
+    // followed by an arithmetic chain. Exercises every non-crypto opcode group:
+    // push, dup, hash, equality, arithmetic. The Interpreter is recreated per
+    // iteration to match real validation (one interpreter per input).
+    {
+        // HASH160(empty) — same vector as op_hash160_known_vector unit test.
+        const HASH160_EMPTY: [u8; 20] = [
+            0xb4, 0x72, 0xa2, 0x66, 0xd0, 0xbd, 0x89, 0xc1, 0x37, 0x06,
+            0xa4, 0x13, 0x2c, 0xcf, 0xb1, 0x6f, 0x7c, 0x3b, 0x9f, 0xcb,
+        ];
+        let checker = NopSigChecker;
+        let mut script = Vec::with_capacity(64);
+        script.push(0x00);                                              // OP_0
+        script.push(0x76);                                              // OP_DUP
+        script.push(0xa9);                                              // OP_HASH160
+        script.push(0x14); script.extend_from_slice(&HASH160_EMPTY);    // PUSHBYTES_20 expected
+        script.push(0x88);                                              // OP_EQUALVERIFY
+        for k in 0u8..5 {
+            script.push(0x51 + k);
+            if k > 0 { script.push(0x93); } // OP_ADD
+        }
+        let n = run_for(secs, || {
+            let mut interp = Interpreter::new(&checker, ScriptFlags::NONE, SigVersion::Base);
+            interp.eval(black_box(&script)).expect("script must succeed");
+            black_box(());
+        });
+        eprintln!("script_eval(p2pkh-shape): {n} iters");
     }
 }
