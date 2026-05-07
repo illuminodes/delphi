@@ -2,6 +2,7 @@ pub mod chain_view;
 pub mod error;
 pub mod genesis;
 pub mod merkle;
+pub mod script;
 pub mod validation;
 
 #[cfg(test)]
