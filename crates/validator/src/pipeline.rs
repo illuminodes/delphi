@@ -1,6 +1,4 @@
-use std::collections::HashSet;
-
-use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
+use mantle::collections::{BuildPrehashedHasher, PrehashedMap, PrehashedSet};
 use mantle::primitives::{Block, BlockHeight, BlockRef, OutPoint, TxHash};
 use mantle_consensus::chain_view::Coin;
 use mantle_consensus::error::ValidationError;
@@ -50,7 +48,8 @@ trait BlockExt {
 
 impl BlockExt for Block {
     fn intra_block_outputs(&self) -> PrehashedMap<OutPoint, Option<Coin>> {
-        let mut spent: HashSet<OutPoint> = HashSet::new();
+        let mut spent: PrehashedSet<OutPoint> =
+            PrehashedSet::with_hasher(BuildPrehashedHasher);
         for tx in self.transactions.iter().skip(1) {
             for inp in &tx.inputs {
                 spent.insert(inp.previous_output);
@@ -128,7 +127,9 @@ pub fn validate_and_commit(
     // BIP30 probe outpoints: `(txid, 0)` for every tx in the block.
     // connect_block probes these to check for duplicate unspent coinbases.
     // They must be in the prefetched map even if absent (Ok(None) = no collision).
-    let spend_set: HashSet<OutPoint> = spend_outpoints.iter().copied().collect();
+    let mut spend_set: PrehashedSet<OutPoint> =
+        PrehashedSet::with_capacity_and_hasher(spend_outpoints.len(), BuildPrehashedHasher);
+    spend_set.extend(spend_outpoints.iter().copied());
     let mut scratch = Vec::new();
     let bip30_outpoints: Vec<OutPoint> = block
         .transactions
@@ -214,7 +215,8 @@ pub fn validate_and_commit_ref(
 
     // Intra-block dependencies — same logic as `BlockExt::intra_block_outputs`
     // but iterating `TransactionRef`s.
-    let mut spent: HashSet<OutPoint> = HashSet::new();
+    let mut spent: PrehashedSet<OutPoint> =
+        PrehashedSet::with_hasher(BuildPrehashedHasher);
     for tx in block_ref.transactions().skip(1) {
         for inp in tx.inputs() {
             let Ok(i) = inp else { continue };
@@ -272,7 +274,9 @@ pub fn validate_and_commit_ref(
     }
 
     // BIP30 probes — reuse the same precomputed txids.
-    let spend_set: HashSet<OutPoint> = spend_outpoints.iter().copied().collect();
+    let mut spend_set: PrehashedSet<OutPoint> =
+        PrehashedSet::with_capacity_and_hasher(spend_outpoints.len(), BuildPrehashedHasher);
+    spend_set.extend(spend_outpoints.iter().copied());
     let mut bip30_outpoints: Vec<OutPoint> = Vec::with_capacity(block_ref.tx_count());
     for &txid in &txids {
         let op = OutPoint { txid, vout: 0 };
