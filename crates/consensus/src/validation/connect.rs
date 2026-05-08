@@ -85,6 +85,14 @@ where
     let mut created: Vec<NewCoin> = Vec::with_capacity(total_outputs);
     let mut spent: Vec<OutPoint> = Vec::with_capacity(total_inputs);
 
+    // Per-tx scratch reused across the non-coinbase loop; capacity grows to the
+    // largest tx's input count and stays there. Without this we allocated a
+    // fresh Vec per non-coinbase tx (~1.8 MB across 5 ordinals blocks).
+    let max_tx_inputs = block.txs().map(TxView::input_count).max().unwrap_or(0);
+    let mut outpoints_scratch: Vec<OutPoint> = Vec::with_capacity(max_tx_inputs);
+    let mut coins_scratch: Vec<Option<crate::chain_view::Coin>> =
+        Vec::with_capacity(max_tx_inputs);
+
     let mut total_fees = Satoshi::ZERO;
     let mut total_sigops: u32 = 0;
 
@@ -139,9 +147,12 @@ where
             continue;
         }
 
-        // Non-coinbase: look up every input in the UTXO set.
-        let outpoints: Vec<OutPoint> = tx.inputs().map(|i| i.previous_output()).collect();
-        let coins = view.get_coins(&outpoints)?;
+        // Non-coinbase: look up every input in the UTXO set. Reuse both
+        // scratch vecs instead of allocating per tx.
+        outpoints_scratch.clear();
+        outpoints_scratch.extend(tx.inputs().map(|i| i.previous_output()));
+        view.get_coins_into(&outpoints_scratch, &mut coins_scratch)?;
+        let coins = &coins_scratch;
 
         // Built once per-tx only when scripts run without an exec_cache.
         // Under skip_script or when exec_cache is present, never allocated.

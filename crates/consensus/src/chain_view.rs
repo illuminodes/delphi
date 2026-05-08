@@ -74,6 +74,25 @@ pub trait ChainView {
         outpoints.iter().map(|op| self.get_coin(op)).collect()
     }
 
+    /// Allocation-free variant of [`Self::get_coins`]: writes results into
+    /// the caller-provided `out` vec, which is cleared on entry. Capacity is
+    /// preserved so a hot loop can reuse one buffer across thousands of calls.
+    ///
+    /// # Errors
+    /// Same as [`Self::get_coins`].
+    fn get_coins_into(
+        &self,
+        outpoints: &[OutPoint],
+        out: &mut Vec<Option<Coin>>,
+    ) -> Result<(), ChainViewError> {
+        out.clear();
+        out.reserve(outpoints.len());
+        for op in outpoints {
+            out.push(self.get_coin(op)?);
+        }
+        Ok(())
+    }
+
     /// Header by hash.
     ///
     /// # Errors

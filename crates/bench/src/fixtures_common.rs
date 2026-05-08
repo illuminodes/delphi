@@ -271,19 +271,30 @@ pub fn replay_block_ref(
     let block_ref = BlockRef::decode_with_arena(wire, arena)
         .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.0));
 
+    let tx_count = block_ref.tx_count();
+
+    // Sum of inputs across non-coinbase txs — used as upper bound for
+    // pre-sizing the spend/dedup containers below.
+    let total_non_coinbase_inputs: usize = block_ref
+        .transactions()
+        .skip(1)
+        .map(mantle::primitives::TransactionRef::input_count)
+        .sum();
+
     // Compute every txid exactly once. Shared by the intra-block dep pass,
     // the BIP30 probe pass, and `connect_block`.
     let mut hash_scratch = Vec::new();
-    let txids: Vec<Hash256> = block_ref
-        .transactions()
-        .map(|tx| {
+    let mut txids: Vec<Hash256> = Vec::with_capacity(tx_count);
+    for tx in block_ref.transactions() {
+        txids.push(
             tx.txid_into(&mut hash_scratch)
-                .expect("txid hash never fails")
-        })
-        .collect();
+                .expect("txid hash never fails"),
+        );
+    }
 
     // ── intra-block deps ─────────────────────────────────────────────────────
-    let mut spent_set: PrehashedSet<OutPoint> = PrehashedSet::default();
+    let mut spent_set: PrehashedSet<OutPoint> =
+        PrehashedSet::with_capacity_and_hasher(total_non_coinbase_inputs, BuildPrehashedHasher);
     for tx in block_ref.transactions().skip(1) {
         for inp in tx.inputs() {
             let outpoint = match inp {
@@ -323,7 +334,7 @@ pub fn replay_block_ref(
     }
 
     // ── external spend outpoints ─────────────────────────────────────────────
-    let mut spend_ops: Vec<OutPoint> = Vec::new();
+    let mut spend_ops: Vec<OutPoint> = Vec::with_capacity(total_non_coinbase_inputs);
     for tx in block_ref.transactions().skip(1) {
         for inp in tx.inputs() {
             let Ok(i) = inp else { continue };
@@ -335,8 +346,10 @@ pub fn replay_block_ref(
     }
 
     // ── BIP30 probes (reuse precomputed txids) ───────────────────────────────
-    let spend_op_set: PrehashedSet<OutPoint> = spend_ops.iter().copied().collect();
-    let mut bip30_ops: Vec<OutPoint> = Vec::with_capacity(block_ref.tx_count());
+    let mut spend_op_set: PrehashedSet<OutPoint> =
+        PrehashedSet::with_capacity_and_hasher(spend_ops.len(), BuildPrehashedHasher);
+    spend_op_set.extend(spend_ops.iter().copied());
+    let mut bip30_ops: Vec<OutPoint> = Vec::with_capacity(tx_count);
     for &txid in &txids {
         let op = OutPoint { txid, vout: 0 };
         if !intra.contains_key(&op) && !spend_op_set.contains(&op) {
@@ -345,6 +358,7 @@ pub fn replay_block_ref(
     }
 
     let mut all_ops = spend_ops;
+    all_ops.reserve(bip30_ops.len());
     all_ops.extend_from_slice(&bip30_ops);
 
     storage.send_lookup(&all_ops).expect("send_lookup");

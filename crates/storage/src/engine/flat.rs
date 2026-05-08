@@ -408,6 +408,11 @@ fn read_utxo_log_entry(
 // Fixed 116 bytes: hash(32) + prev_block(32) + merkle_root(32) +
 //   time(4) + bits(4) + nonce(4) + height(4)
 
+/// Chunk size for streaming zero-fill of header gaps. 64 KB matches typical
+/// page/IO granularity without holding a huge live allocation.
+const ZERO_CHUNK: usize = 64 * 1024;
+static ZERO_PAD: [u8; ZERO_CHUNK] = [0u8; ZERO_CHUNK];
+
 fn write_header_record(
     f: &mut File,
     h: BlockHeight,
@@ -417,10 +422,16 @@ fn write_header_record(
 ) -> Result<u64, EngineError> {
     let offset = u64::from(h.0) * HEADER_RECORD_SIZE as u64;
     let new_len = if offset > file_len {
-        let gap = offset - file_len;
-        // Gap is at most ~4 GB (u32::MAX * 116) on a valid chain; safe on 64-bit.
-        let zeros = vec![0u8; usize::try_from(gap).map_err(|_| EngineError::HeaderGapOverflow)?];
-        f.write_all(&zeros).map_err(|e| io_err(&e))?;
+        // Stream zero padding in fixed chunks instead of allocating the whole
+        // gap up front. In production each commit is at `tip+1` so this branch
+        // never fires; the bench harness commits sample blocks at high heights
+        // to fresh storage, which used to allocate ~86 MB of zeros per commit.
+        let mut gap = offset - file_len;
+        while gap > 0 {
+            let n = usize::try_from(gap.min(ZERO_CHUNK as u64)).expect("min ≤ ZERO_CHUNK");
+            f.write_all(&ZERO_PAD[..n]).map_err(|e| io_err(&e))?;
+            gap -= n as u64;
+        }
         offset
     } else {
         file_len
