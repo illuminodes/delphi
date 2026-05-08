@@ -5,6 +5,7 @@
 //! (`ScriptError`, `ScriptFlags`, `Opcode`, `ScriptNum`, `Stack`). The
 //! interpreter loop and `verify_script` entry point land in M1.1+.
 
+pub mod cache;
 pub mod checker;
 pub mod condition_stack;
 pub mod consensus_crypto;
@@ -27,4 +28,5 @@ pub use num::ScriptNum;
 pub use opcodes::Opcode;
 pub use sig_version::SigVersion;
 pub use stack::{Stack, StackElement};
-pub use verify::{ScriptVerifier, verify_script};
+pub use cache::{ScriptExecutionCache, SignatureCache};
+pub use verify::{ScriptVerifier, verify_script, verify_script_cached};

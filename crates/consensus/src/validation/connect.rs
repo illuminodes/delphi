@@ -3,7 +3,7 @@ use mantle::primitives::{Block, BlockHeight, OutPoint, Satoshi, TxHash};
 use crate::chain_view::{ChainView, ConnectResult, NewCoin};
 use crate::error::ValidationError;
 use crate::script::sighash::Bip143Cache;
-use crate::script::{ScriptFlags, ScriptVerifier};
+use crate::script::{ScriptExecutionCache, ScriptFlags, ScriptVerifier, verify_script_cached};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -33,6 +33,14 @@ const BIP30_EXCEPTION_HEIGHTS: [u32; 2] = [91_842, 91_880];
 ///
 /// `scratch` is reused across txid computations to avoid repeated allocation.
 ///
+/// `skip_script` — when `true`, script verification is skipped entirely for
+/// all inputs. Set this for blocks at or below the `assumevalid` tip: all
+/// other consensus checks (UTXO, maturity, fee math, sigops) still run.
+///
+/// `exec_cache` — optional [`ScriptExecutionCache`]. When `Some`, each input
+/// probes the cache before running the interpreter; hits short-circuit the
+/// full verification. Pass `None` to disable caching (fuzzer, tests).
+///
 /// # Errors
 /// Returns the first [`ValidationError`] encountered.
 #[allow(clippy::too_many_lines)] // single-pass per-input loop reads better as one function
@@ -41,6 +49,8 @@ pub fn connect_block<V: ChainView>(
     height: BlockHeight,
     view: &V,
     scratch: &mut Vec<u8>,
+    skip_script: bool,
+    mut exec_cache: Option<&mut ScriptExecutionCache>,
 ) -> Result<ConnectResult, ValidationError> {
     let is_bip30_exception = BIP30_EXCEPTION_HEIGHTS.contains(&height.0);
     let subsidy = block_subsidy(height);
@@ -131,23 +141,36 @@ pub fn connect_block<V: ChainView>(
                 }
             }
 
-            // Per `docs/architecture/script.md` M1: script verification is
-            // the fourth per-input check, run after the coin lookup and
-            // before fee math. A failure rejects the tx regardless of
-            // whether the value math would have passed.
-            ScriptVerifier::with_cache(
-                tx,
-                input_index,
-                coin.value,
-                script_flags,
-                bip143_cache.clone(),
-            )
-            .verify(input.script_sig.as_slice(), coin.script_pubkey.as_slice())
-            .map_err(|kind| ValidationError::ScriptVerifyFailed {
-                tx_index,
-                input_index,
-                kind,
-            })?;
+            // Script verification: fourth per-input check, after coin lookup,
+            // before fee math. Skipped entirely under assumevalid (`skip_script`).
+            // When a cache is provided, probes it before running the interpreter.
+            if !skip_script {
+                let script_result = if let Some(ref mut cache) = exec_cache {
+                    verify_script_cached(
+                        input.script_sig.as_slice(),
+                        coin.script_pubkey.as_slice(),
+                        tx,
+                        input_index,
+                        coin.value,
+                        script_flags,
+                        cache,
+                    )
+                } else {
+                    ScriptVerifier::with_cache(
+                        tx,
+                        input_index,
+                        coin.value,
+                        script_flags,
+                        bip143_cache.clone(),
+                    )
+                    .verify(input.script_sig.as_slice(), coin.script_pubkey.as_slice())
+                };
+                script_result.map_err(|kind| ValidationError::ScriptVerifyFailed {
+                    tx_index,
+                    input_index,
+                    kind,
+                })?;
+            }
 
             input_total = input_total
                 .checked_add(coin.value)

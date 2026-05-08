@@ -215,6 +215,49 @@ proptest! {
     }
 }
 
+// ── ScriptExecutionCache: cached == uncached verdict ─────────────────────────
+
+proptest! {
+    /// Any input that produces a verdict on the cold path must produce the
+    /// same verdict when retrieved from the cache on the second call.
+    /// This is the M5 cache-correctness gate.
+    #[test]
+    fn exec_cache_same_verdict_cold_vs_hot(
+        script_sig  in prop::collection::vec(any::<u8>(), 0..=32_usize),
+        script_pubkey in prop::collection::vec(any::<u8>(), 0..=32_usize),
+        amount      in any::<u64>(),
+    ) {
+        use mantle::primitives::{Hash256, OutPoint, Satoshi, TxIn, TxOut, Witness};
+        use crate::script::{ScriptExecutionCache, ScriptFlags, verify_script_cached};
+
+        let flags = ScriptFlags::NONE;
+        let amount = Satoshi::new(amount);
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: script_sig.clone().into(),
+                sequence: 0xffff_ffff,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: vec![0x51].into(),
+            }],
+            locktime: 0,
+        };
+
+        let mut cache = ScriptExecutionCache::new(64);
+        let cold = verify_script_cached(&script_sig, &script_pubkey, &tx, 0, amount, flags, &mut cache);
+        let hot  = verify_script_cached(&script_sig, &script_pubkey, &tx, 0, amount, flags, &mut cache);
+        prop_assert_eq!(
+            cold.is_ok(), hot.is_ok(),
+            "cache returned different verdict: cold={:?} hot={:?}", cold, hot
+        );
+        prop_assert_eq!(cache.hits(), 1, "second call must be a cache hit");
+    }
+}
+
 // ── Merkle tree properties ────────────────────────────────────────────────────
 
 proptest! {

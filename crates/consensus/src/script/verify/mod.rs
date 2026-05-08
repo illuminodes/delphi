@@ -160,6 +160,45 @@ pub fn verify_script(
     ScriptVerifier::new(tx, n_in, amount, flags).verify(script_sig, script_pubkey)
 }
 
+/// Cached variant of [`verify_script`].
+///
+/// Probes `cache` with a key derived from `(script_sig, script_pubkey,
+/// witness, amount, flags)` before calling the interpreter. On a hit the
+/// stored verdict is returned immediately; on a miss the cold path runs and
+/// the verdict is stored for future calls.
+///
+/// Accepts/rejects map to `Ok(())`/`Err(ScriptError::EvalFalse)` for cached
+/// rejects (the exact error variant from a cold path is not stored — callers
+/// that need the specific error on rejection should use [`verify_script`]).
+///
+/// # Errors
+/// Same variants as [`verify_script`] on a cold miss. Cached rejects return
+/// [`ScriptError::EvalFalse`].
+pub fn verify_script_cached(
+    script_sig: &[u8],
+    script_pubkey: &[u8],
+    tx: &Transaction,
+    n_in: usize,
+    amount: Satoshi,
+    flags: ScriptFlags,
+    cache: &mut super::cache::ScriptExecutionCache,
+) -> Result<(), ScriptError> {
+    let witness_items = tx.inputs[n_in].witness.to_vec();
+    let key = super::cache::ScriptExecutionCache::key(
+        script_sig,
+        script_pubkey,
+        &witness_items,
+        amount.to_u64(),
+        flags.bits(),
+    );
+    if let Some(verdict) = cache.get(&key) {
+        return if verdict { Ok(()) } else { Err(ScriptError::EvalFalse) };
+    }
+    let result = verify_script(script_sig, script_pubkey, tx, n_in, amount, flags);
+    cache.insert(key, result.is_ok());
+    result
+}
+
 #[allow(clippy::too_many_arguments)]
 fn verify_script_impl(
     script_sig: &[u8],
