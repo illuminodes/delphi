@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use mantle::hash::ByteSliceExt;
@@ -14,6 +14,11 @@ use crate::types::{CommitBlockReq, Durability, LookupResult};
 /// time(4) + bits(4) + nonce(4) + height(4) = 112 bytes.
 const HEADER_RECORD_SIZE: usize = 112;
 
+/// User-space buffer in front of the append-only logs. Sized to absorb several
+/// blocks' worth of UTXO and header writes so the kernel only sees a handful
+/// of large `write()` syscalls instead of thousands of tiny ones.
+const WRITE_BUF_BYTES: usize = 256 * 1024;
+
 /// Phase-1 flat-file storage engine.
 ///
 /// - `utxo.bin`: append-only log of `(OutPoint, Option<Coin>)` records.
@@ -23,11 +28,16 @@ const HEADER_RECORD_SIZE: usize = 112;
 pub struct FlatEngine {
     data_dir: PathBuf,
 
-    utxo_file: File,
+    utxo_file: BufWriter<File>,
     utxo_read: File,
     utxo_write_pos: u64,
+    utxo_flushed_pos: u64,
     utxo_index: HashMap<OutPoint, u64>,
 
+    // Headers are tiny (112 B each, one per block) and read by methods that
+    // take `&self`. Keeping them unbuffered means reads always observe prior
+    // writes without coordination and the syscall savings are not worth the
+    // bookkeeping cost.
     header_file: File,
     header_write_len: u64,
     header_index: HashMap<Hash256, u32>,
@@ -50,7 +60,7 @@ impl FlatEngine {
         let header_path = data_dir.join("headers.bin");
         let checkpoint_path = data_dir.join("checkpoint.bin");
 
-        let utxo_file = open_append(&utxo_path)?;
+        let utxo_file = BufWriter::with_capacity(WRITE_BUF_BYTES, open_append(&utxo_path)?);
         let utxo_read = open_read(&utxo_path)?;
         let header_file = open_append(&header_path)?;
         let checkpoint_file = OpenOptions::new()
@@ -66,6 +76,7 @@ impl FlatEngine {
             utxo_file,
             utxo_read,
             utxo_write_pos: 0,
+            utxo_flushed_pos: 0,
             utxo_index: HashMap::new(),
             header_file,
             header_write_len: 0,
@@ -78,6 +89,17 @@ impl FlatEngine {
         };
         engine.recover()?;
         Ok(engine)
+    }
+
+    /// Drain the UTXO write buffer to the kernel so subsequent reads via
+    /// `utxo_read` see all newly written records. Cheap when nothing is
+    /// buffered.
+    fn flush_utxo_writer(&mut self) -> Result<(), EngineError> {
+        if self.utxo_flushed_pos != self.utxo_write_pos {
+            self.utxo_file.flush().map_err(|e| io_err(&e))?;
+            self.utxo_flushed_pos = self.utxo_write_pos;
+        }
+        Ok(())
     }
 
     fn utxo_path(&self) -> PathBuf {
@@ -94,6 +116,11 @@ impl Engine for FlatEngine {
         let Some(&offset) = self.utxo_index.get(op) else {
             return Ok(None);
         };
+        // The index can point into the still-buffered tail of the writer; drain
+        // it so the read handle observes the bytes.
+        if offset >= self.utxo_flushed_pos {
+            self.flush_utxo_writer()?;
+        }
         self.utxo_read
             .seek(SeekFrom::Start(offset))
             .map_err(|e| io_err(&e))?;
@@ -105,6 +132,15 @@ impl Engine for FlatEngine {
         ops: &[OutPoint],
         out: &mut Vec<LookupResult>,
     ) -> Result<(), EngineError> {
+        // If any requested outpoint maps into the still-buffered tail, flush
+        // once up-front instead of branching per-record.
+        let needs_flush = ops
+            .iter()
+            .filter_map(|op| self.utxo_index.get(op).copied())
+            .any(|off| off >= self.utxo_flushed_pos);
+        if needs_flush {
+            self.flush_utxo_writer()?;
+        }
         for &op in ops {
             let coin = if let Some(&offset) = self.utxo_index.get(&op) {
                 self.utxo_read
@@ -196,7 +232,11 @@ impl Engine for FlatEngine {
     fn flush(&mut self, d: Durability) -> Result<(), EngineError> {
         if d == Durability::Synced {
             self.utxo_file.flush().map_err(|e| io_err(&e))?;
-            self.utxo_file.sync_all().map_err(|e| io_err(&e))?;
+            self.utxo_file
+                .get_ref()
+                .sync_all()
+                .map_err(|e| io_err(&e))?;
+            self.utxo_flushed_pos = self.utxo_write_pos;
             self.header_file.flush().map_err(|e| io_err(&e))?;
             self.header_file.sync_all().map_err(|e| io_err(&e))?;
             self.checkpoint_file
@@ -293,7 +333,7 @@ impl Engine for FlatEngine {
 //     script_pubkey_len: u32 (4)
 //     script_pubkey: [u8; len]
 
-fn write_coin_record(f: &mut File, nc: &NewCoin) -> Result<(), EngineError> {
+fn write_coin_record<W: Write>(f: &mut W, nc: &NewCoin) -> Result<(), EngineError> {
     write_outpoint(f, &nc.outpoint)?;
     f.write_all(&[1u8]).map_err(|e| io_err(&e))?;
     f.write_all(&u64::from(nc.value).to_le_bytes())
@@ -310,13 +350,13 @@ fn write_coin_record(f: &mut File, nc: &NewCoin) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn write_spend_record(f: &mut File, op: &OutPoint) -> Result<(), EngineError> {
+fn write_spend_record<W: Write>(f: &mut W, op: &OutPoint) -> Result<(), EngineError> {
     write_outpoint(f, op)?;
     f.write_all(&[0u8]).map_err(|e| io_err(&e))?;
     Ok(())
 }
 
-fn write_outpoint(f: &mut File, op: &OutPoint) -> Result<(), EngineError> {
+fn write_outpoint<W: Write>(f: &mut W, op: &OutPoint) -> Result<(), EngineError> {
     f.write_all(&op.txid.0).map_err(|e| io_err(&e))?;
     f.write_all(&op.vout.to_le_bytes())
         .map_err(|e| io_err(&e))?;
@@ -413,13 +453,16 @@ fn read_utxo_log_entry(
 const ZERO_CHUNK: usize = 64 * 1024;
 static ZERO_PAD: [u8; ZERO_CHUNK] = [0u8; ZERO_CHUNK];
 
-fn write_header_record(
-    f: &mut File,
+fn write_header_record<W: Write>(
+    f: &mut W,
     h: BlockHeight,
     header: &BlockHeader,
     hash: Hash256,
     file_len: u64,
 ) -> Result<u64, EngineError> {
+    // Files are opened with O_APPEND, so every write goes to EOF regardless
+    // of any prior seek. We only have to extend the file to `offset` when
+    // there is a gap; the actual record then appends naturally.
     let offset = u64::from(h.0) * HEADER_RECORD_SIZE as u64;
     let new_len = if offset > file_len {
         // Stream zero padding in fixed chunks instead of allocating the whole
@@ -436,7 +479,6 @@ fn write_header_record(
     } else {
         file_len
     };
-    f.seek(SeekFrom::Start(offset)).map_err(|e| io_err(&e))?;
     f.write_all(&hash.0).map_err(|e| io_err(&e))?;
     f.write_all(&header.prev_block.0).map_err(|e| io_err(&e))?;
     f.write_all(&header.merkle_root.0).map_err(|e| io_err(&e))?;
