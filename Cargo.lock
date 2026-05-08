@@ -564,6 +564,7 @@ version = "0.1.0"
 dependencies = [
  "k256",
  "mantle",
+ "mantle-conformance",
  "proptest",
  "ripemd",
  "sha1",

@@ -85,12 +85,12 @@ impl ScriptFlags {
     /// Source: BIP activation heights as documented; cross-checked against
     /// `bitcoinconsensus::height_to_flags` by the differential fuzzer.
     const ACTIVATIONS: &'static [(u32, Self)] = &[
-        (170_060, Self::P2SH.union(Self::const_self_or(Self::NONE))), // BIP16
+        (173_805, Self::P2SH.union(Self::const_self_or(Self::NONE))), // BIP16
         (363_725, Self::DERSIG),                                      // BIP66
         (388_381, Self::CHECKLOCKTIMEVERIFY),                         // BIP65
         (419_328, Self::CHECKSEQUENCEVERIFY),                         // BIP112/68/113
         (481_824, Self::WITNESS.union(Self::NULLDUMMY)),              // BIP141/143/147
-        (709_632, Self::TAPROOT),                                     // BIP341/342
+        (709_633, Self::TAPROOT),                                     // BIP341/342 (Core uses > 709632)
     ];
 
     /// Construct from raw bits — for fuzzer parity. Prefer the named constants.

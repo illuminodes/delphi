@@ -78,14 +78,22 @@ impl ConditionStack {
 
     /// Push the result of an `OP_IF`/`OP_NOTIF` condition.
     ///
-    /// Callers must ensure `depth() < MAX_CONDITION_DEPTH`; the pre-scan
-    /// enforces this via the op-count limit before any `OP_IF` can execute.
-    pub fn push(&mut self, executing: bool) {
-        self.branches[usize::from(self.len)] = executing;
+    /// Returns `false` if the nesting depth would exceed `MAX_CONDITION_DEPTH`.
+    /// The pre-scan's op-count limit enforces this for legacy scripts, but
+    /// tapscript removes the per-script op limit, so the bound must be checked
+    /// here too.
+    #[must_use]
+    pub fn push(&mut self, executing: bool) -> bool {
+        let idx = usize::from(self.len);
+        if idx >= MAX_CONDITION_DEPTH {
+            return false;
+        }
+        self.branches[idx] = executing;
         self.len += 1;
         if executing {
             self.depth_executing += 1;
         }
+        true
     }
 
     /// Pop the topmost branch (`OP_ENDIF`). `None` if the stack is empty —
@@ -142,7 +150,7 @@ mod tests {
     #[test]
     fn push_true_keeps_executing() {
         let mut cs = ConditionStack::new();
-        cs.push(true);
+        assert!(cs.push(true));
         assert!(cs.executing());
         assert_eq!(cs.depth(), 1);
     }
@@ -150,15 +158,15 @@ mod tests {
     #[test]
     fn push_false_stops_executing() {
         let mut cs = ConditionStack::new();
-        cs.push(false);
+        assert!(cs.push(false));
         assert!(!cs.executing());
     }
 
     #[test]
     fn nested_true_then_false_not_executing() {
         let mut cs = ConditionStack::new();
-        cs.push(true);
-        cs.push(false);
+        assert!(cs.push(true));
+        assert!(cs.push(false));
         assert!(!cs.executing());
         assert_eq!(cs.depth(), 2);
     }
@@ -166,8 +174,8 @@ mod tests {
     #[test]
     fn pop_restores_outer() {
         let mut cs = ConditionStack::new();
-        cs.push(true);
-        cs.push(false);
+        assert!(cs.push(true));
+        assert!(cs.push(false));
         assert!(!cs.executing());
         cs.pop();
         assert!(cs.executing());
@@ -176,7 +184,7 @@ mod tests {
     #[test]
     fn toggle_flips_top() {
         let mut cs = ConditionStack::new();
-        cs.push(false);
+        assert!(cs.push(false));
         assert!(!cs.executing());
         cs.toggle_top();
         assert!(cs.executing());
@@ -186,10 +194,9 @@ mod tests {
 
     #[test]
     fn toggle_inner_under_outer_false_stays_not_executing() {
-        // Outer false dominates — toggling the inner can't enable execution.
         let mut cs = ConditionStack::new();
-        cs.push(false);
-        cs.push(true);
+        assert!(cs.push(false));
+        assert!(cs.push(true));
         assert!(!cs.executing());
         cs.toggle_top();
         assert!(!cs.executing());
@@ -198,8 +205,8 @@ mod tests {
     #[test]
     fn toggle_inner_under_outer_true_can_execute() {
         let mut cs = ConditionStack::new();
-        cs.push(true);
-        cs.push(false);
+        assert!(cs.push(true));
+        assert!(cs.push(false));
         assert!(!cs.executing());
         cs.toggle_top();
         assert!(cs.executing());
@@ -207,17 +214,23 @@ mod tests {
 
     #[test]
     fn deeply_nested_o1() {
-        // Push MAX_CONDITION_DEPTH - 1 true entries — `executing()` must still be O(1) and true.
         let mut cs = ConditionStack::new();
         for _ in 0..MAX_CONDITION_DEPTH - 1 {
-            cs.push(true);
+            assert!(cs.push(true));
         }
         assert!(cs.executing());
         assert_eq!(cs.depth(), u32::try_from(MAX_CONDITION_DEPTH - 1).unwrap());
-
-        // One false at the maximum depth makes us non-executing in O(1).
-        cs.push(false);
+        assert!(cs.push(false));
         assert!(!cs.executing());
+    }
+
+    #[test]
+    fn push_at_max_depth_fails() {
+        let mut cs = ConditionStack::new();
+        for _ in 0..MAX_CONDITION_DEPTH {
+            assert!(cs.push(true));
+        }
+        assert!(!cs.push(true), "push beyond MAX_CONDITION_DEPTH must return false");
     }
 
     #[test]
@@ -234,14 +247,12 @@ mod tests {
 
     #[test]
     fn depth_executing_invariant_after_mix() {
-        // After arbitrary push/pop/toggle, depth_executing must equal the
-        // count of `true` entries.
         let mut cs = ConditionStack::new();
-        cs.push(true);
-        cs.push(false);
-        cs.push(true);
+        assert!(cs.push(true));
+        assert!(cs.push(false));
+        assert!(cs.push(true));
         cs.toggle_top(); // top is now false
-        cs.push(false);
+        assert!(cs.push(false));
         cs.toggle_top(); // top is now true
         // branches: [true, false, false, true]; executing count = 2.
         assert_eq!(cs.depth_executing, 2);

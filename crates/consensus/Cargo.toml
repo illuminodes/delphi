@@ -16,3 +16,4 @@ k256 = { workspace = true, features = ["ecdsa", "schnorr"] }
 [dev-dependencies]
 proptest = "1"
 k256 = { workspace = true, features = ["ecdsa", "arithmetic"] }
+mantle-conformance = { path = "../conformance" }

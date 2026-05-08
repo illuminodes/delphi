@@ -194,6 +194,27 @@ proptest! {
     }
 }
 
+// ── ScriptFlags::for_height parity ───────────────────────────────────────────
+
+proptest! {
+    /// `ScriptFlags::for_height` must match `bitcoinconsensus::height_to_flags`
+    /// at every mainnet height. This is the M4 gate: all flag bits are active.
+    #[test]
+    fn flags_for_height_matches_bitcoinconsensus(h in 0u32..=900_000u32) {
+        use mantle::primitives::BlockHeight;
+        use mantle_conformance::conformance;
+        use crate::script::ScriptFlags;
+
+        let oracle = conformance::flags_for_height(h);
+        let ours   = ScriptFlags::for_height(BlockHeight(h)).bits();
+        prop_assert_eq!(
+            oracle, ours,
+            "flags_for_height({}) diverged: oracle={:#010x} ours={:#010x}",
+            h, oracle, ours
+        );
+    }
+}
+
 // ── Merkle tree properties ────────────────────────────────────────────────────
 
 proptest! {

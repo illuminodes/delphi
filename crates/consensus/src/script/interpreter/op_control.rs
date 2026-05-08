@@ -32,7 +32,9 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
             // so the body remains skipped regardless.
             false
         };
-        self.conditions.push(executing_branch);
+        if !self.conditions.push(executing_branch) {
+            return Err(ScriptError::UnbalancedConditional);
+        }
         Ok(())
     }
 

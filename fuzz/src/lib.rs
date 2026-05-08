@@ -13,13 +13,15 @@ use std::io::Cursor;
 
 /// Mask to the flag bits we currently assert parity on.
 ///
-/// **M2**: legacy + segwit v0 — P2SH, BIP66 (DERSIG), NULLDUMMY, CLTV, CSV, WITNESS.
+/// **M4**: all consensus flags — P2SH, BIP66 (DERSIG), NULLDUMMY, CLTV, CSV,
+/// WITNESS, and TAPROOT. Every flag bitcoinconsensus accepts is now compared.
 pub const FLAGS_MASK: u32 = conformance::VERIFY_P2SH
     | conformance::VERIFY_DERSIG
     | conformance::VERIFY_NULLDUMMY
     | conformance::VERIFY_CHECKLOCKTIMEVERIFY
     | conformance::VERIFY_CHECKSEQUENCEVERIFY
-    | conformance::VERIFY_WITNESS;
+    | conformance::VERIFY_WITNESS
+    | conformance::VERIFY_TAPROOT;
 
 /// One entry in the spent-outputs table: the script_pubkey and amount for a
 /// single input's corresponding UTXO.
@@ -63,8 +65,6 @@ pub fn run_differential(input: &FuzzInput) {
     if flags & conformance::VERIFY_WITNESS != 0 {
         flags |= conformance::VERIFY_P2SH;
     }
-    let mantle_flags = ScriptFlags::from_bits(flags);
-
     let tx = match Transaction::decode(&mut Cursor::new(&input.tx_bytes)) {
         Ok(tx) => tx,
         Err(_) => return,
@@ -83,6 +83,38 @@ pub fn run_differential(input: &FuzzInput) {
     tx.encode(&mut tx_wire)
         .expect("encode must not fail on a decoded Transaction");
 
+    // Build the spent-outputs table for the oracle (required for taproot).
+    //
+    // Core's C++ requires `spent_outputs.len() == tx.inputs.len()` whenever
+    // TAPROOT is set and spent_outputs is Some — a count mismatch returns
+    // ERR_SPENT_OUTPUTS_MISMATCH regardless of the script being verified.
+    // When the fuzz input doesn't cover all inputs, we can't meaningfully
+    // compare taproot verdicts, so strip TAPROOT and pass None.
+    let have_full_spent_outputs = input.spent_outputs.len() >= tx.inputs.len();
+    if flags & conformance::VERIFY_TAPROOT != 0 && !have_full_spent_outputs {
+        flags &= !conformance::VERIFY_TAPROOT;
+    }
+    let mantle_flags = ScriptFlags::from_bits(flags);
+
+    // `Utxo` holds a raw pointer into the script_pubkey bytes, so the Vec
+    // data must outlive the Utxo slice. We borrow from `input.spent_outputs`
+    // directly — their Vecs don't move while `utxos` is alive.
+    let utxos: Vec<conformance::Utxo> = input
+        .spent_outputs
+        .iter()
+        .take(tx.inputs.len())
+        .map(|s| conformance::Utxo {
+            script_pubkey: s.script_pubkey.as_ptr(),
+            script_pubkey_len: s.script_pubkey.len() as u32,
+            value: s.amount as i64,
+        })
+        .collect();
+    let spent_outputs_arg = if flags & conformance::VERIFY_TAPROOT != 0 {
+        Some(utxos.as_slice())
+    } else {
+        None
+    };
+
     for (i, spent) in input.spent_outputs.iter().enumerate().take(tx.inputs.len()) {
         // Exercise TxOut codec on each spent output.
         let txout = TxOut {
@@ -98,16 +130,11 @@ pub fn run_differential(input: &FuzzInput) {
         assert_eq!(txout.value, txout_rt.value);
         assert_eq!(txout.script_pubkey, txout_rt.script_pubkey);
 
-        // Skip taproot outputs — M3 not yet implemented.
-        if is_taproot_program(&spent.script_pubkey) {
-            continue;
-        }
-
         let oracle = conformance::verify_script(
             &spent.script_pubkey,
             spent.amount,
             &tx_wire,
-            None,
+            spent_outputs_arg,
             i,
             flags,
         );
@@ -121,30 +148,19 @@ pub fn run_differential(input: &FuzzInput) {
             mantle_flags,
         );
 
-        // Skip if the oracle returns a taproot-related error string — those
-        // require Schnorr and are M3 scope.
-        if let Err(ref e) = oracle {
-            let s = format!("{e}");
-            if s.contains("taproot") || s.contains("Taproot") || s.contains("Schnorr") {
-                continue;
-            }
-        }
-
         assert_eq!(
             oracle.is_ok(),
             mantle.is_ok(),
-            "M2 divergence at input {i}: oracle={oracle:?} mantle={mantle:?}\n\
-             tx_wire={tx_wire:02x?}\n\
+            "M4 divergence at input {}: oracle={:?} mantle={:?}\n\
+             tx_wire={:02x?}\n\
              script_pubkey={:02x?}\n\
-             flags={flags:#010x}",
+             flags={:#010x}",
+            i,
+            oracle,
+            mantle,
+            tx_wire,
             spent.script_pubkey,
+            flags,
         );
     }
-}
-
-/// True if `script` is a taproot (witness v1, 32-byte program) output.
-///
-/// These require Schnorr verification (M3) and are skipped in M2 differential.
-fn is_taproot_program(script: &[u8]) -> bool {
-    script.len() == 34 && script[0] == 0x51 && script[1] == 0x20
 }
