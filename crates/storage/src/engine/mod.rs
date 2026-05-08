@@ -14,8 +14,6 @@ pub enum EngineError {
     ScriptPubKeyTooLarge,
     /// A stored script pubkey length field would overflow `usize` on this platform.
     ScriptLenOverflow,
-    /// A header gap would overflow `usize` on this platform.
-    HeaderGapOverflow,
 }
 
 impl std::fmt::Display for EngineError {
@@ -24,7 +22,6 @@ impl std::fmt::Display for EngineError {
             Self::Io(e) => write!(f, "engine I/O error: {e}"),
             Self::ScriptPubKeyTooLarge => f.write_str("script_pubkey exceeds 4 GiB"),
             Self::ScriptLenOverflow => f.write_str("script_pubkey length overflows usize"),
-            Self::HeaderGapOverflow => f.write_str("header gap overflows usize"),
         }
     }
 }

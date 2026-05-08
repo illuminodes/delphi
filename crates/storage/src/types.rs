@@ -105,8 +105,6 @@ pub enum StorageError {
     ScriptPubKeyTooLarge,
     /// A stored script pubkey length field overflows `usize` on this platform.
     ScriptLenOverflow,
-    /// A header gap overflows `usize` on this platform.
-    HeaderGapOverflow,
     /// The request ring was full.
     RingFull,
     /// The storage thread exited unexpectedly.
@@ -121,7 +119,6 @@ impl From<EngineError> for StorageError {
             EngineError::Io(e) => Self::Io(e.kind()),
             EngineError::ScriptPubKeyTooLarge => Self::ScriptPubKeyTooLarge,
             EngineError::ScriptLenOverflow => Self::ScriptLenOverflow,
-            EngineError::HeaderGapOverflow => Self::HeaderGapOverflow,
         }
     }
 }
@@ -132,7 +129,6 @@ impl std::fmt::Display for StorageError {
             Self::Io(k) => write!(f, "storage I/O error: {k}"),
             Self::ScriptPubKeyTooLarge => f.write_str("script_pubkey exceeds 4 GiB"),
             Self::ScriptLenOverflow => f.write_str("script_pubkey length overflows usize"),
-            Self::HeaderGapOverflow => f.write_str("header gap overflows usize"),
             Self::RingFull => f.write_str("storage request ring full"),
             Self::ThreadGone => f.write_str("storage thread exited unexpectedly"),
             Self::UnexpectedResponse => f.write_str("unexpected response from storage thread"),
