@@ -15,7 +15,10 @@ fn key(secret: [u8; 32]) -> SigningKey {
 }
 
 fn compressed_pubkey(sk: &SigningKey) -> Vec<u8> {
-    sk.verifying_key().to_encoded_point(true).as_bytes().to_vec()
+    sk.verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .to_vec()
 }
 
 fn hash160(data: &[u8]) -> [u8; 20] {
@@ -37,7 +40,10 @@ fn make_tx() -> Transaction {
     Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256([0u8; 32]), vout: 0 },
+            previous_output: OutPoint {
+                txid: Hash256([0u8; 32]),
+                vout: 0,
+            },
             script_sig: Vec::<u8>::new().into(),
             sequence: 0xffff_ffff,
             witness: Witness::empty(),
@@ -391,11 +397,14 @@ fn segwit_flags() -> ScriptFlags {
 }
 
 /// Build a tx whose input has `witness` set.
-fn make_witness_tx(witness_items: Vec<Vec<u8>>) -> Transaction {
+fn make_witness_tx(witness_items: &[Vec<u8>]) -> Transaction {
     Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256([0u8; 32]), vout: 0 },
+            previous_output: OutPoint {
+                txid: Hash256([0u8; 32]),
+                vout: 0,
+            },
             script_sig: Vec::<u8>::new().into(),
             sequence: 0xffff_ffff,
             witness: Witness::from_slice(
@@ -431,14 +440,13 @@ fn p2wpkh_succeeds() {
     script_code.extend_from_slice(&[0x88, 0xac]);
 
     // Build a temporary tx with empty witness to compute the sighash.
-    let tmp_tx = make_witness_tx(vec![]);
+    let tmp_tx = make_witness_tx(&[]);
     let cache = crate::script::sighash::Bip143Cache::new(&tmp_tx);
     let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
     let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
-    let tx = make_witness_tx(vec![sig, pk]);
-    verify_script(&[], &spk, &tx, 0, amount, segwit_flags())
-        .expect("p2wpkh should verify");
+    let tx = make_witness_tx(&[sig, pk]);
+    verify_script(&[], &spk, &tx, 0, amount, segwit_flags()).expect("p2wpkh should verify");
 }
 
 #[test]
@@ -454,13 +462,13 @@ fn p2wpkh_wrong_sig_fails() {
     script_code.extend_from_slice(&pkh);
     script_code.extend_from_slice(&[0x88, 0xac]);
 
-    let tmp_tx = make_witness_tx(vec![]);
+    let tmp_tx = make_witness_tx(&[]);
     let cache = crate::script::sighash::Bip143Cache::new(&tmp_tx);
     let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
     // Sign with the attacker key.
     let sig = sign(&attacker, &digest.0, SigHashType::ALL);
 
-    let tx = make_witness_tx(vec![sig, pk]);
+    let tx = make_witness_tx(&[sig, pk]);
     let r = verify_script(&[], &spk, &tx, 0, amount, segwit_flags());
     assert!(r.is_err(), "wrong sig must fail");
 }
@@ -473,7 +481,7 @@ fn p2wpkh_nonempty_scriptsig_is_malleable() {
     let spk = p2wpkh_spk(&pkh);
     let amount = Satoshi::new(100_000);
 
-    let tx = make_witness_tx(vec![vec![0xab], pk.clone()]);
+    let tx = make_witness_tx(&[vec![0xab], pk.clone()]);
     // Supply a non-empty scriptSig — must be rejected.
     let r = verify_script(&[0x01, 0xff], &spk, &tx, 0, amount, segwit_flags());
     assert!(matches!(r, Err(ScriptError::WitnessMalleated)));
@@ -495,15 +503,14 @@ fn p2wsh_succeeds() {
     let amount = Satoshi::new(200_000);
 
     // BIP143 sighash: scriptCode = witness_script.
-    let tmp_tx = make_witness_tx(vec![]);
+    let tmp_tx = make_witness_tx(&[]);
     let cache = crate::script::sighash::Bip143Cache::new(&tmp_tx);
     let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
     let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
     // Witness stack: [sig, pubkey, witness_script]
-    let tx = make_witness_tx(vec![sig, pk, witness_script]);
-    verify_script(&[], &spk, &tx, 0, amount, segwit_flags())
-        .expect("p2wsh should verify");
+    let tx = make_witness_tx(&[sig, pk, witness_script]);
+    verify_script(&[], &spk, &tx, 0, amount, segwit_flags()).expect("p2wsh should verify");
 }
 
 #[test]
@@ -520,7 +527,7 @@ fn p2wsh_wrong_script_hash_fails() {
     let mut spk = vec![0x00, 0x20];
     spk.extend_from_slice(&wrong_hash);
 
-    let tx = make_witness_tx(vec![witness_script]);
+    let tx = make_witness_tx(&[witness_script]);
     let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(0), segwit_flags());
     assert!(matches!(r, Err(ScriptError::WitnessProgramMismatch)));
 }
@@ -530,7 +537,7 @@ fn witness_unexpected_on_legacy_input() {
     // A P2WPKH input with only 1 witness item (should be 2).
     let pkh = [0xabu8; 20]; // non-zero so eval leaves truthy top
     let spk = p2wpkh_spk(&pkh);
-    let tx = make_witness_tx(vec![vec![0xab]]); // 1 item instead of 2
+    let tx = make_witness_tx(&[vec![0xab]]); // 1 item instead of 2
     let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(0), segwit_flags());
     assert!(matches!(r, Err(ScriptError::WitnessProgramMismatch)));
 }

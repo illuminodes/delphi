@@ -6,8 +6,8 @@
 //! from the same primitives the implementation uses.
 //!
 //! Coverage:
-//!  - BIP340 key-path: valid / corrupted Schnorr sig, explicit SIGHASH_ALL
-//!  - BIP341 script-path: OP_1 leaf, wrong output key, bad control block,
+//!  - BIP340 key-path: valid / corrupted Schnorr sig, explicit `SIGHASH_ALL`
+//!  - BIP341 script-path: `OP_1` leaf, wrong output key, bad control block,
 //!    wrong committed script
 //!  - BIP342 tapscript CHECKSIG: valid sign + corrupted sig
 //!  - Structural: empty witness, non-empty scriptSig, P2SH-wrapped taproot,
@@ -27,7 +27,7 @@ fn taproot_flags() -> ScriptFlags {
     ScriptFlags::P2SH | ScriptFlags::WITNESS | ScriptFlags::TAPROOT
 }
 
-fn make_taproot_tx(spk: Vec<u8>, _amount: Satoshi, witness_items: Vec<Vec<u8>>) -> Transaction {
+fn make_taproot_tx(spk: Vec<u8>, _amount: Satoshi, witness_items: &[Vec<u8>]) -> Transaction {
     Transaction {
         version: 2,
         inputs: vec![TxIn {
@@ -70,9 +70,9 @@ fn schnorr_pubkey(secret: &[u8; 32]) -> [u8; 32] {
 /// Compute the BIP341 tweaked signing key for a key-path spend.
 ///
 /// BIP341 §"Spending using the key path":
-///   d = internal_secret (negated if internal_pubkey has odd Y — k256 does this on construction)
-///   t = int(TapTweak(internal_pubkey || merkle_root))  mod n
-///   tweaked_secret = (d + t) mod n
+///   d = `internal_secret` (negated if `internal_pubkey` has odd Y — k256 does this on construction)
+///   t = int(TapTweak(`internal_pubkey` || `merkle_root`))  mod n
+///   `tweaked_secret` = (d + t) mod n
 fn tweaked_signing_key(internal_secret: &[u8; 32], merkle_root: &[u8]) -> [u8; 32] {
     use k256::elliptic_curve::ops::Reduce;
     use k256::schnorr::SigningKey;
@@ -110,14 +110,14 @@ fn bip340_key_path_spend_succeeds() {
     // Compute sighash on a placeholder tx, sign, then rebuild with the real sig.
     // Two-pass: first pass uses a zeroed sig placeholder to get the tx shape
     // (sighash doesn't commit to witness, so this equals the final tx's sighash).
-    let placeholder_tx = make_taproot_tx(spk.clone(), amount, vec![[0u8; 64].to_vec()]);
+    let placeholder_tx = make_taproot_tx(spk.clone(), amount, &[[0u8; 64].to_vec()]);
     let cache = Bip341Cache::new(&placeholder_tx, &[amount], &[spk.as_slice()]);
     let msg = placeholder_tx.bip341_sighash(
         0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, None, None,
     );
     let sig64 = schnorr_sign(&tweaked_secret, &msg);
 
-    let tx = make_taproot_tx(spk.clone(), amount, vec![sig64.to_vec()]);
+    let tx = make_taproot_tx(spk.clone(), amount, &[sig64.to_vec()]);
     verify_script(&[], &spk, &tx, 0, amount, taproot_flags())
         .expect("BIP340 key-path spend must verify");
 }
@@ -130,7 +130,7 @@ fn bip340_key_path_wrong_sig_fails() {
     let spk = taproot_spk(&output_key);
     let amount = Satoshi::new(100_000);
 
-    let tmp_tx = make_taproot_tx(spk.clone(), amount, vec![]);
+    let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let msg = tmp_tx.bip341_sighash(
         0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, None, None,
@@ -139,7 +139,7 @@ fn bip340_key_path_wrong_sig_fails() {
     let mut sig64 = schnorr_sign(&tweaked_secret, &msg);
     sig64[0] ^= 0xff;
 
-    let tx = make_taproot_tx(spk.clone(), amount, vec![sig64.to_vec()]);
+    let tx = make_taproot_tx(spk.clone(), amount, &[sig64.to_vec()]);
     assert!(
         verify_script(&[], &spk, &tx, 0, amount, taproot_flags()).is_err(),
         "corrupted sig must fail"
@@ -155,7 +155,7 @@ fn bip340_key_path_sighash_all_explicit_succeeds() {
     let spk = taproot_spk(&output_key);
     let amount = Satoshi::new(50_000);
 
-    let tmp_tx = make_taproot_tx(spk.clone(), amount, vec![]);
+    let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let msg = tmp_tx.bip341_sighash(
         0,amount, &spk, TaprootSigHashType::ALL, &cache, None, None,
@@ -165,7 +165,7 @@ fn bip340_key_path_sighash_all_explicit_succeeds() {
     let mut sig65 = sig64.to_vec();
     sig65.push(0x01);
 
-    let tx = make_taproot_tx(spk.clone(), amount, vec![sig65]);
+    let tx = make_taproot_tx(spk.clone(), amount, &[sig65]);
     verify_script(&[], &spk, &tx, 0, amount, taproot_flags())
         .expect("65-byte explicit SIGHASH_ALL must verify");
 }
@@ -178,7 +178,7 @@ fn bip340_key_path_empty_witness_fails() {
     let spk = taproot_spk(&output_key);
     let amount = Satoshi::new(100_000);
 
-    let tx = make_taproot_tx(spk.clone(), amount, vec![]);
+    let tx = make_taproot_tx(spk.clone(), amount, &[]);
     assert!(
         verify_script(&[], &spk, &tx, 0, amount, taproot_flags()).is_err(),
         "empty witness must fail for taproot"
@@ -213,7 +213,7 @@ fn bip341_script_path_op1_leaf_succeeds() {
     let (spk, witness_items) = script_path_single_leaf(&internal_key, &script);
     let amount = Satoshi::new(200_000);
 
-    let tx = make_taproot_tx(spk.clone(), amount, witness_items);
+    let tx = make_taproot_tx(spk.clone(), amount, &witness_items);
     verify_script(&[], &spk, &tx, 0, amount, taproot_flags())
         .expect("OP_1 tapscript leaf must verify");
 }
@@ -228,7 +228,7 @@ fn bip341_script_path_wrong_output_key_fails() {
     wrong_spk[2] ^= 0xff;
 
     let amount = Satoshi::new(200_000);
-    let tx = make_taproot_tx(wrong_spk.clone(), amount, witness_items);
+    let tx = make_taproot_tx(wrong_spk.clone(), amount, &witness_items);
     assert!(
         verify_script(&[], &wrong_spk, &tx, 0, amount, taproot_flags()).is_err(),
         "wrong output key must fail"
@@ -242,9 +242,9 @@ fn bip341_script_path_bad_control_block_fails() {
     let (spk, _) = script_path_single_leaf(&internal_key, &script);
 
     let bad_control = vec![0xc0]; // only leaf_version byte, no internal key
-    let witness_items = vec![script.to_vec(), bad_control];
+    let witness_items = vec![script.clone(), bad_control];
     let amount = Satoshi::new(200_000);
-    let tx = make_taproot_tx(spk.clone(), amount, witness_items);
+    let tx = make_taproot_tx(spk.clone(), amount, &witness_items);
     assert!(
         verify_script(&[], &spk, &tx, 0, amount, taproot_flags()).is_err(),
         "truncated control block must fail"
@@ -260,7 +260,7 @@ fn bip341_script_path_wrong_leaf_script_fails() {
     witness_items[0] = vec![0x00]; // swap to OP_0 — leaf hash won't match
 
     let amount = Satoshi::new(200_000);
-    let tx = make_taproot_tx(spk.clone(), amount, witness_items);
+    let tx = make_taproot_tx(spk.clone(), amount, &witness_items);
     assert!(
         verify_script(&[], &spk, &tx, 0, amount, taproot_flags()).is_err(),
         "mismatched committed script must fail"
@@ -293,7 +293,7 @@ fn bip342_tapscript_checksig_succeeds() {
     control_block.extend_from_slice(&internal_key);
 
     let amount = Satoshi::new(300_000);
-    let tmp_tx = make_taproot_tx(spk.clone(), amount, vec![]);
+    let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let msg = tmp_tx.bip341_sighash(
         0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, None,
@@ -302,7 +302,7 @@ fn bip342_tapscript_checksig_succeeds() {
     let sig64 = schnorr_sign(&secret, &msg);
 
     let witness_items = vec![sig64.to_vec(), script.clone(), control_block];
-    let tx = make_taproot_tx(spk.clone(), amount, witness_items);
+    let tx = make_taproot_tx(spk.clone(), amount, &witness_items);
     verify_script(&[], &spk, &tx, 0, amount, taproot_flags())
         .expect("BIP342 CHECKSIG tapscript must verify");
 }
@@ -324,7 +324,7 @@ fn bip342_tapscript_checksig_wrong_sig_fails() {
     control_block.extend_from_slice(&internal_key);
 
     let amount = Satoshi::new(300_000);
-    let tmp_tx = make_taproot_tx(spk.clone(), amount, vec![]);
+    let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let msg = tmp_tx.bip341_sighash(
         0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, None,
@@ -334,7 +334,7 @@ fn bip342_tapscript_checksig_wrong_sig_fails() {
     sig64[0] ^= 0xff;
 
     let witness_items = vec![sig64.to_vec(), script.clone(), control_block];
-    let tx = make_taproot_tx(spk.clone(), amount, witness_items);
+    let tx = make_taproot_tx(spk.clone(), amount, &witness_items);
     assert!(
         verify_script(&[], &spk, &tx, 0, amount, taproot_flags()).is_err(),
         "wrong sig in tapscript CHECKSIG must fail"
@@ -351,14 +351,14 @@ fn taproot_nonempty_scriptsig_is_malleated() {
     let spk = taproot_spk(&output_key);
     let amount = Satoshi::new(100_000);
 
-    let tmp_tx = make_taproot_tx(spk.clone(), amount, vec![]);
+    let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let msg = tmp_tx.bip341_sighash(
         0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, None, None,
     );
     let sig64 = schnorr_sign(&secret, &msg);
 
-    let mut tx = make_taproot_tx(spk.clone(), amount, vec![sig64.to_vec()]);
+    let mut tx = make_taproot_tx(spk.clone(), amount, &[sig64.to_vec()]);
     tx.inputs[0].script_sig = vec![0x51].into();
 
     // Non-empty scriptSig on a native segwit input → WitnessMalleated.
@@ -411,7 +411,7 @@ fn taproot_disabled_treats_as_unknown_witness_version() {
     let spk = taproot_spk(&output_key);
     let amount = Satoshi::new(100_000);
 
-    let tx = make_taproot_tx(spk.clone(), amount, vec![vec![0xde, 0xad]]);
+    let tx = make_taproot_tx(spk.clone(), amount, &[vec![0xde, 0xad]]);
 
     let flags_no_taproot = ScriptFlags::P2SH | ScriptFlags::WITNESS;
     verify_script(&[], &spk, &tx, 0, amount, flags_no_taproot)
@@ -434,7 +434,7 @@ fn bip341_key_path_with_annex_succeeds() {
 
     // Use the final tx layout (sig placeholder + annex) so the sighash sees
     // the right annex commitment.
-    let tmp_tx = make_taproot_tx(spk.clone(), amount, vec![vec![0u8; 64], annex.clone()]);
+    let tmp_tx = make_taproot_tx(spk.clone(), amount, &[vec![0u8; 64], annex.clone()]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let annex_body = &annex[1..]; // strip 0x50 prefix byte
     let msg = tmp_tx.bip341_sighash(
@@ -445,7 +445,7 @@ fn bip341_key_path_with_annex_succeeds() {
     let tweaked_secret = tweaked_signing_key(&internal_secret, &[]);
     let sig64 = schnorr_sign(&tweaked_secret, &msg);
 
-    let tx = make_taproot_tx(spk.clone(), amount, vec![sig64.to_vec(), annex]);
+    let tx = make_taproot_tx(spk.clone(), amount, &[sig64.to_vec(), annex]);
     verify_script(&[], &spk, &tx, 0, amount, taproot_flags())
         .expect("key-path spend with annex must verify");
 }
@@ -463,7 +463,7 @@ fn diag_schnorr_sign_verify_roundtrip() {
     // PrehashVerifier uses the raw bytes (no re-hash) — must match sign_prehash.
     vk.verify_prehash(&msg, &sig).expect("k256 prehash verify must pass");
 
-    let sig_bytes: [u8; 64] = sig.to_bytes().into();
+    let sig_bytes: [u8; 64] = sig.to_bytes();
     let pk_bytes: [u8; 32] = vk.to_bytes().into();
     let ok = crate::script::consensus_crypto::Schnorr::verify(&sig_bytes, &pk_bytes, &msg);
     assert!(ok, "Schnorr::verify must pass for k256-signed msg");
@@ -477,13 +477,13 @@ fn diag_sighash_determinism() {
     let spk = taproot_spk(&output_key);
     let amount = Satoshi::new(100_000);
 
-    let tmp_tx = make_taproot_tx(spk.clone(), amount, vec![]);
+    let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache1 = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let msg1 = tmp_tx.bip341_sighash(0, amount, &spk, TaprootSigHashType::DEFAULT, &cache1, None, None);
 
     // The real tx has a witness — sighash must be the same.
     let sig64 = [0u8; 64];
-    let real_tx = make_taproot_tx(spk.clone(), amount, vec![sig64.to_vec()]);
+    let real_tx = make_taproot_tx(spk.clone(), amount, &[sig64.to_vec()]);
     let cache2 = Bip341Cache::new(&real_tx, &[amount], &[spk.as_slice()]);
     let msg2 = real_tx.bip341_sighash(0, amount, &spk, TaprootSigHashType::DEFAULT, &cache2, None, None);
 
@@ -494,14 +494,14 @@ fn diag_sighash_determinism() {
     let sig = schnorr_sign(&tweaked_secret, &msg1);
 
     // Mimic exactly what run_taproot does: build cache from the REAL tx (with sig in witness).
-    let real_tx = make_taproot_tx(spk.clone(), amount, vec![sig.to_vec()]);
+    let real_tx = make_taproot_tx(spk.clone(), amount, &[sig.to_vec()]);
     let rt_cache = Bip341Cache::new(&real_tx, &[amount], &[spk.as_slice()]);
     let rt_msg = real_tx.bip341_sighash(
         0, amount, &spk, TaprootSigHashType::DEFAULT, &rt_cache, None, None,
     );
 
-    eprintln!("msg1 (from placeholder_tx): {:02x?}", msg1);
-    eprintln!("rt_msg (from real_tx):      {:02x?}", rt_msg);
+    eprintln!("msg1 (from placeholder_tx): {msg1:02x?}");
+    eprintln!("rt_msg (from real_tx):      {rt_msg:02x?}");
     eprintln!("msgs_match: {}", msg1 == rt_msg);
 
     // run_taproot verifies: Schnorr::verify(sig64, program32=output_key, &rt_msg)

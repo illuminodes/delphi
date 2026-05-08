@@ -213,7 +213,7 @@ mod tests {
             cs.push(true);
         }
         assert!(cs.executing());
-        assert_eq!(cs.depth(), (MAX_CONDITION_DEPTH - 1) as u32);
+        assert_eq!(cs.depth(), u32::try_from(MAX_CONDITION_DEPTH - 1).unwrap());
 
         // One false at the maximum depth makes us non-executing in O(1).
         cs.push(false);

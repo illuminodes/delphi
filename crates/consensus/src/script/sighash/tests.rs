@@ -246,7 +246,7 @@ fn bip143_p2wpkh_tx() -> Transaction {
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffffffee,
+                sequence: 0xffff_ffee,
                 witness: Witness::empty(),
             },
             TxIn {
@@ -257,20 +257,18 @@ fn bip143_p2wpkh_tx() -> Transaction {
                     vout: 1,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffffffff,
+                sequence: 0xffff_ffff,
                 witness: Witness::empty(),
             },
         ],
         outputs: vec![
             TxOut {
                 value: Satoshi::new(112_340_000),
-                script_pubkey: hex("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac")
-                    .into(),
+                script_pubkey: hex("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac").into(),
             },
             TxOut {
                 value: Satoshi::new(223_450_000),
-                script_pubkey: hex("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac")
-                    .into(),
+                script_pubkey: hex("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac").into(),
             },
         ],
         locktime: 0x11,
