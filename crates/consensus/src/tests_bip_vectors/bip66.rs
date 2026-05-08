@@ -8,15 +8,15 @@
 // - **Reject** vectors are the forms that *did* parse on pre-BIP66 nodes
 //   (libsecp256k1's lenient parser) but are now consensus-invalid.
 //
-// We exercise `consensus_crypto::is_valid_signature_encoding_der` — the
-// behavioural mirror of Core's `IsValidSignatureEncoding`. Both arms include
-// a brief description so failures point at the rule under test.
+// We exercise `Ecdsa::is_valid_der_encoding` — the behavioural mirror of
+// Core's `IsValidSignatureEncoding`. Both arms include a brief description
+// so failures point at the rule under test.
 //
 // Note: these are signature *bodies*, not `<DER>||<sighash>` blobs — the
 // trailing sighash byte is split off by `TxSigChecker` before this validator
 // runs. Vector lengths are 8..=72 (the post-split body range).
 
-use crate::script::consensus_crypto::is_valid_signature_encoding_der;
+use crate::script::consensus_crypto::Ecdsa;
 
 /// Smallest possible canonical DER signature: `r=1, s=1`.
 /// `30 06 02 01 01 02 01 01`.
@@ -43,17 +43,17 @@ fn full_size_canonical() -> Vec<u8> {
 
 #[test]
 fn accept_minimal() {
-    assert!(is_valid_signature_encoding_der(&minimal_canonical()));
+    assert!(Ecdsa::is_valid_der_encoding(&minimal_canonical()));
 }
 
 #[test]
 fn accept_r_with_required_leading_zero() {
-    assert!(is_valid_signature_encoding_der(&r_with_required_zero_pad()));
+    assert!(Ecdsa::is_valid_der_encoding(&r_with_required_zero_pad()));
 }
 
 #[test]
 fn accept_full_size() {
-    assert!(is_valid_signature_encoding_der(&full_size_canonical()));
+    assert!(Ecdsa::is_valid_der_encoding(&full_size_canonical()));
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn accept_72_byte_max() {
     v.push(0x00);
     v.extend_from_slice(&[0xff; 32]);
     assert_eq!(v.len(), 72);
-    assert!(is_valid_signature_encoding_der(&v));
+    assert!(Ecdsa::is_valid_der_encoding(&v));
 }
 
 // ── Reject vectors ───────────────────────────────────────────────────────
@@ -75,14 +75,14 @@ fn accept_72_byte_max() {
 #[test]
 fn reject_too_short() {
     // 7 bytes — under the 8-byte minimum.
-    assert!(!is_valid_signature_encoding_der(&[0x30, 0x05, 0x02, 0x01, 0x01, 0x02, 0x00]));
+    assert!(!Ecdsa::is_valid_der_encoding(&[0x30, 0x05, 0x02, 0x01, 0x01, 0x02, 0x00]));
 }
 
 #[test]
 fn reject_too_long() {
     // 73 bytes — over the 72-byte maximum.
     let v = vec![0u8; 73];
-    assert!(!is_valid_signature_encoding_der(&v));
+    assert!(!Ecdsa::is_valid_der_encoding(&v));
 }
 
 #[test]
@@ -90,13 +90,13 @@ fn reject_wrong_outer_tag() {
     // Outer tag must be 0x30 (SEQUENCE).
     let mut v = minimal_canonical();
     v[0] = 0x31;
-    assert!(!is_valid_signature_encoding_der(&v));
+    assert!(!Ecdsa::is_valid_der_encoding(&v));
 }
 
 #[test]
 fn reject_total_length_mismatch() {
     // Total-length byte claims 5 but body is 6.
-    assert!(!is_valid_signature_encoding_der(&[
+    assert!(!Ecdsa::is_valid_der_encoding(&[
         0x30, 0x05, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01,
     ]));
 }
@@ -105,13 +105,13 @@ fn reject_total_length_mismatch() {
 fn reject_r_not_integer_tag() {
     let mut v = minimal_canonical();
     v[2] = 0x03; // BIT STRING instead of INTEGER
-    assert!(!is_valid_signature_encoding_der(&v));
+    assert!(!Ecdsa::is_valid_der_encoding(&v));
 }
 
 #[test]
 fn reject_r_zero_length() {
     // r length 0 — empty INTEGER bodies aren't valid magnitude encodings.
-    assert!(!is_valid_signature_encoding_der(&[
+    assert!(!Ecdsa::is_valid_der_encoding(&[
         0x30, 0x05, 0x02, 0x00, 0x02, 0x01, 0x01,
     ]));
 }
@@ -119,7 +119,7 @@ fn reject_r_zero_length() {
 #[test]
 fn reject_r_negative() {
     // r high bit set without a leading 0x00 → reads as negative.
-    assert!(!is_valid_signature_encoding_der(&[
+    assert!(!Ecdsa::is_valid_der_encoding(&[
         0x30, 0x06, 0x02, 0x01, 0x80, 0x02, 0x01, 0x01,
     ]));
 }
@@ -127,7 +127,7 @@ fn reject_r_negative() {
 #[test]
 fn reject_r_redundant_leading_zero() {
     // r = 00 01 — leading zero is redundant since 0x01's high bit is clear.
-    assert!(!is_valid_signature_encoding_der(&[
+    assert!(!Ecdsa::is_valid_der_encoding(&[
         0x30, 0x07, 0x02, 0x02, 0x00, 0x01, 0x02, 0x01, 0x01,
     ]));
 }
@@ -135,28 +135,28 @@ fn reject_r_redundant_leading_zero() {
 #[test]
 fn reject_s_not_integer_tag() {
     // r is fine; s tag is 0x03 instead of 0x02.
-    assert!(!is_valid_signature_encoding_der(&[
+    assert!(!Ecdsa::is_valid_der_encoding(&[
         0x30, 0x06, 0x02, 0x01, 0x01, 0x03, 0x01, 0x01,
     ]));
 }
 
 #[test]
 fn reject_s_zero_length() {
-    assert!(!is_valid_signature_encoding_der(&[
+    assert!(!Ecdsa::is_valid_der_encoding(&[
         0x30, 0x05, 0x02, 0x01, 0x01, 0x02, 0x00,
     ]));
 }
 
 #[test]
 fn reject_s_negative() {
-    assert!(!is_valid_signature_encoding_der(&[
+    assert!(!Ecdsa::is_valid_der_encoding(&[
         0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x80,
     ]));
 }
 
 #[test]
 fn reject_s_redundant_leading_zero() {
-    assert!(!is_valid_signature_encoding_der(&[
+    assert!(!Ecdsa::is_valid_der_encoding(&[
         0x30, 0x07, 0x02, 0x01, 0x01, 0x02, 0x02, 0x00, 0x01,
     ]));
 }
@@ -164,7 +164,7 @@ fn reject_s_redundant_leading_zero() {
 #[test]
 fn reject_truncated_after_r_length_byte() {
     // r tag + r len byte but no body and no s.
-    assert!(!is_valid_signature_encoding_der(&[
+    assert!(!Ecdsa::is_valid_der_encoding(&[
         0x30, 0x02, 0x02, 0x01,
     ]));
 }
@@ -175,5 +175,5 @@ fn reject_trailing_garbage() {
     // byte no longer matches actual body length.
     let mut v = minimal_canonical();
     v.push(0xff);
-    assert!(!is_valid_signature_encoding_der(&v));
+    assert!(!Ecdsa::is_valid_der_encoding(&v));
 }

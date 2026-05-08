@@ -10,12 +10,11 @@
 
 use mantle::primitives::{Satoshi, Transaction};
 
-use super::consensus_crypto;
+use super::consensus_crypto::{Ecdsa, Schnorr};
 use super::flags::ScriptFlags;
 use super::sig_version::SigVersion;
 use super::sighash::{
-    Bip143Cache, Bip341Cache, SigHashType, TaprootSigHashType, find_and_delete_sig,
-    signature_hash, signature_hash_bip143, signature_hash_bip341,
+    Bip143Cache, Bip341Cache, SigHashType, TaprootSigHashType, TxSighash, find_and_delete_sig,
 };
 
 /// Asks "does this signature, pubkey, and scriptCode verify?" for the script
@@ -148,14 +147,13 @@ impl SignatureChecker for TxSigChecker<'_> {
                 // FindAndDelete: legacy regime removes any push of the exact
                 // `sig` bytes from `script_code` before hashing.
                 let cleaned_code = find_and_delete_sig(script_code, sig);
-                signature_hash(self.tx, self.n_in, &cleaned_code, hash_type)
+                self.tx.legacy_sighash(self.n_in, &cleaned_code, hash_type)
             }
             SigVersion::WitnessV0 => {
                 // BIP143: no FindAndDelete; script_code is already the
                 // scriptCode for this input (P2WPKH synthetic or P2WSH witness
                 // script), passed through unchanged.
-                signature_hash_bip143(
-                    self.tx,
+                self.tx.bip143_sighash(
                     self.n_in,
                     script_code,
                     self.amount,
@@ -166,7 +164,7 @@ impl SignatureChecker for TxSigChecker<'_> {
             SigVersion::Tapscript => unreachable!(),
         };
 
-        consensus_crypto::verify_ecdsa(sig_der, pubkey, &digest.0)
+        Ecdsa::verify(sig_der, pubkey, &digest.0)
     }
 
     fn check_schnorr_sig(
@@ -180,7 +178,7 @@ impl SignatureChecker for TxSigChecker<'_> {
         bip341_cache: &Bip341Cache,
     ) -> bool {
         // Encoding check: 64 or 65 bytes.
-        let Ok((sig64, hash_type_byte)) = consensus_crypto::check_schnorr_sig_encoding(sig) else {
+        let Ok((sig64, hash_type_byte)) = Schnorr::check_sig_encoding(sig) else {
             return false;
         };
         // Pubkey must be exactly 32 bytes.
@@ -193,8 +191,7 @@ impl SignatureChecker for TxSigChecker<'_> {
             return false;
         }
 
-        let digest = signature_hash_bip341(
-            self.tx,
+        let digest = self.tx.bip341_sighash(
             self.n_in,
             spent_amount,
             spent_spk,
@@ -204,7 +201,7 @@ impl SignatureChecker for TxSigChecker<'_> {
             Some((*leaf_hash, code_sep_pos)),
         );
 
-        consensus_crypto::verify_schnorr(sig64, pubkey_arr, &digest)
+        Schnorr::verify(sig64, pubkey_arr, &digest)
     }
 
     fn check_lock_time(&self, locktime: i64) -> bool {
@@ -339,7 +336,7 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use crate::script::interpreter::Interpreter;
-    use crate::script::sighash::SigHashType;
+    use crate::script::sighash::{SigHashType, TxSighash};
     use crate::script::stack::Stack;
 
     #[test]
@@ -418,7 +415,7 @@ mod tests {
 
         // Compute legacy sighash over the full scriptPubKey.
         let digest =
-            crate::script::sighash::signature_hash(&tx, 0, &script_pubkey, SigHashType::ALL);
+            tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
         let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
         // Build scriptSig: <sig> <pubkey>.
@@ -452,7 +449,7 @@ mod tests {
         let tx = make_tx_p2pkh(&pkh);
         let script_pubkey = p2pkh_script(&pkh);
         let digest =
-            crate::script::sighash::signature_hash(&tx, 0, &script_pubkey, SigHashType::ALL);
+            tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
         let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
         // Wrong pubkey supplied — fails at OP_EQUALVERIFY (hash mismatch).
@@ -503,7 +500,7 @@ mod tests {
 
         // Sign with the wrong key — yields a strict-DER signature that won't verify.
         let digest =
-            crate::script::sighash::signature_hash(&tx, 0, &script_pubkey, SigHashType::ALL);
+            tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
         let sig = sign(&other_sk, &digest.0, SigHashType::ALL);
 
         // Build scriptSig with the *correct* pubkey but wrong sig — CHECKSIG

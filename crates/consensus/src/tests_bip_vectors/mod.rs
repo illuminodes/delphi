@@ -22,6 +22,7 @@ mod stage1;
 mod stage2;
 mod fixtures;
 mod bip66;
+mod taproot;
 
 fn hash_to_hex_display(hash: Hash256) -> String {
     hash_to_hex(hash.0)

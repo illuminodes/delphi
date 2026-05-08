@@ -18,11 +18,11 @@
 use mantle::primitives::{Satoshi, Transaction};
 
 use super::checker::{SignatureChecker, TxSigChecker};
-use super::consensus_crypto;
+use super::consensus_crypto::{Ecdsa, Schnorr};
 use super::error::ScriptError;
 use super::flags::ScriptFlags;
 use super::interpreter::{InterpStackElement, Interpreter, TapscriptCtx};
-use super::sighash::{Bip143Cache, Bip341Cache, TapHasher};
+use super::sighash::{Bip143Cache, Bip341Cache, TapHasher, TxSighash};
 use super::sig_version::SigVersion;
 
 /// Verifier for a single transaction input's script pair.
@@ -209,10 +209,10 @@ fn try_verify_p2pkh(
     }
 
     // ── Encoding checks (DERSIG / STRICTENC / LOW_S) ─────────────────────────
-    if let Err(e) = consensus_crypto::check_signature_encoding(sig, flags) {
+    if let Err(e) = Ecdsa::check_sig_encoding(sig, flags) {
         return Some(Err(e));
     }
-    if let Err(e) = consensus_crypto::check_pubkey_encoding(pubkey, flags) {
+    if let Err(e) = Ecdsa::check_pubkey_encoding(pubkey, flags) {
         return Some(Err(e));
     }
 
@@ -479,7 +479,7 @@ fn run_taproot(
         1 => {
             let sig = &effective_witness[0];
 
-            let Ok((sig64, hash_type_byte)) = consensus_crypto::check_schnorr_sig_encoding(sig)
+            let Ok((sig64, hash_type_byte)) = Schnorr::check_sig_encoding(sig)
             else {
                 return Err(ScriptError::SchnorrSigInvalidFormat);
             };
@@ -490,14 +490,14 @@ fn run_taproot(
 
             // Annex is included in sighash for key-path too.
             let annex_body = annex.map(|a| &a[1..]); // strip 0x50 prefix byte
-            let digest = super::sighash::signature_hash_bip341(
-                tx, n_in, amount, spent_spk, hash_type, &bip341_cache,
+            let digest = tx.bip341_sighash(
+                n_in, amount, spent_spk, hash_type, &bip341_cache,
                 annex_body,
                 None, // key-path: no leaf_hash
             );
 
             let pubkey_arr: &[u8; 32] = program32;
-            if !consensus_crypto::verify_schnorr(sig64, pubkey_arr, &digest) {
+            if !Schnorr::verify(sig64, pubkey_arr, &digest) {
                 return Err(ScriptError::TaprootVerify);
             }
             Ok(())

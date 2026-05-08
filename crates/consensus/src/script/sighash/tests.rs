@@ -62,7 +62,7 @@ fn anyonecanpay_bit() {
 fn sighash_single_one_bug() {
     // Two inputs, two outputs. n_in = 5 → past the last output → "1" digest.
     let tx = make_tx();
-    let h = signature_hash(&tx, 5, &[0xab], SigHashType::SINGLE);
+    let h = tx.legacy_sighash(5, &[0xab], SigHashType::SINGLE);
     let mut expected = [0u8; 32];
     expected[0] = 0x01;
     assert_eq!(h.0, expected);
@@ -72,7 +72,7 @@ fn sighash_single_one_bug() {
 fn sighash_single_at_boundary_is_one_bug() {
     // n_in = 2 (== n_outputs) is also the "1" digest.
     let tx = make_tx();
-    let h = signature_hash(&tx, 2, &[0xab], SigHashType::SINGLE);
+    let h = tx.legacy_sighash(2, &[0xab], SigHashType::SINGLE);
     let mut expected = [0u8; 32];
     expected[0] = 0x01;
     assert_eq!(h.0, expected);
@@ -81,9 +81,9 @@ fn sighash_single_at_boundary_is_one_bug() {
 #[test]
 fn sighash_all_differs_from_none_and_single() {
     let tx = make_tx();
-    let all = signature_hash(&tx, 0, &[0xab], SigHashType::ALL);
-    let none = signature_hash(&tx, 0, &[0xab], SigHashType::NONE);
-    let single = signature_hash(&tx, 0, &[0xab], SigHashType::SINGLE);
+    let all = tx.legacy_sighash(0, &[0xab], SigHashType::ALL);
+    let none = tx.legacy_sighash(0, &[0xab], SigHashType::NONE);
+    let single = tx.legacy_sighash(0, &[0xab], SigHashType::SINGLE);
     assert_ne!(all, none);
     assert_ne!(all, single);
     assert_ne!(none, single);
@@ -92,16 +92,16 @@ fn sighash_all_differs_from_none_and_single() {
 #[test]
 fn sighash_anyonecanpay_changes_digest() {
     let tx = make_tx();
-    let standard = signature_hash(&tx, 0, &[0xab], SigHashType::ALL);
-    let anyone = signature_hash(&tx, 0, &[0xab], SigHashType(0x81));
+    let standard = tx.legacy_sighash(0, &[0xab], SigHashType::ALL);
+    let anyone = tx.legacy_sighash(0, &[0xab], SigHashType(0x81));
     assert_ne!(standard, anyone);
 }
 
 #[test]
 fn sighash_changes_with_input_index() {
     let tx = make_tx();
-    let h0 = signature_hash(&tx, 0, &[0xab], SigHashType::ALL);
-    let h1 = signature_hash(&tx, 1, &[0xab], SigHashType::ALL);
+    let h0 = tx.legacy_sighash(0, &[0xab], SigHashType::ALL);
+    let h1 = tx.legacy_sighash(1, &[0xab], SigHashType::ALL);
     assert_ne!(h0, h1);
 }
 
@@ -323,14 +323,7 @@ fn bip143_sighash_input1_p2wpkh() {
     let script_code = hex("76a9141d0f172a0ecb48aee1be1f2687d2963ae33f71a188ac");
     let amount = Satoshi::new(600_000_000); // 6 BTC
 
-    let digest = signature_hash_bip143(
-        &tx,
-        1,
-        &script_code,
-        amount,
-        SigHashType::ALL,
-        &cache,
-    );
+    let digest = tx.bip143_sighash(1, &script_code, amount, SigHashType::ALL, &cache);
 
     // sigHash from BIP143 §"Native P2WPKH"
     assert_eq!(

@@ -76,7 +76,7 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             altstack: Stack::new(),
             conditions: ConditionStack::new(),
             op_count: 0,
-            last_codeseparator: 0,
+            last_codeseparator: usize::MAX, // sentinel: no OP_CODESEPARATOR seen (→ 0xFFFF_FFFF)
             flags,
             sig_version,
             checker,
@@ -103,7 +103,7 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             altstack: Stack::from_buf(altstack_buf),
             conditions: ConditionStack::new(),
             op_count: 0,
-            last_codeseparator: 0,
+            last_codeseparator: usize::MAX, // sentinel: no OP_CODESEPARATOR seen (→ 0xFFFF_FFFF)
             flags,
             sig_version,
             checker,
@@ -145,7 +145,12 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
         // times on the same Interpreter (scriptSig, scriptPubKey, P2SH redeem)
         // and the stack persists across them, but condition stack, op count,
         // and `last_codeseparator` reset for each new script.
-        self.last_codeseparator = 0;
+        //
+        // Sentinel `usize::MAX`: no `OP_CODESEPARATOR` seen yet. Legacy/segwit-v0
+        // CHECKSIG treats that as "scriptCode is the whole script" (offset 0);
+        // tapscript CHECKSIG signs `code_sep_pos = 0xFFFF_FFFF`. Both paths read
+        // `last_codeseparator` and apply their own conversion.
+        self.last_codeseparator = usize::MAX;
         self.op_count = 0;
         self.conditions.clear();
 

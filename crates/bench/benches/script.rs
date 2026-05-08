@@ -15,7 +15,7 @@ use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, W
 use mantle_consensus::script::{
     Interpreter, InterpStackElement, NopSigChecker, ScriptFlags, SigVersion,
 };
-use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, signature_hash_bip143};
+use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, TxSighash};
 use mantle_consensus::script::verify::{ScriptVerifier, verify_script};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
@@ -306,7 +306,7 @@ fn verify_p2wpkh(bencher: divan::Bencher) {
     let amount = Satoshi::new(100_000);
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
-    let digest = signature_hash_bip143(&tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache);
+    let digest = tmp_tx.bip143_sighash(0,&script_code, amount, SigHashType::ALL, &cache);
     let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
@@ -338,7 +338,7 @@ fn verify_p2wsh(bencher: divan::Bencher) {
     let amount = Satoshi::new(200_000);
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
-    let digest = signature_hash_bip143(&tmp_tx, 0, &witness_script, amount, SigHashType::ALL, &cache);
+    let digest = tmp_tx.bip143_sighash(0,&witness_script, amount, SigHashType::ALL, &cache);
     let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice(), witness_script.as_slice()]);
@@ -367,7 +367,7 @@ fn verify_p2wpkh_with_bufs(bencher: divan::Bencher) {
     let amount = Satoshi::new(100_000);
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
-    let digest = signature_hash_bip143(&tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache);
+    let digest = tmp_tx.bip143_sighash(0,&script_code, amount, SigHashType::ALL, &cache);
     let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
@@ -400,7 +400,7 @@ fn verify_p2wsh_with_bufs(bencher: divan::Bencher) {
     let amount = Satoshi::new(200_000);
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
-    let digest = signature_hash_bip143(&tmp_tx, 0, &witness_script, amount, SigHashType::ALL, &cache);
+    let digest = tmp_tx.bip143_sighash(0,&witness_script, amount, SigHashType::ALL, &cache);
     let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice(), witness_script.as_slice()]);

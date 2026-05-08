@@ -13,7 +13,7 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use crate::script::checker::SignatureChecker;
-use crate::script::consensus_crypto::{check_pubkey_encoding, check_signature_encoding};
+use crate::script::consensus_crypto::Ecdsa;
 use crate::script::error::ScriptError;
 use crate::script::flags::ScriptFlags;
 use crate::script::sighash::script_code_after_codeseparator;
@@ -78,42 +78,76 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
 
     /// `OP_CHECKSIG` (and `OP_CHECKSIGVERIFY` when `verify` is `true`).
     ///
-    /// Pops `pubkey`, then `sig`. Computes `scriptCode` as the suffix of
-    /// `script` from `last_codeseparator`. Calls
-    /// `SignatureChecker::check_ecdsa_sig`. Under `NULLFAIL`, a failed check
-    /// requires `sig` to be the empty push. The `Verify` form fails the
-    /// script outright on a falsey result; the plain form pushes the bool.
+    /// In legacy and segwit-v0 regimes: pops `pubkey`, then `sig`, computes
+    /// the scriptCode from `last_codeseparator`, and calls
+    /// `SignatureChecker::check_ecdsa_sig`.
+    ///
+    /// In tapscript (BIP342): uses Schnorr verification via
+    /// `SignatureChecker::check_schnorr_sig`. An empty sig is a clean failure
+    /// (pushes false); unknown pubkey type (not 32 bytes) is a NOP (push false,
+    /// no error). Under `NULLFAIL`, a non-empty sig that fails is an error.
     pub(super) fn op_check_sig(
         &mut self,
         script: &[u8],
         verify: bool,
     ) -> Result<(), ScriptError> {
+        use crate::script::sig_version::SigVersion;
+
         let pubkey = self.stack.pop()?;
         let sig = self.stack.pop()?;
 
-        // Encoding checks come *before* the curve check. A signature whose
-        // wire form is rejected by DERSIG/STRICTENC/LOW_S fails the script
-        // entirely (Core's `CheckSignatureEncoding` returns false-with-error).
-        // An empty signature short-circuits past these — see
-        // `check_signature_encoding`.
-        check_signature_encoding(sig.as_slice(), self.flags)?;
-        check_pubkey_encoding(pubkey.as_slice(), self.flags)?;
+        let ok = if self.sig_version == SigVersion::Tapscript {
+            // BIP342: OP_CHECKSIG uses Schnorr over x-only pubkeys.
+            // Unknown pubkey type (not 32 bytes) → NOP (push false, no error).
+            if pubkey.as_slice().len() != 32 {
+                self.stack.push_bool(false, self.altstack.len())?;
+                return Ok(());
+            }
+            // Empty sig → clean failure (not a NULLFAIL error).
+            if sig.is_empty() {
+                self.stack.push_bool(false, self.altstack.len())?;
+                return Ok(());
+            }
+            let Some(ctx) = &self.tapscript else {
+                return Err(ScriptError::BadOpcode);
+            };
+            let leaf_hash = ctx.leaf_hash;
+            let code_sep_pos = u32::try_from(self.last_codeseparator).unwrap_or(0xffff_ffff);
+            let spent_amount = ctx.spent_amount;
+            let spent_spk = ctx.spent_spk.clone();
+            let bip341_cache = ctx.bip341_cache.clone();
+            let ok = self.checker.check_schnorr_sig(
+                sig.as_slice(),
+                pubkey.as_slice(),
+                &leaf_hash,
+                code_sep_pos,
+                spent_amount,
+                &spent_spk,
+                &bip341_cache,
+            );
+            if !ok && self.flags.contains(ScriptFlags::NULLFAIL) {
+                return Err(ScriptError::SigNullFail);
+            }
+            ok
+        } else {
+            // Legacy / segwit-v0: ECDSA path.
+            Ecdsa::check_sig_encoding(sig.as_slice(), self.flags)?;
+            Ecdsa::check_pubkey_encoding(pubkey.as_slice(), self.flags)?;
 
-        let script_code = script_code_after_codeseparator(script, self.last_codeseparator);
-        let ok = self
-            .checker
-            .check_ecdsa_sig(sig.as_slice(), pubkey.as_slice(), script_code, self.sig_version);
-
-        if !ok && self.flags.contains(ScriptFlags::NULLFAIL) && !sig.is_empty() {
-            return Err(ScriptError::SigNullFail);
-        }
+            // usize::MAX is the sentinel for "no OP_CODESEPARATOR seen" → use the whole script (pos=0).
+            let codesep = if self.last_codeseparator == usize::MAX { 0 } else { self.last_codeseparator };
+            let script_code = script_code_after_codeseparator(script, codesep);
+            let ok = self
+                .checker
+                .check_ecdsa_sig(sig.as_slice(), pubkey.as_slice(), script_code, self.sig_version);
+            if !ok && self.flags.contains(ScriptFlags::NULLFAIL) && !sig.is_empty() {
+                return Err(ScriptError::SigNullFail);
+            }
+            ok
+        };
 
         if verify {
-            if ok {
-                Ok(())
-            } else {
-                Err(ScriptError::Verify)
-            }
+            if ok { Ok(()) } else { Err(ScriptError::Verify) }
         } else {
             self.stack.push_bool(ok, self.altstack.len())
         }
@@ -245,17 +279,18 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
         // Empty sigs short-circuit `Ok(())` so this doesn't reject the
         // common "skipped slot" case in n-of-m multisigs.
         for s in &sigs {
-            check_signature_encoding(s.as_slice(), self.flags)?;
+            Ecdsa::check_sig_encoding(s.as_slice(), self.flags)?;
         }
         for p in &pubkeys {
-            check_pubkey_encoding(p.as_slice(), self.flags)?;
+            Ecdsa::check_pubkey_encoding(p.as_slice(), self.flags)?;
         }
 
         // Walk sigs and pubkeys in parallel. Signatures must match in order
         // against pubkeys; pubkeys may be skipped. The pops above placed the
         // topmost item at index 0 — i.e. *last* in script order — so we
         // iterate from the back to recover original push order.
-        let script_code = script_code_after_codeseparator(script, self.last_codeseparator);
+        let codesep = if self.last_codeseparator == usize::MAX { 0 } else { self.last_codeseparator };
+        let script_code = script_code_after_codeseparator(script, codesep);
         let mut sig_idx = 0;
         let mut pk_idx = 0;
         let mut ok = true;

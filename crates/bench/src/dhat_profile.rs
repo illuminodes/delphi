@@ -6,7 +6,7 @@ use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, 
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::{compute_merkle_root_reusing, merkle_root_owned};
 use mantle_consensus::script::{Interpreter, InterpStackElement, NopSigChecker, ScriptFlags, SigVersion};
-use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, signature_hash_bip143};
+use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, TxSighash};
 use mantle_consensus::script::verify::{ScriptVerifier, verify_script};
 use mantle_consensus::validation::{validate_block_structure_reusing, validate_block_wire};
 use ripemd::Ripemd160;
@@ -252,7 +252,7 @@ fn main() {
             locktime: 0,
         };
         let cache = Bip143Cache::new(&tmp_tx);
-        let digest = signature_hash_bip143(&tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache);
+        let digest = tmp_tx.bip143_sighash(0,&script_code, amount, SigHashType::ALL, &cache);
         let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
         let sig = sig.normalize_s().unwrap_or(sig);
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
@@ -314,7 +314,7 @@ fn main() {
             locktime: 0,
         };
         let cache = Bip143Cache::new(&tmp_tx);
-        let digest = signature_hash_bip143(&tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache);
+        let digest = tmp_tx.bip143_sighash(0,&script_code, amount, SigHashType::ALL, &cache);
         let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
         let sig = sig.normalize_s().unwrap_or(sig);
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
@@ -379,7 +379,7 @@ fn main() {
             locktime: 0,
         };
         let cache = Bip143Cache::new(&tmp_tx);
-        let digest = signature_hash_bip143(&tmp_tx, 0, &witness_script, amount, SigHashType::ALL, &cache);
+        let digest = tmp_tx.bip143_sighash(0,&witness_script, amount, SigHashType::ALL, &cache);
         let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
         let sig = sig.normalize_s().unwrap_or(sig);
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
@@ -439,7 +439,7 @@ fn main() {
             locktime: 0,
         };
         let cache = Bip143Cache::new(&tmp_tx);
-        let digest = signature_hash_bip143(&tmp_tx, 0, &witness_script, amount, SigHashType::ALL, &cache);
+        let digest = tmp_tx.bip143_sighash(0,&witness_script, amount, SigHashType::ALL, &cache);
         let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
         let sig = sig.normalize_s().unwrap_or(sig);
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();

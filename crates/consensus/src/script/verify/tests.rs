@@ -6,7 +6,7 @@ use mantle::primitives::{Hash256, OutPoint, TxIn, TxOut, Witness};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 
-use crate::script::sighash::{SigHashType, signature_hash};
+use crate::script::sighash::{SigHashType, TxSighash};
 
 // ── End-to-end signing helpers ─────────────────────────────────────────
 
@@ -75,7 +75,7 @@ fn p2pkh_succeeds() {
     let pkh = hash160(&pk);
     let tx = make_tx();
     let spk = p2pkh_spk(&pkh);
-    let digest = signature_hash(&tx, 0, &spk, SigHashType::ALL);
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
     let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
     let mut script_sig = vec![u8::try_from(sig.len()).expect("DER ≤ 72")];
@@ -98,7 +98,7 @@ fn p2pkh_fails_with_wrong_signature() {
 
     // Sign with the *attacker* key but submit the real pubkey — CHECKSIG
     // verifies against the real pubkey and fails.
-    let digest = signature_hash(&tx, 0, &spk, SigHashType::ALL);
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
     let sig = sign(&attacker_sk, &digest.0, SigHashType::ALL);
 
     let mut script_sig = vec![u8::try_from(sig.len()).expect("DER ≤ 72")];
@@ -160,7 +160,7 @@ fn p2sh_wrapped_p2pkh_succeeds() {
     let tx = make_tx();
     // For BIP16, sighash is computed against the *redeem* script, not
     // the P2SH-wrapped outer script.
-    let digest = signature_hash(&tx, 0, &redeem, SigHashType::ALL);
+    let digest = tx.legacy_sighash(0, &redeem, SigHashType::ALL);
     let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
     // scriptSig = <sig> <pk> <redeem>
@@ -189,7 +189,7 @@ fn p2sh_fails_when_redeem_hash_mismatches() {
     spk.push(0x87);
 
     let tx = make_tx();
-    let digest = signature_hash(&tx, 0, &redeem, SigHashType::ALL);
+    let digest = tx.legacy_sighash(0, &redeem, SigHashType::ALL);
     let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
     let mut script_sig = vec![u8::try_from(sig.len()).expect("DER ≤ 72")];
@@ -249,7 +249,7 @@ fn cleanstack_passes_when_only_one_item_remains_after_p2sh() {
     spk.push(0x87);
 
     let tx = make_tx();
-    let digest = signature_hash(&tx, 0, &redeem, SigHashType::ALL);
+    let digest = tx.legacy_sighash(0, &redeem, SigHashType::ALL);
     let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
     let mut script_sig = vec![u8::try_from(sig.len()).expect("DER ≤ 72")];
@@ -285,7 +285,7 @@ fn cleanstack_fails_when_extra_item_remains() {
     spk.push(0x87);
 
     let tx = make_tx();
-    let digest = signature_hash(&tx, 0, &redeem, SigHashType::ALL);
+    let digest = tx.legacy_sighash(0, &redeem, SigHashType::ALL);
     let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
     // Junk push at the front of scriptSig. Pure data push so SIGPUSHONLY
@@ -433,9 +433,7 @@ fn p2wpkh_succeeds() {
     // Build a temporary tx with empty witness to compute the sighash.
     let tmp_tx = make_witness_tx(vec![]);
     let cache = crate::script::sighash::Bip143Cache::new(&tmp_tx);
-    let digest = crate::script::sighash::signature_hash_bip143(
-        &tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache,
-    );
+    let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
     let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
     let tx = make_witness_tx(vec![sig, pk]);
@@ -458,9 +456,7 @@ fn p2wpkh_wrong_sig_fails() {
 
     let tmp_tx = make_witness_tx(vec![]);
     let cache = crate::script::sighash::Bip143Cache::new(&tmp_tx);
-    let digest = crate::script::sighash::signature_hash_bip143(
-        &tmp_tx, 0, &script_code, amount, SigHashType::ALL, &cache,
-    );
+    let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
     // Sign with the attacker key.
     let sig = sign(&attacker, &digest.0, SigHashType::ALL);
 
@@ -501,9 +497,7 @@ fn p2wsh_succeeds() {
     // BIP143 sighash: scriptCode = witness_script.
     let tmp_tx = make_witness_tx(vec![]);
     let cache = crate::script::sighash::Bip143Cache::new(&tmp_tx);
-    let digest = crate::script::sighash::signature_hash_bip143(
-        &tmp_tx, 0, &witness_script, amount, SigHashType::ALL, &cache,
-    );
+    let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
     let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
     // Witness stack: [sig, pubkey, witness_script]

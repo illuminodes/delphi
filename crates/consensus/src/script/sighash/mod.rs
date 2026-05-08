@@ -1,9 +1,16 @@
-//! Signature hash computation — legacy (pre-segwit) and BIP143 (segwit v0).
+//! Signature hash computation for the three regimes Mantle supports —
+//! legacy (pre-segwit), BIP143 (segwit v0), and BIP341 (taproot).
 //!
-//! ## Legacy (`signature_hash`)
+//! All three are exposed as methods on [`Transaction`] via the
+//! [`TxSighash`] extension trait — call sites read
+//! `tx.legacy_sighash(...)`, `tx.bip143_sighash(...)`,
+//! `tx.bip341_sighash(...)`. The trait lives here because `Transaction`
+//! is foreign (defined in `mantle::primitives`).
 //!
-//! Produces the 32-byte digest that an ECDSA signature in the legacy regime is
-//! computed over. The algorithm:
+//! ## Legacy ([`TxSighash::legacy_sighash`])
+//!
+//! Produces the 32-byte digest that an ECDSA signature in the legacy
+//! regime is computed over. The algorithm:
 //!
 //! 1. Build a *modified* transaction:
 //!    - Replace every input's `script_sig` with the empty script.
@@ -18,29 +25,39 @@
 //! 2. Serialise the modified tx in legacy form, append the 4-byte
 //!    little-endian `hash_type`, and SHA-256d.
 //!
-//! All four base modes plus `ANYONECANPAY` are reproduced exactly, including
-//! the `SIGHASH_SINGLE` "1" bug — fixing it would be a hard fork.
+//! All four base modes plus `ANYONECANPAY` are reproduced exactly,
+//! including the `SIGHASH_SINGLE` "1" bug — fixing it would be a hard
+//! fork.
 //!
-//! ## BIP143 (`signature_hash_bip143`)
+//! ## BIP143 ([`TxSighash::bip143_sighash`])
 //!
-//! Segwit v0 sighash. Commits to amounts and removes quadratic hashing by
-//! pre-hashing shared fields (`hashPrevouts`, `hashSequence`, `hashOutputs`)
-//! once per transaction via [`Bip143Cache`], then per-input serialises:
+//! Segwit v0 sighash. Commits to amounts and removes quadratic hashing
+//! by pre-hashing shared fields (`hashPrevouts`, `hashSequence`,
+//! `hashOutputs`) once per transaction via [`Bip143Cache`], then
+//! per-input serialises:
 //!
 //! ```text
 //! nVersion || hashPrevouts || hashSequence || outpoint || scriptCode ||
 //! amount || nSequence || hashOutputs || nLocktime || nHashType
 //! ```
 //!
-//! `scriptCode` for P2WPKH is a synthetic P2PKH script; for P2WSH it is the
-//! witness script with a `VarInt` length prefix (both supplied by the caller
-//! from the segwit dispatch logic in `verify_script`).
+//! `scriptCode` for P2WPKH is a synthetic P2PKH script; for P2WSH it is
+//! the witness script with a `VarInt` length prefix (both supplied by
+//! the caller from the segwit dispatch logic in `verify_script`).
+//!
+//! ## BIP341 ([`TxSighash::bip341_sighash`])
+//!
+//! Taproot sighash. Like BIP143, shared fields are pre-hashed via
+//! [`Bip341Cache`]. Adds an epoch byte, an `out_mode` per
+//! `TaprootSigHashType`, an `annex` commitment, and — for script-path
+//! spends — a `(leaf_hash, code_sep_pos)` extension. See
+//! [`TxSighash::bip341_sighash`] for the argument shape.
 
 use mantle::codec::{Encode, VarInt};
 use mantle::hash::sha256d;
 use mantle::primitives::{Hash256, Satoshi, Transaction, TxIn, TxOut, Witness};
 
-use super::consensus_crypto::tagged_hash;
+use super::consensus_crypto::Schnorr;
 
 /// `hash_type` mode (low 5 bits, masking off `ANYONECANPAY`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,42 +104,172 @@ impl SigHashType {
     }
 }
 
-/// Compute the legacy signature hash.
+/// Extension trait on [`Transaction`] grouping the three sighash regimes.
 ///
-/// `script_code` is the script being signed — the caller has already applied
-/// `OP_CODESEPARATOR` slicing and `FindAndDelete` of the signature.
-///
-/// Returns the canonical "1" digest if `SIGHASH_SINGLE` is used with `n_in`
-/// past the last output.
-///
-/// # Panics
-/// Panics if `n_in >= tx.inputs.len()`. Calling code (the interpreter) only
-/// reaches this with a valid input index.
-#[must_use]
-pub fn signature_hash(
-    tx: &Transaction,
-    n_in: usize,
-    script_code: &[u8],
-    hash_type: SigHashType,
-) -> Hash256 {
-    let mode = hash_type.mode();
+/// Methods over free functions per `docs/architecture/script.md` §9: the
+/// transaction is the primary `&self`-shaped argument for every signature
+/// hash, so the call sites read `tx.legacy_sighash(...)` instead of
+/// `signature_hash(tx, ...)`. The trait lives in this module because the
+/// `Transaction` type is foreign (it lives in `mantle::primitives`).
+pub trait TxSighash {
+    /// Legacy (pre-segwit) signature hash. See [`TxSighash::legacy_sighash`]
+    /// implementation for the exact preimage construction.
+    fn legacy_sighash(&self, n_in: usize, script_code: &[u8], hash_type: SigHashType)
+        -> Hash256;
 
-    // The SIGHASH_SINGLE "1" bug: if `n_in` is at or past the last output,
-    // the digest is the canonical 1, not a hash of anything.
-    if mode == SigHashMode::Single && n_in >= tx.outputs.len() {
-        let mut h = [0u8; 32];
-        h[0] = 0x01;
-        return Hash256(h);
+    /// BIP143 (segwit v0) signature hash. `cache` must have been built from
+    /// `self`.
+    fn bip143_sighash(
+        &self,
+        n_in: usize,
+        script_code: &[u8],
+        amount: Satoshi,
+        hash_type: SigHashType,
+        cache: &Bip143Cache,
+    ) -> Hash256;
+
+    /// BIP341 (taproot) signature hash. `spent_spk` is the scriptPubKey of
+    /// the UTXO being spent; `spent_amount` is its value. `annex` is the
+    /// optional annex item with the leading `0x50` byte already stripped;
+    /// `leaf_hash_code_sep` is `Some` for script-path (tapscript) and `None`
+    /// for key-path.
+    #[allow(clippy::too_many_arguments)]
+    fn bip341_sighash(
+        &self,
+        n_in: usize,
+        spent_amount: Satoshi,
+        spent_spk: &[u8],
+        hash_type: TaprootSigHashType,
+        cache: &Bip341Cache,
+        annex: Option<&[u8]>,
+        leaf_hash_code_sep: Option<([u8; 32], u32)>,
+    ) -> [u8; 32];
+}
+
+impl TxSighash for Transaction {
+    /// Legacy signature hash — see module docs §"Legacy" for the algorithm.
+    ///
+    /// `script_code` is the script being signed — the caller has already
+    /// applied `OP_CODESEPARATOR` slicing and `FindAndDelete` of the
+    /// signature. Returns the canonical "1" digest if `SIGHASH_SINGLE` is
+    /// used with `n_in` past the last output.
+    ///
+    /// # Panics
+    /// Panics if `n_in >= self.inputs.len()`. Calling code (the interpreter)
+    /// only reaches this with a valid input index.
+    fn legacy_sighash(
+        &self,
+        n_in: usize,
+        script_code: &[u8],
+        hash_type: SigHashType,
+    ) -> Hash256 {
+        let mode = hash_type.mode();
+
+        // The SIGHASH_SINGLE "1" bug: if `n_in` is at or past the last output,
+        // the digest is the canonical 1, not a hash of anything.
+        if mode == SigHashMode::Single && n_in >= self.outputs.len() {
+            let mut h = [0u8; 32];
+            h[0] = 0x01;
+            return Hash256(h);
+        }
+
+        let modified = build_modified_tx(self, n_in, script_code, hash_type);
+
+        // Serialise + append the 4-byte little-endian hash_type.
+        let mut buf = Vec::with_capacity(modified.encoded_len() + 4);
+        modified
+            .encode(&mut buf)
+            .expect("encoding into Vec cannot fail");
+        buf.extend_from_slice(&hash_type.0.to_le_bytes());
+
+        Hash256(sha256d(&buf))
     }
 
-    let modified = build_modified_tx(tx, n_in, script_code, hash_type);
+    /// BIP143 (segwit v0) signature hash — see module docs §"BIP143" for
+    /// the per-input layout. `script_code` is the scriptCode for this input
+    /// (P2WPKH synthetic or P2WSH witness script); this method prepends the
+    /// required `VarInt(len)` length prefix. `cache` must have been built
+    /// from the same transaction.
+    ///
+    /// # Panics
+    /// Panics if `n_in >= self.inputs.len()`.
+    fn bip143_sighash(
+        &self,
+        n_in: usize,
+        script_code: &[u8],
+        amount: Satoshi,
+        hash_type: SigHashType,
+        cache: &Bip143Cache,
+    ) -> Hash256 {
+        let mode = hash_type.mode();
+        let anyonecanpay = hash_type.is_anyonecanpay();
 
-    // Serialise + append the 4-byte little-endian hash_type.
-    let mut buf = Vec::with_capacity(modified.encoded_len() + 4);
-    modified.encode(&mut buf).expect("encoding into Vec cannot fail");
-    buf.extend_from_slice(&hash_type.0.to_le_bytes());
+        let hash_prevouts = if anyonecanpay { Hash256::ZERO } else { cache.prevouts };
 
-    Hash256(sha256d(&buf))
+        let hash_sequence =
+            if anyonecanpay || mode == SigHashMode::Single || mode == SigHashMode::None {
+                Hash256::ZERO
+            } else {
+                cache.sequence
+            };
+
+        let hash_outputs = match mode {
+            SigHashMode::All => cache.outputs,
+            SigHashMode::None => Hash256::ZERO,
+            SigHashMode::Single => {
+                if n_in < self.outputs.len() {
+                    let mut buf: Vec<u8> = Vec::new();
+                    let _ = self.outputs[n_in].encode(&mut buf);
+                    Hash256(sha256d(&buf))
+                } else {
+                    Hash256::ZERO
+                }
+            }
+        };
+
+        let input = &self.inputs[n_in];
+
+        let mut buf: Vec<u8> = Vec::with_capacity(200);
+        buf.extend_from_slice(&self.version.to_le_bytes());
+        buf.extend_from_slice(&hash_prevouts.0);
+        buf.extend_from_slice(&hash_sequence.0);
+        let _ = input.previous_output.encode(&mut buf);
+        let _ = VarInt(script_code.len() as u64).encode(&mut buf);
+        buf.extend_from_slice(script_code);
+        buf.extend_from_slice(&u64::from(amount).to_le_bytes());
+        buf.extend_from_slice(&input.sequence.to_le_bytes());
+        buf.extend_from_slice(&hash_outputs.0);
+        buf.extend_from_slice(&self.locktime.to_le_bytes());
+        buf.extend_from_slice(&hash_type.0.to_le_bytes());
+
+        Hash256(sha256d(&buf))
+    }
+
+    /// BIP341 (taproot) signature hash — see [`TxSighash::bip341_sighash`]
+    /// trait doc for argument shape. The implementation lives in the
+    /// free-standing `compute_bip341_sighash` so the BIP341 preimage
+    /// construction reads top-down without trait-method indentation.
+    fn bip341_sighash(
+        &self,
+        n_in: usize,
+        spent_amount: Satoshi,
+        spent_spk: &[u8],
+        hash_type: TaprootSigHashType,
+        cache: &Bip341Cache,
+        annex: Option<&[u8]>,
+        leaf_hash_code_sep: Option<([u8; 32], u32)>,
+    ) -> [u8; 32] {
+        compute_bip341_sighash(
+            self,
+            n_in,
+            spent_amount,
+            spent_spk,
+            hash_type,
+            cache,
+            annex,
+            leaf_hash_code_sep,
+        )
+    }
 }
 
 /// Per-transaction cache of the three BIP143 hash fields that are shared
@@ -170,73 +317,6 @@ impl Bip143Cache {
             outputs: Hash256(sha256d(&outputs_buf)),
         }
     }
-}
-
-/// Compute the BIP143 (segwit v0) signature hash.
-///
-/// `script_code` is the scriptCode for this input as defined by BIP143:
-/// - P2WPKH: the 25-byte synthetic `OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG`
-///   built by the segwit dispatch in `verify_script`.
-/// - P2WSH: the witness script bytes (the last witness stack item).
-///
-/// In both cases this function prepends a `VarInt(len)` length prefix as
-/// required by BIP143 §Script Code. The cache must have been built from the
-/// same `tx`.
-///
-/// # Panics
-/// Panics if `n_in >= tx.inputs.len()`. The interpreter only reaches this
-/// with a valid input index.
-#[must_use]
-pub fn signature_hash_bip143(
-    tx: &Transaction,
-    n_in: usize,
-    script_code: &[u8],
-    amount: Satoshi,
-    hash_type: SigHashType,
-    cache: &Bip143Cache,
-) -> Hash256 {
-    let mode = hash_type.mode();
-    let anyonecanpay = hash_type.is_anyonecanpay();
-
-    let hash_prevouts = if anyonecanpay { Hash256::ZERO } else { cache.prevouts };
-
-    let hash_sequence =
-        if anyonecanpay || mode == SigHashMode::Single || mode == SigHashMode::None {
-            Hash256::ZERO
-        } else {
-            cache.sequence
-        };
-
-    let hash_outputs = match mode {
-        SigHashMode::All => cache.outputs,
-        SigHashMode::None => Hash256::ZERO,
-        SigHashMode::Single => {
-            if n_in < tx.outputs.len() {
-                let mut buf: Vec<u8> = Vec::new();
-                let _ = tx.outputs[n_in].encode(&mut buf);
-                Hash256(sha256d(&buf))
-            } else {
-                Hash256::ZERO
-            }
-        }
-    };
-
-    let input = &tx.inputs[n_in];
-
-    let mut buf: Vec<u8> = Vec::with_capacity(200);
-    buf.extend_from_slice(&tx.version.to_le_bytes());
-    buf.extend_from_slice(&hash_prevouts.0);
-    buf.extend_from_slice(&hash_sequence.0);
-    let _ = input.previous_output.encode(&mut buf);
-    let _ = VarInt(script_code.len() as u64).encode(&mut buf);
-    buf.extend_from_slice(script_code);
-    buf.extend_from_slice(&u64::from(amount).to_le_bytes());
-    buf.extend_from_slice(&input.sequence.to_le_bytes());
-    buf.extend_from_slice(&hash_outputs.0);
-    buf.extend_from_slice(&tx.locktime.to_le_bytes());
-    buf.extend_from_slice(&hash_type.0.to_le_bytes());
-
-    Hash256(sha256d(&buf))
 }
 
 /// Build the modified `Transaction` that the legacy preimage hashes.
@@ -579,25 +659,27 @@ impl Bip341Cache {
     }
 }
 
-/// Compute the BIP341 sighash for a taproot input.
+/// Compute the BIP341 sighash for a taproot input. Backing impl for
+/// [`TxSighash::bip341_sighash`]; not exposed publicly because the trait
+/// method is the supported entry point.
 ///
-/// `spent_spk` is the scriptPubKey of the output being spent by `tx.inputs[n_in]`.
-/// `spent_amount` is its value.
+/// `spent_spk` is the scriptPubKey of the output being spent by
+/// `tx.inputs[n_in]`. `spent_amount` is its value.
 ///
-/// `annex` is the optional annex item (the witness item starting with `0x50`),
-/// already stripped of its leading byte — pass `None` if no annex is present.
+/// `annex` is the optional annex item (the witness item starting with
+/// `0x50`), already stripped of its leading byte — pass `None` if no annex
+/// is present.
 ///
-/// For key-path spends, `leaf_hash_code_sep` is `None`.
-/// For script-path (tapscript) spends, `leaf_hash_code_sep` is
-/// `Some((leaf_hash, code_sep_pos))` where `leaf_hash` is the
-/// `tagged_hash("TapLeaf", version || compact_size(script) || script)` and
-/// `code_sep_pos` is `0xFFFF_FFFF` if no `OP_CODESEPARATOR` has been seen.
+/// For key-path spends, `leaf_hash_code_sep` is `None`. For script-path
+/// (tapscript) spends, `leaf_hash_code_sep` is `Some((leaf_hash, code_sep_pos))`
+/// where `leaf_hash` is `tagged_hash("TapLeaf", version || compact_size(script) || script)`
+/// and `code_sep_pos` is `0xFFFF_FFFF` if no `OP_CODESEPARATOR` has been seen.
 ///
 /// # Panics
 /// Panics if `n_in >= tx.inputs.len()`.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
-pub fn signature_hash_bip341(
+fn compute_bip341_sighash(
     tx: &Transaction,
     n_in: usize,
     spent_amount: Satoshi,
@@ -688,7 +770,7 @@ pub fn signature_hash_bip341(
         preimage.extend_from_slice(&code_sep_pos.to_le_bytes());
     }
 
-    tagged_hash(b"TapSighash", &preimage)
+    Schnorr::tagged_hash(b"TapSighash", &preimage)
 }
 
 /// BIP341 taproot hash helpers — leaf, branch, and output-key tweak.
@@ -710,7 +792,7 @@ impl TapHasher {
         let _ = VarInt(script.len() as u64).encode(&mut vint);
         buf.extend_from_slice(&vint);
         buf.extend_from_slice(script);
-        tagged_hash(b"TapLeaf", &buf)
+        Schnorr::tagged_hash(b"TapLeaf", &buf)
     }
 
     /// `tagged_hash("TapBranch", left || right)`.
@@ -721,7 +803,7 @@ impl TapHasher {
         let mut buf = [0u8; 64];
         buf[..32].copy_from_slice(left);
         buf[32..].copy_from_slice(right);
-        tagged_hash(b"TapBranch", &buf)
+        Schnorr::tagged_hash(b"TapBranch", &buf)
     }
 
     /// Compute the BIP341 tweaked output key.
@@ -744,7 +826,7 @@ impl TapHasher {
         let mut tweak_input = Vec::with_capacity(64);
         tweak_input.extend_from_slice(internal_key);
         tweak_input.extend_from_slice(merkle_root);
-        let tweak_hash = tagged_hash(b"TapTweak", &tweak_input);
+        let tweak_hash = Schnorr::tagged_hash(b"TapTweak", &tweak_input);
 
         let tweak_scalar = <Scalar as Reduce<U256>>::reduce_bytes((&tweak_hash).into());
         let output_point = internal_point + ProjectivePoint::mul_by_generator(&tweak_scalar);
