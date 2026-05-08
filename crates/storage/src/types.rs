@@ -1,5 +1,10 @@
+use std::io;
+
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint};
 use mantle_consensus::chain_view::{Coin, NewCoin, TipInfo};
+
+use crate::engine::EngineError;
+
 
 // ── Tokens ────────────────────────────────────────────────────────────────────
 
@@ -93,20 +98,46 @@ pub struct ReadHeaderResp {
     pub header: Option<BlockHeader>,
 }
 
-#[derive(Debug, Clone)]
-pub struct StorageError {
-    pub msg: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageError {
+    /// Underlying I/O failure; carries the `ErrorKind` so the type stays `Clone + Copy`.
+    Io(io::ErrorKind),
+    /// A script pubkey exceeded the maximum encodable length.
+    ScriptPubKeyTooLarge,
+    /// A stored script pubkey length field overflows `usize` on this platform.
+    ScriptLenOverflow,
+    /// A header gap overflows `usize` on this platform.
+    HeaderGapOverflow,
+    /// The request ring was full.
+    RingFull,
+    /// The storage thread exited unexpectedly.
+    ThreadGone,
+    /// A response arrived for a different request variant than expected.
+    UnexpectedResponse,
 }
 
-impl StorageError {
-    pub(crate) fn new(msg: impl Into<String>) -> Self {
-        Self { msg: msg.into() }
+impl From<EngineError> for StorageError {
+    fn from(e: EngineError) -> Self {
+        match e {
+            EngineError::Io(e) => Self::Io(e.kind()),
+            EngineError::ScriptPubKeyTooLarge => Self::ScriptPubKeyTooLarge,
+            EngineError::ScriptLenOverflow => Self::ScriptLenOverflow,
+            EngineError::HeaderGapOverflow => Self::HeaderGapOverflow,
+        }
     }
 }
 
 impl std::fmt::Display for StorageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "storage error: {}", self.msg)
+        match self {
+            Self::Io(k) => write!(f, "storage I/O error: {k}"),
+            Self::ScriptPubKeyTooLarge => f.write_str("script_pubkey exceeds 4 GiB"),
+            Self::ScriptLenOverflow => f.write_str("script_pubkey length overflows usize"),
+            Self::HeaderGapOverflow => f.write_str("header gap overflows usize"),
+            Self::RingFull => f.write_str("storage request ring full"),
+            Self::ThreadGone => f.write_str("storage thread exited unexpectedly"),
+            Self::UnexpectedResponse => f.write_str("unexpected response from storage thread"),
+        }
     }
 }
 

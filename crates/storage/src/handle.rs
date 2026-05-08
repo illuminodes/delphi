@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use ququmatz::EventFd;
-
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint};
 use mantle_consensus::chain_view::TipInfo;
 
@@ -13,18 +11,9 @@ use crate::types::{
     ReadHeaderResp, ReqToken, StorageError, StorageReq, StorageResp,
 };
 
-/// Public API for submitting requests to the storage thread.
-///
-/// Each call takes the next monotonic token, pushes a request, signals the
-/// thread via the eventfd, then spins on the response ring until the reply
-/// arrives. v1 issues one in-flight request at a time — no shared state,
-/// no locks.
 pub struct StorageHandle {
     req_tx: quetzalcoatl::mpsc::Producer<StorageReq>,
     resp_rx: quetzalcoatl::spsc::Consumer<StorageResp>,
-    /// Owned eventfd; handle writes 1 to wake the storage thread.
-    wake_efd: EventFd,
-    /// Last known tip, updated from every `CommittedResp`.
     tip: TipInfo,
     next_token: u64,
 }
@@ -35,22 +24,12 @@ impl StorageHandle {
     /// # Errors
     /// Returns `StorageError` if the engine cannot be opened or the thread cannot be spawned.
     pub fn open(data_dir: &Path) -> Result<Self, StorageError> {
-        let engine =
-            FlatEngine::open(data_dir).map_err(|e| StorageError::new(e.to_string()))?;
-
-        // Snapshot the tip that recover() left in the engine before handing it off.
+        let engine = FlatEngine::open(data_dir).map_err(StorageError::from)?;
         let initial_tip = engine.tip();
-
-        let wake_efd = EventFd::new(0)
-            .map_err(|e| StorageError::new(format!("eventfd: {e:?}")))?;
-        let raw_wake_fd = wake_efd.fd();
-
-        let handle = thread::spawn(engine, raw_wake_fd)?;
-
+        let handle = thread::spawn(engine)?;
         Ok(Self {
             req_tx: handle.req_tx,
             resp_rx: handle.resp_rx,
-            wake_efd,
             tip: initial_tip,
             next_token: 1,
         })
@@ -68,7 +47,7 @@ impl StorageHandle {
         }))?;
         match self.recv()? {
             StorageResp::LookupCoins(r) => r.map(|ok: LookupCoinsResp| ok.results),
-            other => Err(StorageError::new(format!("unexpected response: {other:?}"))),
+            _ => Err(StorageError::UnexpectedResponse),
         }
     }
 
@@ -84,10 +63,7 @@ impl StorageHandle {
     ///
     /// # Errors
     /// Returns `StorageError` on ring or I/O failure.
-    pub fn read_header_at(
-        &mut self,
-        h: BlockHeight,
-    ) -> Result<Option<BlockHeader>, StorageError> {
+    pub fn read_header_at(&mut self, h: BlockHeight) -> Result<Option<BlockHeader>, StorageError> {
         self.read_header_inner(HeaderKey::ByHeight(h))
     }
 
@@ -103,7 +79,7 @@ impl StorageHandle {
                 self.tip = resp.tip.clone();
                 Ok(resp)
             }
-            other => Err(StorageError::new(format!("unexpected response: {other:?}"))),
+            _ => Err(StorageError::UnexpectedResponse),
         }
     }
 
@@ -118,13 +94,9 @@ impl StorageHandle {
     /// Returns `StorageError` if the shutdown request cannot be sent.
     pub fn shutdown(mut self) -> Result<(), StorageError> {
         self.send(StorageReq::Shutdown)?;
-        loop {
-            if let Some(resp) = self.resp_rx.pop()
-                && matches!(resp, StorageResp::Shutdown)
-            {
-                return Ok(());
-            }
-            std::hint::spin_loop();
+        match self.recv()? {
+            StorageResp::Shutdown => Ok(()),
+            _ => Err(StorageError::UnexpectedResponse),
         }
     }
 
@@ -137,33 +109,34 @@ impl StorageHandle {
     }
 
     fn send(&self, req: StorageReq) -> Result<(), StorageError> {
-        self.req_tx
-            .push(req)
-            .map_err(|_| StorageError::new("request ring full"))?;
-        self.wake_efd
-            .write(1)
-            .map_err(|e| StorageError::new(format!("eventfd write: {e:?}")))?;
-        Ok(())
+        #[cfg(feature = "storage-dbg")]
+        eprintln!("[h] send {}", match &req {
+            StorageReq::LookupCoins(r) => format!("Lookup({} ops, tok={})", r.outpoints.len(), r.token.0),
+            StorageReq::CommitBlock(r) => format!("Commit(h={}, tok={})", r.height.0, r.token.0),
+            StorageReq::ReadHeader(r) => format!("ReadHdr(tok={})", r.token.0),
+            StorageReq::Shutdown => "Shutdown".to_string(),
+        });
+        let r = self.req_tx.push(req).map_err(|_| StorageError::RingFull);
+        #[cfg(feature = "storage-dbg")]
+        eprintln!("[h] send done: {:?}", r.is_ok());
+        r
     }
 
     fn recv(&mut self) -> Result<StorageResp, StorageError> {
-        loop {
-            if let Some(resp) = self.resp_rx.pop() {
-                return Ok(resp);
-            }
-            std::hint::spin_loop();
-        }
+        #[cfg(feature = "storage-dbg")]
+        eprintln!("[h] recv waiting");
+        let r = self.resp_rx.pop_block().ok_or(StorageError::ThreadGone);
+        #[cfg(feature = "storage-dbg")]
+        eprintln!("[h] recv got: {:?}", r.is_ok());
+        r
     }
 
-    fn read_header_inner(
-        &mut self,
-        key: HeaderKey,
-    ) -> Result<Option<BlockHeader>, StorageError> {
+    fn read_header_inner(&mut self, key: HeaderKey) -> Result<Option<BlockHeader>, StorageError> {
         let token = self.next_token();
         self.send(StorageReq::ReadHeader(ReadHeaderReq { token, key }))?;
         match self.recv()? {
             StorageResp::ReadHeader(r) => r.map(|ok: ReadHeaderResp| ok.header),
-            other => Err(StorageError::new(format!("unexpected response: {other:?}"))),
+            _ => Err(StorageError::UnexpectedResponse),
         }
     }
 }

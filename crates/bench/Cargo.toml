@@ -31,6 +31,10 @@ harness = false
 name = "script"
 harness = false
 
+[[bench]]
+name = "replay"
+harness = false
+
 [[bin]]
 name = "dhat-profile"
 path = "src/dhat_profile.rs"
@@ -39,9 +43,31 @@ path = "src/dhat_profile.rs"
 name = "perf-driver"
 path = "src/perf_driver.rs"
 
+[[bin]]
+name = "replay-dhat"
+path = "src/replay_dhat.rs"
+
+[[bin]]
+name = "replay-perf"
+path = "src/replay_perf.rs"
+
+[[bin]]
+name = "replay-perf-a"
+path = "src/replay_perf_a.rs"
+
+[[bin]]
+name = "replay-perf-b"
+path = "src/replay_perf_b.rs"
+
+[[bin]]
+name = "replay-perf-c"
+path = "src/replay_perf_c.rs"
+
 [dependencies]
 mantle = { path = "../core" }
 mantle-consensus = { path = "../consensus" }
+mantle-storage = { path = "../storage" }
+mantle-validator = { path = "../validator" }
 dhat = "0.3"
 k256 = { workspace = true, features = ["ecdsa", "arithmetic"] }
 sha2 = { workspace = true }

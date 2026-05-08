@@ -41,11 +41,11 @@ impl std::error::Error for EngineError {
 pub trait Engine {
     /// # Errors
     /// Returns `EngineError` on I/O failure.
-    fn read_coin(&self, op: &OutPoint) -> Result<Option<Coin>, EngineError>;
+    fn read_coin(&mut self, op: &OutPoint) -> Result<Option<Coin>, EngineError>;
 
     /// # Errors
     /// Returns `EngineError` on I/O failure.
-    fn read_coins(&self, ops: &[OutPoint], out: &mut Vec<LookupResult>) -> Result<(), EngineError>;
+    fn read_coins(&mut self, ops: &[OutPoint], out: &mut Vec<LookupResult>) -> Result<(), EngineError>;
 
     /// # Errors
     /// Returns `EngineError` on I/O failure.

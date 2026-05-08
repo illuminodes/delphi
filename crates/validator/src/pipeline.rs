@@ -105,7 +105,9 @@ pub fn validate_and_commit(
     token: ReqToken,
 ) -> Result<CommittedResp, ValidationOrStorageError> {
     let intra_block = block.intra_block_outputs();
-    let external_outpoints: Vec<OutPoint> = block
+
+    // Outpoints the block spends from prior blocks.
+    let spend_outpoints: Vec<OutPoint> = block
         .transactions
         .iter()
         .skip(1)
@@ -114,7 +116,24 @@ pub fn validate_and_commit(
         .filter(|op| !intra_block.contains_key(op))
         .collect();
 
-    let lookup = storage.lookup_coins(&external_outpoints)?;
+    // BIP30 probe outpoints: `(txid, 0)` for every tx in the block.
+    // connect_block probes these to check for duplicate unspent coinbases.
+    // They must be in the prefetched map even if absent (Ok(None) = no collision).
+    let spend_set: HashSet<OutPoint> = spend_outpoints.iter().copied().collect();
+    let mut scratch = Vec::new();
+    let bip30_outpoints: Vec<OutPoint> = block
+        .transactions
+        .iter()
+        .filter_map(|tx| {
+            tx.txid_into(&mut scratch).ok().map(|txid| OutPoint { txid, vout: 0 })
+        })
+        .filter(|op| !intra_block.contains_key(op) && !spend_set.contains(op))
+        .collect();
+
+    let mut all_outpoints = spend_outpoints;
+    all_outpoints.extend_from_slice(&bip30_outpoints);
+
+    let lookup = storage.lookup_coins(&all_outpoints)?;
 
     let coins: Vec<(OutPoint, Option<Coin>)> = lookup
         .into_iter()
@@ -125,7 +144,7 @@ pub fn validate_and_commit(
     let tip = storage.tip();
     let view = PrefetchedView::new(coins, headers, tip);
 
-    let mut scratch = Vec::new();
+    scratch.clear();
     let result = connect_block(block, height, &view, &mut scratch, skip_script, exec_cache)?;
 
     let hash = block.header.hash();
