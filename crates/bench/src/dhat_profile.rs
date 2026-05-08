@@ -8,7 +8,11 @@ use mantle::primitives::{
 };
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::{compute_merkle_root_reusing, merkle_root_owned};
-use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, TxSighash};
+use mantle_consensus::script::consensus_crypto::Schnorr;
+use mantle_consensus::script::sighash::{
+    Bip143Cache, Bip341Cache, SigHashType, TapHasher, TaprootSigHashType, TxSighash,
+};
+use mantle_consensus::script::checker::TxSigChecker;
 use mantle_consensus::script::verify::{ScriptVerifier, verify_script};
 use mantle_consensus::script::{
     InterpStackElement, Interpreter, NopSigChecker, ScriptFlags, SigVersion,
@@ -581,6 +585,132 @@ fn main() {
             let (result, returned) = verifier.verify_with_bufs(&[], &spk, bufs);
             result.expect("p2wsh must verify");
             bufs = returned;
+        }
+    }
+
+    // --- scenario 11: verify_script taproot key-path (1000 iters, M3) ---
+    // Exercises BIP341 sighash preimage, Bip341Cache construction, and Schnorr
+    // verify via k256. One full `verify_script` call per iter — no buffer reuse.
+    // dhat should show one Bip341Cache allocation per call (the sighash amounts
+    // and script_pubkeys vecs) plus the Schnorr verifier internals.
+    {
+        use k256::schnorr::SigningKey as SchnorrSK;
+        use k256::schnorr::signature::hazmat::PrehashSigner;
+
+        let internal_secret = [0x55u8; 32];
+        let internal_key: [u8; 32] = SchnorrSK::from_bytes(&internal_secret)
+            .expect("nonzero")
+            .verifying_key()
+            .to_bytes()
+            .into();
+        let output_key = TapHasher::tweak_output_key(&internal_key, &[]).expect("valid key");
+
+        // tweaked signing key
+        let tweaked_secret: [u8; 32] = {
+            use k256::elliptic_curve::ops::Reduce;
+            use k256::{NonZeroScalar, Scalar, U256};
+            let sk = SchnorrSK::from_bytes(&internal_secret).expect("nonzero");
+            let mut tweak_input = [0u8; 32];
+            tweak_input.copy_from_slice(&internal_key);
+            let tweak_bytes = Schnorr::tagged_hash(b"TapTweak", &tweak_input);
+            let t = <Scalar as Reduce<U256>>::reduce_bytes((&tweak_bytes).into());
+            let d: Scalar = *sk.as_nonzero_scalar().as_ref();
+            NonZeroScalar::new(d + t).expect("nonzero").to_bytes().into()
+        };
+
+        let amount = Satoshi::new(100_000);
+        let mut spk = vec![0x51u8, 0x20];
+        spk.extend_from_slice(&output_key);
+
+        // build a placeholder tx to compute the sighash, sign, then put the
+        // real sig in the witness.
+        let placeholder = Transaction {
+            version: 2,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256([0x55; 32]), vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_fffd,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+        let cache = Bip341Cache::new(&placeholder, &[amount], &[spk.as_slice()]);
+        let msg = placeholder.bip341_sighash(
+            0, amount, &spk, TaprootSigHashType::DEFAULT, &cache, None, None,
+        );
+        let sig64: [u8; 64] = {
+            let sk = SchnorrSK::from_bytes(&tweaked_secret).expect("nonzero");
+            let sig: k256::schnorr::Signature = sk.sign_prehash(&msg).expect("sign");
+            sig.to_bytes()
+        };
+
+        let tx = Transaction {
+            version: 2,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256([0x55; 32]), vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_fffd,
+                witness: Witness::from_slice(&[sig64.as_slice()]),
+            }],
+            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            locktime: 0,
+        };
+
+        let flags = ScriptFlags::P2SH | ScriptFlags::WITNESS | ScriptFlags::TAPROOT;
+        for _ in 0..1_000 {
+            verify_script(&[], &spk, &tx, 0, amount, flags).expect("taproot key-path must verify");
+        }
+    }
+
+    // --- scenario 12: CLTV + CSV opcode throughput (10000 iters each, M4) ---
+    // Measures allocation overhead of CLTV/CSV dispatch. These opcodes are pure
+    // stack-peek + trait calls; any allocations here are interpreter overhead.
+    {
+        // CLTV: scriptPubKey = OP_PUSHBYTES_1 0x64 OP_CHECKLOCKTIMEVERIFY OP_DROP OP_1
+        let cltv_spk: &[u8] = &[0x01, 0x64, 0xb1, 0x75, 0x51];
+        let cltv_flags = ScriptFlags::P2SH | ScriptFlags::CHECKLOCKTIMEVERIFY;
+        let cltv_tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256([0x33; 32]), vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 0xffff_fffe,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(1000),
+                script_pubkey: vec![0x51].into(),
+            }],
+            locktime: 200,
+        };
+        for _ in 0..10_000 {
+            let checker = TxSigChecker::new(&cltv_tx, 0, Satoshi::new(1000), cltv_flags);
+            let mut interp = Interpreter::new(&checker, cltv_flags, SigVersion::Base);
+            interp.eval(cltv_spk).expect("CLTV must pass");
+        }
+
+        // CSV: scriptPubKey = OP_PUSHBYTES_1 0x05 OP_CHECKSEQUENCEVERIFY OP_DROP OP_1
+        let csv_spk: &[u8] = &[0x01, 0x05, 0xb2, 0x75, 0x51];
+        let csv_flags = ScriptFlags::P2SH | ScriptFlags::CHECKSEQUENCEVERIFY;
+        let csv_tx = Transaction {
+            version: 2,
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256([0x44; 32]), vout: 0 },
+                script_sig: vec![].into(),
+                sequence: 10,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(1000),
+                script_pubkey: vec![0x51].into(),
+            }],
+            locktime: 0,
+        };
+        for _ in 0..10_000 {
+            let checker = TxSigChecker::new(&csv_tx, 0, Satoshi::new(1000), csv_flags);
+            let mut interp = Interpreter::new(&checker, csv_flags, SigVersion::Base);
+            interp.eval(csv_spk).expect("CSV must pass");
         }
     }
 
