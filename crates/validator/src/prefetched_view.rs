@@ -41,7 +41,10 @@ impl HeaderSnapshot {
         entries: Vec<(Hash256, BlockHeader)>,
     ) -> Result<Self, HeaderSnapshotOverflow> {
         let len = u32::try_from(entries.len()).map_err(|_| HeaderSnapshotOverflow)?;
-        base_height.0.checked_add(len).ok_or(HeaderSnapshotOverflow)?;
+        base_height
+            .0
+            .checked_add(len)
+            .ok_or(HeaderSnapshotOverflow)?;
         let mut by_hash = PrehashedMap::default();
         for (i, (hash, _)) in entries.iter().enumerate() {
             // i < len, and len fits in u32 per the check above.
@@ -55,13 +58,15 @@ impl HeaderSnapshot {
         })
     }
 
-    #[must_use] pub fn get_header(&self, hash: &Hash256) -> Option<BlockHeader> {
+    #[must_use]
+    pub fn get_header(&self, hash: &Hash256) -> Option<BlockHeader> {
         let &h = self.by_hash.get(hash)?;
         let idx = usize::try_from(h.checked_sub(self.base)?).ok()?;
         self.headers.get(idx).map(|(_, hdr)| *hdr)
     }
 
-    #[must_use] pub fn get_header_at(&self, height: BlockHeight) -> Option<BlockHeader> {
+    #[must_use]
+    pub fn get_header_at(&self, height: BlockHeight) -> Option<BlockHeader> {
         let idx = usize::try_from(height.0.checked_sub(self.base)?).ok()?;
         self.headers.get(idx).map(|(_, hdr)| *hdr)
     }
@@ -72,7 +77,8 @@ impl HeaderSnapshot {
 
     /// # Panics
     /// Cannot panic: `new` guarantees `headers.len()` fits in `u32`.
-    #[must_use] pub fn tip(&self) -> TipInfo {
+    #[must_use]
+    pub fn tip(&self) -> TipInfo {
         match self.headers.last() {
             None => TipInfo {
                 hash: Hash256::ZERO,
@@ -80,7 +86,8 @@ impl HeaderSnapshot {
             },
             Some((hash, _)) => {
                 // len was validated to fit u32 in new(); subtraction cannot underflow (len >= 1).
-                let last_offset = u32::try_from(self.headers.len()).expect("len fits u32 per new()") - 1;
+                let last_offset =
+                    u32::try_from(self.headers.len()).expect("len fits u32 per new()") - 1;
                 TipInfo {
                     hash: *hash,
                     height: BlockHeight(self.base + last_offset),
@@ -89,7 +96,8 @@ impl HeaderSnapshot {
         }
     }
 
-    #[must_use] pub fn median_time_past(&self, header: &BlockHeader) -> Option<u32> {
+    #[must_use]
+    pub fn median_time_past(&self, header: &BlockHeader) -> Option<u32> {
         let parent_height = *self.by_hash.get(&header.prev_block)?;
         let ph_idx = parent_height.checked_sub(self.base)? as usize;
         let start = (ph_idx + 1).saturating_sub(11);
@@ -116,17 +124,20 @@ pub struct PrefetchedView<'a> {
 }
 
 impl<'a> PrefetchedView<'a> {
-    /// Build the view from a flat list of `(outpoint, coin)` pairs.
+    /// Build the view from a pre-populated coin map.
+    ///
+    /// The caller is responsible for sizing and populating the map;
+    /// this avoids a redundant allocation + collect on the hot path.
     ///
     /// `tip` should be the storage tip *after* the previous block was committed.
     #[must_use]
     pub fn new(
-        coins: impl IntoIterator<Item = (OutPoint, Option<Coin>)>,
+        coins: PrehashedMap<OutPoint, Option<Coin>>,
         headers: &'a HeaderSnapshot,
         tip: TipInfo,
     ) -> Self {
         Self {
-            coins: coins.into_iter().collect(),
+            coins,
             headers,
             tip,
         }

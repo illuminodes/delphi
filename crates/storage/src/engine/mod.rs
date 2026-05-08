@@ -45,7 +45,11 @@ pub trait Engine {
 
     /// # Errors
     /// Returns `EngineError` on I/O failure.
-    fn read_coins(&mut self, ops: &[OutPoint], out: &mut Vec<LookupResult>) -> Result<(), EngineError>;
+    fn read_coins(
+        &mut self,
+        ops: &[OutPoint],
+        out: &mut Vec<LookupResult>,
+    ) -> Result<(), EngineError>;
 
     /// # Errors
     /// Returns `EngineError` on I/O failure.

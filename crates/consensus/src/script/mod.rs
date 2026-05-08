@@ -19,6 +19,7 @@ pub mod sighash;
 pub mod stack;
 pub mod verify;
 
+pub use cache::{ScriptExecutionCache, SignatureCache};
 pub use checker::{NopSigChecker, SignatureChecker, TxSigChecker};
 pub use condition_stack::ConditionStack;
 pub use error::ScriptError;
@@ -28,5 +29,4 @@ pub use num::ScriptNum;
 pub use opcodes::Opcode;
 pub use sig_version::SigVersion;
 pub use stack::{Stack, StackElement};
-pub use cache::{ScriptExecutionCache, SignatureCache};
 pub use verify::{ScriptVerifier, verify_script, verify_script_cached};

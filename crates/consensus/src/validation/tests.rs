@@ -827,14 +827,31 @@ fn connect_exec_cache_hits_on_second_call() {
     let mut scratch = Vec::new();
     let mut cache = crate::script::ScriptExecutionCache::new(64);
     // Cold call — populates cache.
-    connect_block(&block, BlockHeight(200), &view, &mut scratch, false, Some(&mut cache))
-        .expect("first call must succeed");
+    connect_block(
+        &block,
+        BlockHeight(200),
+        &view,
+        &mut scratch,
+        false,
+        Some(&mut cache),
+    )
+    .expect("first call must succeed");
     assert_eq!(cache.hits(), 0);
     assert!(cache.misses() > 0);
     // Hot call — must hit the cache.
-    connect_block(&block, BlockHeight(200), &view, &mut scratch, false, Some(&mut cache))
-        .expect("second call must succeed");
-    assert!(cache.hits() > 0, "second call must produce at least one cache hit");
+    connect_block(
+        &block,
+        BlockHeight(200),
+        &view,
+        &mut scratch,
+        false,
+        Some(&mut cache),
+    )
+    .expect("second call must succeed");
+    assert!(
+        cache.hits() > 0,
+        "second call must produce at least one cache hit"
+    );
 }
 
 #[test]

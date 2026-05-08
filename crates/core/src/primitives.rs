@@ -860,7 +860,9 @@ impl<const ITEMS: usize, const BYTES: usize> Decode for WitnessBuf<ITEMS, BYTES>
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut items: Vec<Vec<u8>> = Vec::with_capacity(count.min(16));
         for _ in 0..count {
-            let item = decode_bytes_limited::<520>(r)?;
+            // Witness stack items have no per-item consensus size limit (unlike
+            // script push data). Cap at 4 MiB — the block weight bound.
+            let item = decode_bytes_limited::<{ 4 * 1024 * 1024 }>(r)?;
             items.push(item);
         }
         let slices: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();

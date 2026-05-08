@@ -593,7 +593,10 @@ fn main() {
             let tweak_bytes = Schnorr::tagged_hash(b"TapTweak", &internal_key);
             let t = <Scalar as Reduce<U256>>::reduce_bytes((&tweak_bytes).into());
             let d: Scalar = *sk.as_nonzero_scalar().as_ref();
-            NonZeroScalar::new(d + t).expect("nonzero").to_bytes().into()
+            NonZeroScalar::new(d + t)
+                .expect("nonzero")
+                .to_bytes()
+                .into()
         };
 
         let amount = Satoshi::new(100_000);
@@ -603,17 +606,29 @@ fn main() {
         let placeholder = Transaction {
             version: 2,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256([0x55; 32]), vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256([0x55; 32]),
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_fffd,
                 witness: Witness::empty(),
             }],
-            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: spk.clone().into(),
+            }],
             locktime: 0,
         };
         let cache = Bip341Cache::new(&placeholder, &[amount], &[spk.as_slice()]);
         let msg = placeholder.bip341_sighash(
-            0, amount, &spk, TaprootSigHashType::DEFAULT, &cache, None, None,
+            0,
+            amount,
+            &spk,
+            TaprootSigHashType::DEFAULT,
+            &cache,
+            None,
+            None,
         );
         let sig64: [u8; 64] = {
             let sk = SchnorrSK::from_bytes(&tweaked_secret).expect("nonzero");
@@ -624,19 +639,32 @@ fn main() {
         let tx = Transaction {
             version: 2,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256([0x55; 32]), vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256([0x55; 32]),
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_fffd,
                 witness: Witness::from_slice(&[sig64.as_slice()]),
             }],
-            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: spk.clone().into(),
+            }],
             locktime: 0,
         };
 
         let flags = ScriptFlags::P2SH | ScriptFlags::WITNESS | ScriptFlags::TAPROOT;
         let n = run_for(secs, || {
-            verify_script(black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, flags)
-                .expect("taproot key-path must verify");
+            verify_script(
+                black_box(&[]),
+                black_box(&spk),
+                black_box(&tx),
+                0,
+                amount,
+                flags,
+            )
+            .expect("taproot key-path must verify");
             black_box(());
         });
         eprintln!("verify_script(taproot-keypath): {n} iters");
@@ -653,7 +681,10 @@ fn main() {
         let cltv_tx = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256([0x33; 32]), vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256([0x33; 32]),
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_fffe,
                 witness: Witness::empty(),
@@ -679,7 +710,10 @@ fn main() {
         let csv_tx = Transaction {
             version: 2,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256([0x44; 32]), vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256([0x44; 32]),
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 10,
                 witness: Witness::empty(),
@@ -692,8 +726,7 @@ fn main() {
         };
         let csv_checker = TxSigChecker::new(&csv_tx, 0, Satoshi::new(1000), csv_flags);
         let n = run_for(secs, || {
-            let mut interp =
-                Interpreter::new(&csv_checker, black_box(csv_flags), SigVersion::Base);
+            let mut interp = Interpreter::new(&csv_checker, black_box(csv_flags), SigVersion::Base);
             interp.eval(black_box(csv_spk)).expect("CSV must pass");
             black_box(());
         });

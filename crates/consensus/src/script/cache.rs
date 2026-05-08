@@ -100,9 +100,10 @@ impl SignatureCache {
             return;
         }
         if self.map.len() >= self.capacity
-            && let Some(oldest) = self.order.pop_front() {
-                self.map.remove(&oldest);
-            }
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.map.remove(&oldest);
+        }
         self.map.insert(key, verdict);
         self.order.push_back(key);
     }
@@ -210,9 +211,10 @@ impl ScriptExecutionCache {
             return;
         }
         if self.map.len() >= self.capacity
-            && let Some(oldest) = self.order.pop_front() {
-                self.map.remove(&oldest);
-            }
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.map.remove(&oldest);
+        }
         self.map.insert(key, verdict);
         self.order.push_back(key);
     }

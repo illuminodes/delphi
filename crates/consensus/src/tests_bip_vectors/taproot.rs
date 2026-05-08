@@ -31,14 +31,20 @@ fn make_taproot_tx(spk: Vec<u8>, _amount: Satoshi, witness_items: &[Vec<u8>]) ->
     Transaction {
         version: 2,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256([0x11; 32]), vout: 0 },
+            previous_output: OutPoint {
+                txid: Hash256([0x11; 32]),
+                vout: 0,
+            },
             script_sig: Vec::<u8>::new().into(),
             sequence: 0xffff_fffd,
             witness: Witness::from_slice(
                 &witness_items.iter().map(Vec::as_slice).collect::<Vec<_>>(),
             ),
         }],
-        outputs: vec![TxOut { value: Satoshi::new(900), script_pubkey: spk.into() }],
+        outputs: vec![TxOut {
+            value: Satoshi::new(900),
+            script_pubkey: spk.into(),
+        }],
         locktime: 0,
     }
 }
@@ -64,7 +70,11 @@ fn schnorr_sign(secret: &[u8; 32], msg: &[u8; 32]) -> [u8; 64] {
 
 fn schnorr_pubkey(secret: &[u8; 32]) -> [u8; 32] {
     use k256::schnorr::SigningKey;
-    SigningKey::from_bytes(secret).expect("nonzero secret").verifying_key().to_bytes().into()
+    SigningKey::from_bytes(secret)
+        .expect("nonzero secret")
+        .verifying_key()
+        .to_bytes()
+        .into()
 }
 
 /// Compute the BIP341 tweaked signing key for a key-path spend.
@@ -113,7 +123,13 @@ fn bip340_key_path_spend_succeeds() {
     let placeholder_tx = make_taproot_tx(spk.clone(), amount, &[[0u8; 64].to_vec()]);
     let cache = Bip341Cache::new(&placeholder_tx, &[amount], &[spk.as_slice()]);
     let msg = placeholder_tx.bip341_sighash(
-        0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, None, None,
+        0,
+        amount,
+        &spk,
+        TaprootSigHashType::DEFAULT,
+        &cache,
+        None,
+        None,
     );
     let sig64 = schnorr_sign(&tweaked_secret, &msg);
 
@@ -133,7 +149,13 @@ fn bip340_key_path_wrong_sig_fails() {
     let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let msg = tmp_tx.bip341_sighash(
-        0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, None, None,
+        0,
+        amount,
+        &spk,
+        TaprootSigHashType::DEFAULT,
+        &cache,
+        None,
+        None,
     );
     let tweaked_secret = tweaked_signing_key(&internal_secret, &[]);
     let mut sig64 = schnorr_sign(&tweaked_secret, &msg);
@@ -157,9 +179,7 @@ fn bip340_key_path_sighash_all_explicit_succeeds() {
 
     let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
-    let msg = tmp_tx.bip341_sighash(
-        0,amount, &spk, TaprootSigHashType::ALL, &cache, None, None,
-    );
+    let msg = tmp_tx.bip341_sighash(0, amount, &spk, TaprootSigHashType::ALL, &cache, None, None);
     let tweaked_secret = tweaked_signing_key(&internal_secret, &[]);
     let sig64 = schnorr_sign(&tweaked_secret, &msg);
     let mut sig65 = sig64.to_vec();
@@ -193,8 +213,8 @@ fn bip340_key_path_empty_witness_fails() {
 fn script_path_single_leaf(internal_key: &[u8; 32], script: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     let leaf_version: u8 = 0xc0;
     let leaf_hash = TapHasher::leaf(leaf_version, script);
-    let output_key = TapHasher::tweak_output_key(internal_key, &leaf_hash)
-        .expect("valid internal key");
+    let output_key =
+        TapHasher::tweak_output_key(internal_key, &leaf_hash).expect("valid internal key");
     let spk = taproot_spk(&output_key);
 
     // Control block: (leaf_version | parity=0) || internal_key  (no merkle path)
@@ -285,8 +305,8 @@ fn bip342_tapscript_checksig_succeeds() {
     let script = checksig_tapscript(&pubkey32);
     let leaf_version: u8 = 0xc0;
     let leaf_hash = TapHasher::leaf(leaf_version, &script);
-    let output_key = TapHasher::tweak_output_key(&internal_key, &leaf_hash)
-        .expect("valid internal key");
+    let output_key =
+        TapHasher::tweak_output_key(&internal_key, &leaf_hash).expect("valid internal key");
     let spk = taproot_spk(&output_key);
 
     let mut control_block = vec![leaf_version];
@@ -296,7 +316,12 @@ fn bip342_tapscript_checksig_succeeds() {
     let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let msg = tmp_tx.bip341_sighash(
-        0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, None,
+        0,
+        amount,
+        &spk,
+        TaprootSigHashType::DEFAULT,
+        &cache,
+        None,
         Some((leaf_hash, 0xffff_ffff)),
     );
     let sig64 = schnorr_sign(&secret, &msg);
@@ -316,8 +341,8 @@ fn bip342_tapscript_checksig_wrong_sig_fails() {
     let script = checksig_tapscript(&pubkey32);
     let leaf_version: u8 = 0xc0;
     let leaf_hash = TapHasher::leaf(leaf_version, &script);
-    let output_key = TapHasher::tweak_output_key(&internal_key, &leaf_hash)
-        .expect("valid internal key");
+    let output_key =
+        TapHasher::tweak_output_key(&internal_key, &leaf_hash).expect("valid internal key");
     let spk = taproot_spk(&output_key);
 
     let mut control_block = vec![leaf_version];
@@ -327,7 +352,12 @@ fn bip342_tapscript_checksig_wrong_sig_fails() {
     let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let msg = tmp_tx.bip341_sighash(
-        0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, None,
+        0,
+        amount,
+        &spk,
+        TaprootSigHashType::DEFAULT,
+        &cache,
+        None,
         Some((leaf_hash, 0xffff_ffff)),
     );
     let mut sig64 = schnorr_sign(&secret, &msg);
@@ -354,7 +384,13 @@ fn taproot_nonempty_scriptsig_is_malleated() {
     let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let msg = tmp_tx.bip341_sighash(
-        0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, None, None,
+        0,
+        amount,
+        &spk,
+        TaprootSigHashType::DEFAULT,
+        &cache,
+        None,
+        None,
     );
     let sig64 = schnorr_sign(&secret, &msg);
 
@@ -386,18 +422,31 @@ fn p2sh_wrapped_taproot_is_rejected() {
     let tx = Transaction {
         version: 2,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256([0x11; 32]), vout: 0 },
+            previous_output: OutPoint {
+                txid: Hash256([0x11; 32]),
+                vout: 0,
+            },
             script_sig: script_sig.clone().into(),
             sequence: 0xffff_ffff,
             witness: Witness::from_slice(&[&[][..]]),
         }],
-        outputs: vec![TxOut { value: Satoshi::new(900), script_pubkey: vec![0x6a].into() }],
+        outputs: vec![TxOut {
+            value: Satoshi::new(900),
+            script_pubkey: vec![0x6a].into(),
+        }],
         locktime: 0,
     };
 
     assert!(
-        verify_script(&script_sig, &p2sh_spk, &tx, 0, Satoshi::new(100_000), taproot_flags())
-            .is_err(),
+        verify_script(
+            &script_sig,
+            &p2sh_spk,
+            &tx,
+            0,
+            Satoshi::new(100_000),
+            taproot_flags()
+        )
+        .is_err(),
         "P2SH-wrapped taproot must be rejected"
     );
 }
@@ -438,7 +487,13 @@ fn bip341_key_path_with_annex_succeeds() {
     let cache = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
     let annex_body = &annex[1..]; // strip 0x50 prefix byte
     let msg = tmp_tx.bip341_sighash(
-        0,amount, &spk, TaprootSigHashType::DEFAULT, &cache, Some(annex_body), None,
+        0,
+        amount,
+        &spk,
+        TaprootSigHashType::DEFAULT,
+        &cache,
+        Some(annex_body),
+        None,
     );
     // Key-path sigs are produced with the *tweaked* secret so the resulting
     // signature verifies against the output (tweaked) key in the scriptPubKey.
@@ -461,7 +516,8 @@ fn diag_schnorr_sign_verify_roundtrip() {
     let sig: k256::schnorr::Signature = sk.sign_prehash(&msg).expect("sign");
     let vk = sk.verifying_key();
     // PrehashVerifier uses the raw bytes (no re-hash) — must match sign_prehash.
-    vk.verify_prehash(&msg, &sig).expect("k256 prehash verify must pass");
+    vk.verify_prehash(&msg, &sig)
+        .expect("k256 prehash verify must pass");
 
     let sig_bytes: [u8; 64] = sig.to_bytes();
     let pk_bytes: [u8; 32] = vk.to_bytes().into();
@@ -479,13 +535,29 @@ fn diag_sighash_determinism() {
 
     let tmp_tx = make_taproot_tx(spk.clone(), amount, &[]);
     let cache1 = Bip341Cache::new(&tmp_tx, &[amount], &[spk.as_slice()]);
-    let msg1 = tmp_tx.bip341_sighash(0, amount, &spk, TaprootSigHashType::DEFAULT, &cache1, None, None);
+    let msg1 = tmp_tx.bip341_sighash(
+        0,
+        amount,
+        &spk,
+        TaprootSigHashType::DEFAULT,
+        &cache1,
+        None,
+        None,
+    );
 
     // The real tx has a witness — sighash must be the same.
     let sig64 = [0u8; 64];
     let real_tx = make_taproot_tx(spk.clone(), amount, &[sig64.to_vec()]);
     let cache2 = Bip341Cache::new(&real_tx, &[amount], &[spk.as_slice()]);
-    let msg2 = real_tx.bip341_sighash(0, amount, &spk, TaprootSigHashType::DEFAULT, &cache2, None, None);
+    let msg2 = real_tx.bip341_sighash(
+        0,
+        amount,
+        &spk,
+        TaprootSigHashType::DEFAULT,
+        &cache2,
+        None,
+        None,
+    );
 
     // Also compute what run_taproot computes: it builds cache from the REAL tx.
     assert_eq!(msg1, msg2, "sighash must not depend on witness content");
@@ -497,7 +569,13 @@ fn diag_sighash_determinism() {
     let real_tx = make_taproot_tx(spk.clone(), amount, &[sig.to_vec()]);
     let rt_cache = Bip341Cache::new(&real_tx, &[amount], &[spk.as_slice()]);
     let rt_msg = real_tx.bip341_sighash(
-        0, amount, &spk, TaprootSigHashType::DEFAULT, &rt_cache, None, None,
+        0,
+        amount,
+        &spk,
+        TaprootSigHashType::DEFAULT,
+        &rt_cache,
+        None,
+        None,
     );
 
     eprintln!("msg1 (from placeholder_tx): {msg1:02x?}");

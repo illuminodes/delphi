@@ -5,7 +5,6 @@ use mantle_consensus::chain_view::{Coin, NewCoin, TipInfo};
 
 use crate::engine::EngineError;
 
-
 // ── Tokens ────────────────────────────────────────────────────────────────────
 
 /// Opaque request token. Each `StorageHandle` call stamps its request with a
@@ -152,7 +151,8 @@ pub enum StorageResp {
 }
 
 impl StorageResp {
-    #[must_use] pub fn token(&self) -> Option<ReqToken> {
+    #[must_use]
+    pub fn token(&self) -> Option<ReqToken> {
         match self {
             Self::LookupCoins(Ok(r)) => Some(r.token),
             Self::CommitBlock(Ok(r)) => Some(r.token),
@@ -164,4 +164,3 @@ impl StorageResp {
         }
     }
 }
-

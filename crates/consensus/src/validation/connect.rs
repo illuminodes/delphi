@@ -119,9 +119,13 @@ pub fn connect_block<V: ChainView>(
         let outpoints: Vec<OutPoint> = tx.inputs.iter().map(|i| i.previous_output).collect();
         let coins = view.get_coins(&outpoints)?;
 
-        // Build the BIP143 cache once per transaction; all inputs share
-        // hashPrevouts / hashSequence / hashOutputs.
-        let bip143_cache = Bip143Cache::new(tx);
+        // Built once per-tx only when scripts run without an exec_cache.
+        // Under skip_script or when exec_cache is present, never allocated.
+        let bip143_cache: Option<Bip143Cache> = if !skip_script && exec_cache.is_none() {
+            Some(Bip143Cache::new(tx))
+        } else {
+            None
+        };
 
         let mut input_total = Satoshi::ZERO;
         for (input_index, (input, coin_opt)) in tx.inputs.iter().zip(coins.iter()).enumerate() {
@@ -161,7 +165,8 @@ pub fn connect_block<V: ChainView>(
                         input_index,
                         coin.value,
                         script_flags,
-                        bip143_cache.clone(),
+                        #[allow(clippy::clone_on_ref_ptr)]
+                        bip143_cache.clone().unwrap_or_else(|| unreachable!()),
                     )
                     .verify(input.script_sig.as_slice(), coin.script_pubkey.as_slice())
                 };

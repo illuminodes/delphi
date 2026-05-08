@@ -15,8 +15,8 @@ use mantle::primitives::{
 };
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::ScriptExecutionCache;
-use mantle_storage::types::{Durability, ReqToken};
 use mantle_storage::StorageHandle;
+use mantle_storage::types::{Durability, ReqToken};
 use mantle_validator::pipeline::validate_and_commit;
 use mantle_validator::prefetched_view::HeaderSnapshot;
 
@@ -29,7 +29,10 @@ pub fn coinbase_tx(height: u32, value: u64) -> Transaction {
     Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+            previous_output: OutPoint {
+                txid: Hash256::ZERO,
+                vout: u32::MAX,
+            },
             script_sig: vec![0x03, h[0], h[1], h[2]].into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
@@ -46,7 +49,10 @@ pub fn spend_tx(prev_txid: Hash256, vout: u32, value: u64) -> Transaction {
     Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: prev_txid, vout },
+            previous_output: OutPoint {
+                txid: prev_txid,
+                vout,
+            },
             script_sig: vec![0x51].into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
@@ -60,7 +66,11 @@ pub fn spend_tx(prev_txid: Hash256, vout: u32, value: u64) -> Transaction {
 }
 
 pub fn mine(mut block: Block) -> Block {
-    let target = block.header.bits.to_target().expect("EASY_BITS always valid");
+    let target = block
+        .header
+        .bits
+        .to_target()
+        .expect("EASY_BITS always valid");
     for nonce in 0..=u32::MAX {
         block.header.nonce = nonce;
         let mut hash = sha256d(&block.header.to_bytes());
@@ -108,7 +118,9 @@ pub fn make_snapshot(chain: &[(Hash256, BlockHeader)]) -> HeaderSnapshot {
 
 pub struct TmpDir(pub std::path::PathBuf);
 impl Drop for TmpDir {
-    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 pub fn tmp_storage() -> (StorageHandle, TmpDir) {
@@ -116,8 +128,8 @@ pub fn tmp_storage() -> (StorageHandle, TmpDir) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .subsec_nanos();
-    let path = std::env::temp_dir()
-        .join(format!("mantle-replay-perf-{}-{}", std::process::id(), ns));
+    let path =
+        std::env::temp_dir().join(format!("mantle-replay-perf-{}-{}", std::process::id(), ns));
     std::fs::create_dir_all(&path).expect("create tmp dir");
     let handle = StorageHandle::open(&path).expect("StorageHandle::open");
     (handle, TmpDir(path))
@@ -131,9 +143,17 @@ pub fn commit(
     cache: &mut ScriptExecutionCache,
     token: u64,
 ) {
-    validate_and_commit(block, height, storage, snap, true, Some(cache), Durability::Memory,
-        ReqToken(token))
-        .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.0));
+    validate_and_commit(
+        block,
+        height,
+        storage,
+        snap,
+        true,
+        Some(cache),
+        Durability::Memory,
+        ReqToken(token),
+    )
+    .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.0));
 }
 
 pub fn run_for(dur: Duration, mut f: impl FnMut()) -> u64 {

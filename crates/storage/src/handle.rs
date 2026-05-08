@@ -3,8 +3,8 @@ use std::path::Path;
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint};
 use mantle_consensus::chain_view::TipInfo;
 
-use crate::engine::flat::FlatEngine;
 use crate::engine::Engine;
+use crate::engine::flat::FlatEngine;
 use crate::thread;
 use crate::types::{
     CommitBlockReq, CommittedResp, HeaderKey, LookupCoinsResp, LookupResult, ReadHeaderReq,
@@ -35,16 +35,33 @@ impl StorageHandle {
         })
     }
 
-    /// Batch UTXO lookup.
+    /// Batch UTXO lookup (send + recv in one call).
     ///
     /// # Errors
     /// Returns `StorageError` on ring or I/O failure.
     pub fn lookup_coins(&mut self, ops: &[OutPoint]) -> Result<Vec<LookupResult>, StorageError> {
+        self.send_lookup(ops)?;
+        self.recv_lookup()
+    }
+
+    /// Send a lookup request without waiting for the response.
+    /// Must be followed by exactly one call to [`recv_lookup`].
+    ///
+    /// # Errors
+    /// Returns `StorageError` if the ring is full.
+    pub fn send_lookup(&mut self, ops: &[OutPoint]) -> Result<(), StorageError> {
         let token = self.next_token();
         self.send(StorageReq::LookupCoins(crate::types::LookupCoinsReq {
             token,
             outpoints: ops.to_vec(),
-        }))?;
+        }))
+    }
+
+    /// Receive the response from a prior [`send_lookup`] call.
+    ///
+    /// # Errors
+    /// Returns `StorageError` on ring or I/O failure.
+    pub fn recv_lookup(&mut self) -> Result<Vec<LookupResult>, StorageError> {
         match self.recv()? {
             StorageResp::LookupCoins(r) => r.map(|ok: LookupCoinsResp| ok.results),
             _ => Err(StorageError::UnexpectedResponse),
@@ -110,12 +127,17 @@ impl StorageHandle {
 
     fn send(&self, req: StorageReq) -> Result<(), StorageError> {
         #[cfg(feature = "storage-dbg")]
-        eprintln!("[h] send {}", match &req {
-            StorageReq::LookupCoins(r) => format!("Lookup({} ops, tok={})", r.outpoints.len(), r.token.0),
-            StorageReq::CommitBlock(r) => format!("Commit(h={}, tok={})", r.height.0, r.token.0),
-            StorageReq::ReadHeader(r) => format!("ReadHdr(tok={})", r.token.0),
-            StorageReq::Shutdown => "Shutdown".to_string(),
-        });
+        eprintln!(
+            "[h] send {}",
+            match &req {
+                StorageReq::LookupCoins(r) =>
+                    format!("Lookup({} ops, tok={})", r.outpoints.len(), r.token.0),
+                StorageReq::CommitBlock(r) =>
+                    format!("Commit(h={}, tok={})", r.height.0, r.token.0),
+                StorageReq::ReadHeader(r) => format!("ReadHdr(tok={})", r.token.0),
+                StorageReq::Shutdown => "Shutdown".to_string(),
+            }
+        );
         let r = self.req_tx.push(req).map_err(|_| StorageError::RingFull);
         #[cfg(feature = "storage-dbg")]
         eprintln!("[h] send done: {:?}", r.is_ok());

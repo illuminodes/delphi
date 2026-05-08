@@ -8,7 +8,7 @@ use mantle_consensus::script::ScriptExecutionCache;
 
 #[path = "replay_perf_common.rs"]
 mod common;
-use common::{coinbase_tx, commit, make_block, make_snapshot, run_for, tmp_storage, SECS};
+use common::{SECS, coinbase_tx, commit, make_block, make_snapshot, run_for, tmp_storage};
 
 fn main() {
     const CHAIN_LEN: u32 = 100;
@@ -32,15 +32,26 @@ fn main() {
         let (mut storage, _dir) = tmp_storage();
         let mut cache = ScriptExecutionCache::new(1024);
         for (i, block) in blocks.iter().enumerate() {
-            if i % 10 == 0 { eprint!("h{} ", i + 1); }
+            if i % 10 == 0 {
+                eprint!("h{} ", i + 1);
+            }
             let height = BlockHeight(u32::try_from(i + 1).expect("fits"));
-            commit(&mut storage, black_box(block), height, &snap, &mut cache, i as u64);
+            commit(
+                &mut storage,
+                black_box(block),
+                height,
+                &snap,
+                &mut cache,
+                i as u64,
+            );
         }
         eprint!("X ");
         storage.shutdown().expect("shutdown");
         eprintln!("done");
         iter_idx += 1;
     });
-    eprintln!("replay_chain_100:     {n} chains ({:.0} blocks/s)",
-        n as f64 * f64::from(CHAIN_LEN) / SECS.as_secs_f64());
+    eprintln!(
+        "replay_chain_100:     {n} chains ({:.0} blocks/s)",
+        n as f64 * f64::from(CHAIN_LEN) / SECS.as_secs_f64()
+    );
 }

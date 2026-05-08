@@ -94,7 +94,9 @@ impl Engine for FlatEngine {
         let Some(&offset) = self.utxo_index.get(op) else {
             return Ok(None);
         };
-        self.utxo_read.seek(SeekFrom::Start(offset)).map_err(|e| io_err(&e))?;
+        self.utxo_read
+            .seek(SeekFrom::Start(offset))
+            .map_err(|e| io_err(&e))?;
         read_coin_record(&mut self.utxo_read)
     }
 
@@ -105,7 +107,9 @@ impl Engine for FlatEngine {
     ) -> Result<(), EngineError> {
         for &op in ops {
             let coin = if let Some(&offset) = self.utxo_index.get(&op) {
-                self.utxo_read.seek(SeekFrom::Start(offset)).map_err(|e| io_err(&e))?;
+                self.utxo_read
+                    .seek(SeekFrom::Start(offset))
+                    .map_err(|e| io_err(&e))?;
                 read_coin_record(&mut self.utxo_read)?
             } else {
                 None
@@ -178,8 +182,13 @@ impl Engine for FlatEngine {
 
     fn write_header(&mut self, h: BlockHeight, header: &BlockHeader) -> Result<(), EngineError> {
         let hash = header.hash();
-        self.header_write_len =
-            write_header_record(&mut self.header_file, h, header, hash, self.header_write_len)?;
+        self.header_write_len = write_header_record(
+            &mut self.header_file,
+            h,
+            header,
+            hash,
+            self.header_write_len,
+        )?;
         self.header_index.insert(hash, h.0);
         Ok(())
     }
@@ -194,12 +203,8 @@ impl Engine for FlatEngine {
                 .seek(SeekFrom::Start(0))
                 .map_err(|e| io_err(&e))?;
             let h = self.tip.height.0.to_le_bytes();
-            self.checkpoint_file
-                .write_all(&h)
-                .map_err(|e| io_err(&e))?;
-            self.checkpoint_file
-                .sync_all()
-                .map_err(|e| io_err(&e))?;
+            self.checkpoint_file.write_all(&h).map_err(|e| io_err(&e))?;
+            self.checkpoint_file.sync_all().map_err(|e| io_err(&e))?;
         }
         Ok(())
     }
@@ -298,9 +303,9 @@ fn write_coin_record(f: &mut File, nc: &NewCoin) -> Result<(), EngineError> {
     f.write_all(&[u8::from(nc.coinbase)])
         .map_err(|e| io_err(&e))?;
     let spk = nc.script_pubkey.as_slice();
-    let spk_len =
-        u32::try_from(spk.len()).map_err(|_| EngineError::ScriptPubKeyTooLarge)?;
-    f.write_all(&spk_len.to_le_bytes()).map_err(|e| io_err(&e))?;
+    let spk_len = u32::try_from(spk.len()).map_err(|_| EngineError::ScriptPubKeyTooLarge)?;
+    f.write_all(&spk_len.to_le_bytes())
+        .map_err(|e| io_err(&e))?;
     f.write_all(spk).map_err(|e| io_err(&e))?;
     Ok(())
 }
@@ -313,7 +318,8 @@ fn write_spend_record(f: &mut File, op: &OutPoint) -> Result<(), EngineError> {
 
 fn write_outpoint(f: &mut File, op: &OutPoint) -> Result<(), EngineError> {
     f.write_all(&op.txid.0).map_err(|e| io_err(&e))?;
-    f.write_all(&op.vout.to_le_bytes()).map_err(|e| io_err(&e))?;
+    f.write_all(&op.vout.to_le_bytes())
+        .map_err(|e| io_err(&e))?;
     Ok(())
 }
 
@@ -335,7 +341,8 @@ fn read_coin_record(f: &mut File) -> Result<Option<Coin>, EngineError> {
     f.read_exact(&mut tag1).map_err(|e| io_err(&e))?;
     let coinbase = tag1[0] != 0;
     f.read_exact(&mut buf4).map_err(|e| io_err(&e))?;
-    let spk_len = usize::try_from(u32::from_le_bytes(buf4)).map_err(|_| EngineError::ScriptLenOverflow)?;
+    let spk_len =
+        usize::try_from(u32::from_le_bytes(buf4)).map_err(|_| EngineError::ScriptLenOverflow)?;
     let mut spk = vec![0u8; spk_len];
     f.read_exact(&mut spk).map_err(|e| io_err(&e))?;
     Ok(Some(Coin {
@@ -374,7 +381,8 @@ fn read_utxo_log_entry(
     f.read_exact(&mut tag1).map_err(|e| io_err(&e))?;
     let coinbase = tag1[0] != 0;
     f.read_exact(&mut buf4).map_err(|e| io_err(&e))?;
-    let spk_len = usize::try_from(u32::from_le_bytes(buf4)).map_err(|_| EngineError::ScriptLenOverflow)?;
+    let spk_len =
+        usize::try_from(u32::from_le_bytes(buf4)).map_err(|_| EngineError::ScriptLenOverflow)?;
     let mut spk = vec![0u8; spk_len];
     f.read_exact(&mut spk).map_err(|e| io_err(&e))?;
     let coin = Coin {
@@ -384,7 +392,14 @@ fn read_utxo_log_entry(
         coinbase,
     };
     // 36 (outpoint) + 1 (tag) + 8 + 4 + 1 + 4 + spk_len
-    let record_end = offset + 36 + 1 + 8 + 4 + 1 + 4 + u64::try_from(spk_len).map_err(|_| EngineError::ScriptLenOverflow)?;
+    let record_end = offset
+        + 36
+        + 1
+        + 8
+        + 4
+        + 1
+        + 4
+        + u64::try_from(spk_len).map_err(|_| EngineError::ScriptLenOverflow)?;
     Ok(Some((op, Some(coin), record_end)))
 }
 
@@ -404,11 +419,7 @@ fn write_header_record(
     let new_len = if offset > file_len {
         let gap = offset - file_len;
         // Gap is at most ~4 GB (u32::MAX * 116) on a valid chain; safe on 64-bit.
-        let zeros = vec![
-            0u8;
-            usize::try_from(gap)
-                .map_err(|_| EngineError::HeaderGapOverflow)?
-        ];
+        let zeros = vec![0u8; usize::try_from(gap).map_err(|_| EngineError::HeaderGapOverflow)?];
         f.write_all(&zeros).map_err(|e| io_err(&e))?;
         offset
     } else {
@@ -474,18 +485,28 @@ mod tests {
     impl TmpDir {
         fn new() -> Self {
             use std::time::{SystemTime, UNIX_EPOCH};
-            let ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos();
-            let path = std::env::temp_dir().join(format!("mantle-test-{}-{}", std::process::id(), ns));
+            let ns = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos();
+            let path =
+                std::env::temp_dir().join(format!("mantle-test-{}-{}", std::process::id(), ns));
             std::fs::create_dir_all(&path).unwrap();
             Self(path)
         }
-        fn path(&self) -> &std::path::Path { &self.0 }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
     }
     impl Drop for TmpDir {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
-    fn tmp() -> TmpDir { TmpDir::new() }
+    fn tmp() -> TmpDir {
+        TmpDir::new()
+    }
 
     fn make_header(time: u32) -> BlockHeader {
         BlockHeader {

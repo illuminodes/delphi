@@ -230,7 +230,10 @@ mod tests {
         for _ in 0..MAX_CONDITION_DEPTH {
             assert!(cs.push(true));
         }
-        assert!(!cs.push(true), "push beyond MAX_CONDITION_DEPTH must return false");
+        assert!(
+            !cs.push(true),
+            "push beyond MAX_CONDITION_DEPTH must return false"
+        );
     }
 
     #[test]

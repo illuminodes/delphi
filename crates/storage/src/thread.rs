@@ -2,8 +2,8 @@ use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::RingBuffer as MpscRing;
 use quetzalcoatl::spsc::RingBuffer as SpscRing;
 
-use crate::engine::flat::FlatEngine;
 use crate::engine::Engine;
+use crate::engine::flat::FlatEngine;
 use crate::types::{
     CommittedResp, HeaderKey, LookupCoinsResp, LookupResult, StorageError, StorageReq, StorageResp,
 };
@@ -23,12 +23,17 @@ impl StorageWorker {
             n += 1;
             let shutdown = matches!(req, StorageReq::Shutdown);
             #[cfg(feature = "storage-dbg")]
-            eprintln!("[w] req#{n} {}", match &req {
-                StorageReq::LookupCoins(r) => format!("Lookup({} ops, tok={})", r.outpoints.len(), r.token.0),
-                StorageReq::CommitBlock(r) => format!("Commit(h={}, tok={})", r.height.0, r.token.0),
-                StorageReq::ReadHeader(r) => format!("ReadHdr(tok={})", r.token.0),
-                StorageReq::Shutdown => "Shutdown".to_string(),
-            });
+            eprintln!(
+                "[w] req#{n} {}",
+                match &req {
+                    StorageReq::LookupCoins(r) =>
+                        format!("Lookup({} ops, tok={})", r.outpoints.len(), r.token.0),
+                    StorageReq::CommitBlock(r) =>
+                        format!("Commit(h={}, tok={})", r.height.0, r.token.0),
+                    StorageReq::ReadHeader(r) => format!("ReadHdr(tok={})", r.token.0),
+                    StorageReq::Shutdown => "Shutdown".to_string(),
+                }
+            );
             let resp = self.dispatch(req);
             #[cfg(feature = "storage-dbg")]
             eprintln!("[w] resp#{n} pushing");
@@ -52,7 +57,9 @@ impl StorageWorker {
             StorageReq::LookupCoins(r) => {
                 let token = r.token;
                 let mut results: Vec<LookupResult> = Vec::with_capacity(r.outpoints.len());
-                let resp =self.engine.read_coins(&r.outpoints, &mut results)
+                let resp = self
+                    .engine
+                    .read_coins(&r.outpoints, &mut results)
                     .map(|()| LookupCoinsResp { token, results })
                     .map_err(StorageError::from);
                 StorageResp::LookupCoins(resp)
@@ -60,15 +67,20 @@ impl StorageWorker {
             StorageReq::CommitBlock(r) => {
                 let token = r.token;
                 let durability = r.durability;
-                let resp =self.engine.write_block(&r)
+                let resp = self
+                    .engine
+                    .write_block(&r)
                     .and_then(|()| self.engine.flush(durability))
-                    .map(|()| CommittedResp { token, tip: self.engine.tip() })
+                    .map(|()| CommittedResp {
+                        token,
+                        tip: self.engine.tip(),
+                    })
                     .map_err(StorageError::from);
                 StorageResp::CommitBlock(resp)
             }
             StorageReq::ReadHeader(r) => {
                 let token = r.token;
-                let resp =match r.key {
+                let resp = match r.key {
                     HeaderKey::ByHash(h) => self.engine.read_header(&h),
                     HeaderKey::ByHeight(h) => self.engine.read_header_at(h),
                 }
@@ -90,7 +102,11 @@ pub(crate) fn spawn(engine: FlatEngine) -> Result<StorageThreadHandle, StorageEr
     let (req_tx, req_rx) = MpscRing::new(Capacity::exact(RING_CAP)).split();
     let (resp_tx, resp_rx) = SpscRing::new(Capacity::exact(RING_CAP)).split();
 
-    let worker = StorageWorker { req_rx, resp_tx, engine };
+    let worker = StorageWorker {
+        req_rx,
+        resp_tx,
+        engine,
+    };
 
     std::thread::Builder::new()
         .name("storage".into())

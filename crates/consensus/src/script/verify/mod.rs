@@ -192,7 +192,11 @@ pub fn verify_script_cached(
         flags.bits(),
     );
     if let Some(verdict) = cache.get(&key) {
-        return if verdict { Ok(()) } else { Err(ScriptError::EvalFalse) };
+        return if verdict {
+            Ok(())
+        } else {
+            Err(ScriptError::EvalFalse)
+        };
     }
     let result = verify_script(script_sig, script_pubkey, tx, n_in, amount, flags);
     cache.insert(key, result.is_ok());

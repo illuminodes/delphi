@@ -1,7 +1,12 @@
 //! Replay perf — workload B only: block with 50 UTXO spends.
 //!
-//! Fund coinbase at height 1 with 50 outputs; 100 filler blocks for maturity;
-//! spend block at height 102.  Setup chain re-committed each iter.
+//! Setup (once, outside the timed loop):
+//!   Builds a seed storage directory with the full 102-block setup chain
+//!   (fund coinbase at height 1, 100 filler blocks for maturity).
+//!
+//! Timed region (per iteration):
+//!   Copy seed dir → open storage → commit the spend block → shutdown → delete.
+//!   This isolates the cost of the spend block commit itself.
 #![allow(clippy::cast_precision_loss)]
 
 use std::hint::black_box;
@@ -15,8 +20,17 @@ use mantle_consensus::script::ScriptExecutionCache;
 #[path = "replay_perf_common.rs"]
 mod common;
 use common::{
-    coinbase_tx, commit, make_block, make_snapshot, run_for, spend_tx, tmp_storage, SECS,
+    SECS, TmpDir, coinbase_tx, commit, make_block, make_snapshot, run_for, spend_tx, tmp_storage,
 };
+
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).expect("create dst dir");
+    for entry in std::fs::read_dir(src).expect("read src dir") {
+        let entry = entry.expect("dir entry");
+        let dst_path = dst.join(entry.file_name());
+        std::fs::copy(entry.path(), dst_path).expect("copy file");
+    }
+}
 
 fn main() {
     const N_SPENDS: usize = 50;
@@ -27,15 +41,20 @@ fn main() {
     let fund_cb = Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+            previous_output: OutPoint {
+                txid: Hash256::ZERO,
+                vout: u32::MAX,
+            },
             script_sig: vec![0x03, 0x01, 0x00, 0x00].into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
         }],
-        outputs: (0..N_SPENDS).map(|_| TxOut {
-            value: Satoshi::new(1000),
-            script_pubkey: vec![0x51].into(),
-        }).collect(),
+        outputs: (0..N_SPENDS)
+            .map(|_| TxOut {
+                value: Satoshi::new(1000),
+                script_pubkey: vec![0x51].into(),
+            })
+            .collect(),
         locktime: 0,
     };
     let fund_block = make_block(Hash256::ZERO, FUND_H, vec![fund_cb]);
@@ -57,37 +76,84 @@ fn main() {
     let spend_hash = spend_block.header.hash();
 
     let mut chain = vec![(fund_hash, fund_block.header)];
-    for b in &filler { chain.push((b.header.hash(), b.header)); }
+    for b in &filler {
+        chain.push((b.header.hash(), b.header));
+    }
     chain.push((spend_hash, spend_block.header));
     let snap = make_snapshot(&chain);
 
+    // ── Build seed storage once ───────────────────────────────────────────────
+    eprintln!("[B] building seed storage...");
+    let (mut seed_storage, seed_dir) = tmp_storage();
+    let mut cache = ScriptExecutionCache::new(1024);
+    commit(
+        &mut seed_storage,
+        &fund_block,
+        BlockHeight(FUND_H),
+        &snap,
+        &mut cache,
+        1,
+    );
+    for (i, b) in filler.iter().enumerate() {
+        commit(
+            &mut seed_storage,
+            b,
+            BlockHeight(2 + u32::try_from(i).expect("fits")),
+            &snap,
+            &mut cache,
+            2 + i as u64,
+        );
+    }
+    seed_storage.shutdown().expect("seed shutdown");
+    eprintln!("[B] seed ready at {}", seed_dir.0.display());
+
+    // ── Timed loop: copy seed → commit spend block → shutdown ─────────────────
     let mut iter_idx = 0u32;
     let workload_start = Instant::now();
-    eprintln!("[B] workload begin t=0");
     let n = run_for(SECS, || {
         let it_start = Instant::now();
-        eprint!("[B] {iter_idx} ");
-        let (mut storage, _dir) = tmp_storage();
+
+        let ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let iter_path = std::env::temp_dir().join(format!(
+            "mantle-replay-perf-b-iter-{}-{}",
+            std::process::id(),
+            ns
+        ));
+        copy_dir(&seed_dir.0, &iter_path);
+        let _iter_dir = TmpDir(iter_path.clone());
+
+        let mut storage =
+            mantle_storage::StorageHandle::open(&iter_path).expect("StorageHandle::open");
         let mut cache = ScriptExecutionCache::new(1024);
-        eprint!("F ");
-        commit(&mut storage, &fund_block, BlockHeight(FUND_H), &snap, &mut cache, 1);
-        for (i, b) in filler.iter().enumerate() {
-            eprint!("f{i} ");
-            commit(&mut storage, b, BlockHeight(2 + u32::try_from(i).expect("fits")),
-                &snap, &mut cache, 2 + i as u64);
-        }
-        eprint!("S ");
-        commit(&mut storage, black_box(&spend_block), BlockHeight(SPEND_H),
-            &snap, &mut cache, u64::from(SPEND_H));
-        eprint!("X ");
+        commit(
+            &mut storage,
+            black_box(&spend_block),
+            BlockHeight(SPEND_H),
+            &snap,
+            &mut cache,
+            u64::from(SPEND_H),
+        );
         storage.shutdown().expect("shutdown");
+
         let dt = it_start.elapsed();
-        eprintln!("dt={:.1} wall={:.2}",
-            dt.as_secs_f64() * 1000.0,
-            workload_start.elapsed().as_secs_f64());
+        if iter_idx < 5 || iter_idx % 50 == 0 {
+            eprintln!(
+                "[B] iter={iter_idx} dt={:.2}ms wall={:.2}s",
+                dt.as_secs_f64() * 1000.0,
+                workload_start.elapsed().as_secs_f64()
+            );
+        }
         iter_idx += 1;
     });
-    eprintln!("[B] workload end wall={:.2}s n={n}", workload_start.elapsed().as_secs_f64());
-    eprintln!("replay_50_spends:     {n} iters  ({:.0} blocks/s)",
-        n as f64 / SECS.as_secs_f64());
+    eprintln!(
+        "[B] done wall={:.2}s n={n}",
+        workload_start.elapsed().as_secs_f64()
+    );
+    eprintln!(
+        "replay_50_spends:     {n} iters  ({:.0} spend-blocks/s)",
+        n as f64 / SECS.as_secs_f64()
+    );
 }

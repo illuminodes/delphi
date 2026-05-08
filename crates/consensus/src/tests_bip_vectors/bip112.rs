@@ -55,7 +55,10 @@ fn make_tx(version: i32, n_sequence: u32) -> Transaction {
     Transaction {
         version,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256([0x22; 32]), vout: 0 },
+            previous_output: OutPoint {
+                txid: Hash256([0x22; 32]),
+                vout: 0,
+            },
             script_sig: Vec::<u8>::new().into(),
             sequence: n_sequence,
             witness: Witness::empty(),
@@ -190,18 +193,21 @@ fn cltv_and_csv_combined_accepts() {
     // blocks 5  = 0x05
     let spk: &[u8] = &[
         0x01, 0x64, // push 100
-        0xb1,       // OP_CHECKLOCKTIMEVERIFY
-        0x75,       // OP_DROP
+        0xb1, // OP_CHECKLOCKTIMEVERIFY
+        0x75, // OP_DROP
         0x01, 0x05, // push 5
-        0xb2,       // OP_CHECKSEQUENCEVERIFY
-        0x75,       // OP_DROP
-        0x51,       // OP_1
+        0xb2, // OP_CHECKSEQUENCEVERIFY
+        0x75, // OP_DROP
+        0x51, // OP_1
     ];
 
     let tx = Transaction {
         version: 2,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256([0x33; 32]), vout: 0 },
+            previous_output: OutPoint {
+                txid: Hash256([0x33; 32]),
+                vout: 0,
+            },
             script_sig: Vec::<u8>::new().into(),
             sequence: 5, // 5 blocks
             witness: Witness::empty(),
@@ -213,8 +219,6 @@ fn cltv_and_csv_combined_accepts() {
         locktime: 200, // ≥ 100
     };
 
-    let f = ScriptFlags::P2SH
-        | ScriptFlags::CHECKLOCKTIMEVERIFY
-        | ScriptFlags::CHECKSEQUENCEVERIFY;
+    let f = ScriptFlags::P2SH | ScriptFlags::CHECKLOCKTIMEVERIFY | ScriptFlags::CHECKSEQUENCEVERIFY;
     assert!(verify_script(&[], spk, &tx, 0, Satoshi::new(1000), f).is_ok());
 }

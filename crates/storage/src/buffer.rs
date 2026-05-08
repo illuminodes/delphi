@@ -19,7 +19,9 @@ impl BufferPool {
 
     /// Take a buffer from the pool, or allocate a fresh one if the pool is empty.
     pub fn acquire(&mut self) -> Vec<u8> {
-        self.slots.pop().unwrap_or_else(|| Vec::with_capacity(self.capacity))
+        self.slots
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(self.capacity))
     }
 
     /// Return a buffer to the pool. The buffer is cleared before re-pooling.

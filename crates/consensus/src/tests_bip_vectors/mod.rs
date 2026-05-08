@@ -19,10 +19,10 @@ use crate::validation::{
     validate_block_context, validate_block_structure,
 };
 
-mod bip65;
-mod bip66;
 mod bip112;
 mod bip143;
+mod bip65;
+mod bip66;
 mod fixtures;
 mod genesis;
 mod stage1;

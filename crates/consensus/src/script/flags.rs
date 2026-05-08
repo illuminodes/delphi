@@ -90,7 +90,7 @@ impl ScriptFlags {
         (388_381, Self::CHECKLOCKTIMEVERIFY),                         // BIP65
         (419_328, Self::CHECKSEQUENCEVERIFY),                         // BIP112/68/113
         (481_824, Self::WITNESS.union(Self::NULLDUMMY)),              // BIP141/143/147
-        (709_633, Self::TAPROOT),                                     // BIP341/342 (Core uses > 709632)
+        (709_633, Self::TAPROOT), // BIP341/342 (Core uses > 709632)
     ];
 
     /// Construct from raw bits — for fuzzer parity. Prefer the named constants.

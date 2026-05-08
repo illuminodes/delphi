@@ -14,10 +14,10 @@ use mantle::primitives::{
 };
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::ScriptExecutionCache;
-use mantle_storage::types::{Durability, ReqToken};
 use mantle_storage::StorageHandle;
-use mantle_validator::prefetched_view::HeaderSnapshot;
+use mantle_storage::types::{Durability, ReqToken};
 use mantle_validator::pipeline::validate_and_commit;
+use mantle_validator::prefetched_view::HeaderSnapshot;
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -30,7 +30,10 @@ fn coinbase_tx(height: u32, value: u64) -> Transaction {
     Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+            previous_output: OutPoint {
+                txid: Hash256::ZERO,
+                vout: u32::MAX,
+            },
             script_sig: vec![0x03, h[0], h[1], h[2]].into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
@@ -47,7 +50,10 @@ fn spend_tx(prev_txid: Hash256, vout: u32, value: u64) -> Transaction {
     Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: prev_txid, vout },
+            previous_output: OutPoint {
+                txid: prev_txid,
+                vout,
+            },
             script_sig: vec![0x51].into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
@@ -61,7 +67,11 @@ fn spend_tx(prev_txid: Hash256, vout: u32, value: u64) -> Transaction {
 }
 
 fn mine(mut block: Block) -> Block {
-    let target = block.header.bits.to_target().expect("EASY_BITS always valid");
+    let target = block
+        .header
+        .bits
+        .to_target()
+        .expect("EASY_BITS always valid");
     for nonce in 0..=u32::MAX {
         block.header.nonce = nonce;
         let mut hash = sha256d(&block.header.to_bytes());
@@ -109,7 +119,9 @@ fn make_snapshot(chain: &[(Hash256, BlockHeader)]) -> HeaderSnapshot {
 
 struct TmpDir(std::path::PathBuf);
 impl Drop for TmpDir {
-    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn tmp_storage() -> (StorageHandle, TmpDir) {
@@ -117,8 +129,8 @@ fn tmp_storage() -> (StorageHandle, TmpDir) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .subsec_nanos();
-    let path = std::env::temp_dir()
-        .join(format!("mantle-replay-dhat-{}-{}", std::process::id(), ns));
+    let path =
+        std::env::temp_dir().join(format!("mantle-replay-dhat-{}-{}", std::process::id(), ns));
     std::fs::create_dir_all(&path).expect("create tmp dir");
     let handle = StorageHandle::open(&path).expect("StorageHandle::open");
     (handle, TmpDir(path))
@@ -132,9 +144,17 @@ fn commit(
     cache: &mut ScriptExecutionCache,
     token: u64,
 ) {
-    validate_and_commit(block, height, storage, snap, true, Some(cache), Durability::Memory,
-        ReqToken(token))
-        .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.0));
+    validate_and_commit(
+        block,
+        height,
+        storage,
+        snap,
+        true,
+        Some(cache),
+        Durability::Memory,
+        ReqToken(token),
+    )
+    .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.0));
 }
 
 fn main() {
@@ -153,7 +173,14 @@ fn main() {
             let hash = block.header.hash();
             chain.push((hash, block.header));
             let snap = make_snapshot(&chain);
-            commit(&mut storage, &block, BlockHeight(i), &snap, &mut cache, u64::from(i));
+            commit(
+                &mut storage,
+                &block,
+                BlockHeight(i),
+                &snap,
+                &mut cache,
+                u64::from(i),
+            );
             prev_hash = hash;
         }
 
@@ -174,15 +201,20 @@ fn main() {
         let fund_cb = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: u32::MAX,
+                },
                 script_sig: vec![0x03, 0x01, 0x00, 0x00].into(),
                 sequence: u32::MAX,
                 witness: Witness::empty(),
             }],
-            outputs: (0..SPENDS).map(|_| TxOut {
-                value: Satoshi::new(1000),
-                script_pubkey: vec![0x51].into(),
-            }).collect(),
+            outputs: (0..SPENDS)
+                .map(|_| TxOut {
+                    value: Satoshi::new(1000),
+                    script_pubkey: vec![0x51].into(),
+                })
+                .collect(),
             locktime: 0,
         };
         let fund_block = make_block(Hash256::ZERO, FUND_H, vec![fund_cb]);
@@ -204,20 +236,41 @@ fn main() {
         let spend_hash = spend_block.header.hash();
 
         let mut chain = vec![(fund_hash, fund_block.header)];
-        for b in &filler { chain.push((b.header.hash(), b.header)); }
+        for b in &filler {
+            chain.push((b.header.hash(), b.header));
+        }
         chain.push((spend_hash, spend_block.header));
         let snap = make_snapshot(&chain);
 
         for _ in 0..ROUNDS {
             let (mut storage, _dir) = tmp_storage();
             let mut cache = ScriptExecutionCache::new(1024);
-            commit(&mut storage, &fund_block, BlockHeight(FUND_H), &snap, &mut cache, 1);
+            commit(
+                &mut storage,
+                &fund_block,
+                BlockHeight(FUND_H),
+                &snap,
+                &mut cache,
+                1,
+            );
             for (i, b) in filler.iter().enumerate() {
-                commit(&mut storage, b, BlockHeight(2 + u32::try_from(i).expect("fits")),
-                    &snap, &mut cache, 2 + i as u64);
+                commit(
+                    &mut storage,
+                    b,
+                    BlockHeight(2 + u32::try_from(i).expect("fits")),
+                    &snap,
+                    &mut cache,
+                    2 + i as u64,
+                );
             }
-            commit(&mut storage, &spend_block, BlockHeight(SPEND_H),
-                &snap, &mut cache, u64::from(SPEND_H));
+            commit(
+                &mut storage,
+                &spend_block,
+                BlockHeight(SPEND_H),
+                &snap,
+                &mut cache,
+                u64::from(SPEND_H),
+            );
             storage.shutdown().expect("shutdown");
         }
     }

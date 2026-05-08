@@ -62,8 +62,7 @@ fn decode_legacy_tx(hex_str: &str) -> Transaction {
 //   hashSequence: 52b0a642eea2fb7ae638c36f6252b6750293dbe574a806984b8e4d8548339a3b
 //   hashOutputs:  863ef3e1a92afbfdb97f31ad0fc7683ee943e9abcf2501590ff8f6551f47e5e5
 
-const P2WPKH_UNSIGNED_TX: &str =
-    "0100000002fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f\
+const P2WPKH_UNSIGNED_TX: &str = "0100000002fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f\
      0000000000eeffffffef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57\
      b90ec68a0100000000ffffffff02202cb206000000001976a9148280b37df378db99f66f85\
      c95a783a76ac7a6d5988ac9093510d000000001976a9143bde42dbee7e4dbe6a21b2d50ce\
@@ -100,8 +99,7 @@ fn p2wpkh_sighash_input1() {
 //   hashSequence: 18606b350cd8bf565266bc352f0caddcf01e8fa789dd8a15386327cf8cabe198
 //   hashOutputs:  de984f44532e2173ca0d64314fcefe6d30da6f8cf27bafa706da61df8a226c83
 
-const P2SH_P2WPKH_UNSIGNED_TX: &str =
-    "0100000001db6b1b20aa0fd7b23880be2ecbd4a98130974cf4748fb66092ac4d3ceb1a5477\
+const P2SH_P2WPKH_UNSIGNED_TX: &str = "0100000001db6b1b20aa0fd7b23880be2ecbd4a98130974cf4748fb66092ac4d3ceb1a5477\
      0100000000feffffff02b8b4eb0b000000001976a914a457b684d7f0d539a46a45bbc043f3\
      5b59d0d96388ac0008af2f000000001976a914fd270b1ee6abcaea97fea7ad0402e8bd8ad6\
      d77c88ac92040000";
@@ -136,8 +134,7 @@ fn p2sh_p2wpkh_sighash_input0() {
 // hashSequence and hashOutputs are both zero (SIGHASH_SINGLE, n_in=1 > n_out=1,
 // so the SIGHASH_SINGLE "1" bug applies for hashOutputs).
 
-const P2WSH_UNSIGNED_TX: &str =
-    "0100000002fe3dc9208094f3ffd12645477b3dc56f60ec4fa8e6f5d67c565d1c6b9216b36e\
+const P2WSH_UNSIGNED_TX: &str = "0100000002fe3dc9208094f3ffd12645477b3dc56f60ec4fa8e6f5d67c565d1c6b9216b36e\
      0000000000ffffffff0815cf020f013ed6cf91d29f4202e8a58726b1ac6c79da47c23d1bee\
      0a6925f80000000000ffffffff0100f2052a010000001976a914a30741f8145e5acadf23f7\
      51864167f32e0963f788ac00000000";
@@ -169,8 +166,7 @@ fn p2wsh_sighash_input1_second_sig() {
     let tx = decode_legacy_tx(P2WSH_UNSIGNED_TX);
     let cache = Bip143Cache::new(&tx);
     // BIP shows scriptCode with leading VarInt (0x23=35); strip it.
-    let script_code =
-        hex("210255a9626aebf5e29c0e6538428ba0d1dcf6ca98ffdf086aa8ced5e0d0215ea465ac");
+    let script_code = hex("210255a9626aebf5e29c0e6538428ba0d1dcf6ca98ffdf086aa8ced5e0d0215ea465ac");
     let amount = Satoshi::new(4_900_000_000);
     let digest = tx.bip143_sighash(1, &script_code, amount, SigHashType::SINGLE, &cache);
     assert_eq!(
@@ -188,8 +184,7 @@ fn p2wsh_sighash_input1_second_sig() {
 // Single input, 6-of-6 multisig witnessScript, amount = 987_654_321 sat.
 // The BIP publishes the sigHash for all six SIGHASH_* combinations.
 
-const P2SH_P2WSH_UNSIGNED_TX: &str =
-    "010000000136641869ca081e70f394c6948e8af409e18b619df2ed74aa106c1ca29787b96e\
+const P2SH_P2WSH_UNSIGNED_TX: &str = "010000000136641869ca081e70f394c6948e8af409e18b619df2ed74aa106c1ca29787b96e\
      0100000000ffffffff0200e9a435000000001976a914389ffce9cd9ae88dcc0631e88a821f\
      fdbe9bfe2688acc0832f05000000001976a9147480a33f950689af511e6e84c138dbbd3c3e\
      e41588ac00000000";

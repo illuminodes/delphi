@@ -10,7 +10,7 @@ use mantle_consensus::script::ScriptExecutionCache;
 
 #[path = "replay_perf_common.rs"]
 mod common;
-use common::{coinbase_tx, commit, make_block, make_snapshot, run_for, tmp_storage, SECS};
+use common::{SECS, coinbase_tx, commit, make_block, make_snapshot, run_for, tmp_storage};
 
 fn main() {
     eprintln!("[A] start");
@@ -24,12 +24,21 @@ fn main() {
         let (mut storage, _dir) = tmp_storage();
         let mut cache = ScriptExecutionCache::new(1024);
         eprint!("C ");
-        commit(&mut storage, black_box(&block), BlockHeight(1), &snap, &mut cache, 1);
+        commit(
+            &mut storage,
+            black_box(&block),
+            BlockHeight(1),
+            &snap,
+            &mut cache,
+            1,
+        );
         eprint!("X ");
         storage.shutdown().expect("shutdown");
         eprintln!("ok");
         iter_idx += 1;
     });
-    eprintln!("replay_coinbase_only: {n} iters  ({:.0} blocks/s)",
-        n as f64 / SECS.as_secs_f64());
+    eprintln!(
+        "replay_coinbase_only: {n} iters  ({:.0} blocks/s)",
+        n as f64 / SECS.as_secs_f64()
+    );
 }
