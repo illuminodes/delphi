@@ -22,6 +22,7 @@ use crate::validation::{
 mod bip65;
 mod bip66;
 mod bip112;
+mod bip143;
 mod fixtures;
 mod genesis;
 mod stage1;

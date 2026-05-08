@@ -1,0 +1,13 @@
+[package]
+name = "mantle-storage"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mantle = { path = "../core" }
+mantle-consensus = { path = "../consensus" }
+ququmatz.workspace = true
+quetzalcoatl.workspace = true

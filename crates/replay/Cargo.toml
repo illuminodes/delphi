@@ -1,0 +1,18 @@
+[package]
+name = "mantle-replay"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "mantle-replay"
+path = "src/main.rs"
+
+[dependencies]
+mantle = { path = "../core" }
+mantle-consensus = { path = "../consensus" }
+mantle-storage = { path = "../storage" }
+mantle-validator = { path = "../validator" }
+ququmatz.workspace = true

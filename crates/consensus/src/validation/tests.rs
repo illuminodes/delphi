@@ -778,7 +778,7 @@ fn connect_script_verify_failure_propagates() {
 }
 
 /// `skip_script=true` bypasses script verification: a block whose inputs
-/// would normally fail (OP_RETURN scriptPubKey) succeeds when skipped.
+/// would normally fail (`OP_RETURN` scriptPubKey) succeeds when skipped.
 #[test]
 fn connect_skip_script_bypasses_verification() {
     let (mut view, _, _) = connect_setup(200);

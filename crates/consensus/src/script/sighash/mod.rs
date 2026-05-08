@@ -54,7 +54,7 @@
 //! [`TxSighash::bip341_sighash`] for the argument shape.
 
 use mantle::codec::{Encode, VarInt};
-use mantle::hash::sha256d;
+use mantle::hash::ByteSliceExt;
 use mantle::primitives::{Hash256, Satoshi, Transaction, TxIn, TxOut, Witness};
 
 use super::consensus_crypto::Schnorr;
@@ -176,7 +176,7 @@ impl TxSighash for Transaction {
             .expect("encoding into Vec cannot fail");
         buf.extend_from_slice(&hash_type.0.to_le_bytes());
 
-        Hash256(sha256d(&buf))
+        buf.sha256d()
     }
 
     /// BIP143 (segwit v0) signature hash — see module docs §"BIP143" for
@@ -218,7 +218,7 @@ impl TxSighash for Transaction {
                 if n_in < self.outputs.len() {
                     let mut buf: Vec<u8> = Vec::new();
                     let _ = self.outputs[n_in].encode(&mut buf);
-                    Hash256(sha256d(&buf))
+                    buf.sha256d()
                 } else {
                     Hash256::ZERO
                 }
@@ -240,7 +240,7 @@ impl TxSighash for Transaction {
         buf.extend_from_slice(&self.locktime.to_le_bytes());
         buf.extend_from_slice(&hash_type.0.to_le_bytes());
 
-        Hash256(sha256d(&buf))
+        buf.sha256d()
     }
 
     /// BIP341 (taproot) signature hash — see [`TxSighash::bip341_sighash`]
@@ -310,9 +310,9 @@ impl Bip143Cache {
         }
 
         Self {
-            prevouts: Hash256(sha256d(&prevouts_buf)),
-            sequence: Hash256(sha256d(&seq_buf)),
-            outputs: Hash256(sha256d(&outputs_buf)),
+            prevouts: prevouts_buf.sha256d(),
+            sequence: seq_buf.sha256d(),
+            outputs: outputs_buf.sha256d(),
         }
     }
 }

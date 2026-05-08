@@ -37,7 +37,7 @@ fn push_scriptnum(value: i64) -> Vec<u8> {
     } else if negative {
         *bytes.last_mut().expect("non-empty") |= 0x80;
     }
-    let len = bytes.len() as u8;
+    let len = u8::try_from(bytes.len()).expect("script number > 255 bytes");
     let mut out = vec![len];
     out.extend(bytes);
     out
@@ -91,7 +91,7 @@ fn cltv_height_tx_locktime_greater_accepts() {
     assert!(verify_script(&[], &spk, &tx, 0, Satoshi::new(1000), flags()).is_ok());
 }
 
-/// Lock at MTP-style locktime 500_000_001; tx locktime 600_000_000 → satisfied.
+/// Lock at MTP-style locktime `500_000_001`; tx locktime `600_000_000` → satisfied.
 #[test]
 fn cltv_time_accepts() {
     let spk = cltv_spk(500_000_001);
@@ -127,7 +127,7 @@ fn cltv_tx_locktime_too_low_rejects() {
     assert!(result.is_err());
 }
 
-/// Mixing height-space (script = 100) with time-space (tx = 500_000_001) → reject.
+/// Mixing height-space (script = 100) with time-space (tx = `500_000_001`) → reject.
 #[test]
 fn cltv_type_mismatch_height_vs_time_rejects() {
     let spk = cltv_spk(100); // height-space
@@ -136,7 +136,7 @@ fn cltv_type_mismatch_height_vs_time_rejects() {
     assert!(result.is_err());
 }
 
-/// Mixing time-space (script = 500_000_001) with height-space (tx = 100) → reject.
+/// Mixing time-space (script = `500_000_001`) with height-space (tx = 100) → reject.
 #[test]
 fn cltv_type_mismatch_time_vs_height_rejects() {
     let spk = cltv_spk(500_000_001);

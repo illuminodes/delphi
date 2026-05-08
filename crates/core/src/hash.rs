@@ -1,5 +1,7 @@
 use sha2::{Digest, Sha256};
 
+use crate::primitives::Hash256;
+
 /// `SHA256d`: double-SHA256, used for block/tx hashes and message checksums.
 #[inline]
 #[must_use]
@@ -14,6 +16,67 @@ pub fn sha256d(data: &[u8]) -> [u8; 32] {
 pub fn checksum(data: &[u8]) -> [u8; 4] {
     let [a, b, c, d, ..] = sha256d(data);
     [a, b, c, d]
+}
+
+/// Extension methods on byte slices for hashing and fixed-width field parsing.
+pub trait ByteSliceExt {
+    /// Double-SHA256 of this slice, returned as a [`Hash256`] newtype.
+    #[must_use]
+    fn sha256d(&self) -> Hash256;
+
+    /// Read a `u32` in little-endian byte order from `offset`.
+    ///
+    /// # Panics
+    /// Panics if `offset + 4 > self.len()`.
+    #[must_use]
+    fn read_u32_le(&self, offset: usize) -> u32;
+
+    /// Copy 32 bytes starting at `offset` into a new `[u8; 32]`.
+    ///
+    /// # Panics
+    /// Panics if `offset + 32 > self.len()`.
+    #[must_use]
+    fn read_hash(&self, offset: usize) -> [u8; 32];
+
+    /// Copy 32 bytes starting at `offset` into a caller-supplied buffer `out`,
+    /// returning it by mutable reference for chaining.
+    ///
+    /// Avoids the extra stack copy that `read_hash` performs when the caller
+    /// already owns a `[u8; 32]`.
+    ///
+    /// # Panics
+    /// Panics if `offset + 32 > self.len()`.
+    fn read_hash_into<'a>(&self, offset: usize, out: &'a mut [u8; 32]) -> &'a mut [u8; 32];
+}
+
+impl ByteSliceExt for [u8] {
+    #[inline]
+    fn sha256d(&self) -> Hash256 {
+        Hash256(sha256d(self))
+    }
+
+    #[inline]
+    fn read_u32_le(&self, offset: usize) -> u32 {
+        u32::from_le_bytes([
+            self[offset],
+            self[offset + 1],
+            self[offset + 2],
+            self[offset + 3],
+        ])
+    }
+
+    #[inline]
+    fn read_hash(&self, offset: usize) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&self[offset..offset + 32]);
+        out
+    }
+
+    #[inline]
+    fn read_hash_into<'a>(&self, offset: usize, out: &'a mut [u8; 32]) -> &'a mut [u8; 32] {
+        out.copy_from_slice(&self[offset..offset + 32]);
+        out
+    }
 }
 
 #[cfg(test)]

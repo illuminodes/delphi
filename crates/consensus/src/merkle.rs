@@ -1,4 +1,4 @@
-use mantle::hash::sha256d;
+use mantle::hash::ByteSliceExt;
 use mantle::primitives::Hash256;
 
 /// Compute the merkle root from a slice, reusing `buf` as the working buffer.
@@ -53,7 +53,7 @@ fn reduce_in_place(row: &mut Vec<Hash256>) -> Hash256 {
         for i in 0..parents {
             pair[..32].copy_from_slice(&row[i * 2].0);
             pair[32..].copy_from_slice(&row[i * 2 + 1].0);
-            row[i] = Hash256(sha256d(&pair));
+            row[i] = pair.sha256d();
         }
         row.truncate(parents);
     }
@@ -100,7 +100,7 @@ mod tests {
         let mut buf = [0u8; 64];
         buf[..32].copy_from_slice(&a.0);
         buf[32..].copy_from_slice(&b.0);
-        let expected = Hash256(sha256d(&buf));
+        let expected = buf.sha256d();
         assert_eq!(compute_merkle_root(&[a, b]), Some(expected));
     }
 
@@ -114,15 +114,15 @@ mod tests {
         let mut buf = [0u8; 64];
         buf[..32].copy_from_slice(&a.0);
         buf[32..].copy_from_slice(&b.0);
-        let ab = Hash256(sha256d(&buf));
+        let ab = buf.sha256d();
 
         buf[..32].copy_from_slice(&c.0);
         buf[32..].copy_from_slice(&c.0);
-        let cc = Hash256(sha256d(&buf));
+        let cc = buf.sha256d();
 
         buf[..32].copy_from_slice(&ab.0);
         buf[32..].copy_from_slice(&cc.0);
-        let expected = Hash256(sha256d(&buf));
+        let expected = buf.sha256d();
 
         assert_eq!(compute_merkle_root(&[a, b, c]), Some(expected));
     }

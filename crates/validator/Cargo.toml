@@ -1,0 +1,12 @@
+[package]
+name = "mantle-validator"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mantle = { path = "../core" }
+mantle-consensus = { path = "../consensus" }
+mantle-storage = { path = "../storage" }

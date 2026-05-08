@@ -36,7 +36,7 @@ fn push_scriptnum(value: i64) -> Vec<u8> {
     } else if negative {
         *bytes.last_mut().expect("non-empty") |= 0x80;
     }
-    let len = bytes.len() as u8;
+    let len = u8::try_from(bytes.len()).expect("script number > 255 bytes");
     let mut out = vec![len];
     out.extend(bytes);
     out
@@ -216,5 +216,5 @@ fn cltv_and_csv_combined_accepts() {
     let f = ScriptFlags::P2SH
         | ScriptFlags::CHECKLOCKTIMEVERIFY
         | ScriptFlags::CHECKSEQUENCEVERIFY;
-    assert!(verify_script(&[], &spk, &tx, 0, Satoshi::new(1000), f).is_ok());
+    assert!(verify_script(&[], spk, &tx, 0, Satoshi::new(1000), f).is_ok());
 }

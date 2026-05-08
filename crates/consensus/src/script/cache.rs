@@ -314,7 +314,7 @@ mod tests {
         cache.insert(k2, true);
         cache.insert(k3, true); // evicts k1
         assert_eq!(cache.len(), 2);
-        assert!(cache.map.get(&k1).is_none());
+        assert!(!cache.map.contains_key(&k1));
     }
 
     #[test]

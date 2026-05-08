@@ -6,6 +6,9 @@ members = [
     "crates/node",
     "crates/bench",
     "crates/conformance",
+    "crates/storage",
+    "crates/validator",
+    "crates/replay",
 ]
 
 [workspace.package]

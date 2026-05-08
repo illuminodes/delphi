@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use mantle::codec::{DecodeRef, VarInt};
 use mantle::collections::PrehashedSet;
-use mantle::hash::sha256d;
+use mantle::hash::ByteSliceExt;
 use mantle::primitives::{
     Block, BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi, Transaction, TransactionRef,
     TxHash, TxInRef, TxOutRef,
@@ -128,7 +128,7 @@ where
     txids.reserve(block.transactions.len());
     for tx in &block.transactions {
         tx.txid_into(serial_scratch)?;
-        txids.push(Hash256(sha256d(serial_scratch)));
+        txids.push(serial_scratch.sha256d());
     }
 
     // CVE-2012-2459: reject any block whose txid set contains duplicates.
@@ -332,7 +332,7 @@ where
 
     let (_, rest) = u32::decode_ref(buf).map_err(malformed)?; // locktime
     let tx_raw_len = wire.len() - rest.len();
-    Ok((tx_raw_len, Hash256(sha256d(&wire[..tx_raw_len]))))
+    Ok((tx_raw_len, wire[..tx_raw_len].sha256d()))
 }
 
 /// Minimal view a transaction must expose to be structurally validated.

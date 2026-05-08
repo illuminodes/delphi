@@ -2,7 +2,7 @@ use std::fmt;
 use std::io::{self, Read, Write};
 
 use crate::codec::{Decode, DecodeRef, Encode, VarInt, decode_bytes_limited};
-use crate::hash::sha256d;
+use crate::hash::ByteSliceExt;
 
 // ── Hash256 ───────────────────────────────────────────────────────────────────
 
@@ -403,7 +403,7 @@ impl BlockHeader {
     /// `SHA256d` of the 80-byte serialised header — the canonical block hash.
     #[must_use]
     pub fn hash(&self) -> Hash256 {
-        Hash256(sha256d(&self.to_bytes()))
+        self.to_bytes().sha256d()
     }
 
     /// Deserialize from a fixed 80-byte slice.
@@ -1023,7 +1023,7 @@ impl TxHash for Transaction {
         buf.clear();
         buf.reserve(self.base_encoded_len());
         self.encode_base(buf)?;
-        Ok(Hash256(sha256d(buf)))
+        Ok(buf.sha256d())
     }
 }
 
@@ -1406,7 +1406,7 @@ impl Encode for TransactionRef<'_> {
 impl TxHash for TransactionRef<'_> {
     #[inline]
     fn txid_into(&self, _buf: &mut Vec<u8>) -> io::Result<Hash256> {
-        Ok(Hash256(sha256d(self.non_witness_raw)))
+        Ok(self.non_witness_raw.sha256d())
     }
 }
 

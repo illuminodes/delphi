@@ -581,6 +581,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "mantle-replay"
+version = "0.1.0"
+dependencies = [
+ "mantle",
+ "mantle-consensus",
+ "mantle-storage",
+ "mantle-validator",
+ "ququmatz",
+]
+
+[[package]]
+name = "mantle-storage"
+version = "0.1.0"
+dependencies = [
+ "mantle",
+ "mantle-consensus",
+ "quetzalcoatl",
+ "ququmatz",
+]
+
+[[package]]
+name = "mantle-validator"
+version = "0.1.0"
+dependencies = [
+ "mantle",
+ "mantle-consensus",
+ "mantle-storage",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

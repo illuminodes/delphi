@@ -85,7 +85,7 @@ pub enum ValidationError {
     /// `ChainView` returned an error.
     ChainView(ChainViewError),
     /// An I/O error during serialisation (e.g. computing a txid).
-    Io(String),
+    Io(std::io::ErrorKind),
 }
 
 impl std::fmt::Display for ValidationError {
@@ -104,7 +104,7 @@ impl From<ChainViewError> for ValidationError {
 
 impl From<std::io::Error> for ValidationError {
     fn from(e: std::io::Error) -> Self {
-        Self::Io(e.to_string())
+        Self::Io(e.kind())
     }
 }
 
@@ -113,15 +113,12 @@ impl From<std::io::Error> for ValidationError {
 pub enum ChainViewError {
     /// The requested item was not found (distinct from a storage failure).
     NotFound,
-    /// An underlying storage or I/O failure.
-    Storage(String),
 }
 
 impl std::fmt::Display for ChainViewError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => f.write_str("not found"),
-            Self::Storage(s) => write!(f, "storage error: {s}"),
         }
     }
 }
