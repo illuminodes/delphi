@@ -86,6 +86,7 @@ fn find_preset(name: &str) -> Option<&'static Preset> {
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 struct Args {
+    preset: String,
     start: u32,
     end: u32,
     locator: Hash256,
@@ -143,6 +144,7 @@ fn parse_args() -> Args {
             std::process::exit(1);
         });
         return Args {
+            preset: p.name.to_string(),
             start: p.start,
             end: p.end,
             locator: Hash256::from_display_hex(p.locator).expect("hardcoded locator"),
@@ -153,6 +155,7 @@ fn parse_args() -> Args {
     if start.is_none() && end.is_none() && locator_hex.is_none() {
         let p = find_preset("early").expect("early preset exists");
         return Args {
+            preset: p.name.to_string(),
             start: p.start,
             end: p.end,
             locator: Hash256::from_display_hex(p.locator).expect("hardcoded locator"),
@@ -175,6 +178,7 @@ fn parse_args() -> Args {
     );
 
     Args {
+        preset: format!("custom_{start}_{end}"),
         start,
         end,
         locator,
@@ -210,8 +214,10 @@ fn our_version() -> VersionMsg {
     }
 }
 
-fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
+fn fixtures_dir(preset: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
+        .join(preset)
 }
 
 fn block_path(dir: &Path, height: u32) -> PathBuf {
@@ -262,7 +268,7 @@ fn main() {
     let args = parse_args();
     let n = args.end - args.start + 1;
 
-    let fixtures = fixtures_dir();
+    let fixtures = fixtures_dir(&args.preset);
     std::fs::create_dir_all(fixtures.join("blocks")).expect("create fixtures/blocks");
 
     let mut have: Vec<bool> = (args.start..=args.end)

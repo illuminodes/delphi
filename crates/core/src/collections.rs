@@ -16,10 +16,11 @@ pub struct PrehashedHasher {
 impl Hasher for PrehashedHasher {
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        // Take the first 8 bytes as a little-endian u64. Callers write
-        // fixed-size types so `bytes` is never shorter than 8 in practice
-        // (`Hash256` is 32 bytes, `OutPoint` is 36 bytes). Pad with zeros
-        // if somehow shorter — the hasher must not panic.
+        // Take the first 8 bytes as a little-endian u64. Every type used as a
+        // key must write its entropy in a single write() call (not field-by-field
+        // via derive) so this overwrite is safe. Hash256 is [u8;32] written as
+        // one slice; OutPoint has a custom Hash impl that packs txid+vout into
+        // a single [u8;36] write. Pad with zeros if somehow shorter — must not panic.
         let mut buf = [0u8; 8];
         let n = bytes.len().min(8);
         buf[..n].copy_from_slice(&bytes[..n]);

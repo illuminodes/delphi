@@ -192,11 +192,11 @@ fn replay_block(
     token: u64,
     dummy_on_miss: bool,
 ) {
+    use mantle::collections::PrehashedSet;
     use mantle::primitives::TxHash as _;
-    use std::collections::HashSet;
 
     // Intra-block outputs.
-    let mut spent_set: HashSet<OutPoint> = HashSet::new();
+    let mut spent_set: PrehashedSet<OutPoint> = PrehashedSet::default();
     for tx in block.transactions.iter().skip(1) {
         for inp in &tx.inputs {
             spent_set.insert(inp.previous_output);
@@ -242,7 +242,7 @@ fn replay_block(
         .collect();
 
     // BIP30 probes.
-    let spend_op_set: HashSet<OutPoint> = spend_ops.iter().copied().collect();
+    let spend_op_set: PrehashedSet<OutPoint> = spend_ops.iter().copied().collect();
     scratch.clear();
     let bip30_ops: Vec<OutPoint> = block
         .transactions
@@ -273,7 +273,7 @@ fn replay_block(
     let view = BenchView::new(coins, snap, tip, dummy_on_miss);
 
     let mut scratch2 = Vec::new();
-    let result = connect_block(block, height, &view, &mut scratch2, true, Some(cache))
+    let result = connect_block(block, height, &view, &mut scratch2, true, Some(cache), None)
         .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage

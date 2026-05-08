@@ -71,6 +71,14 @@ path = "src/fetch_fixtures.rs"
 name = "replay-mainnet"
 path = "src/replay_mainnet.rs"
 
+[[bin]]
+name = "replay-perf-ordinals"
+path = "src/replay_perf_ordinals.rs"
+
+[[bin]]
+name = "replay-dhat-ordinals"
+path = "src/replay_dhat_ordinals.rs"
+
 [dependencies]
 mantle = { path = "../core" }
 mantle-consensus = { path = "../consensus" }

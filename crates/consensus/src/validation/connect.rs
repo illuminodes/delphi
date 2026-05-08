@@ -1,9 +1,10 @@
-use mantle::primitives::{Block, BlockHeight, OutPoint, Satoshi, TxHash};
+use mantle::primitives::{BlockHeight, Hash256, OutPoint, Satoshi};
 
 use crate::chain_view::{ChainView, ConnectResult, NewCoin};
 use crate::error::ValidationError;
 use crate::script::sighash::Bip143Cache;
 use crate::script::{ScriptExecutionCache, ScriptFlags, ScriptVerifier, verify_script_cached};
+use crate::tx_view::{BlockView, InputView, OutputView, TxView};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -41,33 +42,58 @@ const BIP30_EXCEPTION_HEIGHTS: [u32; 2] = [91_842, 91_880];
 /// probes the cache before running the interpreter; hits short-circuit the
 /// full verification. Pass `None` to disable caching (fuzzer, tests).
 ///
+/// `precomputed_txids` — optional pre-hashed per-tx ids in block order. The
+/// pipeline computes txids before validation (for intra-block dep collection,
+/// BIP30 probes, etc.); passing them here lets `connect_block` skip its own
+/// txid pass and reuse the same hashes. Length must equal `block.tx_count()`.
+/// Pass `None` to compute internally (legacy / single-block test paths).
+///
 /// # Errors
 /// Returns the first [`ValidationError`] encountered.
+///
+/// # Panics
+/// Panics if `precomputed_txids` is `Some(slice)` and `slice.len() != block.tx_count()`.
 #[allow(clippy::too_many_lines)] // single-pass per-input loop reads better as one function
-pub fn connect_block<V: ChainView>(
-    block: &Block,
+#[allow(clippy::too_many_arguments)] // precomputed_txids is opt-in; refactoring to a struct adds churn
+pub fn connect_block<B, V>(
+    block: &B,
     height: BlockHeight,
     view: &V,
     scratch: &mut Vec<u8>,
     skip_script: bool,
     mut exec_cache: Option<&mut ScriptExecutionCache>,
-) -> Result<ConnectResult, ValidationError> {
+    precomputed_txids: Option<&[Hash256]>,
+) -> Result<ConnectResult, ValidationError>
+where
+    B: BlockView,
+    V: ChainView,
+{
+    if let Some(txids) = precomputed_txids {
+        assert_eq!(
+            txids.len(),
+            block.tx_count(),
+            "precomputed txids length must match block tx count",
+        );
+    }
     let is_bip30_exception = BIP30_EXCEPTION_HEIGHTS.contains(&height.0);
     let subsidy = block_subsidy(height);
     let script_flags = ScriptFlags::for_height(height);
 
     // Pre-size the output vecs. Most blocks have O(thousands) of inputs/outputs.
-    let total_inputs: usize = block.transactions.iter().map(|tx| tx.inputs.len()).sum();
-    let total_outputs: usize = block.transactions.iter().map(|tx| tx.outputs.len()).sum();
+    let total_inputs: usize = block.txs().map(TxView::input_count).sum();
+    let total_outputs: usize = block.txs().map(TxView::output_count).sum();
     let mut created: Vec<NewCoin> = Vec::with_capacity(total_outputs);
     let mut spent: Vec<OutPoint> = Vec::with_capacity(total_inputs);
 
     let mut total_fees = Satoshi::ZERO;
     let mut total_sigops: u32 = 0;
 
-    for (tx_index, tx) in block.transactions.iter().enumerate() {
+    for (tx_index, tx) in block.txs().enumerate() {
         let is_coinbase = tx_index == 0;
-        let txid = tx.txid_into(scratch)?;
+        let txid = match precomputed_txids {
+            Some(txids) => txids[tx_index],
+            None => tx.compute_txid(scratch)?,
+        };
 
         // BIP30: if any output of this tx is at a txid that already has an
         // unspent coinbase in the UTXO set, reject (unless this is an exception height).
@@ -82,13 +108,11 @@ pub fn connect_block<V: ChainView>(
 
         // Legacy sigops: count OP_CHECKSIG / OP_CHECKMULTISIG in scriptSig and
         // scriptPubKey. Each OP_CHECKMULTISIG counts as 20 (MAX_PUBKEYS_PER_MULTISIG).
-        for input in &tx.inputs {
-            total_sigops =
-                total_sigops.saturating_add(count_legacy_sigops(input.script_sig.as_slice()));
+        for input in tx.inputs() {
+            total_sigops = total_sigops.saturating_add(count_legacy_sigops(input.script_sig()));
         }
-        for output in &tx.outputs {
-            total_sigops =
-                total_sigops.saturating_add(count_legacy_sigops(output.script_pubkey.as_slice()));
+        for output in tx.outputs() {
+            total_sigops = total_sigops.saturating_add(count_legacy_sigops(output.script_pubkey()));
         }
         if total_sigops > MAX_BLOCK_SIGOPS {
             return Err(ValidationError::SigopsLimitExceeded {
@@ -98,15 +122,15 @@ pub fn connect_block<V: ChainView>(
 
         if is_coinbase {
             // Coinbase outputs go straight into created; no input lookup needed.
-            for (vout, output) in tx.outputs.iter().enumerate() {
+            for (vout, output) in tx.outputs().enumerate() {
                 #[allow(clippy::cast_possible_truncation)]
                 created.push(NewCoin {
                     outpoint: OutPoint {
                         txid,
                         vout: vout as u32,
                     },
-                    value: output.value,
-                    script_pubkey: output.script_pubkey.clone(),
+                    value: output.value(),
+                    script_pubkey: output.script_pubkey().to_vec().into(),
                     coinbase: true,
                     height,
                 });
@@ -116,7 +140,7 @@ pub fn connect_block<V: ChainView>(
         }
 
         // Non-coinbase: look up every input in the UTXO set.
-        let outpoints: Vec<OutPoint> = tx.inputs.iter().map(|i| i.previous_output).collect();
+        let outpoints: Vec<OutPoint> = tx.inputs().map(|i| i.previous_output()).collect();
         let coins = view.get_coins(&outpoints)?;
 
         // Built once per-tx only when scripts run without an exec_cache.
@@ -128,7 +152,7 @@ pub fn connect_block<V: ChainView>(
         };
 
         let mut input_total = Satoshi::ZERO;
-        for (input_index, (input, coin_opt)) in tx.inputs.iter().zip(coins.iter()).enumerate() {
+        for (input_index, (input, coin_opt)) in tx.inputs().zip(coins.iter()).enumerate() {
             let coin = coin_opt.as_ref().ok_or(ValidationError::MissingInput {
                 tx_index,
                 input_index,
@@ -151,7 +175,7 @@ pub fn connect_block<V: ChainView>(
             if !skip_script {
                 let script_result = if let Some(ref mut cache) = exec_cache {
                     verify_script_cached(
-                        input.script_sig.as_slice(),
+                        input.script_sig(),
                         coin.script_pubkey.as_slice(),
                         tx,
                         input_index,
@@ -168,7 +192,7 @@ pub fn connect_block<V: ChainView>(
                         #[allow(clippy::clone_on_ref_ptr)]
                         bip143_cache.clone().unwrap_or_else(|| unreachable!()),
                     )
-                    .verify(input.script_sig.as_slice(), coin.script_pubkey.as_slice())
+                    .verify(input.script_sig(), coin.script_pubkey.as_slice())
                 };
                 script_result.map_err(|kind| ValidationError::ScriptVerifyFailed {
                     tx_index,
@@ -181,13 +205,12 @@ pub fn connect_block<V: ChainView>(
                 .checked_add(coin.value)
                 .ok_or(ValidationError::InputValueOverflow { tx_index })?;
 
-            spent.push(input.previous_output);
+            spent.push(input.previous_output());
         }
 
         let output_total = tx
-            .outputs
-            .iter()
-            .try_fold(Satoshi::ZERO, |acc, o| acc.checked_add(o.value))
+            .outputs()
+            .try_fold(Satoshi::ZERO, |acc, o| acc.checked_add(o.value()))
             .ok_or(ValidationError::InputValueOverflow { tx_index })?;
 
         if output_total.to_u64() > input_total.to_u64() {
@@ -199,15 +222,15 @@ pub fn connect_block<V: ChainView>(
             .checked_add(fee)
             .ok_or(ValidationError::InputValueOverflow { tx_index })?;
 
-        for (vout, output) in tx.outputs.iter().enumerate() {
+        for (vout, output) in tx.outputs().enumerate() {
             #[allow(clippy::cast_possible_truncation)]
             created.push(NewCoin {
                 outpoint: OutPoint {
                     txid,
                     vout: vout as u32,
                 },
-                value: output.value,
-                script_pubkey: output.script_pubkey.clone(),
+                value: output.value(),
+                script_pubkey: output.script_pubkey().to_vec().into(),
                 coinbase: false,
                 height,
             });
@@ -215,10 +238,10 @@ pub fn connect_block<V: ChainView>(
     }
 
     // Validate coinbase reward against subsidy + fees.
-    let coinbase_output_total = block.transactions[0]
-        .outputs
-        .iter()
-        .try_fold(Satoshi::ZERO, |acc, o| acc.checked_add(o.value))
+    let coinbase_output_total = block
+        .tx(0)
+        .outputs()
+        .try_fold(Satoshi::ZERO, |acc, o| acc.checked_add(o.value()))
         .ok_or(ValidationError::CoinbaseRewardExceedsSubsidy)?;
 
     let max_coinbase = subsidy

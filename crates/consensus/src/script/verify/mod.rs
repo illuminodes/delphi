@@ -15,7 +15,7 @@
 //!    - P2WSH (`OP_0 <32 bytes>`): hash-check the witness script, then eval it.
 //! 7. Optional `CLEANSTACK` check — exactly one item must remain.
 
-use mantle::primitives::{Satoshi, Transaction};
+use mantle::primitives::Satoshi;
 
 use super::checker::{SignatureChecker, TxSigChecker};
 use super::consensus_crypto::{Ecdsa, Schnorr};
@@ -24,6 +24,7 @@ use super::flags::ScriptFlags;
 use super::interpreter::{InterpStackElement, Interpreter, TapscriptCtx};
 use super::sig_version::SigVersion;
 use super::sighash::{Bip143Cache, Bip341Cache, TapHasher, TxSighash};
+use crate::tx_view::{InputView, TxView, WitnessView};
 
 /// Verifier for a single transaction input's script pair.
 ///
@@ -33,22 +34,22 @@ use super::sighash::{Bip143Cache, Bip341Cache, TapHasher, TxSighash};
 ///
 /// [`verify`]: ScriptVerifier::verify
 /// [`verify_with_bufs`]: ScriptVerifier::verify_with_bufs
-pub struct ScriptVerifier<'a> {
-    tx: &'a Transaction,
+pub struct ScriptVerifier<'a, T: TxView> {
+    tx: &'a T,
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
     cache: Bip143Cache,
 }
 
-impl<'a> ScriptVerifier<'a> {
+impl<'a, T: TxView> ScriptVerifier<'a, T> {
     /// Build a verifier for input `n_in` of `tx`. Computes the `Bip143Cache`
     /// immediately; use [`with_cache`] when verifying multiple inputs of the
     /// same transaction.
     ///
     /// [`with_cache`]: ScriptVerifier::with_cache
     #[must_use]
-    pub fn new(tx: &'a Transaction, n_in: usize, amount: Satoshi, flags: ScriptFlags) -> Self {
+    pub fn new(tx: &'a T, n_in: usize, amount: Satoshi, flags: ScriptFlags) -> Self {
         Self {
             tx,
             n_in,
@@ -66,7 +67,7 @@ impl<'a> ScriptVerifier<'a> {
     /// every input of the same transaction.
     #[must_use]
     pub fn with_cache(
-        tx: &'a Transaction,
+        tx: &'a T,
         n_in: usize,
         amount: Satoshi,
         flags: ScriptFlags,
@@ -149,10 +150,10 @@ impl<'a> ScriptVerifier<'a> {
 ///
 /// # Errors
 /// Any of the structured `ScriptError` variants — see that enum's docs.
-pub fn verify_script(
+pub fn verify_script<T: TxView>(
     script_sig: &[u8],
     script_pubkey: &[u8],
-    tx: &Transaction,
+    tx: &T,
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
@@ -174,16 +175,16 @@ pub fn verify_script(
 /// # Errors
 /// Same variants as [`verify_script`] on a cold miss. Cached rejects return
 /// [`ScriptError::EvalFalse`].
-pub fn verify_script_cached(
+pub fn verify_script_cached<T: TxView>(
     script_sig: &[u8],
     script_pubkey: &[u8],
-    tx: &Transaction,
+    tx: &T,
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
     cache: &mut super::cache::ScriptExecutionCache,
 ) -> Result<(), ScriptError> {
-    let witness_items = tx.inputs[n_in].witness.to_vec();
+    let witness_items = tx.input(n_in).witness().to_vec();
     let key = super::cache::ScriptExecutionCache::key(
         script_sig,
         script_pubkey,
@@ -204,10 +205,10 @@ pub fn verify_script_cached(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn verify_script_impl(
+fn verify_script_impl<T: TxView>(
     script_sig: &[u8],
     script_pubkey: &[u8],
-    tx: &Transaction,
+    tx: &T,
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
@@ -246,10 +247,10 @@ fn verify_script_impl(
 /// - `NULLFAIL`: if sig is non-empty and CHECKSIG fails, reject.
 /// - `DERSIG`/`STRICTENC`/`LOW_S`: delegated to `check_signature_encoding` and
 ///   `check_pubkey_encoding` (same code the opcode handler calls).
-fn try_verify_p2pkh(
+fn try_verify_p2pkh<T: TxView>(
     script_sig: &[u8],
     script_pubkey: &[u8],
-    tx: &Transaction,
+    tx: &T,
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
@@ -288,7 +289,7 @@ fn try_verify_p2pkh(
     let pubkey = pk_step.data;
 
     // ── WITNESS: no witness allowed on legacy P2PKH ──────────────────────────
-    if flags.contains(ScriptFlags::WITNESS) && !tx.inputs[n_in].witness.is_empty() {
+    if flags.contains(ScriptFlags::WITNESS) && !tx.input(n_in).witness().is_empty() {
         return Some(Err(ScriptError::WitnessUnexpected));
     }
 
@@ -327,10 +328,10 @@ fn try_verify_p2pkh(
 }
 
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-fn verify_script_inner(
+fn verify_script_inner<T: TxView>(
     script_sig: &[u8],
     script_pubkey: &[u8],
-    tx: &Transaction,
+    tx: &T,
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
@@ -480,10 +481,10 @@ fn verify_script_inner(
                 return Err(ScriptError::WitnessMalleatedP2sh);
             }
 
-            let witness = &tx.inputs[n_in].witness;
+            let witness_items = tx.input(n_in).witness().to_vec();
 
             if version == 0 {
-                run_witness_v0(&program, &witness.to_vec(), tx, n_in, amount, flags, bufs)?;
+                run_witness_v0(&program, &witness_items, tx, n_in, amount, flags, bufs)?;
             } else if version == 1 && program.len() == 32 && flags.contains(ScriptFlags::TAPROOT) {
                 // BIP341 taproot (witness v1, 32-byte program).
                 // P2SH-wrapped taproot is not valid — BIP341 §"Script validation rules".
@@ -492,7 +493,7 @@ fn verify_script_inner(
                 }
                 run_taproot(
                     program.as_slice().try_into().expect("len==32"),
-                    &witness.to_vec(),
+                    &witness_items,
                     tx,
                     n_in,
                     amount,
@@ -515,7 +516,7 @@ fn verify_script_inner(
 
         // No witness program was found — if the input still carries a witness,
         // that's unexpected (BIP141 rule).
-        if !tx.inputs[n_in].witness.is_empty() {
+        if !tx.input(n_in).witness().is_empty() {
             return Err(ScriptError::WitnessUnexpected);
         }
     }
@@ -536,10 +537,10 @@ fn verify_script_inner(
 /// `witness_items` is the full witness stack. `spent_spk` is the scriptPubKey
 /// of the UTXO being spent (needed for BIP341 sighash).
 #[allow(clippy::too_many_arguments)]
-fn run_taproot(
+fn run_taproot<T: TxView>(
     program32: &[u8; 32],
     witness_items: &[Vec<u8>],
-    tx: &Transaction,
+    tx: &T,
     n_in: usize,
     amount: Satoshi,
     spent_spk: &[u8],
@@ -677,11 +678,11 @@ fn run_taproot(
 /// `leaf_hash` is the `TapLeaf` hash for this leaf. The script runs under
 /// `SigVersion::Tapscript` rules.
 #[allow(clippy::too_many_arguments)]
-fn run_tapscript(
+fn run_tapscript<T: TxView>(
     script: &[u8],
     stack_items: &[Vec<u8>],
     leaf_hash: [u8; 32],
-    tx: &Transaction,
+    tx: &T,
     n_in: usize,
     amount: Satoshi,
     spent_spk: &[u8],
@@ -736,10 +737,10 @@ fn run_tapscript(
 /// `stack_items` are pushed bottom-to-top before `script` is evaluated.
 /// The interpreter runs under `SigVersion::WitnessV0` so `check_ecdsa_sig`
 /// will use the BIP143 sighash path.
-fn eval_witness_script(
+fn eval_witness_script<T: TxView>(
     stack_items: &[&[u8]], // caller builds this on the stack — no heap alloc
     script: &[u8],
-    tx: &Transaction,
+    tx: &T,
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
@@ -784,10 +785,10 @@ fn eval_witness_script(
 ///
 /// `program` is the 20- or 32-byte witness program extracted from scriptPubKey.
 /// `witness_items` is the full witness stack for this input as owned byte vectors.
-fn run_witness_v0(
+fn run_witness_v0<T: TxView>(
     program: &[u8],
     witness_items: &[Vec<u8>],
-    tx: &Transaction,
+    tx: &T,
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,

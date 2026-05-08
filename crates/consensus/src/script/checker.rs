@@ -8,7 +8,7 @@
 //! Production wires a `TxSigChecker { tx, n_in, amount }` (M1.2). Tests wire
 //! `NopSigChecker` to exercise non-crypto opcodes without a transaction.
 
-use mantle::primitives::{Satoshi, Transaction};
+use mantle::primitives::Satoshi;
 
 use super::consensus_crypto::{Ecdsa, Schnorr};
 use super::flags::ScriptFlags;
@@ -16,6 +16,7 @@ use super::sig_version::SigVersion;
 use super::sighash::{
     Bip143Cache, Bip341Cache, SigHashType, TaprootSigHashType, TxSighash, find_and_delete_sig,
 };
+use crate::tx_view::{InputView, TxView};
 
 /// Asks "does this signature, pubkey, and scriptCode verify?" for the script
 /// being evaluated. The interpreter calls one of these methods for every
@@ -78,8 +79,8 @@ pub trait SignatureChecker {
 /// `consensus_crypto::verify_ecdsa` reads `DERSIG` / `STRICTENC` / `LOW_S`
 /// from it.
 #[derive(Debug, Clone)]
-pub struct TxSigChecker<'a> {
-    pub tx: &'a Transaction,
+pub struct TxSigChecker<'a, T: TxView> {
+    pub tx: &'a T,
     pub n_in: usize,
     pub amount: Satoshi,
     pub script_flags: ScriptFlags,
@@ -88,19 +89,14 @@ pub struct TxSigChecker<'a> {
     bip143_cache: Bip143Cache,
 }
 
-impl<'a> TxSigChecker<'a> {
+impl<'a, T: TxView> TxSigChecker<'a, T> {
     /// Construct a checker for input `n_in` of `tx` with the given output
     /// amount and verification flags. Pre-computes the BIP143 cache.
     ///
     /// Use [`Self::with_cache`] when verifying multiple inputs of the same
     /// transaction to avoid recomputing the BIP143 shared fields per input.
     #[must_use]
-    pub fn new(
-        tx: &'a Transaction,
-        n_in: usize,
-        amount: Satoshi,
-        script_flags: ScriptFlags,
-    ) -> Self {
+    pub fn new(tx: &'a T, n_in: usize, amount: Satoshi, script_flags: ScriptFlags) -> Self {
         Self {
             tx,
             n_in,
@@ -118,7 +114,7 @@ impl<'a> TxSigChecker<'a> {
     /// every input of the same transaction.
     #[must_use]
     pub fn with_cache(
-        tx: &'a Transaction,
+        tx: &'a T,
         n_in: usize,
         amount: Satoshi,
         script_flags: ScriptFlags,
@@ -134,7 +130,7 @@ impl<'a> TxSigChecker<'a> {
     }
 }
 
-impl SignatureChecker for TxSigChecker<'_> {
+impl<T: TxView> SignatureChecker for TxSigChecker<'_, T> {
     fn check_ecdsa_sig(
         &self,
         sig: &[u8],
@@ -232,7 +228,7 @@ impl SignatureChecker for TxSigChecker<'_> {
         // tx-level locktime entirely; if this CLTV opcode runs against
         // such an input, it can't enforce anything → reject.
         const LOCKTIME_THRESHOLD: i64 = 500_000_000;
-        let tx_lock = i64::from(self.tx.locktime);
+        let tx_lock = i64::from(self.tx.locktime());
         if (locktime < LOCKTIME_THRESHOLD) != (tx_lock < LOCKTIME_THRESHOLD) {
             return false;
         }
@@ -241,7 +237,7 @@ impl SignatureChecker for TxSigChecker<'_> {
         }
         // Caller-provided `n_in` is in range — `verify_script` is only
         // reached for valid inputs.
-        let seq = self.tx.inputs[self.n_in].sequence;
+        let seq = self.tx.input(self.n_in).sequence();
         seq != u32::MAX
     }
 
@@ -270,12 +266,12 @@ impl SignatureChecker for TxSigChecker<'_> {
         // so a negative i32 with high-byte 0xfd reads as a huge positive
         // u32 and CSV proceeds normally.
         #[allow(clippy::cast_sign_loss)] // intentional u32 reinterpretation
-        let version_u32 = self.tx.version as u32;
+        let version_u32 = self.tx.version() as u32;
         if version_u32 < 2 {
             return false;
         }
 
-        let tx_seq = i64::from(self.tx.inputs[self.n_in].sequence);
+        let tx_seq = i64::from(self.tx.input(self.n_in).sequence());
 
         // If the disable bit is set on the *input's* nSequence, the
         // opcode can't enforce anything against it — reject.
@@ -343,7 +339,7 @@ mod tests {
 
     use k256::ecdsa::signature::hazmat::PrehashSigner;
     use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
-    use mantle::primitives::{Hash256, OutPoint, TxIn, TxOut, Witness};
+    use mantle::primitives::{Hash256, OutPoint, Transaction, TxIn, TxOut, Witness};
     use ripemd::Ripemd160;
     use sha2::{Digest, Sha256};
 

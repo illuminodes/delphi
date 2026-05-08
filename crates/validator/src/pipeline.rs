@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
-use mantle::primitives::{Block, BlockHeight, OutPoint, TxHash};
+use mantle::primitives::{Block, BlockHeight, BlockRef, OutPoint, TxHash};
 use mantle_consensus::chain_view::Coin;
 use mantle_consensus::error::ValidationError;
 use mantle_consensus::script::ScriptExecutionCache;
@@ -167,7 +167,7 @@ pub fn validate_and_commit(
     let view = PrefetchedView::new(coins, headers, tip);
 
     scratch.clear();
-    let result = connect_block(block, height, &view, &mut scratch, skip_script, exec_cache)?;
+    let result = connect_block(block, height, &view, &mut scratch, skip_script, exec_cache, None)?;
 
     let resp = storage.commit_block(CommitBlockReq {
         token,
@@ -181,4 +181,162 @@ pub fn validate_and_commit(
     })?;
 
     Ok(resp)
+}
+
+/// Zero-copy variant of [`validate_and_commit`] that operates directly on a
+/// block's wire bytes via [`BlockRef`].
+///
+/// `arena` is a caller-owned scratch buffer that holds non-witness preimages
+/// for any segwit transactions in this block. Reuse it across calls so its
+/// capacity is amortised.
+///
+/// # Errors
+///
+/// Returns `ValidationOrStorageError` on any validation or I/O failure.
+#[allow(clippy::too_many_arguments)]
+pub fn validate_and_commit_ref(
+    wire: &[u8],
+    arena: &mut Vec<u8>,
+    height: BlockHeight,
+    storage: &mut StorageHandle,
+    headers: &HeaderSnapshot,
+    skip_script: bool,
+    exec_cache: Option<&mut ScriptExecutionCache>,
+    durability: Durability,
+    token: ReqToken,
+) -> Result<CommittedResp, ValidationOrStorageError> {
+    let block_ref = BlockRef::decode_with_arena(wire, arena).map_err(|e| {
+        ValidationOrStorageError::Validation(ValidationError::MalformedTransaction {
+            tx_index: usize::MAX,
+        })
+        .or_io(e)
+    })?;
+
+    // Intra-block dependencies — same logic as `BlockExt::intra_block_outputs`
+    // but iterating `TransactionRef`s.
+    let mut spent: HashSet<OutPoint> = HashSet::new();
+    for tx in block_ref.transactions().skip(1) {
+        for inp in tx.inputs() {
+            let Ok(i) = inp else { continue };
+            spent.insert(i.previous_output);
+        }
+    }
+
+    // Compute every txid exactly once. The intra-block dep pass, the BIP30
+    // probe pass, and `connect_block` all consume this slice — no tx is
+    // re-hashed.
+    let mut scratch = Vec::new();
+    let txids: Vec<mantle::primitives::Hash256> = block_ref
+        .transactions()
+        .map(|tx| tx.txid_into(&mut scratch).expect("txid hash never fails"))
+        .collect();
+
+    let mut intra_block: PrehashedMap<OutPoint, Option<Coin>> =
+        PrehashedMap::with_capacity_and_hasher(spent.len(), BuildPrehashedHasher);
+
+    for (tx_index, tx) in block_ref.transactions().enumerate() {
+        let txid = txids[tx_index];
+        for (vout, output) in tx.outputs().enumerate() {
+            let Ok(out) = output else { continue };
+            let Ok(vout_u32) = u32::try_from(vout) else {
+                continue;
+            };
+            let op = OutPoint {
+                txid,
+                vout: vout_u32,
+            };
+            if spent.contains(&op) {
+                intra_block.insert(
+                    op,
+                    Some(Coin {
+                        value: out.value,
+                        script_pubkey: out.script_pubkey.into(),
+                        height: BlockHeight::ZERO,
+                        coinbase: tx_index == 0,
+                    }),
+                );
+            }
+        }
+    }
+
+    // External spend outpoints.
+    let mut spend_outpoints: Vec<OutPoint> = Vec::new();
+    for tx in block_ref.transactions().skip(1) {
+        for inp in tx.inputs() {
+            let Ok(i) = inp else { continue };
+            let op = i.previous_output;
+            if !intra_block.contains_key(&op) {
+                spend_outpoints.push(op);
+            }
+        }
+    }
+
+    // BIP30 probes — reuse the same precomputed txids.
+    let spend_set: HashSet<OutPoint> = spend_outpoints.iter().copied().collect();
+    let mut bip30_outpoints: Vec<OutPoint> = Vec::with_capacity(block_ref.tx_count());
+    for &txid in &txids {
+        let op = OutPoint { txid, vout: 0 };
+        if !intra_block.contains_key(&op) && !spend_set.contains(&op) {
+            bip30_outpoints.push(op);
+        }
+    }
+
+    let mut all_outpoints = spend_outpoints;
+    all_outpoints.extend_from_slice(&bip30_outpoints);
+
+    storage.send_lookup(&all_outpoints)?;
+
+    let hash = block_ref.header.hash();
+    let prev_hash = block_ref.header.prev_block;
+    let tip = storage.tip();
+
+    let lookup = storage.recv_lookup()?;
+
+    let mut coins: PrehashedMap<OutPoint, Option<Coin>> = PrehashedMap::with_capacity_and_hasher(
+        all_outpoints.len() + intra_block.len(),
+        BuildPrehashedHasher,
+    );
+    for r in lookup {
+        coins.insert(r.outpoint, r.coin);
+    }
+    coins.extend(intra_block);
+
+    let view = PrefetchedView::new(coins, headers, tip);
+
+    scratch.clear();
+    let result = connect_block(
+        &block_ref,
+        height,
+        &view,
+        &mut scratch,
+        skip_script,
+        exec_cache,
+        Some(&txids),
+    )?;
+
+    let resp = storage.commit_block(CommitBlockReq {
+        token,
+        height,
+        hash,
+        prev_hash,
+        created: result.created,
+        spent: result.spent,
+        block_bytes: None,
+        durability,
+    })?;
+
+    Ok(resp)
+}
+
+impl ValidationOrStorageError {
+    /// Combine a non-validation I/O error into a Storage variant by losing
+    /// context — used at decode boundaries where the upstream error type is
+    /// `std::io::Error`. Matches existing crate-internal usage of `From`.
+    fn or_io(self, _e: std::io::Error) -> Self {
+        // Map any decoder I/O into a structural validation failure rather than
+        // surfacing the raw io::Error type here. The validation error already
+        // identifies the failure mode as MalformedTransaction; the original
+        // io::Error message is dropped (the validator pipeline does not log it).
+        self
+    }
 }

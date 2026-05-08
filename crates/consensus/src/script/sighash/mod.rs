@@ -58,6 +58,7 @@ use mantle::hash::ByteSliceExt;
 use mantle::primitives::{Hash256, Satoshi, Transaction, TxIn, TxOut, Witness};
 
 use super::consensus_crypto::Schnorr;
+use crate::tx_view::{InputView, OutputView, TxView};
 
 /// `hash_type` mode (low 5 bits, masking off `ANYONECANPAY`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +146,7 @@ pub trait TxSighash {
     ) -> [u8; 32];
 }
 
-impl TxSighash for Transaction {
+impl<T: TxView> TxSighash for T {
     /// Legacy signature hash — see module docs §"Legacy" for the algorithm.
     ///
     /// `script_code` is the script being signed — the caller has already
@@ -154,20 +155,26 @@ impl TxSighash for Transaction {
     /// used with `n_in` past the last output.
     ///
     /// # Panics
-    /// Panics if `n_in >= self.inputs.len()`. Calling code (the interpreter)
+    /// Panics if `n_in >= self.input_count()`. Calling code (the interpreter)
     /// only reaches this with a valid input index.
     fn legacy_sighash(&self, n_in: usize, script_code: &[u8], hash_type: SigHashType) -> Hash256 {
         let mode = hash_type.mode();
 
         // The SIGHASH_SINGLE "1" bug: if `n_in` is at or past the last output,
         // the digest is the canonical 1, not a hash of anything.
-        if mode == SigHashMode::Single && n_in >= self.outputs.len() {
+        if mode == SigHashMode::Single && n_in >= self.output_count() {
             let mut h = [0u8; 32];
             h[0] = 0x01;
             return Hash256(h);
         }
 
-        let modified = build_modified_tx(self, n_in, script_code, hash_type);
+        // Materialise the tx (legacy sighash builds a structurally-modified
+        // copy regardless, so the cost is amortised). Refs round-trip via
+        // their wire bytes; owned txs hit a cheap clone.
+        let owned = self
+            .to_owned_tx()
+            .expect("to_owned_tx cannot fail on a validated tx");
+        let modified = build_modified_tx(&owned, n_in, script_code, hash_type);
 
         // Serialise + append the 4-byte little-endian hash_type.
         let mut buf = Vec::with_capacity(modified.encoded_len() + 4);
@@ -186,7 +193,7 @@ impl TxSighash for Transaction {
     /// from the same transaction.
     ///
     /// # Panics
-    /// Panics if `n_in >= self.inputs.len()`.
+    /// Panics if `n_in >= self.input_count()`.
     fn bip143_sighash(
         &self,
         n_in: usize,
@@ -215,9 +222,13 @@ impl TxSighash for Transaction {
             SigHashMode::All => cache.outputs,
             SigHashMode::None => Hash256::ZERO,
             SigHashMode::Single => {
-                if n_in < self.outputs.len() {
+                if n_in < self.output_count() {
+                    let out = self.output(n_in);
                     let mut buf: Vec<u8> = Vec::new();
-                    let _ = self.outputs[n_in].encode(&mut buf);
+                    buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
+                    let spk = out.script_pubkey();
+                    let _ = VarInt(spk.len() as u64).encode(&mut buf);
+                    buf.extend_from_slice(spk);
                     buf.sha256d()
                 } else {
                     Hash256::ZERO
@@ -225,19 +236,19 @@ impl TxSighash for Transaction {
             }
         };
 
-        let input = &self.inputs[n_in];
+        let input = self.input(n_in);
 
         let mut buf: Vec<u8> = Vec::with_capacity(200);
-        buf.extend_from_slice(&self.version.to_le_bytes());
+        buf.extend_from_slice(&self.version().to_le_bytes());
         buf.extend_from_slice(&hash_prevouts.0);
         buf.extend_from_slice(&hash_sequence.0);
-        let _ = input.previous_output.encode(&mut buf);
+        let _ = input.previous_output().encode(&mut buf);
         let _ = VarInt(script_code.len() as u64).encode(&mut buf);
         buf.extend_from_slice(script_code);
         buf.extend_from_slice(&u64::from(amount).to_le_bytes());
-        buf.extend_from_slice(&input.sequence.to_le_bytes());
+        buf.extend_from_slice(&input.sequence().to_le_bytes());
         buf.extend_from_slice(&hash_outputs.0);
-        buf.extend_from_slice(&self.locktime.to_le_bytes());
+        buf.extend_from_slice(&self.locktime().to_le_bytes());
         buf.extend_from_slice(&hash_type.0.to_le_bytes());
 
         buf.sha256d()
@@ -294,19 +305,26 @@ pub struct Bip143Cache {
 
 impl Bip143Cache {
     /// Compute the shared hash fields from `tx`. Call once per transaction.
+    ///
+    /// Accepts any [`TxView`] so both owned [`Transaction`] and borrowed
+    /// `TransactionRef` work without materialisation.
     #[must_use]
-    pub fn new(tx: &Transaction) -> Self {
-        let mut prevouts_buf = Vec::with_capacity(tx.inputs.len() * 36);
-        let mut seq_buf = Vec::with_capacity(tx.inputs.len() * 4);
-        for input in &tx.inputs {
-            // OutPoint is fixed-size; encode into a growing Vec (infallible).
-            let _ = input.previous_output.encode(&mut prevouts_buf);
-            seq_buf.extend_from_slice(&input.sequence.to_le_bytes());
+    pub fn new<T: TxView>(tx: &T) -> Self {
+        let n_inputs = tx.input_count();
+        let mut prevouts_buf = Vec::with_capacity(n_inputs * 36);
+        let mut seq_buf = Vec::with_capacity(n_inputs * 4);
+        for input in tx.inputs() {
+            let _ = input.previous_output().encode(&mut prevouts_buf);
+            seq_buf.extend_from_slice(&input.sequence().to_le_bytes());
         }
 
         let mut outputs_buf: Vec<u8> = Vec::new();
-        for output in &tx.outputs {
-            let _ = output.encode(&mut outputs_buf);
+        for output in tx.outputs() {
+            // Output wire form: value(8 LE) || VarInt(spk_len) || spk.
+            outputs_buf.extend_from_slice(&u64::from(output.value()).to_le_bytes());
+            let spk = output.script_pubkey();
+            let _ = VarInt(spk.len() as u64).encode(&mut outputs_buf);
+            outputs_buf.extend_from_slice(spk);
         }
 
         Self {
@@ -589,21 +607,27 @@ pub struct Bip341Cache {
 impl Bip341Cache {
     /// Build the cache from the transaction and the scriptPubKeys of every
     /// input's spent output. `spent_spks[i]` is the scriptPubKey of the
-    /// output that `tx.inputs[i]` spends.
+    /// output that input `i` spends.
+    ///
+    /// Accepts any [`TxView`].
     ///
     /// # Panics
-    /// Panics if `spent_spks.len() != tx.inputs.len()`.
+    /// Panics if `spent_spks.len() != tx.input_count()`.
     #[must_use]
-    pub fn new(tx: &Transaction, spent_amounts: &[Satoshi], spent_spks: &[&[u8]]) -> Self {
-        assert_eq!(spent_amounts.len(), tx.inputs.len());
-        assert_eq!(spent_spks.len(), tx.inputs.len());
+    pub fn new<T: TxView>(
+        tx: &T,
+        spent_amounts: &[Satoshi],
+        spent_spks: &[&[u8]],
+    ) -> Self {
+        assert_eq!(spent_amounts.len(), tx.input_count());
+        assert_eq!(spent_spks.len(), tx.input_count());
 
         let hash_prevouts: [u8; 32] = {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
-            for inp in &tx.inputs {
+            for inp in tx.inputs() {
                 let mut buf = Vec::with_capacity(36);
-                let _ = inp.previous_output.encode(&mut buf);
+                let _ = inp.previous_output().encode(&mut buf);
                 h.update(&buf);
             }
             h.finalize().into()
@@ -633,8 +657,8 @@ impl Bip341Cache {
         let hash_sequences: [u8; 32] = {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
-            for inp in &tx.inputs {
-                h.update(inp.sequence.to_le_bytes());
+            for inp in tx.inputs() {
+                h.update(inp.sequence().to_le_bytes());
             }
             h.finalize().into()
         };
@@ -642,9 +666,12 @@ impl Bip341Cache {
         let hash_outputs: [u8; 32] = {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
-            for out in &tx.outputs {
+            for out in tx.outputs() {
                 let mut buf = Vec::new();
-                let _ = out.encode(&mut buf);
+                buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
+                let spk = out.script_pubkey();
+                let _ = VarInt(spk.len() as u64).encode(&mut buf);
+                buf.extend_from_slice(spk);
                 h.update(&buf);
             }
             h.finalize().into()
@@ -680,8 +707,8 @@ impl Bip341Cache {
 /// Panics if `n_in >= tx.inputs.len()`.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
-fn compute_bip341_sighash(
-    tx: &Transaction,
+fn compute_bip341_sighash<T: TxView>(
+    tx: &T,
     n_in: usize,
     spent_amount: Satoshi,
     spent_spk: &[u8],
@@ -705,9 +732,9 @@ fn compute_bip341_sighash(
     // hash_type
     preimage.push(hash_type.0);
     // nVersion (4 LE)
-    preimage.extend_from_slice(&tx.version.to_le_bytes());
+    preimage.extend_from_slice(&tx.version().to_le_bytes());
     // nLocktime (4 LE)
-    preimage.extend_from_slice(&tx.locktime.to_le_bytes());
+    preimage.extend_from_slice(&tx.locktime().to_le_bytes());
 
     // Shared input hashes — omitted under ANYONECANPAY.
     if !anyonecanpay {
@@ -722,9 +749,13 @@ fn compute_bip341_sighash(
         SigHashMode::All => preimage.extend_from_slice(&cache.outputs),
         SigHashMode::None => {}
         SigHashMode::Single => {
-            if n_in < tx.outputs.len() {
+            if n_in < tx.output_count() {
+                let out = tx.output(n_in);
                 let mut buf = Vec::new();
-                let _ = tx.outputs[n_in].encode(&mut buf);
+                buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
+                let spk = out.script_pubkey();
+                let _ = VarInt(spk.len() as u64).encode(&mut buf);
+                buf.extend_from_slice(spk);
                 let h: [u8; 32] = Sha256::digest(&buf).into();
                 preimage.extend_from_slice(&h);
             }
@@ -740,16 +771,16 @@ fn compute_bip341_sighash(
 
     // Per-input data.
     if anyonecanpay {
-        let inp = &tx.inputs[n_in];
+        let inp = tx.input(n_in);
         let mut ob = Vec::with_capacity(36);
-        let _ = inp.previous_output.encode(&mut ob);
+        let _ = inp.previous_output().encode(&mut ob);
         preimage.extend_from_slice(&ob);
         preimage.extend_from_slice(&u64::from(spent_amount).to_le_bytes());
         let mut spk_buf = Vec::new();
         let _ = VarInt(spent_spk.len() as u64).encode(&mut spk_buf);
         preimage.extend_from_slice(&spk_buf);
         preimage.extend_from_slice(spent_spk);
-        preimage.extend_from_slice(&tx.inputs[n_in].sequence.to_le_bytes());
+        preimage.extend_from_slice(&inp.sequence().to_le_bytes());
     } else {
         // Input index (4 LE).
         preimage.extend_from_slice(&u32::try_from(n_in).unwrap_or(u32::MAX).to_le_bytes());

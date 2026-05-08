@@ -2,7 +2,7 @@ use super::*;
 
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
-use mantle::primitives::{Hash256, OutPoint, TxIn, TxOut, Witness};
+use mantle::primitives::{Hash256, OutPoint, Transaction, TxIn, TxOut, Witness};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 

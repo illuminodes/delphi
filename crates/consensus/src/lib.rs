@@ -3,6 +3,7 @@ pub mod error;
 pub mod genesis;
 pub mod merkle;
 pub mod script;
+pub mod tx_view;
 pub mod validation;
 
 #[cfg(test)]
