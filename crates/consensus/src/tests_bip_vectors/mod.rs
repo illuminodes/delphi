@@ -4,7 +4,9 @@
 /// data. No runtime file I/O; everything compiles into the test binary.
 use mantle::codec::{Decode, Encode};
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut, Witness};
+use mantle::primitives::{
+    Block, BlockHeader, BlockHeight, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut, Witness,
+};
 use std::io::Cursor;
 
 use crate::chain_view::{ChainView, Coin, MemoryChainView};
@@ -13,15 +15,15 @@ use crate::genesis::{GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEX};
 use crate::merkle::compute_merkle_root;
 use crate::test_helpers::{decode_hex, hash_to_hex};
 use crate::validation::{
-    validate_block_context, validate_block_structure, BIP34_HEIGHT,
-    MAX_COINBASE_SCRIPTSIG_LEN, MAX_MONEY, MIN_COINBASE_SCRIPTSIG_LEN,
+    BIP34_HEIGHT, MAX_COINBASE_SCRIPTSIG_LEN, MAX_MONEY, MIN_COINBASE_SCRIPTSIG_LEN,
+    validate_block_context, validate_block_structure,
 };
 
+mod bip66;
+mod fixtures;
 mod genesis;
 mod stage1;
 mod stage2;
-mod fixtures;
-mod bip66;
 mod taproot;
 
 fn hash_to_hex_display(hash: Hash256) -> String {
@@ -31,16 +33,21 @@ fn hash_to_hex_display(hash: Hash256) -> String {
 /// Build the minimal null-outpoint input (coinbase marker).
 fn coinbase_input(script_sig: Vec<u8>) -> TxIn {
     TxIn {
-        previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+        previous_output: OutPoint {
+            txid: Hash256::ZERO,
+            vout: u32::MAX,
+        },
         script_sig: script_sig.into(),
         sequence: u32::MAX,
         witness: Witness::empty(),
     }
 }
 
-
 fn make_output(value: u64) -> TxOut {
-    TxOut { value: mantle::primitives::Satoshi::new(value), script_pubkey: vec![0x51].into() } // OP_1 (trivial P2PK stand-in)
+    TxOut {
+        value: mantle::primitives::Satoshi::new(value),
+        script_pubkey: vec![0x51].into(),
+    } // OP_1 (trivial P2PK stand-in)
 }
 
 /// Build a minimal valid block whose Stage 1 checks pass.
@@ -58,7 +65,8 @@ fn minimal_block(coinbase_script_sig: Vec<u8>, transactions: Vec<Transaction>) -
     let mut txs = vec![coinbase];
     txs.extend(transactions);
 
-    let txids: Vec<Hash256> = txs.iter()
+    let txids: Vec<Hash256> = txs
+        .iter()
         .map(Transaction::txid)
         .collect::<Result<Vec<_>, _>>()
         .expect("txid encoding cannot fail");
@@ -99,7 +107,11 @@ fn build_chain(n: u32, bits: mantle::primitives::CompactBits, base_time: u32) ->
 
 /// Build a chain whose tip is at `tip_height` by only storing the last 12
 /// headers. Validation only needs the parent + 11 ancestors for MTP.
-fn build_chain_at(tip_height: BlockHeight, bits: mantle::primitives::CompactBits, base_time: u32) -> MemoryChainView {
+fn build_chain_at(
+    tip_height: BlockHeight,
+    bits: mantle::primitives::CompactBits,
+    base_time: u32,
+) -> MemoryChainView {
     let window = 12u32;
     let start = tip_height.0.saturating_sub(window - 1);
     let mut view = MemoryChainView::with_height_base(BlockHeight(start));

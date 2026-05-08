@@ -10,8 +10,10 @@ pub(crate) mod test_helpers {
     pub fn decode_hex(s: &str) -> Vec<u8> {
         (0..s.len())
             .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16)
-                .unwrap_or_else(|_| panic!("invalid hex at offset {i}")))
+            .map(|i| {
+                u8::from_str_radix(&s[i..i + 2], 16)
+                    .unwrap_or_else(|_| panic!("invalid hex at offset {i}"))
+            })
             .collect()
     }
 

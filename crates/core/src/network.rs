@@ -365,7 +365,11 @@ impl<'a> DecodeRef<'a> for NetworkAddr {
             ));
         }
         let (port_bytes, buf) = buf.split_at(2);
-        let port = u16::from_be_bytes(port_bytes.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?);
+        let port = u16::from_be_bytes(
+            port_bytes
+                .try_into()
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+        );
         Ok((Self { services, ip, port }, buf))
     }
 }
@@ -525,10 +529,19 @@ impl<'a> DecodeRef<'a> for InvEntry {
     #[inline]
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
         if buf.len() < Self::ENCODED_LEN {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "not enough bytes"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "not enough bytes",
+            ));
         }
         let (head, tail) = buf.split_at(Self::ENCODED_LEN);
-        Ok((Self::from_bytes(head.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?), tail))
+        Ok((
+            Self::from_bytes(
+                head.try_into()
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+            ),
+            tail,
+        ))
     }
 }
 
@@ -567,12 +580,19 @@ impl Iterator for InvEntryIter<'_> {
         }
         if self.remaining.len() < InvEntry::ENCODED_LEN {
             self.left = 0; // prevent further iteration after error
-            return Some(Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated inv entry")));
+            return Some(Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "truncated inv entry",
+            )));
         }
         let (head, tail) = self.remaining.split_at(InvEntry::ENCODED_LEN);
         self.remaining = tail;
         self.left -= 1;
-        Some(head.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData)).map(InvEntry::from_bytes))
+        Some(
+            head.try_into()
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+                .map(InvEntry::from_bytes),
+        )
     }
 
     #[inline]
@@ -592,16 +612,20 @@ impl InvMsg {
     /// # Errors
     /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES` or if the `VarInt`
     /// cannot be decoded. Individual entries surface truncation errors as `Err` items.
-    pub fn iter_entries<const MAX_ENTRIES: usize>(
-        buf: &[u8],
-    ) -> io::Result<InvEntryIter<'_>> {
+    pub fn iter_entries<const MAX_ENTRIES: usize>(buf: &[u8]) -> io::Result<InvEntryIter<'_>> {
         let (varint, rest) = VarInt::decode_ref(buf)?;
-        let count = usize::try_from(varint.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let count =
+            usize::try_from(varint.0).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if count > MAX_ENTRIES {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "inv entry count exceeds limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "inv entry count exceeds limit",
+            ));
         }
-        Ok(InvEntryIter { remaining: rest, left: count })
+        Ok(InvEntryIter {
+            remaining: rest,
+            left: count,
+        })
     }
 
     /// # Errors
@@ -611,7 +635,10 @@ impl InvMsg {
         let count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if count > MAX_ENTRIES {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "inv entry count exceeds limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "inv entry count exceeds limit",
+            ));
         }
         // Read all entry bytes in one shot, then decode via the zero-copy path.
         let byte_len = count * InvEntry::ENCODED_LEN;
@@ -619,7 +646,12 @@ impl InvMsg {
         r.read_exact(&mut buf)?;
         let entries = buf
             .chunks_exact(InvEntry::ENCODED_LEN)
-            .map(|chunk| chunk.try_into().map(InvEntry::from_bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidData)))
+            .map(|chunk| {
+                chunk
+                    .try_into()
+                    .map(InvEntry::from_bytes)
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+            })
             .collect::<io::Result<Vec<_>>>()?;
         Ok(Self(entries))
     }
@@ -639,7 +671,10 @@ impl InvMsg {
         let count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if count > MAX_ENTRIES {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "inv entry count exceeds limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "inv entry count exceeds limit",
+            ));
         }
         let byte_len = count * InvEntry::ENCODED_LEN;
         // Reuse a scratch buffer stored temporarily on the stack for small messages,
@@ -650,7 +685,12 @@ impl InvMsg {
         r.read_exact(&mut buf)?;
         let entries = buf
             .chunks_exact(InvEntry::ENCODED_LEN)
-            .map(|chunk| chunk.try_into().map(InvEntry::from_bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidData)))
+            .map(|chunk| {
+                chunk
+                    .try_into()
+                    .map(InvEntry::from_bytes)
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+            })
             .collect::<io::Result<Vec<_>>>()?;
         out.clear();
         out.extend(entries);
@@ -694,14 +734,21 @@ impl GetHeadersMsg {
         let count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if count > MAX_LOCATORS {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "locator count exceeds limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "locator count exceeds limit",
+            ));
         }
         let mut locator_hashes = Vec::with_capacity(count);
         for _ in 0..count {
             locator_hashes.push(Hash256::decode(r)?);
         }
         let stop_hash = Hash256::decode(r)?;
-        Ok(Self { version, locator_hashes, stop_hash })
+        Ok(Self {
+            version,
+            locator_hashes,
+            stop_hash,
+        })
     }
 }
 
@@ -747,16 +794,28 @@ impl Iterator for BlockHeaderIter<'_> {
         }
         if self.remaining.len() < BlockHeader::ENCODED_LEN {
             self.left = 0;
-            return Some(Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated block header")));
+            return Some(Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "truncated block header",
+            )));
         }
         let (head, tail) = self.remaining.split_at(BlockHeader::ENCODED_LEN);
-        let arr = match head.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData)) {
+        let arr = match head
+            .try_into()
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+        {
             Ok(a) => a,
-            Err(e) => { self.left = 0; return Some(Err(e)); }
+            Err(e) => {
+                self.left = 0;
+                return Some(Err(e));
+            }
         };
         let header = match BlockHeader::from_bytes(arr) {
             Ok(h) => h,
-            Err(e) => { self.left = 0; return Some(Err(e)); }
+            Err(e) => {
+                self.left = 0;
+                return Some(Err(e));
+            }
         };
         // Consume the tx_count VarInt stub that follows every header.
         match VarInt::decode_ref(tail) {
@@ -789,16 +848,20 @@ impl HeadersMsg {
     /// # Errors
     /// Returns `InvalidData` if the header count exceeds `MAX_HEADERS` or if the `VarInt`
     /// cannot be decoded. Individual entries surface truncation errors as `Err` items.
-    pub fn iter_entries<const MAX_HEADERS: usize>(
-        buf: &[u8],
-    ) -> io::Result<BlockHeaderIter<'_>> {
+    pub fn iter_entries<const MAX_HEADERS: usize>(buf: &[u8]) -> io::Result<BlockHeaderIter<'_>> {
         let (varint, rest) = VarInt::decode_ref(buf)?;
-        let count = usize::try_from(varint.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let count =
+            usize::try_from(varint.0).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if count > MAX_HEADERS {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "header count exceeds limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "header count exceeds limit",
+            ));
         }
-        Ok(BlockHeaderIter { remaining: rest, left: count })
+        Ok(BlockHeaderIter {
+            remaining: rest,
+            left: count,
+        })
     }
 
     /// # Errors
@@ -807,7 +870,10 @@ impl HeadersMsg {
         let count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if count > MAX_HEADERS {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "header count exceeds limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "header count exceeds limit",
+            ));
         }
         let mut headers = Vec::with_capacity(count);
         for _ in 0..count {
@@ -831,7 +897,10 @@ impl HeadersMsg {
         let count = usize::try_from(VarInt::decode(r)?.0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if count > MAX_HEADERS {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "header count exceeds limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "header count exceeds limit",
+            ));
         }
         out.clear();
         for _ in 0..count {
@@ -972,7 +1041,8 @@ mod tests {
     fn encode_message_checksum() {
         let payload = b"payload";
         let mut buf = Vec::new();
-        encode_message(Magic::Mainnet, Command::Ping, payload, &mut buf).expect("encode_message cannot fail writing to Vec");
+        encode_message(Magic::Mainnet, Command::Ping, payload, &mut buf)
+            .expect("encode_message cannot fail writing to Vec");
         let header = decode::<MessageHeader>(&buf[..24]);
         assert_eq!(header.checksum, checksum(payload));
         assert_eq!(&buf[24..], payload);
@@ -1103,7 +1173,8 @@ mod tests {
     fn message_header_exact_24_bytes() {
         let payload = b"";
         let mut buf = Vec::new();
-        encode_message(Magic::Mainnet, Command::Verack, payload, &mut buf).expect("encode_message cannot fail writing to Vec");
+        encode_message(Magic::Mainnet, Command::Verack, payload, &mut buf)
+            .expect("encode_message cannot fail writing to Vec");
         assert_eq!(buf.len(), MessageHeader::ENCODED_LEN); // verack has no payload
         decode::<MessageHeader>(&buf[..24]);
     }
@@ -1171,7 +1242,11 @@ mod tests {
     // NetworkAddr: port 0 is a valid wire value.
     #[test]
     fn network_addr_port_zero() {
-        let addr = NetworkAddr { services: 0, ip: [0u8; 16], port: 0 };
+        let addr = NetworkAddr {
+            services: 0,
+            ip: [0u8; 16],
+            port: 0,
+        };
         let bytes = encode(&addr);
         assert_eq!(decode::<NetworkAddr>(&bytes), addr);
     }
@@ -1179,7 +1254,11 @@ mod tests {
     // NetworkAddr: port u16::MAX round-trips correctly.
     #[test]
     fn network_addr_port_max() {
-        let addr = NetworkAddr { services: u64::MAX, ip: [0xff; 16], port: u16::MAX };
+        let addr = NetworkAddr {
+            services: u64::MAX,
+            ip: [0xff; 16],
+            port: u16::MAX,
+        };
         let bytes = encode(&addr);
         assert_eq!(decode::<NetworkAddr>(&bytes), addr);
     }
@@ -1213,7 +1292,10 @@ mod tests {
     // InvMsg: unknown InvType round-trips without loss.
     #[test]
     fn inv_msg_unknown_inv_type() {
-        let entry = InvEntry { kind: InvType::Unknown(0xdead_beef), hash: Hash256::ZERO };
+        let entry = InvEntry {
+            kind: InvType::Unknown(0xdead_beef),
+            hash: Hash256::ZERO,
+        };
         let msg = InvMsg(vec![entry]);
         let bytes = encode(&msg);
         let decoded = decode::<InvMsg>(&bytes);
@@ -1224,8 +1306,14 @@ mod tests {
     #[test]
     fn inv_msg_truncated_entries() {
         let mut bytes = encode(&InvMsg(vec![
-            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
-            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+            InvEntry {
+                kind: InvType::Block,
+                hash: Hash256::ZERO,
+            },
+            InvEntry {
+                kind: InvType::Tx,
+                hash: Hash256::ZERO,
+            },
         ]));
         // Truncate to cut off the second entry.
         bytes.truncate(1 + 36); // VarInt(2) + one full entry
@@ -1236,7 +1324,11 @@ mod tests {
     // GetHeadersMsg: zero locator hashes is valid.
     #[test]
     fn getheaders_empty_locator() {
-        let msg = GetHeadersMsg { version: 70015, locator_hashes: vec![], stop_hash: Hash256::ZERO };
+        let msg = GetHeadersMsg {
+            version: 70015,
+            locator_hashes: vec![],
+            stop_hash: Hash256::ZERO,
+        };
         let bytes = encode(&msg);
         assert_eq!(decode::<GetHeadersMsg>(&bytes), msg);
     }
@@ -1244,7 +1336,11 @@ mod tests {
     // GetHeadersMsg: truncated stop_hash.
     #[test]
     fn getheaders_truncated_stop_hash() {
-        let msg = GetHeadersMsg { version: 70015, locator_hashes: vec![], stop_hash: Hash256::ZERO };
+        let msg = GetHeadersMsg {
+            version: 70015,
+            locator_hashes: vec![],
+            stop_hash: Hash256::ZERO,
+        };
         let mut bytes = encode(&msg);
         bytes.truncate(bytes.len() - 1); // shave one byte off stop_hash
         let e = decode_err::<GetHeadersMsg>(&bytes);
@@ -1273,9 +1369,13 @@ mod tests {
         };
         // Manually encode with tx_count = 5 instead of 0.
         let mut buf = Vec::new();
-        crate::codec::VarInt(1).encode(&mut buf).expect("Vec<u8> write cannot fail"); // 1 header
+        crate::codec::VarInt(1)
+            .encode(&mut buf)
+            .expect("Vec<u8> write cannot fail"); // 1 header
         header.encode(&mut buf).expect("Vec<u8> write cannot fail");
-        crate::codec::VarInt(5).encode(&mut buf).expect("Vec<u8> write cannot fail"); // non-zero tx_count
+        crate::codec::VarInt(5)
+            .encode(&mut buf)
+            .expect("Vec<u8> write cannot fail"); // non-zero tx_count
         // Decoder reads and discards tx_count regardless of value.
         let decoded = decode::<HeadersMsg>(&buf);
         assert_eq!(decoded.0.len(), 1);
@@ -1301,7 +1401,11 @@ mod tests {
     // VersionMsg: extreme field values round-trip without panic.
     #[test]
     fn version_msg_extreme_fields() {
-        let addr = NetworkAddr { services: 0, ip: [0u8; 16], port: 0 };
+        let addr = NetworkAddr {
+            services: 0,
+            ip: [0u8; 16],
+            port: 0,
+        };
         let msg = VersionMsg {
             version: i32::MIN,
             services: u64::MAX,
@@ -1320,7 +1424,11 @@ mod tests {
     // VersionMsg: invalid UTF-8 in user_agent must return InvalidData.
     #[test]
     fn version_msg_invalid_utf8_user_agent() {
-        let addr = NetworkAddr { services: 0, ip: [0u8; 16], port: 0 };
+        let addr = NetworkAddr {
+            services: 0,
+            ip: [0u8; 16],
+            port: 0,
+        };
         let good = VersionMsg {
             version: 70015,
             services: 0,
@@ -1370,8 +1478,14 @@ mod tests {
     #[test]
     fn inv_iter_matches_owned() {
         let inv = InvMsg(vec![
-            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
-            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+            InvEntry {
+                kind: InvType::Block,
+                hash: Hash256::ZERO,
+            },
+            InvEntry {
+                kind: InvType::Tx,
+                hash: Hash256::ZERO,
+            },
         ]);
         let bytes = encode(&inv);
         let iter_entries: Vec<InvEntry> = InvMsg::iter_entries::<50_000>(&bytes)
@@ -1384,7 +1498,8 @@ mod tests {
     #[test]
     fn inv_iter_empty() {
         let bytes = encode(&InvMsg(vec![]));
-        let mut iter = InvMsg::iter_entries::<50_000>(&bytes).expect("iter_entries must succeed on valid bytes");
+        let mut iter = InvMsg::iter_entries::<50_000>(&bytes)
+            .expect("iter_entries must succeed on valid bytes");
         assert_eq!(iter.len(), 0);
         assert!(iter.next().is_none());
     }
@@ -1392,20 +1507,36 @@ mod tests {
     #[test]
     fn inv_iter_exact_size() {
         let inv = InvMsg(vec![
-            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
-            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
-            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+            InvEntry {
+                kind: InvType::Tx,
+                hash: Hash256::ZERO,
+            },
+            InvEntry {
+                kind: InvType::Tx,
+                hash: Hash256::ZERO,
+            },
+            InvEntry {
+                kind: InvType::Tx,
+                hash: Hash256::ZERO,
+            },
         ]);
         let bytes = encode(&inv);
-        let iter = InvMsg::iter_entries::<50_000>(&bytes).expect("iter_entries must succeed on valid bytes");
+        let iter = InvMsg::iter_entries::<50_000>(&bytes)
+            .expect("iter_entries must succeed on valid bytes");
         assert_eq!(iter.len(), 3);
     }
 
     #[test]
     fn inv_iter_limit_exceeded() {
         let inv = InvMsg(vec![
-            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
-            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
+            InvEntry {
+                kind: InvType::Block,
+                hash: Hash256::ZERO,
+            },
+            InvEntry {
+                kind: InvType::Block,
+                hash: Hash256::ZERO,
+            },
         ]);
         let bytes = encode(&inv);
         let err = InvMsg::iter_entries::<1>(&bytes).unwrap_err();
@@ -1415,31 +1546,52 @@ mod tests {
     #[test]
     fn inv_iter_truncated_entry() {
         let inv = InvMsg(vec![
-            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
-            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+            InvEntry {
+                kind: InvType::Block,
+                hash: Hash256::ZERO,
+            },
+            InvEntry {
+                kind: InvType::Tx,
+                hash: Hash256::ZERO,
+            },
         ]);
         let mut bytes = encode(&inv);
         bytes.truncate(1 + 36 + 10); // VarInt + full entry + partial second entry
-        let mut iter = InvMsg::iter_entries::<50_000>(&bytes).expect("iter_entries must succeed on valid bytes");
+        let mut iter = InvMsg::iter_entries::<50_000>(&bytes)
+            .expect("iter_entries must succeed on valid bytes");
         assert!(iter.next().expect("first entry must be present").is_ok());
-        assert_eq!(iter.next().expect("second entry must be present").unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            iter.next()
+                .expect("second entry must be present")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
         assert!(iter.next().is_none()); // stops after error
     }
 
     #[test]
     fn inv_decode_into_reuses_capacity() {
         let inv = InvMsg(vec![
-            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
-            InvEntry { kind: InvType::Tx, hash: Hash256::ZERO },
+            InvEntry {
+                kind: InvType::Block,
+                hash: Hash256::ZERO,
+            },
+            InvEntry {
+                kind: InvType::Tx,
+                hash: Hash256::ZERO,
+            },
         ]);
         let bytes = encode(&inv);
         let mut buf: Vec<InvEntry> = Vec::new();
-        InvMsg::decode_into_limited::<50_000>(&mut std::io::Cursor::new(&bytes), &mut buf).expect("decode_into_limited must succeed on valid bytes");
+        InvMsg::decode_into_limited::<50_000>(&mut std::io::Cursor::new(&bytes), &mut buf)
+            .expect("decode_into_limited must succeed on valid bytes");
         assert_eq!(buf, inv.0);
         let cap_after_first = buf.capacity();
 
         // Second call: no new allocation if same or smaller count.
-        InvMsg::decode_into_limited::<50_000>(&mut std::io::Cursor::new(&bytes), &mut buf).expect("decode_into_limited must succeed on valid bytes");
+        InvMsg::decode_into_limited::<50_000>(&mut std::io::Cursor::new(&bytes), &mut buf)
+            .expect("decode_into_limited must succeed on valid bytes");
         assert_eq!(buf, inv.0);
         assert!(buf.capacity() >= cap_after_first);
     }
@@ -1447,8 +1599,14 @@ mod tests {
     #[test]
     fn inv_decode_into_limit_exceeded() {
         let inv = InvMsg(vec![
-            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
-            InvEntry { kind: InvType::Block, hash: Hash256::ZERO },
+            InvEntry {
+                kind: InvType::Block,
+                hash: Hash256::ZERO,
+            },
+            InvEntry {
+                kind: InvType::Block,
+                hash: Hash256::ZERO,
+            },
         ]);
         let bytes = encode(&inv);
         let mut buf = Vec::new();
@@ -1484,7 +1642,8 @@ mod tests {
     #[test]
     fn headers_iter_empty() {
         let bytes = encode(&HeadersMsg(vec![]));
-        let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes).expect("iter_entries must succeed on valid bytes");
+        let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes)
+            .expect("iter_entries must succeed on valid bytes");
         assert_eq!(iter.len(), 0);
         assert!(iter.next().is_none());
     }
@@ -1493,7 +1652,8 @@ mod tests {
     fn headers_iter_exact_size() {
         let msg = HeadersMsg(vec![sample_header(0), sample_header(1), sample_header(2)]);
         let bytes = encode(&msg);
-        let iter = HeadersMsg::iter_entries::<2_000>(&bytes).expect("iter_entries must succeed on valid bytes");
+        let iter = HeadersMsg::iter_entries::<2_000>(&bytes)
+            .expect("iter_entries must succeed on valid bytes");
         assert_eq!(iter.len(), 3);
     }
 
@@ -1511,9 +1671,16 @@ mod tests {
         let mut bytes = encode(&msg);
         // Each encoded entry is 81 bytes (80 header + 1 byte tx_count VarInt).
         bytes.truncate(1 + 81 + 40); // VarInt + full entry + partial second
-        let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes).expect("iter_entries must succeed on valid bytes");
+        let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes)
+            .expect("iter_entries must succeed on valid bytes");
         assert!(iter.next().expect("first entry must be present").is_ok());
-        assert_eq!(iter.next().expect("second entry must be present").unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            iter.next()
+                .expect("second entry must be present")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
         assert!(iter.next().is_none());
     }
 
@@ -1538,9 +1705,8 @@ mod tests {
         let msg = HeadersMsg(vec![sample_header(0), sample_header(1)]);
         let bytes = encode(&msg);
         let mut buf = Vec::new();
-        let err =
-            HeadersMsg::decode_into_limited::<1>(&mut std::io::Cursor::new(&bytes), &mut buf)
-                .unwrap_err();
+        let err = HeadersMsg::decode_into_limited::<1>(&mut std::io::Cursor::new(&bytes), &mut buf)
+            .unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 }

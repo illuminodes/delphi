@@ -146,7 +146,10 @@ fn handle_message(msg: &InboundMsg) -> bool {
                 {
                     let h = match result {
                         Ok(h) => h,
-                        Err(e) => { eprintln!("  failed to decode header: {e}"); break; }
+                        Err(e) => {
+                            eprintln!("  failed to decode header: {e}");
+                            break;
+                        }
                     };
                     let hex = h.hash().to_display_hex();
                     println!(

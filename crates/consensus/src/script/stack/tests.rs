@@ -33,7 +33,10 @@ fn peek_past_bottom_is_invalid_stack_op() {
 fn push_size_cap() {
     let mut s = TestStack::new();
     let oversized = vec![0u8; MAX_SCRIPT_ELEMENT_SIZE + 1];
-    assert!(matches!(s.push_checked(&oversized, 0), Err(ScriptError::PushSize)));
+    assert!(matches!(
+        s.push_checked(&oversized, 0),
+        Err(ScriptError::PushSize)
+    ));
     let max = vec![0u8; MAX_SCRIPT_ELEMENT_SIZE];
     assert!(s.push_checked(&max, 0).is_ok());
 }
@@ -57,7 +60,8 @@ fn combined_stack_size_cap() {
 fn combined_cap_uses_altstack_len() {
     let mut s = TestStack::new();
     // Pretend the alt stack has 999 items already.
-    s.push_checked(&[], 999).expect("combined = 999 + 1 <= 1000");
+    s.push_checked(&[], 999)
+        .expect("combined = 999 + 1 <= 1000");
     assert!(matches!(
         s.push_checked(&[], 999),
         Err(ScriptError::StackSize)
@@ -85,7 +89,10 @@ fn truncate_to_smaller() {
     }
     s.truncate(2).expect("smaller");
     assert_eq!(s.len(), 2);
-    assert!(matches!(s.truncate(99), Err(ScriptError::InvalidStackOperation)));
+    assert!(matches!(
+        s.truncate(99),
+        Err(ScriptError::InvalidStackOperation)
+    ));
 }
 
 #[test]
@@ -146,10 +153,7 @@ fn pop_num_respects_size_limit() {
     // Five-byte encoding pushed.
     s.push_num(0x007f_ffff_ffff_i64, 0).expect("ok");
     // Arithmetic limit (4) rejects it.
-    assert!(matches!(
-        s.pop_num(4, false),
-        Err(ScriptError::NumOverflow)
-    ));
+    assert!(matches!(s.pop_num(4, false), Err(ScriptError::NumOverflow)));
 }
 
 #[test]

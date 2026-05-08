@@ -2,12 +2,17 @@ use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 use mantle::codec::Encode;
 use mantle::hash::sha256d;
-use mantle::primitives::{Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut, Witness};
+use mantle::primitives::{
+    Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash,
+    TxIn, TxOut, Witness,
+};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::{compute_merkle_root_reusing, merkle_root_owned};
-use mantle_consensus::script::{Interpreter, InterpStackElement, NopSigChecker, ScriptFlags, SigVersion};
 use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, TxSighash};
 use mantle_consensus::script::verify::{ScriptVerifier, verify_script};
+use mantle_consensus::script::{
+    InterpStackElement, Interpreter, NopSigChecker, ScriptFlags, SigVersion,
+};
 use mantle_consensus::validation::{validate_block_structure_reusing, validate_block_wire};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
@@ -25,12 +30,18 @@ fn coinbase_tx(height_script: Vec<u8>, value: u64) -> Transaction {
     Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+            previous_output: OutPoint {
+                txid: Hash256::ZERO,
+                vout: u32::MAX,
+            },
             script_sig: height_script.into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }],
+        outputs: vec![TxOut {
+            value: Satoshi::new(value),
+            script_pubkey: vec![0x51].into(),
+        }],
         locktime: 0,
     }
 }
@@ -44,7 +55,10 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
             sequence: u32::MAX,
             witness: Witness::empty(),
         }],
-        outputs: vec![TxOut { value: Satoshi::new(value), script_pubkey: vec![0x51].into() }],
+        outputs: vec![TxOut {
+            value: Satoshi::new(value),
+            script_pubkey: vec![0x51].into(),
+        }],
         locktime: 0,
     }
 }
@@ -68,25 +82,30 @@ fn build_chain(len: u32) -> MemoryChainView {
 }
 
 fn mine_block(mut block: Block) -> Block {
-    let target = block.header.bits.to_target()
+    let target = block
+        .header
+        .bits
+        .to_target()
         .expect("mine_block called with invalid nBits");
     for nonce in 0..=u32::MAX {
         block.header.nonce = nonce;
         let raw = sha256d(&block.header.to_bytes());
         let mut be = raw;
         be.reverse();
-        if be <= target { return block; }
+        if be <= target {
+            return block;
+        }
     }
     panic!("no nonce found");
 }
 
 fn make_valid_block(txs: Vec<Transaction>) -> Block {
-    let txids: Vec<Hash256> = txs.iter()
+    let txids: Vec<Hash256> = txs
+        .iter()
         .map(Transaction::txid)
         .collect::<Result<Vec<_>, _>>()
         .expect("txid encoding cannot fail");
-    let merkle_root = merkle_root_owned(txids)
-        .expect("non-empty tx list always has a merkle root");
+    let merkle_root = merkle_root_owned(txids).expect("non-empty tx list always has a merkle root");
     let block = Block {
         header: BlockHeader {
             version: 1,
@@ -127,7 +146,8 @@ fn main() {
                 &mut merkle_buf,
                 &mut seen_inputs,
                 &mut seen_txids,
-            ).expect("valid block must pass structure check");
+            )
+            .expect("valid block must pass structure check");
         }
     }
 
@@ -145,8 +165,11 @@ fn main() {
         let mut encode_buf: Vec<u8> = Vec::new();
         for _ in 0..200 {
             encode_buf.clear();
-            block.encode(&mut encode_buf).expect("Vec<u8> write cannot fail");
-            let _ = Block::decode(&mut Cursor::new(encode_buf.as_slice())).expect("valid block bytes must decode");
+            block
+                .encode(&mut encode_buf)
+                .expect("Vec<u8> write cannot fail");
+            let _ = Block::decode(&mut Cursor::new(encode_buf.as_slice()))
+                .expect("valid block bytes must decode");
         }
     }
 
@@ -154,7 +177,9 @@ fn main() {
     {
         let view = build_chain(200);
         for i in 0..1000u32 {
-            let _ = view.get_header_at(BlockHeight(i % 200)).expect("storage error");
+            let _ = view
+                .get_header_at(BlockHeight(i % 200))
+                .expect("storage error");
             let tip = view.tip();
             let _ = view.get_header(&tip.hash).expect("storage error");
         }
@@ -162,10 +187,13 @@ fn main() {
 
     // --- scenario 4: merkle root over 1000 txids (100 iters) ---
     {
-        let template: Vec<Hash256> = (0..1000u32).map(|i| Hash256([(i & 0xff) as u8; 32])).collect();
+        let template: Vec<Hash256> = (0..1000u32)
+            .map(|i| Hash256([(i & 0xff) as u8; 32]))
+            .collect();
         let mut buf: Vec<Hash256> = Vec::with_capacity(template.len());
         for _ in 0..100 {
-            let _ = compute_merkle_root_reusing(&template, &mut buf).expect("non-empty tx list must have merkle root");
+            let _ = compute_merkle_root_reusing(&template, &mut buf)
+                .expect("non-empty tx list must have merkle root");
         }
     }
 
@@ -173,8 +201,19 @@ fn main() {
     {
         let mut view = MemoryChainView::new();
         for i in 0..5000u32 {
-            let op = OutPoint { txid: Hash256(sha256d(&i.to_le_bytes())), vout: 0 };
-            view.insert_coin(op, Coin { value: Satoshi::new(1000), script_pubkey: vec![0x51].into(), height: BlockHeight(i), coinbase: false });
+            let op = OutPoint {
+                txid: Hash256(sha256d(&i.to_le_bytes())),
+                vout: 0,
+            };
+            view.insert_coin(
+                op,
+                Coin {
+                    value: Satoshi::new(1000),
+                    script_pubkey: vec![0x51].into(),
+                    height: BlockHeight(i),
+                    coinbase: false,
+                },
+            );
             let _ = view.get_coin(&op).expect("storage error");
             view.spend_coin(&op);
         }
@@ -194,7 +233,14 @@ fn main() {
         let mut seen_inputs: HashSet<OutPoint> = HashSet::new();
         let mut seen_txids: HashSet<Hash256> = HashSet::new();
         for _ in 0..500 {
-            validate_block_wire(&wire, &mut txids, &mut merkle_buf, &mut seen_inputs, &mut seen_txids).expect("valid block wire must pass structure check");
+            validate_block_wire(
+                &wire,
+                &mut txids,
+                &mut merkle_buf,
+                &mut seen_inputs,
+                &mut seen_txids,
+            )
+            .expect("valid block wire must pass structure check");
         }
     }
 
@@ -220,7 +266,11 @@ fn main() {
     // matching real per-input validation.
     {
         let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+        let pk: Vec<u8> = sk
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()
@@ -243,16 +293,22 @@ fn main() {
         let tmp_tx = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_ffff,
                 witness: Witness::empty(),
             }],
-            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: spk.clone().into(),
+            }],
             locktime: 0,
         };
         let cache = Bip143Cache::new(&tmp_tx);
-        let digest = tmp_tx.bip143_sighash(0,&script_code, amount, SigHashType::ALL, &cache);
+        let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
         let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
         let sig = sig.normalize_s().unwrap_or(sig);
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
@@ -261,12 +317,18 @@ fn main() {
         let tx = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_ffff,
                 witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice()]),
             }],
-            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: spk.clone().into(),
+            }],
             locktime: 0,
         };
 
@@ -282,7 +344,11 @@ fn main() {
     // here versus a linear one in scenario 8.
     {
         let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+        let pk: Vec<u8> = sk
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()
@@ -305,16 +371,22 @@ fn main() {
         let tmp_tx = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_ffff,
                 witness: Witness::empty(),
             }],
-            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: spk.clone().into(),
+            }],
             locktime: 0,
         };
         let cache = Bip143Cache::new(&tmp_tx);
-        let digest = tmp_tx.bip143_sighash(0,&script_code, amount, SigHashType::ALL, &cache);
+        let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
         let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
         let sig = sig.normalize_s().unwrap_or(sig);
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
@@ -323,12 +395,18 @@ fn main() {
         let tx = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_ffff,
                 witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice()]),
             }],
-            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: spk.clone().into(),
+            }],
             locktime: 0,
         };
 
@@ -346,7 +424,11 @@ fn main() {
     // clean-stack enforcement. The witness script is a P2PKH-inside-P2WSH.
     {
         let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+        let pk: Vec<u8> = sk
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()
@@ -370,16 +452,22 @@ fn main() {
         let tmp_tx = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_ffff,
                 witness: Witness::empty(),
             }],
-            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: spk.clone().into(),
+            }],
             locktime: 0,
         };
         let cache = Bip143Cache::new(&tmp_tx);
-        let digest = tmp_tx.bip143_sighash(0,&witness_script, amount, SigHashType::ALL, &cache);
+        let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
         let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
         let sig = sig.normalize_s().unwrap_or(sig);
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
@@ -388,12 +476,22 @@ fn main() {
         let tx = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_ffff,
-                witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice(), witness_script.as_slice()]),
+                witness: Witness::from_slice(&[
+                    sig_bytes.as_slice(),
+                    pk.as_slice(),
+                    witness_script.as_slice(),
+                ]),
             }],
-            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: spk.clone().into(),
+            }],
             locktime: 0,
         };
 
@@ -406,7 +504,11 @@ fn main() {
     // Buffer-reuse counterpart to scenario 9.
     {
         let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+        let pk: Vec<u8> = sk
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()
@@ -430,16 +532,22 @@ fn main() {
         let tmp_tx = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_ffff,
                 witness: Witness::empty(),
             }],
-            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: spk.clone().into(),
+            }],
             locktime: 0,
         };
         let cache = Bip143Cache::new(&tmp_tx);
-        let digest = tmp_tx.bip143_sighash(0,&witness_script, amount, SigHashType::ALL, &cache);
+        let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
         let sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
         let sig = sig.normalize_s().unwrap_or(sig);
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
@@ -448,12 +556,22 @@ fn main() {
         let tx = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: 0xffff_ffff,
-                witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice(), witness_script.as_slice()]),
+                witness: Witness::from_slice(&[
+                    sig_bytes.as_slice(),
+                    pk.as_slice(),
+                    witness_script.as_slice(),
+                ]),
             }],
-            outputs: vec![TxOut { value: amount, script_pubkey: spk.clone().into() }],
+            outputs: vec![TxOut {
+                value: amount,
+                script_pubkey: spk.clone().into(),
+            }],
             locktime: 0,
         };
 
@@ -476,20 +594,23 @@ fn main() {
         // Same vector covered by the script::interpreter::op_hash160_known_vector test,
         // so we can pin it as a const here without a hash-crate dep.
         const HASH160_EMPTY: [u8; 20] = [
-            0xb4, 0x72, 0xa2, 0x66, 0xd0, 0xbd, 0x89, 0xc1, 0x37, 0x06,
-            0xa4, 0x13, 0x2c, 0xcf, 0xb1, 0x6f, 0x7c, 0x3b, 0x9f, 0xcb,
+            0xb4, 0x72, 0xa2, 0x66, 0xd0, 0xbd, 0x89, 0xc1, 0x37, 0x06, 0xa4, 0x13, 0x2c, 0xcf,
+            0xb1, 0x6f, 0x7c, 0x3b, 0x9f, 0xcb,
         ];
         let checker = NopSigChecker;
         let mut script = Vec::with_capacity(64);
-        script.push(0x00);                                             // OP_0 (push empty)
-        script.push(0x76);                                             // OP_DUP
-        script.push(0xa9);                                             // OP_HASH160
-        script.push(0x14); script.extend_from_slice(&HASH160_EMPTY);   // PUSHBYTES_20 expected
-        script.push(0x88);                                             // OP_EQUALVERIFY
+        script.push(0x00); // OP_0 (push empty)
+        script.push(0x76); // OP_DUP
+        script.push(0xa9); // OP_HASH160
+        script.push(0x14);
+        script.extend_from_slice(&HASH160_EMPTY); // PUSHBYTES_20 expected
+        script.push(0x88); // OP_EQUALVERIFY
         // Arithmetic: 1 + 2 + 3 + 4 + 5 = 15
         for k in 0u8..5 {
             script.push(0x51 + k); // OP_(k+1)
-            if k > 0 { script.push(0x93); } // OP_ADD
+            if k > 0 {
+                script.push(0x93);
+            } // OP_ADD
         }
         for _ in 0..5_000 {
             let mut interp = Interpreter::new(&checker, ScriptFlags::NONE, SigVersion::Base);

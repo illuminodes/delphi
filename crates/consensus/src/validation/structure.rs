@@ -4,8 +4,8 @@ use mantle::codec::{DecodeRef, VarInt};
 use mantle::collections::PrehashedSet;
 use mantle::hash::sha256d;
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi, Transaction,
-    TransactionRef, TxHash, TxInRef, TxOutRef,
+    Block, BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi, Transaction, TransactionRef,
+    TxHash, TxInRef, TxOutRef,
 };
 
 use crate::error::ValidationError;
@@ -140,8 +140,8 @@ where
         }
     }
 
-    let computed_root = compute_merkle_root_reusing(txids, merkle_buf)
-        .expect("non-empty; checked above");
+    let computed_root =
+        compute_merkle_root_reusing(txids, merkle_buf).expect("non-empty; checked above");
     if computed_root != block.header.merkle_root {
         return Err(ValidationError::MerkleRootMismatch);
     }
@@ -183,7 +183,9 @@ where
     S1: std::hash::BuildHasher,
     S2: std::hash::BuildHasher,
 {
-    let malformed_block = |_| ValidationError::MalformedTransaction { tx_index: usize::MAX };
+    let malformed_block = |_| ValidationError::MalformedTransaction {
+        tx_index: usize::MAX,
+    };
 
     let (header, rest) = BlockHeader::decode_ref(wire).map_err(malformed_block)?;
 
@@ -206,8 +208,7 @@ where
     txids.reserve(tx_count);
 
     for tx_index in 0..tx_count {
-        let (tx_raw_len, txid) =
-            scan_tx_wire(rest, tx_index, seen_inputs)?;
+        let (tx_raw_len, txid) = scan_tx_wire(rest, tx_index, seen_inputs)?;
         rest = &rest[tx_raw_len..];
         base_size += tx_raw_len;
         txids.push(txid);
@@ -227,8 +228,8 @@ where
         }
     }
 
-    let computed_root = compute_merkle_root_reusing(txids, merkle_buf)
-        .expect("non-empty; checked above");
+    let computed_root =
+        compute_merkle_root_reusing(txids, merkle_buf).expect("non-empty; checked above");
     if computed_root != header.merkle_root {
         return Err(ValidationError::MerkleRootMismatch);
     }
@@ -262,8 +263,8 @@ where
     let (_, buf) = i32::decode_ref(wire).map_err(malformed)?; // version
 
     let (VarInt(n), mut buf) = VarInt::decode_ref(buf).map_err(malformed)?;
-    let input_count = usize::try_from(n)
-        .map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
+    let input_count =
+        usize::try_from(n).map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
     if input_count == 0 {
         return Err(ValidationError::EmptyInputs { tx_index });
     }
@@ -307,8 +308,8 @@ where
     }
 
     let (VarInt(m), mut buf) = VarInt::decode_ref(buf).map_err(malformed)?;
-    let output_count = usize::try_from(m)
-        .map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
+    let output_count =
+        usize::try_from(m).map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
     if output_count == 0 {
         return Err(ValidationError::EmptyOutputs { tx_index });
     }
@@ -318,7 +319,10 @@ where
         let (out, next) = TxOutRef::decode_ref(buf).map_err(malformed)?;
         buf = next;
         if out.value > MAX_MONEY {
-            return Err(ValidationError::OutputValueOutOfRange { tx_index, output_index });
+            return Err(ValidationError::OutputValueOutOfRange {
+                tx_index,
+                output_index,
+            });
         }
         total = total
             .checked_add(out.value)
@@ -341,16 +345,10 @@ trait TxStructureView {
     fn input_count(&self) -> usize;
     fn output_count(&self) -> usize;
     fn first_input(&self) -> std::io::Result<(OutPoint, usize)>;
-    fn for_each_output<E>(
-        &self,
-        f: impl FnMut(usize, Satoshi) -> Result<(), E>,
-    ) -> Result<(), E>
+    fn for_each_output<E>(&self, f: impl FnMut(usize, Satoshi) -> Result<(), E>) -> Result<(), E>
     where
         E: From<std::io::Error>;
-    fn for_each_input_outpoint<E>(
-        &self,
-        f: impl FnMut(OutPoint) -> Result<(), E>,
-    ) -> Result<(), E>
+    fn for_each_input_outpoint<E>(&self, f: impl FnMut(OutPoint) -> Result<(), E>) -> Result<(), E>
     where
         E: From<std::io::Error>;
 }
@@ -474,7 +472,9 @@ where
     if expect_coinbase
         && !(MIN_COINBASE_SCRIPTSIG_LEN..=MAX_COINBASE_SCRIPTSIG_LEN).contains(&first_script_len)
     {
-        return Err(ValidationError::CoinbaseScriptSigLength { len: first_script_len });
+        return Err(ValidationError::CoinbaseScriptSigLength {
+            len: first_script_len,
+        });
     }
 
     // Output value bounds.

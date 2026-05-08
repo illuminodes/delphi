@@ -51,8 +51,15 @@ pub mod conformance {
         n_in: usize,
         flags: ScriptFlags,
     ) -> Result<(), ConformanceError> {
-        bitcoinconsensus::verify_with_flags(script_pubkey, amount, tx_to, spent_outputs, n_in, flags)
-            .map_err(ConformanceError::from)
+        bitcoinconsensus::verify_with_flags(
+            script_pubkey,
+            amount,
+            tx_to,
+            spent_outputs,
+            n_in,
+            flags,
+        )
+        .map_err(ConformanceError::from)
     }
 
     /// Compute the appropriate script flags for a given block height on mainnet.

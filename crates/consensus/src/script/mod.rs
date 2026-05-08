@@ -22,7 +22,7 @@ pub use checker::{NopSigChecker, SignatureChecker, TxSigChecker};
 pub use condition_stack::ConditionStack;
 pub use error::ScriptError;
 pub use flags::ScriptFlags;
-pub use interpreter::{Interpreter, InterpStackElement};
+pub use interpreter::{InterpStackElement, Interpreter};
 pub use num::ScriptNum;
 pub use opcodes::Opcode;
 pub use sig_version::SigVersion;

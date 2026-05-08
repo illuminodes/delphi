@@ -19,7 +19,10 @@ pub enum ValidationError {
     /// A transaction has no outputs.
     EmptyOutputs { tx_index: usize },
     /// An output value is out of range (> 21M BTC in satoshis).
-    OutputValueOutOfRange { tx_index: usize, output_index: usize },
+    OutputValueOutOfRange {
+        tx_index: usize,
+        output_index: usize,
+    },
     /// Sum of output values overflows or exceeds `MAX_MONEY`.
     TotalOutputValueOverflow { tx_index: usize },
     /// A transaction contains duplicate inputs (same outpoint appears twice).
@@ -59,7 +62,11 @@ pub enum ValidationError {
     SigopsLimitExceeded { count: u32 },
     /// Script verification rejected this input — `kind` carries the
     /// structured `ScriptError` from the interpreter.
-    ScriptVerifyFailed { tx_index: usize, input_index: usize, kind: ScriptError },
+    ScriptVerifyFailed {
+        tx_index: usize,
+        input_index: usize,
+        kind: ScriptError,
+    },
 
     // ── Stage 2: contextual ───────────────────────────────────────────────────
     /// nBits does not match the expected difficulty for this block's height.

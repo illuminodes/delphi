@@ -75,7 +75,9 @@ fn accept_72_byte_max() {
 #[test]
 fn reject_too_short() {
     // 7 bytes — under the 8-byte minimum.
-    assert!(!Ecdsa::is_valid_der_encoding(&[0x30, 0x05, 0x02, 0x01, 0x01, 0x02, 0x00]));
+    assert!(!Ecdsa::is_valid_der_encoding(&[
+        0x30, 0x05, 0x02, 0x01, 0x01, 0x02, 0x00
+    ]));
 }
 
 #[test]
@@ -164,9 +166,7 @@ fn reject_s_redundant_leading_zero() {
 #[test]
 fn reject_truncated_after_r_length_byte() {
     // r tag + r len byte but no body and no s.
-    assert!(!Ecdsa::is_valid_der_encoding(&[
-        0x30, 0x02, 0x02, 0x01,
-    ]));
+    assert!(!Ecdsa::is_valid_der_encoding(&[0x30, 0x02, 0x02, 0x01,]));
 }
 
 #[test]

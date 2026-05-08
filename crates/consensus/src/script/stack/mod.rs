@@ -84,7 +84,10 @@ impl<const N: usize> StackElement<N> {
                 std::ptr::copy_nonoverlapping(s.as_ptr(), dst, s.len());
             }
             #[allow(clippy::cast_possible_truncation)]
-            Self::Inline { len: s.len() as u8, data }
+            Self::Inline {
+                len: s.len() as u8,
+                data,
+            }
         } else {
             Self::Heap(s.to_vec().into_boxed_slice())
         }
@@ -219,7 +222,9 @@ const INITIAL_STACK_CAP: usize = 16;
 impl<const N: usize> Stack<N> {
     #[must_use]
     pub fn new() -> Self {
-        Self { items: Vec::with_capacity(INITIAL_STACK_CAP) }
+        Self {
+            items: Vec::with_capacity(INITIAL_STACK_CAP),
+        }
     }
 
     /// Wrap a caller-provided, already-empty `Vec` as the backing store.
@@ -231,7 +236,10 @@ impl<const N: usize> Stack<N> {
     #[inline]
     #[must_use]
     pub fn from_buf(buf: Vec<StackElement<N>>) -> Self {
-        debug_assert!(buf.is_empty(), "buf passed to Stack::from_buf must be empty");
+        debug_assert!(
+            buf.is_empty(),
+            "buf passed to Stack::from_buf must be empty"
+        );
         Self { items: buf }
     }
 
@@ -268,7 +276,11 @@ impl<const N: usize> Stack<N> {
     /// `InvalidStackOperation` if `n` is at or beyond the current depth.
     #[inline]
     pub fn peek(&self, n: usize) -> Result<&StackElement<N>, ScriptError> {
-        let idx = self.items.len().checked_sub(n + 1).ok_or(ScriptError::InvalidStackOperation)?;
+        let idx = self
+            .items
+            .len()
+            .checked_sub(n + 1)
+            .ok_or(ScriptError::InvalidStackOperation)?;
         Ok(&self.items[idx])
     }
 
@@ -345,7 +357,11 @@ impl<const N: usize> Stack<N> {
         if self.items.len() + altstack_len >= MAX_STACK_SIZE {
             return Err(ScriptError::StackSize);
         }
-        let idx = self.items.len().checked_sub(n + 1).ok_or(ScriptError::InvalidStackOperation)?;
+        let idx = self
+            .items
+            .len()
+            .checked_sub(n + 1)
+            .ok_or(ScriptError::InvalidStackOperation)?;
         let copy = self.items[idx].clone();
         self.items.push(copy);
         Ok(())
@@ -365,7 +381,11 @@ impl<const N: usize> Stack<N> {
     /// # Errors
     /// `InvalidStackOperation` if depth `n` does not exist.
     pub fn remove_at(&mut self, n: usize) -> Result<StackElement<N>, ScriptError> {
-        let idx = self.items.len().checked_sub(n + 1).ok_or(ScriptError::InvalidStackOperation)?;
+        let idx = self
+            .items
+            .len()
+            .checked_sub(n + 1)
+            .ok_or(ScriptError::InvalidStackOperation)?;
         Ok(self.items.remove(idx))
     }
 
@@ -393,11 +413,7 @@ impl<const N: usize> Stack<N> {
     /// - `InvalidStackOperation` if the stack is empty.
     /// - `NumOverflow` / `NumNotMinimal` per `ScriptNum::from_bytes`.
     #[inline]
-    pub fn pop_num(
-        &mut self,
-        max_len: usize,
-        require_minimal: bool,
-    ) -> Result<i64, ScriptError> {
+    pub fn pop_num(&mut self, max_len: usize, require_minimal: bool) -> Result<i64, ScriptError> {
         let bytes = self.pop()?;
         Ok(ScriptNum::from_bytes(&bytes, max_len, require_minimal)?.to_i64())
     }
@@ -435,7 +451,6 @@ impl<const N: usize> Stack<N> {
         let bytes: &[u8] = if value { &[0x01] } else { &[] };
         self.push_checked(bytes, altstack_len)
     }
-
 }
 
 #[cfg(test)]

@@ -10,8 +10,11 @@ fn stage2_block_for_height(
     version: i32,
 ) -> Block {
     let tip = view.tip();
-    let parent_bits = view.get_header_at(tip.height)
-        .expect("storage error").expect("tip header must exist").bits;
+    let parent_bits = view
+        .get_header_at(tip.height)
+        .expect("storage error")
+        .expect("tip header must exist")
+        .bits;
     let script_sig = {
         let mut s = Transaction::bip34_height_script(this_height);
         // Ensure minimum length of 2 even if bip34_script produced 1 byte.
@@ -31,8 +34,11 @@ fn stage2_block_for_height(
 
     // MTP = median of up to 11 preceding blocks. We need time > MTP.
     // We pick a timestamp 600 seconds after the tip's timestamp.
-    let parent_time = view.get_header_at(tip.height)
-        .expect("storage error").expect("tip header must exist").time;
+    let parent_time = view
+        .get_header_at(tip.height)
+        .expect("storage error")
+        .expect("tip header must exist")
+        .time;
     let time = parent_time + 600;
 
     Block {
@@ -76,8 +82,11 @@ fn stage2_unexpected_difficulty_rejected() {
 fn stage2_timestamp_not_greater_than_mtp_rejected() {
     let view = build_chain(12, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
     let tip = view.tip();
-    let parent_bits = view.get_header_at(tip.height)
-        .expect("storage error").expect("tip header must exist").bits;
+    let parent_bits = view
+        .get_header_at(tip.height)
+        .expect("storage error")
+        .expect("tip header must exist")
+        .bits;
     let this_height = tip.height + 1;
     let script_sig = {
         let mut s = Transaction::bip34_height_script(this_height);
@@ -148,14 +157,24 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
 
 #[test]
 fn stage2_bip34_height_missing_rejected() {
-    let view = build_chain_at(BIP34_HEIGHT - 1u32, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let view = build_chain_at(
+        BIP34_HEIGHT - 1u32,
+        mantle::primitives::CompactBits(0x207f_ffff),
+        1_000_000,
+    );
     let tip = view.tip();
     assert_eq!(tip.height, BIP34_HEIGHT - 1u32);
 
-    let parent_bits = view.get_header_at(tip.height)
-        .expect("storage error").expect("tip header must exist").bits;
-    let parent_time = view.get_header_at(tip.height)
-        .expect("storage error").expect("tip header must exist").time;
+    let parent_bits = view
+        .get_header_at(tip.height)
+        .expect("storage error")
+        .expect("tip header must exist")
+        .bits;
+    let parent_time = view
+        .get_header_at(tip.height)
+        .expect("storage error")
+        .expect("tip header must exist")
+        .time;
 
     // coinbase with NO height encoding — just padding bytes.
     let bad_script = vec![0x51, 0x52]; // does not start with encoded height
@@ -186,7 +205,11 @@ fn stage2_bip34_height_missing_rejected() {
 
 #[test]
 fn stage2_bip34_correct_encoding_accepted() {
-    let view = build_chain_at(BIP34_HEIGHT - 1u32, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let view = build_chain_at(
+        BIP34_HEIGHT - 1u32,
+        mantle::primitives::CompactBits(0x207f_ffff),
+        1_000_000,
+    );
     let block = stage2_block_for_height(&view, BIP34_HEIGHT, 4);
     // Stage 1 uses easiest PoW so it passes; Stage 2 should also pass.
     validate_block_context(&block, &view)
@@ -195,11 +218,18 @@ fn stage2_bip34_correct_encoding_accepted() {
 
 #[test]
 fn stage2_block_version_too_low_rejected() {
-    let view = build_chain_at(BlockHeight(388_381 - 1), mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let view = build_chain_at(
+        BlockHeight(388_381 - 1),
+        mantle::primitives::CompactBits(0x207f_ffff),
+        1_000_000,
+    );
     let block = stage2_block_for_height(&view, BlockHeight(388_381), 3); // version 3 < required 4
     assert_eq!(
         validate_block_context(&block, &view),
-        Err(ValidationError::BlockVersionTooLow { version: 3, required: 4 }),
+        Err(ValidationError::BlockVersionTooLow {
+            version: 3,
+            required: 4
+        }),
     );
 }
 
@@ -208,10 +238,16 @@ fn stage2_valid_block_accepted() {
     // Small chain, pre-BIP34: no height encoding required, version 1 is fine.
     let view = build_chain(5, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
     let tip = view.tip();
-    let parent_bits = view.get_header_at(tip.height)
-        .expect("storage error").expect("tip header must exist").bits;
-    let parent_time = view.get_header_at(tip.height)
-        .expect("storage error").expect("tip header must exist").time;
+    let parent_bits = view
+        .get_header_at(tip.height)
+        .expect("storage error")
+        .expect("tip header must exist")
+        .bits;
+    let parent_time = view
+        .get_header_at(tip.height)
+        .expect("storage error")
+        .expect("tip header must exist")
+        .time;
     let coinbase = Transaction {
         version: 1,
         inputs: vec![coinbase_input(vec![0x51, 0x52])],

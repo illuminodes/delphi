@@ -33,7 +33,8 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
     fn hash_top<H: Digest>(&mut self) -> Result<(), ScriptError> {
         let top = self.stack.pop()?;
         let digest = H::digest(top.as_slice());
-        self.stack.push_checked(digest.as_slice(), self.altstack.len())
+        self.stack
+            .push_checked(digest.as_slice(), self.altstack.len())
     }
 
     pub(super) fn op_ripemd160(&mut self) -> Result<(), ScriptError> {
@@ -53,7 +54,8 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
         let top = self.stack.pop()?;
         let inner = Sha256::digest(top.as_slice());
         let outer = Ripemd160::digest(inner);
-        self.stack.push_checked(outer.as_slice(), self.altstack.len())
+        self.stack
+            .push_checked(outer.as_slice(), self.altstack.len())
     }
 
     /// `OP_HASH256` = `SHA256(SHA256(top))`. Reuses `mantle::hash::sha256d`.
@@ -86,11 +88,7 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
     /// `SignatureChecker::check_schnorr_sig`. An empty sig is a clean failure
     /// (pushes false); unknown pubkey type (not 32 bytes) is a NOP (push false,
     /// no error). Under `NULLFAIL`, a non-empty sig that fails is an error.
-    pub(super) fn op_check_sig(
-        &mut self,
-        script: &[u8],
-        verify: bool,
-    ) -> Result<(), ScriptError> {
+    pub(super) fn op_check_sig(&mut self, script: &[u8], verify: bool) -> Result<(), ScriptError> {
         use crate::script::sig_version::SigVersion;
 
         let pubkey = self.stack.pop()?;
@@ -135,11 +133,18 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
             Ecdsa::check_pubkey_encoding(pubkey.as_slice(), self.flags)?;
 
             // usize::MAX is the sentinel for "no OP_CODESEPARATOR seen" → use the whole script (pos=0).
-            let codesep = if self.last_codeseparator == usize::MAX { 0 } else { self.last_codeseparator };
+            let codesep = if self.last_codeseparator == usize::MAX {
+                0
+            } else {
+                self.last_codeseparator
+            };
             let script_code = script_code_after_codeseparator(script, codesep);
-            let ok = self
-                .checker
-                .check_ecdsa_sig(sig.as_slice(), pubkey.as_slice(), script_code, self.sig_version);
+            let ok = self.checker.check_ecdsa_sig(
+                sig.as_slice(),
+                pubkey.as_slice(),
+                script_code,
+                self.sig_version,
+            );
             if !ok && self.flags.contains(ScriptFlags::NULLFAIL) && !sig.is_empty() {
                 return Err(ScriptError::SigNullFail);
             }
@@ -234,12 +239,13 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
         script: &[u8],
         verify: bool,
     ) -> Result<(), ScriptError> {
-        let n_pubkeys_i = self.stack.pop_num(4, self.flags.contains(ScriptFlags::MINIMALDATA))?;
+        let n_pubkeys_i = self
+            .stack
+            .pop_num(4, self.flags.contains(ScriptFlags::MINIMALDATA))?;
         if !(0..=MAX_PUBKEYS_PER_MULTISIG).contains(&n_pubkeys_i) {
             return Err(ScriptError::PubKeyCount);
         }
-        let n_pubkeys = usize::try_from(n_pubkeys_i)
-            .map_err(|_| ScriptError::PubKeyCount)?;
+        let n_pubkeys = usize::try_from(n_pubkeys_i).map_err(|_| ScriptError::PubKeyCount)?;
 
         // Pubkey ops *do* count against the 201 op limit. Bump it by n_pubkeys
         // (the CHECKMULTISIG opcode itself was already counted by the dispatch).
@@ -257,7 +263,9 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
             pubkeys.push(self.stack.pop()?);
         }
 
-        let n_sigs_i = self.stack.pop_num(4, self.flags.contains(ScriptFlags::MINIMALDATA))?;
+        let n_sigs_i = self
+            .stack
+            .pop_num(4, self.flags.contains(ScriptFlags::MINIMALDATA))?;
         if n_sigs_i < 0 || n_sigs_i > n_pubkeys_i {
             return Err(ScriptError::SigCount);
         }
@@ -289,7 +297,11 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
         // against pubkeys; pubkeys may be skipped. The pops above placed the
         // topmost item at index 0 — i.e. *last* in script order — so we
         // iterate from the back to recover original push order.
-        let codesep = if self.last_codeseparator == usize::MAX { 0 } else { self.last_codeseparator };
+        let codesep = if self.last_codeseparator == usize::MAX {
+            0
+        } else {
+            self.last_codeseparator
+        };
         let script_code = script_code_after_codeseparator(script, codesep);
         let mut sig_idx = 0;
         let mut pk_idx = 0;
@@ -323,11 +335,7 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
         }
 
         if verify {
-            if ok {
-                Ok(())
-            } else {
-                Err(ScriptError::Verify)
-            }
+            if ok { Ok(()) } else { Err(ScriptError::Verify) }
         } else {
             self.stack.push_bool(ok, self.altstack.len())
         }
@@ -347,7 +355,8 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
         let locktime = crate::script::num::ScriptNum::from_bytes(
             top.as_slice(),
             crate::script::num::MAX_NUM_SIZE_CLTV,
-            self.flags.contains(crate::script::flags::ScriptFlags::MINIMALDATA),
+            self.flags
+                .contains(crate::script::flags::ScriptFlags::MINIMALDATA),
         )?
         .to_i64();
         if locktime < 0 {
@@ -367,7 +376,8 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
         let sequence = crate::script::num::ScriptNum::from_bytes(
             top.as_slice(),
             crate::script::num::MAX_NUM_SIZE_CLTV,
-            self.flags.contains(crate::script::flags::ScriptFlags::MINIMALDATA),
+            self.flags
+                .contains(crate::script::flags::ScriptFlags::MINIMALDATA),
         )?
         .to_i64();
         if sequence < 0 {

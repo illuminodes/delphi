@@ -12,11 +12,11 @@
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, Witness};
-use mantle_consensus::script::{
-    Interpreter, InterpStackElement, NopSigChecker, ScriptFlags, SigVersion,
-};
 use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, TxSighash};
 use mantle_consensus::script::verify::{ScriptVerifier, verify_script};
+use mantle_consensus::script::{
+    InterpStackElement, Interpreter, NopSigChecker, ScriptFlags, SigVersion,
+};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 use std::hint::black_box;
@@ -81,8 +81,8 @@ fn n_pushes(bencher: divan::Bencher, n: usize) {
 fn p2pkh_shape_through_equalverify(bencher: divan::Bencher) {
     // HASH160(20 × 0xab) — verified against an independent calculator.
     const EXPECTED: [u8; 20] = [
-        0xc8, 0x07, 0x76, 0x10, 0x73, 0xee, 0xea, 0x40, 0x01, 0xd1,
-        0x07, 0xb6, 0x4f, 0xa6, 0x96, 0x70, 0x39, 0x6c, 0x99, 0x97,
+        0xc8, 0x07, 0x76, 0x10, 0x73, 0xee, 0xea, 0x40, 0x01, 0xd1, 0x07, 0xb6, 0x4f, 0xa6, 0x96,
+        0x70, 0x39, 0x6c, 0x99, 0x97,
     ];
     let mut script = Vec::with_capacity(2 * 20 + 5);
     script.push(0x14); // PUSHBYTES_20
@@ -264,12 +264,18 @@ fn make_witness_tx(witness_items: &[&[u8]]) -> Transaction {
     Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+            previous_output: OutPoint {
+                txid: Hash256::ZERO,
+                vout: 0,
+            },
             script_sig: vec![].into(),
             sequence: 0xffff_ffff,
             witness: Witness::from_slice(witness_items),
         }],
-        outputs: vec![TxOut { value: Satoshi::new(100_000), script_pubkey: vec![0x6a].into() }],
+        outputs: vec![TxOut {
+            value: Satoshi::new(100_000),
+            script_pubkey: vec![0x6a].into(),
+        }],
         locktime: 0,
     }
 }
@@ -293,7 +299,11 @@ fn ecdsa_sign(sk: &SigningKey, digest: &[u8; 32], hash_type: SigHashType) -> Vec
 #[divan::bench]
 fn verify_p2wpkh(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-    let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+    let pk: Vec<u8> = sk
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .to_vec();
     let pkh = hash160(&pk);
 
     let mut spk = vec![0x00u8, 0x14];
@@ -306,14 +316,21 @@ fn verify_p2wpkh(bencher: divan::Bencher) {
     let amount = Satoshi::new(100_000);
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
-    let digest = tmp_tx.bip143_sighash(0,&script_code, amount, SigHashType::ALL, &cache);
+    let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
     let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
 
     bencher.bench(|| {
-        verify_script(black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, segwit_flags())
-            .expect("p2wpkh must verify");
+        verify_script(
+            black_box(&[]),
+            black_box(&spk),
+            black_box(&tx),
+            0,
+            amount,
+            segwit_flags(),
+        )
+        .expect("p2wpkh must verify");
     });
 }
 
@@ -324,7 +341,11 @@ fn verify_p2wpkh(bencher: divan::Bencher) {
 #[divan::bench]
 fn verify_p2wsh(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
-    let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+    let pk: Vec<u8> = sk
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .to_vec();
     let pkh = hash160(&pk);
 
     let mut witness_script = vec![0x76u8, 0xa9, 0x14];
@@ -338,14 +359,21 @@ fn verify_p2wsh(bencher: divan::Bencher) {
     let amount = Satoshi::new(200_000);
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
-    let digest = tmp_tx.bip143_sighash(0,&witness_script, amount, SigHashType::ALL, &cache);
+    let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
     let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice(), witness_script.as_slice()]);
 
     bencher.bench(|| {
-        verify_script(black_box(&[]), black_box(&spk), black_box(&tx), 0, amount, segwit_flags())
-            .expect("p2wsh must verify");
+        verify_script(
+            black_box(&[]),
+            black_box(&spk),
+            black_box(&tx),
+            0,
+            amount,
+            segwit_flags(),
+        )
+        .expect("p2wsh must verify");
     });
 }
 
@@ -354,7 +382,11 @@ fn verify_p2wsh(bencher: divan::Bencher) {
 #[divan::bench]
 fn verify_p2wpkh_with_bufs(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-    let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+    let pk: Vec<u8> = sk
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .to_vec();
     let pkh = hash160(&pk);
 
     let mut spk = vec![0x00u8, 0x14];
@@ -367,7 +399,7 @@ fn verify_p2wpkh_with_bufs(bencher: divan::Bencher) {
     let amount = Satoshi::new(100_000);
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
-    let digest = tmp_tx.bip143_sighash(0,&script_code, amount, SigHashType::ALL, &cache);
+    let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
     let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
@@ -375,7 +407,8 @@ fn verify_p2wpkh_with_bufs(bencher: divan::Bencher) {
     let verifier = ScriptVerifier::new(&tx, 0, amount, segwit_flags());
     let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
     bencher.bench_local(|| {
-        let (r, b) = verifier.verify_with_bufs(black_box(&[]), black_box(&spk), std::mem::take(&mut bufs));
+        let (r, b) =
+            verifier.verify_with_bufs(black_box(&[]), black_box(&spk), std::mem::take(&mut bufs));
         r.expect("p2wpkh must verify");
         bufs = b;
     });
@@ -386,7 +419,11 @@ fn verify_p2wpkh_with_bufs(bencher: divan::Bencher) {
 #[divan::bench]
 fn verify_p2wsh_with_bufs(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
-    let pk: Vec<u8> = sk.verifying_key().to_encoded_point(true).as_bytes().to_vec();
+    let pk: Vec<u8> = sk
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .to_vec();
     let pkh = hash160(&pk);
 
     let mut witness_script = vec![0x76u8, 0xa9, 0x14];
@@ -400,7 +437,7 @@ fn verify_p2wsh_with_bufs(bencher: divan::Bencher) {
     let amount = Satoshi::new(200_000);
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
-    let digest = tmp_tx.bip143_sighash(0,&witness_script, amount, SigHashType::ALL, &cache);
+    let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
     let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice(), witness_script.as_slice()]);
@@ -408,7 +445,8 @@ fn verify_p2wsh_with_bufs(bencher: divan::Bencher) {
     let verifier = ScriptVerifier::new(&tx, 0, amount, segwit_flags());
     let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
     bencher.bench_local(|| {
-        let (r, b) = verifier.verify_with_bufs(black_box(&[]), black_box(&spk), std::mem::take(&mut bufs));
+        let (r, b) =
+            verifier.verify_with_bufs(black_box(&[]), black_box(&spk), std::mem::take(&mut bufs));
         r.expect("p2wsh must verify");
         bufs = b;
     });

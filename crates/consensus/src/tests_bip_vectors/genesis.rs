@@ -25,7 +25,9 @@ fn genesis_txid_matches_merkle_root() {
     let block = Block::decode(&mut Cursor::new(&bytes)).expect("genesis block must decode");
 
     let mut tx_bytes = Vec::new();
-    block.transactions[0].encode(&mut tx_bytes).expect("Vec<u8> write cannot fail");
+    block.transactions[0]
+        .encode(&mut tx_bytes)
+        .expect("Vec<u8> write cannot fail");
     let computed_txid = Hash256(sha256d(&tx_bytes));
 
     // Genesis has one tx — merkle root equals the txid (no pair hashing).

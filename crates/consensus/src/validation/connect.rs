@@ -5,7 +5,6 @@ use crate::error::ValidationError;
 use crate::script::sighash::Bip143Cache;
 use crate::script::{ScriptFlags, ScriptVerifier};
 
-
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const INITIAL_SUBSIDY: u64 = 50 * 100_000_000;
@@ -74,15 +73,17 @@ pub fn connect_block<V: ChainView>(
         // Legacy sigops: count OP_CHECKSIG / OP_CHECKMULTISIG in scriptSig and
         // scriptPubKey. Each OP_CHECKMULTISIG counts as 20 (MAX_PUBKEYS_PER_MULTISIG).
         for input in &tx.inputs {
-            total_sigops = total_sigops
-                .saturating_add(count_legacy_sigops(input.script_sig.as_slice()));
+            total_sigops =
+                total_sigops.saturating_add(count_legacy_sigops(input.script_sig.as_slice()));
         }
         for output in &tx.outputs {
-            total_sigops = total_sigops
-                .saturating_add(count_legacy_sigops(output.script_pubkey.as_slice()));
+            total_sigops =
+                total_sigops.saturating_add(count_legacy_sigops(output.script_pubkey.as_slice()));
         }
         if total_sigops > MAX_BLOCK_SIGOPS {
-            return Err(ValidationError::SigopsLimitExceeded { count: total_sigops });
+            return Err(ValidationError::SigopsLimitExceeded {
+                count: total_sigops,
+            });
         }
 
         if is_coinbase {
@@ -90,7 +91,10 @@ pub fn connect_block<V: ChainView>(
             for (vout, output) in tx.outputs.iter().enumerate() {
                 #[allow(clippy::cast_possible_truncation)]
                 created.push(NewCoin {
-                    outpoint: OutPoint { txid, vout: vout as u32 },
+                    outpoint: OutPoint {
+                        txid,
+                        vout: vout as u32,
+                    },
                     value: output.value,
                     script_pubkey: output.script_pubkey.clone(),
                     coinbase: true,
@@ -131,8 +135,14 @@ pub fn connect_block<V: ChainView>(
             // the fourth per-input check, run after the coin lookup and
             // before fee math. A failure rejects the tx regardless of
             // whether the value math would have passed.
-            ScriptVerifier::with_cache(tx, input_index, coin.value, script_flags, bip143_cache.clone())
-                .verify(input.script_sig.as_slice(), coin.script_pubkey.as_slice())
+            ScriptVerifier::with_cache(
+                tx,
+                input_index,
+                coin.value,
+                script_flags,
+                bip143_cache.clone(),
+            )
+            .verify(input.script_sig.as_slice(), coin.script_pubkey.as_slice())
             .map_err(|kind| ValidationError::ScriptVerifyFailed {
                 tx_index,
                 input_index,
@@ -164,7 +174,10 @@ pub fn connect_block<V: ChainView>(
         for (vout, output) in tx.outputs.iter().enumerate() {
             #[allow(clippy::cast_possible_truncation)]
             created.push(NewCoin {
-                outpoint: OutPoint { txid, vout: vout as u32 },
+                outpoint: OutPoint {
+                    txid,
+                    vout: vout as u32,
+                },
                 value: output.value,
                 script_pubkey: output.script_pubkey.clone(),
                 coinbase: false,
@@ -188,7 +201,11 @@ pub fn connect_block<V: ChainView>(
         return Err(ValidationError::CoinbaseRewardExceedsSubsidy);
     }
 
-    Ok(ConnectResult { created, spent, fees: total_fees })
+    Ok(ConnectResult {
+        created,
+        spent,
+        fees: total_fees,
+    })
 }
 
 // ── BlockHeightExt ────────────────────────────────────────────────────────────

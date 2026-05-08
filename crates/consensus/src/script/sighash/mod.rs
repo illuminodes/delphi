@@ -114,8 +114,7 @@ impl SigHashType {
 pub trait TxSighash {
     /// Legacy (pre-segwit) signature hash. See [`TxSighash::legacy_sighash`]
     /// implementation for the exact preimage construction.
-    fn legacy_sighash(&self, n_in: usize, script_code: &[u8], hash_type: SigHashType)
-        -> Hash256;
+    fn legacy_sighash(&self, n_in: usize, script_code: &[u8], hash_type: SigHashType) -> Hash256;
 
     /// BIP143 (segwit v0) signature hash. `cache` must have been built from
     /// `self`.
@@ -157,12 +156,7 @@ impl TxSighash for Transaction {
     /// # Panics
     /// Panics if `n_in >= self.inputs.len()`. Calling code (the interpreter)
     /// only reaches this with a valid input index.
-    fn legacy_sighash(
-        &self,
-        n_in: usize,
-        script_code: &[u8],
-        hash_type: SigHashType,
-    ) -> Hash256 {
+    fn legacy_sighash(&self, n_in: usize, script_code: &[u8], hash_type: SigHashType) -> Hash256 {
         let mode = hash_type.mode();
 
         // The SIGHASH_SINGLE "1" bug: if `n_in` is at or past the last output,
@@ -204,7 +198,11 @@ impl TxSighash for Transaction {
         let mode = hash_type.mode();
         let anyonecanpay = hash_type.is_anyonecanpay();
 
-        let hash_prevouts = if anyonecanpay { Hash256::ZERO } else { cache.prevouts };
+        let hash_prevouts = if anyonecanpay {
+            Hash256::ZERO
+        } else {
+            cache.prevouts
+        };
 
         let hash_sequence =
             if anyonecanpay || mode == SigHashMode::Single || mode == SigHashMode::None {
@@ -488,12 +486,9 @@ fn pushed_span(script: &[u8], i: usize) -> Option<(usize, usize, usize)> {
             if i + 4 >= script.len() {
                 return None;
             }
-            let len = u32::from_le_bytes([
-                script[i + 1],
-                script[i + 2],
-                script[i + 3],
-                script[i + 4],
-            ]) as usize;
+            let len =
+                u32::from_le_bytes([script[i + 1], script[i + 2], script[i + 3], script[i + 4]])
+                    as usize;
             let data_start = i + 5;
             let data_end = data_start + len;
             if data_end > script.len() {
@@ -655,7 +650,13 @@ impl Bip341Cache {
             h.finalize().into()
         };
 
-        Self { prevouts: hash_prevouts, amounts: hash_amounts, scriptpubkeys: hash_scriptpubkeys, sequences: hash_sequences, outputs: hash_outputs }
+        Self {
+            prevouts: hash_prevouts,
+            amounts: hash_amounts,
+            scriptpubkeys: hash_scriptpubkeys,
+            sequences: hash_sequences,
+            outputs: hash_outputs,
+        }
     }
 }
 

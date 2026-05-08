@@ -640,10 +640,21 @@ mod tests {
     #[test]
     fn disabled_set() {
         for op in [
-            Opcode::Cat, Opcode::SubStr, Opcode::Left, Opcode::Right,
-            Opcode::Invert, Opcode::And, Opcode::Or, Opcode::Xor,
-            Opcode::TwoMul, Opcode::TwoDiv,
-            Opcode::Mul, Opcode::Div, Opcode::Mod, Opcode::LShift, Opcode::RShift,
+            Opcode::Cat,
+            Opcode::SubStr,
+            Opcode::Left,
+            Opcode::Right,
+            Opcode::Invert,
+            Opcode::And,
+            Opcode::Or,
+            Opcode::Xor,
+            Opcode::TwoMul,
+            Opcode::TwoDiv,
+            Opcode::Mul,
+            Opcode::Div,
+            Opcode::Mod,
+            Opcode::LShift,
+            Opcode::RShift,
         ] {
             assert!(op.is_disabled(), "{} should be disabled", op.name());
         }
@@ -655,8 +666,14 @@ mod tests {
     fn upgradable_nops() {
         assert!(!Opcode::Nop.is_upgradable_nop());
         for op in [
-            Opcode::Nop1, Opcode::Nop4, Opcode::Nop5, Opcode::Nop6,
-            Opcode::Nop7, Opcode::Nop8, Opcode::Nop9, Opcode::Nop10,
+            Opcode::Nop1,
+            Opcode::Nop4,
+            Opcode::Nop5,
+            Opcode::Nop6,
+            Opcode::Nop7,
+            Opcode::Nop8,
+            Opcode::Nop9,
+            Opcode::Nop10,
         ] {
             assert!(op.is_upgradable_nop());
         }

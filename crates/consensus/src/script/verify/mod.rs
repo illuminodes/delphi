@@ -22,8 +22,8 @@ use super::consensus_crypto::{Ecdsa, Schnorr};
 use super::error::ScriptError;
 use super::flags::ScriptFlags;
 use super::interpreter::{InterpStackElement, Interpreter, TapscriptCtx};
-use super::sighash::{Bip143Cache, Bip341Cache, TapHasher, TxSighash};
 use super::sig_version::SigVersion;
+use super::sighash::{Bip143Cache, Bip341Cache, TapHasher, TxSighash};
 
 /// Verifier for a single transaction input's script pair.
 ///
@@ -49,7 +49,13 @@ impl<'a> ScriptVerifier<'a> {
     /// [`with_cache`]: ScriptVerifier::with_cache
     #[must_use]
     pub fn new(tx: &'a Transaction, n_in: usize, amount: Satoshi, flags: ScriptFlags) -> Self {
-        Self { tx, n_in, amount, flags, cache: Bip143Cache::new(tx) }
+        Self {
+            tx,
+            n_in,
+            amount,
+            flags,
+            cache: Bip143Cache::new(tx),
+        }
     }
 
     /// Build a verifier reusing a pre-built [`Bip143Cache`].
@@ -66,7 +72,13 @@ impl<'a> ScriptVerifier<'a> {
         flags: ScriptFlags,
         cache: Bip143Cache,
     ) -> Self {
-        Self { tx, n_in, amount, flags, cache }
+        Self {
+            tx,
+            n_in,
+            amount,
+            flags,
+            cache,
+        }
     }
 
     /// Verify the script pair. Returns `Ok(())` iff the input authorises
@@ -77,7 +89,14 @@ impl<'a> ScriptVerifier<'a> {
     pub fn verify(&self, script_sig: &[u8], script_pubkey: &[u8]) -> Result<(), ScriptError> {
         let bufs = (Vec::new(), Vec::new());
         let (result, _bufs) = verify_script_impl(
-            script_sig, script_pubkey, self.tx, self.n_in, self.amount, self.flags, &self.cache, bufs,
+            script_sig,
+            script_pubkey,
+            self.tx,
+            self.n_in,
+            self.amount,
+            self.flags,
+            &self.cache,
+            bufs,
         );
         result
     }
@@ -98,9 +117,19 @@ impl<'a> ScriptVerifier<'a> {
         script_sig: &[u8],
         script_pubkey: &[u8],
         bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
-    ) -> (Result<(), ScriptError>, (Vec<InterpStackElement>, Vec<InterpStackElement>)) {
+    ) -> (
+        Result<(), ScriptError>,
+        (Vec<InterpStackElement>, Vec<InterpStackElement>),
+    ) {
         verify_script_impl(
-            script_sig, script_pubkey, self.tx, self.n_in, self.amount, self.flags, &self.cache, bufs,
+            script_sig,
+            script_pubkey,
+            self.tx,
+            self.n_in,
+            self.amount,
+            self.flags,
+            &self.cache,
+            bufs,
         )
     }
 }
@@ -141,8 +170,20 @@ fn verify_script_impl(
     flags: ScriptFlags,
     cache: &Bip143Cache,
     mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
-) -> (Result<(), ScriptError>, (Vec<InterpStackElement>, Vec<InterpStackElement>)) {
-    let result = verify_script_inner(script_sig, script_pubkey, tx, n_in, amount, flags, cache, &mut bufs);
+) -> (
+    Result<(), ScriptError>,
+    (Vec<InterpStackElement>, Vec<InterpStackElement>),
+) {
+    let result = verify_script_inner(
+        script_sig,
+        script_pubkey,
+        tx,
+        n_in,
+        amount,
+        flags,
+        cache,
+        &mut bufs,
+    );
     (result, bufs)
 }
 
@@ -171,9 +212,9 @@ fn try_verify_p2pkh(
     flags: ScriptFlags,
     cache: &Bip143Cache,
 ) -> Option<Result<(), ScriptError>> {
+    use super::interpreter::reader::ScriptReader;
     use ripemd::Ripemd160;
     use sha2::{Digest, Sha256};
-    use super::interpreter::reader::ScriptReader;
 
     // ── Pattern match on scriptPubKey ────────────────────────────────────────
     // 25 bytes: OP_DUP(76) OP_HASH160(a9) OP_PUSHBYTES_20(14) <20b> OP_EQUALVERIFY(88) OP_CHECKSIG(ac)
@@ -256,7 +297,9 @@ fn verify_script_inner(
     // ── P2PKH fast path ─────────────────────────────────────────────────────
     // Handles ~60–70 % of mainnet inputs without touching the interpreter,
     // ConditionStack, or any other interpreter state.
-    if let Some(result) = try_verify_p2pkh(script_sig, script_pubkey, tx, n_in, amount, flags, cache) {
+    if let Some(result) =
+        try_verify_p2pkh(script_sig, script_pubkey, tx, n_in, amount, flags, cache)
+    {
         return result;
     }
 
@@ -286,8 +329,11 @@ fn verify_script_inner(
     // Snapshot the post-scriptSig stack so we can roll back to it if the
     // P2SH redeem path activates. Cheap: `Stack` clone is a Vec clone of
     // small inline-or-heap elements. Skipped when P2SH is off.
-    let stack_after_sig =
-        if flags.contains(ScriptFlags::P2SH) { Some(interp.stack().clone()) } else { None };
+    let stack_after_sig = if flags.contains(ScriptFlags::P2SH) {
+        Some(interp.stack().clone())
+    } else {
+        None
+    };
 
     // ── scriptPubKey ────────────────────────────────────────────────────────
     macro_rules! try_interp {
@@ -395,10 +441,7 @@ fn verify_script_inner(
 
             if version == 0 {
                 run_witness_v0(&program, &witness.to_vec(), tx, n_in, amount, flags, bufs)?;
-            } else if version == 1
-                && program.len() == 32
-                && flags.contains(ScriptFlags::TAPROOT)
-            {
+            } else if version == 1 && program.len() == 32 && flags.contains(ScriptFlags::TAPROOT) {
                 // BIP341 taproot (witness v1, 32-byte program).
                 // P2SH-wrapped taproot is not valid — BIP341 §"Script validation rules".
                 if is_p2sh(script_pubkey) {
@@ -462,13 +505,19 @@ fn run_taproot(
 ) -> Result<(), ScriptError> {
     // Annex: the last witness item starting with 0x50 is the annex.
     // It is committed to in the sighash but not pushed to the script stack.
-    let (annex, effective_witness): (Option<&[u8]>, &[Vec<u8>]) =
-        if witness_items.len() >= 2 && witness_items.last().is_some_and(|w| w.first() == Some(&0x50)) {
-            let annex_item = witness_items.last().expect("checked len");
-            (Some(annex_item.as_slice()), &witness_items[..witness_items.len() - 1])
-        } else {
-            (None, witness_items)
-        };
+    let (annex, effective_witness): (Option<&[u8]>, &[Vec<u8>]) = if witness_items.len() >= 2
+        && witness_items
+            .last()
+            .is_some_and(|w| w.first() == Some(&0x50))
+    {
+        let annex_item = witness_items.last().expect("checked len");
+        (
+            Some(annex_item.as_slice()),
+            &witness_items[..witness_items.len() - 1],
+        )
+    } else {
+        (None, witness_items)
+    };
 
     // Build the BIP341 cache (needed for both key-path and script-path sighash).
     let bip341_cache = Bip341Cache::new(tx, &[amount], &[spent_spk]);
@@ -479,8 +528,7 @@ fn run_taproot(
         1 => {
             let sig = &effective_witness[0];
 
-            let Ok((sig64, hash_type_byte)) = Schnorr::check_sig_encoding(sig)
-            else {
+            let Ok((sig64, hash_type_byte)) = Schnorr::check_sig_encoding(sig) else {
                 return Err(ScriptError::SchnorrSigInvalidFormat);
             };
             let hash_type = super::sighash::TaprootSigHashType(hash_type_byte);
@@ -491,7 +539,11 @@ fn run_taproot(
             // Annex is included in sighash for key-path too.
             let annex_body = annex.map(|a| &a[1..]); // strip 0x50 prefix byte
             let digest = tx.bip341_sighash(
-                n_in, amount, spent_spk, hash_type, &bip341_cache,
+                n_in,
+                amount,
+                spent_spk,
+                hash_type,
+                &bip341_cache,
                 annex_body,
                 None, // key-path: no leaf_hash
             );
@@ -537,10 +589,9 @@ fn run_taproot(
             let merkle_root: [u8; 32] = {
                 let mut current = leaf_hash;
                 for i in 0..path_len {
-                    let sibling: &[u8; 32] =
-                        control_block[33 + i * 32..33 + (i + 1) * 32]
-                            .try_into()
-                            .expect("slice is 32");
+                    let sibling: &[u8; 32] = control_block[33 + i * 32..33 + (i + 1) * 32]
+                        .try_into()
+                        .expect("slice is 32");
                     // BIP341: sort by value for branch hashing.
                     current = if current <= *sibling {
                         TapHasher::branch(&current, sibling)
@@ -552,9 +603,8 @@ fn run_taproot(
             };
 
             // Verify the tweaked output key commits to (internal_key, merkle_root).
-            let expected_output_key =
-                TapHasher::tweak_output_key(internal_key, &merkle_root)
-                    .ok_or(ScriptError::XOnlyPubkeyTweak)?;
+            let expected_output_key = TapHasher::tweak_output_key(internal_key, &merkle_root)
+                .ok_or(ScriptError::XOnlyPubkeyTweak)?;
             if &expected_output_key != program32 {
                 return Err(ScriptError::WitnessProgramMismatchTaproot);
             }
@@ -644,7 +694,7 @@ fn run_tapscript(
 /// The interpreter runs under `SigVersion::WitnessV0` so `check_ecdsa_sig`
 /// will use the BIP143 sighash path.
 fn eval_witness_script(
-    stack_items: &[&[u8]],  // caller builds this on the stack — no heap alloc
+    stack_items: &[&[u8]], // caller builds this on the stack — no heap alloc
     script: &[u8],
     tx: &Transaction,
     n_in: usize,
@@ -655,8 +705,13 @@ fn eval_witness_script(
     let checker = TxSigChecker::new(tx, n_in, amount, flags);
     let stack_buf = std::mem::take(&mut bufs.0);
     let altstack_buf = std::mem::take(&mut bufs.1);
-    let mut interp =
-        Interpreter::new_with_bufs(&checker, flags, SigVersion::WitnessV0, stack_buf, altstack_buf);
+    let mut interp = Interpreter::new_with_bufs(
+        &checker,
+        flags,
+        SigVersion::WitnessV0,
+        stack_buf,
+        altstack_buf,
+    );
 
     let result = (|| {
         for item in stack_items {
@@ -737,7 +792,15 @@ fn run_witness_v0(
                 for (i, item) in stack_items.iter().enumerate() {
                     buf[i] = item.as_slice();
                 }
-                eval_witness_script(&buf[..stack_items.len()], script_item, tx, n_in, amount, flags, bufs)
+                eval_witness_script(
+                    &buf[..stack_items.len()],
+                    script_item,
+                    tx,
+                    n_in,
+                    amount,
+                    flags,
+                    bufs,
+                )
             } else {
                 let refs: Vec<&[u8]> = stack_items.iter().map(Vec::as_slice).collect();
                 eval_witness_script(&refs, script_item, tx, n_in, amount, flags, bufs)

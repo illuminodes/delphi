@@ -17,8 +17,8 @@
 
 use k256::ecdsa::signature::hazmat::PrehashVerifier;
 use k256::ecdsa::{Signature as EcdsaSig, VerifyingKey};
-use k256::schnorr::{Signature as SchnorrSig, VerifyingKey as SchnorrVerifyingKey};
 use k256::schnorr::signature::hazmat::PrehashVerifier as SchnorrPrehashVerifier;
+use k256::schnorr::{Signature as SchnorrSig, VerifyingKey as SchnorrVerifyingKey};
 use sha2::{Digest, Sha256};
 
 use super::error::ScriptError;
@@ -28,10 +28,8 @@ use super::flags::ScriptFlags;
 /// rejected under `SCRIPT_VERIFY_LOW_S`. Source: BIP146 (the constant is the
 /// secp256k1 group order divided by two, rounded down).
 const HALF_CURVE_ORDER_BE: [u8; 32] = [
-    0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d,
-    0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b, 0x20, 0xa0,
+    0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b, 0x20, 0xa0,
 ];
 
 /// ECDSA operations for legacy and segwit-v0 sighash regimes.
@@ -62,14 +60,12 @@ impl Ecdsa {
         }
 
         // Split the trailing sighash byte. With non-empty sig, we always have one.
-        let (Some(&hashtype), Some(sig_der)) =
-            (sig.last(), sig.split_last().map(|(_, body)| body))
+        let (Some(&hashtype), Some(sig_der)) = (sig.last(), sig.split_last().map(|(_, body)| body))
         else {
             return Ok(());
         };
 
-        let strict =
-            flags.contains(ScriptFlags::DERSIG) || flags.contains(ScriptFlags::STRICTENC);
+        let strict = flags.contains(ScriptFlags::DERSIG) || flags.contains(ScriptFlags::STRICTENC);
         if strict && !Self::is_valid_der_encoding(sig_der) {
             return Err(ScriptError::SigDer);
         }
@@ -93,8 +89,7 @@ impl Ecdsa {
     /// `PubKeyType` if STRICTENC is set and the pubkey doesn't match either
     /// form.
     pub fn check_pubkey_encoding(pubkey: &[u8], flags: ScriptFlags) -> Result<(), ScriptError> {
-        if flags.contains(ScriptFlags::STRICTENC) && !Self::is_compressed_or_uncompressed(pubkey)
-        {
+        if flags.contains(ScriptFlags::STRICTENC) && !Self::is_compressed_or_uncompressed(pubkey) {
             return Err(ScriptError::PubKeyType);
         }
         Ok(())
@@ -228,7 +223,11 @@ impl Ecdsa {
         // forbids a redundant 0x00, but a 0x00 *is* required when the
         // magnitude's high bit is set, and we want to compare magnitude to
         // N/2.
-        let s_mag: &[u8] = if !s.is_empty() && s[0] == 0x00 { &s[1..] } else { s };
+        let s_mag: &[u8] = if !s.is_empty() && s[0] == 0x00 {
+            &s[1..]
+        } else {
+            s
+        };
 
         // Right-align into a 32-byte buffer for big-endian comparison.
         // Anything longer than 32 bytes can't be ≤ N/2 (which is 256 bits).

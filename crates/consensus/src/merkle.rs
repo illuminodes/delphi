@@ -60,7 +60,6 @@ fn reduce_in_place(row: &mut Vec<Hash256>) -> Hash256 {
     row[0]
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,8 +71,10 @@ mod tests {
     fn txid_from_hex(s: &str) -> Hash256 {
         let bytes: Vec<u8> = (0..s.len())
             .step_by(2)
-            .map(|i| u8::from_str_radix(&s[i..i + 2], 16)
-            .unwrap_or_else(|_| panic!("invalid hex at offset {i}")))
+            .map(|i| {
+                u8::from_str_radix(&s[i..i + 2], 16)
+                    .unwrap_or_else(|_| panic!("invalid hex at offset {i}"))
+            })
             .collect();
         // txids are stored internally in byte order (not display-reversed)
         let mut arr = [0u8; 32];
@@ -131,8 +132,7 @@ mod tests {
         // Genesis block has exactly one transaction. The merkle root equals the
         // txid — no hashing applied. Verify against the known genesis txid.
         // Stored in internal byte order (not display-reversed).
-        let genesis_txid_hex =
-            "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a";
+        let genesis_txid_hex = "3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a";
         let txid = txid_from_hex(genesis_txid_hex);
         let root = compute_merkle_root(&[txid]).expect("single-tx merkle root must exist");
         assert_eq!(root, txid);

@@ -33,7 +33,10 @@ pub struct ScriptNum {
 
 impl ScriptNum {
     /// The empty-encoded zero.
-    pub const ZERO: Self = Self { buf: [0; 5], len: 0 };
+    pub const ZERO: Self = Self {
+        buf: [0; 5],
+        len: 0,
+    };
 
     /// Encode an `i64` minimally.
     ///
@@ -56,11 +59,17 @@ impl ScriptNum {
         // and that -value is positive before the cast.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         if (1..=127).contains(&value) {
-            return Self { buf: [value as u8, 0, 0, 0, 0], len: 1 };
+            return Self {
+                buf: [value as u8, 0, 0, 0, 0],
+                len: 1,
+            };
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         if (-127..=-1).contains(&value) {
-            return Self { buf: [((-value) as u8) | 0x80, 0, 0, 0, 0], len: 1 };
+            return Self {
+                buf: [((-value) as u8) | 0x80, 0, 0, 0, 0],
+                len: 1,
+            };
         }
 
         let negative = value < 0;
@@ -69,10 +78,14 @@ impl ScriptNum {
         let mut magnitude: u64 = if negative {
             value = value.wrapping_neg();
             #[allow(clippy::cast_sign_loss)] // see comment above
-            { value as u64 }
+            {
+                value as u64
+            }
         } else {
             #[allow(clippy::cast_sign_loss)] // value > 0 here
-            { value as u64 }
+            {
+                value as u64
+            }
         };
 
         let mut buf = [0u8; 5];
@@ -100,7 +113,10 @@ impl ScriptNum {
         }
 
         #[allow(clippy::cast_possible_truncation)] // len ≤ 5
-        Self { buf, len: len as u8 }
+        Self {
+            buf,
+            len: len as u8,
+        }
     }
 
     /// Decode the magnitude as an `i64`.
@@ -116,7 +132,11 @@ impl ScriptNum {
 
         let mut magnitude: i64 = 0;
         for i in 0..len {
-            let byte = if i == len - 1 { self.buf[i] & 0x7f } else { self.buf[i] };
+            let byte = if i == len - 1 {
+                self.buf[i] & 0x7f
+            } else {
+                self.buf[i]
+            };
             magnitude |= i64::from(byte) << (8 * i);
         }
 
@@ -151,7 +171,10 @@ impl ScriptNum {
         let mut buf = [0u8; 5];
         buf[..bytes.len()].copy_from_slice(bytes);
         #[allow(clippy::cast_possible_truncation)] // bytes.len() ≤ max_len ≤ 5
-        Ok(Self { buf, len: bytes.len() as u8 })
+        Ok(Self {
+            buf,
+            len: bytes.len() as u8,
+        })
     }
 
     /// `true` if `bytes` is the minimal encoding of the value it represents.
@@ -276,7 +299,10 @@ mod tests {
         assert_eq!(ScriptNum::from_i64(255).as_bytes(), &[0xff, 0x00]);
         assert_eq!(ScriptNum::from_i64(-255).as_bytes(), &[0xff, 0x80]);
         assert_eq!(ScriptNum::from_i64(256).as_bytes(), &[0x00, 0x01]);
-        assert_eq!(ScriptNum::from_i64(0x00ff_ffff).as_bytes(), &[0xff, 0xff, 0xff, 0x00]);
+        assert_eq!(
+            ScriptNum::from_i64(0x00ff_ffff).as_bytes(),
+            &[0xff, 0xff, 0xff, 0x00]
+        );
     }
 
     #[test]

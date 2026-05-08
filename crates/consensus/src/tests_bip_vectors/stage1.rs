@@ -15,7 +15,10 @@ fn stage1_empty_block_rejected() {
         },
         transactions: vec![],
     };
-    assert_eq!(validate_block_structure(&block), Err(ValidationError::EmptyBlock));
+    assert_eq!(
+        validate_block_structure(&block),
+        Err(ValidationError::EmptyBlock)
+    );
 }
 
 #[test]
@@ -23,7 +26,10 @@ fn stage1_first_tx_not_coinbase_rejected() {
     let non_cb = Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
+            previous_output: OutPoint {
+                txid: Hash256([0xab; 32]),
+                vout: 0,
+            },
             script_sig: vec![].into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
@@ -44,7 +50,10 @@ fn stage1_first_tx_not_coinbase_rejected() {
         },
         transactions: vec![non_cb],
     };
-    assert_eq!(validate_block_structure(&block), Err(ValidationError::FirstTxNotCoinbase));
+    assert_eq!(
+        validate_block_structure(&block),
+        Err(ValidationError::FirstTxNotCoinbase)
+    );
 }
 
 #[test]
@@ -105,7 +114,9 @@ fn stage1_coinbase_script_too_long() {
     let block = minimal_block(long_script, vec![]);
     assert_eq!(
         validate_block_structure(&block),
-        Err(ValidationError::CoinbaseScriptSigLength { len: MAX_COINBASE_SCRIPTSIG_LEN + 1 }),
+        Err(ValidationError::CoinbaseScriptSigLength {
+            len: MAX_COINBASE_SCRIPTSIG_LEN + 1
+        }),
     );
 }
 
@@ -132,7 +143,10 @@ fn stage1_output_value_over_max_money_rejected() {
     let coinbase = Transaction {
         version: 1,
         inputs: vec![coinbase_input(vec![0x51, 0x52])],
-        outputs: vec![TxOut { value: too_much, script_pubkey: vec![0x51].into() }],
+        outputs: vec![TxOut {
+            value: too_much,
+            script_pubkey: vec![0x51].into(),
+        }],
         locktime: 0,
     };
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
@@ -150,18 +164,34 @@ fn stage1_output_value_over_max_money_rejected() {
     };
     assert_eq!(
         validate_block_structure(&block),
-        Err(ValidationError::OutputValueOutOfRange { tx_index: 0, output_index: 0 }),
+        Err(ValidationError::OutputValueOutOfRange {
+            tx_index: 0,
+            output_index: 0
+        }),
     );
 }
 
 #[test]
 fn stage1_duplicate_inputs_rejected() {
-    let outpoint = OutPoint { txid: Hash256([0xab; 32]), vout: 1 };
+    let outpoint = OutPoint {
+        txid: Hash256([0xab; 32]),
+        vout: 1,
+    };
     let tx = Transaction {
         version: 1,
         inputs: vec![
-            TxIn { previous_output: outpoint, script_sig: vec![].into(), sequence: u32::MAX, witness: Witness::empty() },
-            TxIn { previous_output: outpoint, script_sig: vec![].into(), sequence: u32::MAX, witness: Witness::empty() }, // dup
+            TxIn {
+                previous_output: outpoint,
+                script_sig: vec![].into(),
+                sequence: u32::MAX,
+                witness: Witness::empty(),
+            },
+            TxIn {
+                previous_output: outpoint,
+                script_sig: vec![].into(),
+                sequence: u32::MAX,
+                witness: Witness::empty(),
+            }, // dup
         ],
         outputs: vec![make_output(1000)],
         locktime: 0,
@@ -199,7 +229,10 @@ fn stage1_merkle_mismatch_rejected() {
     let mut block = minimal_block(vec![0x51, 0x52], vec![]);
     // Corrupt the merkle root.
     block.header.merkle_root = Hash256([0xff; 32]);
-    assert_eq!(validate_block_structure(&block), Err(ValidationError::MerkleRootMismatch));
+    assert_eq!(
+        validate_block_structure(&block),
+        Err(ValidationError::MerkleRootMismatch)
+    );
 }
 
 #[test]
@@ -207,7 +240,10 @@ fn stage1_invalid_bits_rejected() {
     let mut block = minimal_block(vec![0x51, 0x52], vec![]);
     block.header.bits = mantle::primitives::CompactBits(0); // zero nBits is always invalid
     // Also recompute merkle (header bits don't affect merkle root — this is fine).
-    assert_eq!(validate_block_structure(&block), Err(ValidationError::InvalidBits));
+    assert_eq!(
+        validate_block_structure(&block),
+        Err(ValidationError::InvalidBits)
+    );
 }
 
 #[test]
@@ -220,7 +256,9 @@ fn stage1_insufficient_pow_rejected() {
     // Recompute the hash check — the actual hash won't satisfy target 0x0001…
     // Note: we don't update merkle root for the bits field (it only appears in
     // the header, not in tx data). So we need to rebuild:
-    let txids: Vec<Hash256> = block.transactions.iter()
+    let txids: Vec<Hash256> = block
+        .transactions
+        .iter()
         .map(Transaction::txid)
         .collect::<Result<Vec<_>, _>>()
         .expect("txid encoding cannot fail");

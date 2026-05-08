@@ -1,6 +1,6 @@
 use super::*;
-use std::collections::HashSet;
 use crate::validation::validate_block_wire;
+use std::collections::HashSet;
 
 // ── Known transaction fixtures ────────────────────────────────────────────────
 //
@@ -16,12 +16,12 @@ const GENESIS_COINBASE_RAW: &str = concat!(
     "ffffffff", // prevout index = 0xffffffff (coinbase)
     // scriptSig length + bytes: "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks"
     "4d04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73",
-    "ffffffff", // sequence
-    "01",       // output count = 1
+    "ffffffff",         // sequence
+    "01",               // output count = 1
     "00f2052a01000000", // value = 5_000_000_000 (50 BTC)
     // scriptPubKey (65-byte uncompressed pubkey + OP_CHECKSIG)
     "434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac",
-    "00000000"  // locktime = 0
+    "00000000" // locktime = 0
 );
 
 /// Known txid of the genesis coinbase (display / reversed byte order).
@@ -37,13 +37,20 @@ fn genesis_coinbase_decode_roundtrip() {
     assert_eq!(tx.version, 1);
     assert_eq!(tx.inputs.len(), 1);
     assert_eq!(tx.outputs.len(), 1);
-    assert_eq!(tx.outputs[0].value, mantle::primitives::Satoshi::new(50_0000_0000));
+    assert_eq!(
+        tx.outputs[0].value,
+        mantle::primitives::Satoshi::new(50_0000_0000)
+    );
     assert_eq!(tx.locktime, 0);
 
     // Re-encode must produce identical bytes.
     let mut reencoded = Vec::new();
-    tx.encode(&mut reencoded).expect("Vec<u8> write cannot fail");
-    assert_eq!(reencoded, bytes, "encode(decode(x)) != x for genesis coinbase");
+    tx.encode(&mut reencoded)
+        .expect("Vec<u8> write cannot fail");
+    assert_eq!(
+        reencoded, bytes,
+        "encode(decode(x)) != x for genesis coinbase"
+    );
 }
 
 #[test]
@@ -78,7 +85,10 @@ fn sequence_field_roundtrip() {
         let tx = Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256([0xab; 32]),
+                    vout: 0,
+                },
                 script_sig: vec![].into(),
                 sequence: seq,
                 witness: Witness::empty(),
@@ -88,9 +98,12 @@ fn sequence_field_roundtrip() {
         };
         let mut buf = Vec::new();
         tx.encode(&mut buf).expect("Vec<u8> write cannot fail");
-        let decoded = Transaction::decode(&mut Cursor::new(&buf))
-            .expect("transaction roundtrip must decode");
-        assert_eq!(decoded.inputs[0].sequence, seq, "sequence {seq:#010x} not preserved");
+        let decoded =
+            Transaction::decode(&mut Cursor::new(&buf)).expect("transaction roundtrip must decode");
+        assert_eq!(
+            decoded.inputs[0].sequence, seq,
+            "sequence {seq:#010x} not preserved"
+        );
     }
 }
 
@@ -99,7 +112,10 @@ fn sequence_field_roundtrip() {
 #[test]
 fn memory_chain_view_utxo_insert_lookup_spend() {
     let mut view = MemoryChainView::new();
-    let op = OutPoint { txid: Hash256([0x12; 32]), vout: 3 };
+    let op = OutPoint {
+        txid: Hash256([0x12; 32]),
+        vout: 3,
+    };
     let coin = Coin {
         value: mantle::primitives::Satoshi::new(100_000),
         script_pubkey: vec![0x76, 0xa9, 0x14].into(), // OP_DUP OP_HASH160 OP_DATA14
@@ -107,18 +123,31 @@ fn memory_chain_view_utxo_insert_lookup_spend() {
         coinbase: false,
     };
 
-    assert!(view.get_coin(&op).expect("storage error").is_none(), "UTXO must not exist before insert");
+    assert!(
+        view.get_coin(&op).expect("storage error").is_none(),
+        "UTXO must not exist before insert"
+    );
     view.insert_coin(op, coin.clone());
-    assert_eq!(view.get_coin(&op).expect("storage error"), Some(coin), "UTXO must be retrievable after insert");
+    assert_eq!(
+        view.get_coin(&op).expect("storage error"),
+        Some(coin),
+        "UTXO must be retrievable after insert"
+    );
 
     view.spend_coin(&op);
-    assert!(view.get_coin(&op).expect("storage error").is_none(), "UTXO must be gone after spend");
+    assert!(
+        view.get_coin(&op).expect("storage error").is_none(),
+        "UTXO must be gone after spend"
+    );
 }
 
 #[test]
 fn memory_chain_view_coinbase_flag_preserved() {
     let mut view = MemoryChainView::new();
-    let op = OutPoint { txid: Hash256([0x99; 32]), vout: 0 };
+    let op = OutPoint {
+        txid: Hash256([0x99; 32]),
+        vout: 0,
+    };
     let coin = Coin {
         value: mantle::primitives::Satoshi::new(50_0000_0000),
         script_pubkey: vec![0x51].into(),
@@ -126,15 +155,29 @@ fn memory_chain_view_coinbase_flag_preserved() {
         coinbase: true,
     };
     view.insert_coin(op, coin.clone());
-    let retrieved = view.get_coin(&op).expect("storage error").expect("coin must exist after insert");
-    assert!(retrieved.coinbase, "coinbase flag must survive round-trip through MemoryChainView");
+    let retrieved = view
+        .get_coin(&op)
+        .expect("storage error")
+        .expect("coin must exist after insert");
+    assert!(
+        retrieved.coinbase,
+        "coinbase flag must survive round-trip through MemoryChainView"
+    );
     assert_eq!(retrieved.height, BlockHeight::ZERO);
-    assert_eq!(retrieved.value, mantle::primitives::Satoshi::new(50_0000_0000));
+    assert_eq!(
+        retrieved.value,
+        mantle::primitives::Satoshi::new(50_0000_0000)
+    );
 }
 
 // ── validate_block_wire ───────────────────────────────────────────────────────
 
-fn wire_scratch() -> (Vec<mantle::primitives::Hash256>, Vec<mantle::primitives::Hash256>, HashSet<OutPoint>, HashSet<mantle::primitives::Hash256>) {
+fn wire_scratch() -> (
+    Vec<mantle::primitives::Hash256>,
+    Vec<mantle::primitives::Hash256>,
+    HashSet<OutPoint>,
+    HashSet<mantle::primitives::Hash256>,
+) {
     (Vec::new(), Vec::new(), HashSet::new(), HashSet::new())
 }
 
@@ -163,8 +206,12 @@ fn wire_empty_block_rejected() {
     // Header + VarInt(0) — no transactions.
     let block = Block {
         header: BlockHeader {
-            version: 1, prev_block: Hash256::ZERO, merkle_root: Hash256::ZERO,
-            time: 0, bits: mantle::primitives::CompactBits(0x207f_ffff), nonce: 0,
+            version: 1,
+            prev_block: Hash256::ZERO,
+            merkle_root: Hash256::ZERO,
+            time: 0,
+            bits: mantle::primitives::CompactBits(0x207f_ffff),
+            nonce: 0,
         },
         transactions: vec![],
     };
@@ -216,7 +263,10 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
             let non_cb = Transaction {
                 version: 1,
                 inputs: vec![TxIn {
-                    previous_output: OutPoint { txid: Hash256([0xab; 32]), vout: 0 },
+                    previous_output: OutPoint {
+                        txid: Hash256([0xab; 32]),
+                        vout: 0,
+                    },
                     script_sig: vec![0x51].into(),
                     sequence: u32::MAX,
                     witness: Witness::empty(),
@@ -225,30 +275,45 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
                 locktime: 0,
             };
             let txids = vec![non_cb.txid().expect("txid encoding cannot fail")];
-            let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
+            let merkle_root =
+                compute_merkle_root(&txids).expect("single-tx merkle root must exist");
             Block {
                 header: BlockHeader {
-                    version: 4, prev_block: Hash256::ZERO, merkle_root,
-                    time: 1_231_006_505, bits: mantle::primitives::CompactBits(0x207f_ffff), nonce: 0,
+                    version: 4,
+                    prev_block: Hash256::ZERO,
+                    merkle_root,
+                    time: 1_231_006_505,
+                    bits: mantle::primitives::CompactBits(0x207f_ffff),
+                    nonce: 0,
                 },
                 transactions: vec![non_cb],
             }
         }),
-        ("coinbase_script_too_short",
-            minimal_block(vec![0x51], vec![])),
+        (
+            "coinbase_script_too_short",
+            minimal_block(vec![0x51], vec![]),
+        ),
         ("output_value_overflow", {
             let coinbase = Transaction {
                 version: 1,
                 inputs: vec![coinbase_input(vec![0x03, 0x01, 0x00, 0x00])],
-                outputs: vec![TxOut { value: mantle::primitives::Satoshi::new(u64::MAX), script_pubkey: vec![0x51].into() }],
+                outputs: vec![TxOut {
+                    value: mantle::primitives::Satoshi::new(u64::MAX),
+                    script_pubkey: vec![0x51].into(),
+                }],
                 locktime: 0,
             };
             let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
-            let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
+            let merkle_root =
+                compute_merkle_root(&txids).expect("single-tx merkle root must exist");
             Block {
                 header: BlockHeader {
-                    version: 4, prev_block: Hash256::ZERO, merkle_root,
-                    time: 1_231_006_505, bits: mantle::primitives::CompactBits(0x207f_ffff), nonce: 0,
+                    version: 4,
+                    prev_block: Hash256::ZERO,
+                    merkle_root,
+                    time: 1_231_006_505,
+                    bits: mantle::primitives::CompactBits(0x207f_ffff),
+                    nonce: 0,
                 },
                 transactions: vec![coinbase],
             }
@@ -258,7 +323,8 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
     for (name, block) in cases {
         let mut bytes = Vec::new();
         block.encode(&mut bytes).expect("Vec<u8> write cannot fail");
-        let owned_err = validate_block_structure(block).expect_err("case must fail owned validation");
+        let owned_err =
+            validate_block_structure(block).expect_err("case must fail owned validation");
         let (mut t, mut mb, mut si, mut st) = wire_scratch();
         let wire_err = validate_block_wire(&bytes, &mut t, &mut mb, &mut si, &mut st)
             .expect_err("case must fail wire validation");

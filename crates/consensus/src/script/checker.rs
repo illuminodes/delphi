@@ -101,7 +101,13 @@ impl<'a> TxSigChecker<'a> {
         amount: Satoshi,
         script_flags: ScriptFlags,
     ) -> Self {
-        Self { tx, n_in, amount, script_flags, bip143_cache: Bip143Cache::new(tx) }
+        Self {
+            tx,
+            n_in,
+            amount,
+            script_flags,
+            bip143_cache: Bip143Cache::new(tx),
+        }
     }
 
     /// Construct a checker reusing a pre-built [`Bip143Cache`].
@@ -118,7 +124,13 @@ impl<'a> TxSigChecker<'a> {
         script_flags: ScriptFlags,
         bip143_cache: Bip143Cache,
     ) -> Self {
-        Self { tx, n_in, amount, script_flags, bip143_cache }
+        Self {
+            tx,
+            n_in,
+            amount,
+            script_flags,
+            bip143_cache,
+        }
     }
 }
 
@@ -355,7 +367,10 @@ mod tests {
 
     /// Compressed SEC1 pubkey bytes (33 bytes).
     fn compressed_pubkey(sk: &SigningKey) -> Vec<u8> {
-        sk.verifying_key().to_encoded_point(true).as_bytes().to_vec()
+        sk.verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec()
     }
 
     fn hash160(data: &[u8]) -> [u8; 20] {
@@ -371,7 +386,10 @@ mod tests {
         Transaction {
             version: 1,
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256([0u8; 32]), vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256([0u8; 32]),
+                    vout: 0,
+                },
                 script_sig: Vec::<u8>::new().into(),
                 sequence: 0xffff_ffff,
                 witness: Witness::empty(),
@@ -414,8 +432,7 @@ mod tests {
         let script_pubkey = p2pkh_script(&pkh);
 
         // Compute legacy sighash over the full scriptPubKey.
-        let digest =
-            tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
+        let digest = tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
         let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
         // Build scriptSig: <sig> <pubkey>.
@@ -448,8 +465,7 @@ mod tests {
 
         let tx = make_tx_p2pkh(&pkh);
         let script_pubkey = p2pkh_script(&pkh);
-        let digest =
-            tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
+        let digest = tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
         let sig = sign(&sk, &digest.0, SigHashType::ALL);
 
         // Wrong pubkey supplied — fails at OP_EQUALVERIFY (hash mismatch).
@@ -499,8 +515,7 @@ mod tests {
         let script_pubkey = p2pkh_script(&pkh);
 
         // Sign with the wrong key — yields a strict-DER signature that won't verify.
-        let digest =
-            tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
+        let digest = tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
         let sig = sign(&other_sk, &digest.0, SigHashType::ALL);
 
         // Build scriptSig with the *correct* pubkey but wrong sig — CHECKSIG
@@ -518,6 +533,9 @@ mod tests {
         let mut interp = Interpreter::new(&checker, flags, SigVersion::Base);
         interp.eval(&script_sig).expect("scriptSig ok");
         let r = interp.eval(&script_pubkey);
-        assert!(matches!(r, Err(crate::script::error::ScriptError::SigNullFail)));
+        assert!(matches!(
+            r,
+            Err(crate::script::error::ScriptError::SigNullFail)
+        ));
     }
 }

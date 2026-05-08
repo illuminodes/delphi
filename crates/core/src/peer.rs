@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::RingBuffer as MpscRing;
 use quetzalcoatl::spmc::RingBuffer as SpmcRing;
-use ququmatz::types::{AF_INET, MsgFlags, SOCK_NONBLOCK, SOCK_STREAM, SockAddrIn, TimeoutFlags, Timespec};
+use ququmatz::types::{
+    AF_INET, MsgFlags, SOCK_NONBLOCK, SOCK_STREAM, SockAddrIn, TimeoutFlags, Timespec,
+};
 use ququmatz::{IoUring, Socket, Sqe};
 
 use crate::codec::{Decode, Encode};
@@ -238,8 +240,7 @@ impl Node {
     /// # Errors
     /// Returns [`Error::RingCreate`] if the `io_uring` instance cannot be created.
     pub fn new(magic: Magic, ring_size: u32, our_version: VersionMsg) -> Result<Self, Error> {
-        let ring = IoUring::new(ring_size)
-            .map_err(|e| Error::RingCreate(format!("{e:?}")))?;
+        let ring = IoUring::new(ring_size).map_err(|e| Error::RingCreate(format!("{e:?}")))?;
 
         let (outbound_tx, outbound_rx) = MpscRing::new(Capacity::exact(CHANNEL_CAP)).split();
         let (inbound_tx, inbound_rx) = SpmcRing::new(Capacity::exact(CHANNEL_CAP)).split();
@@ -327,10 +328,15 @@ impl Node {
             .ok_or(Error::PeerNotFound(peer))?;
 
         let mut framed = Vec::new();
-        self.magic.frame(command, payload, &mut framed).map_err(Error::Codec)?;
+        self.magic
+            .frame(command, payload, &mut framed)
+            .map_err(Error::Codec)?;
 
         self.ring
-            .push(Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(UserDataTag::new(peer, Op::Send).raw()))
+            .push(
+                Sqe::send(fd, framed.leak(), MsgFlags::default())
+                    .user_data(UserDataTag::new(peer, Op::Send).raw()),
+            )
             .map_err(|e| Error::RingPush(format!("{e:?}")))?;
         self.ring
             .submit()
@@ -376,7 +382,9 @@ impl Node {
 
         let ts = Timespec::from_millis(timeout_ms);
         self.ring
-            .push(Sqe::timeout(&ts, 1, TimeoutFlags::default()).user_data(UserDataTag::TIMEOUT.raw()))
+            .push(
+                Sqe::timeout(&ts, 1, TimeoutFlags::default()).user_data(UserDataTag::TIMEOUT.raw()),
+            )
             .map_err(|e| Error::RingPush(format!("{e:?}")))?;
 
         // Block until ≥1 CQE (the timeout itself counts as one).
@@ -403,7 +411,14 @@ impl Node {
     fn dispatch_cqe(&mut self, cqe: ququmatz::Completion) -> Result<(), Error> {
         let (peer_id, op) = UserDataTag::from(cqe.user_data).parts();
         if cqe.result < 0 {
-            eprintln!("{}", Error::CqeError { peer: peer_id, op, code: cqe.result });
+            eprintln!(
+                "{}",
+                Error::CqeError {
+                    peer: peer_id,
+                    op,
+                    code: cqe.result
+                }
+            );
             self.peers.remove(&peer_id);
             return Ok(());
         }
@@ -441,12 +456,17 @@ impl Node {
 
         // Send our version message — borrow of peers ends here.
         let mut payload = Vec::new();
-        self.our_version.encode(&mut payload).map_err(Error::Codec)?;
+        self.our_version
+            .encode(&mut payload)
+            .map_err(Error::Codec)?;
         let mut framed = Vec::new();
-        self.magic.frame(Command::Version, &payload, &mut framed).map_err(Error::Codec)?;
+        self.magic
+            .frame(Command::Version, &payload, &mut framed)
+            .map_err(Error::Codec)?;
 
         let _ = self.ring.push(
-            Sqe::send(fd, framed.leak(), MsgFlags::default()).user_data(UserDataTag::new(id, Op::Send).raw()),
+            Sqe::send(fd, framed.leak(), MsgFlags::default())
+                .user_data(UserDataTag::new(id, Op::Send).raw()),
         );
 
         // submit_recv takes &mut self — safe now, peers borrow is released.
@@ -463,7 +483,10 @@ impl Node {
             return Ok(());
         };
         let fd = peer.fd;
-        let chunk = self.recv_chunks.get_mut(&id).expect("recv_chunks entry exists for every connected peer");
+        let chunk = self
+            .recv_chunks
+            .get_mut(&id)
+            .expect("recv_chunks entry exists for every connected peer");
         let sqe = Sqe::recv(fd, chunk.as_mut_slice(), MsgFlags::default())
             .user_data(UserDataTag::new(id, Op::Recv).raw());
         self.ring
@@ -518,7 +541,9 @@ impl Node {
                     peer.recv_buf.drain(..total);
                     // Send verack.
                     let mut framed = Vec::new();
-                    self.magic.frame(Command::Verack, &[], &mut framed).map_err(Error::Codec)?;
+                    self.magic
+                        .frame(Command::Verack, &[], &mut framed)
+                        .map_err(Error::Codec)?;
                     let _ = self.ring.push(
                         Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
                             .user_data(UserDataTag::new(id, Op::Send).raw()),
@@ -533,7 +558,9 @@ impl Node {
                     // Reflect the nonce back as a pong — borrow payload_slice
                     // before draining so we don't need to copy it.
                     let mut framed = Vec::new();
-                    self.magic.frame(Command::Pong, payload_slice, &mut framed).map_err(Error::Codec)?;
+                    self.magic
+                        .frame(Command::Pong, payload_slice, &mut framed)
+                        .map_err(Error::Codec)?;
                     peer.recv_buf.drain(..total);
                     let _ = self.ring.push(
                         Sqe::send(peer.fd, framed.leak(), MsgFlags::default())
@@ -557,7 +584,8 @@ impl Node {
                             peer: id,
                             command: header.command.0,
                             payload,
-                        }).commit();
+                        })
+                        .commit();
                     }
                     // If the ring is full the payload is dropped here — same
                     // behaviour as before (message silently discarded).

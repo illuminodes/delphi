@@ -5,7 +5,9 @@
 use proptest::prelude::*;
 
 use mantle::codec::{Decode, Encode, VarInt};
-use mantle::primitives::{Block, BlockHeader, CompactBits, Hash256, OutPoint, Transaction, TxIn, TxOut, Witness};
+use mantle::primitives::{
+    Block, BlockHeader, CompactBits, Hash256, OutPoint, Transaction, TxIn, TxOut, Witness,
+};
 use std::io::Cursor;
 
 use crate::merkle::compute_merkle_root;
@@ -27,22 +29,35 @@ fn arb_varint() -> impl Strategy<Value = VarInt> {
 }
 
 fn arb_block_header() -> impl Strategy<Value = BlockHeader> {
-    (any::<i32>(), arb_hash256(), arb_hash256(), any::<u32>(), any::<u32>(), any::<u32>()).prop_map(
-        |(version, prev_block, merkle_root, time, bits, nonce)| BlockHeader {
-            version,
-            prev_block,
-            merkle_root,
-            time,
-            bits: CompactBits(bits),
-            nonce,
-        },
+    (
+        any::<i32>(),
+        arb_hash256(),
+        arb_hash256(),
+        any::<u32>(),
+        any::<u32>(),
+        any::<u32>(),
     )
+        .prop_map(
+            |(version, prev_block, merkle_root, time, bits, nonce)| BlockHeader {
+                version,
+                prev_block,
+                merkle_root,
+                time,
+                bits: CompactBits(bits),
+                nonce,
+            },
+        )
 }
 
 fn arb_txout() -> impl Strategy<Value = TxOut> {
-    (any::<u64>(), prop::collection::vec(any::<u8>(), 0..=256_usize)).prop_map(
-        |(value, script_pubkey)| TxOut { value: mantle::primitives::Satoshi::new(value), script_pubkey: script_pubkey.into() },
+    (
+        any::<u64>(),
+        prop::collection::vec(any::<u8>(), 0..=256_usize),
     )
+        .prop_map(|(value, script_pubkey)| TxOut {
+            value: mantle::primitives::Satoshi::new(value),
+            script_pubkey: script_pubkey.into(),
+        })
 }
 
 fn arb_txin() -> impl Strategy<Value = TxIn> {
@@ -80,7 +95,10 @@ fn arb_block() -> impl Strategy<Value = Block> {
         arb_block_header(),
         prop::collection::vec(arb_transaction(), 0..=4_usize),
     )
-        .prop_map(|(header, transactions)| Block { header, transactions })
+        .prop_map(|(header, transactions)| Block {
+            header,
+            transactions,
+        })
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

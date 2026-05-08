@@ -70,10 +70,7 @@ pub trait ChainView {
     /// # Errors
     /// Returns `Err` on any storage failure. On success, each element is
     /// `Some(coin)` if present or `None` if absent.
-    fn get_coins(
-        &self,
-        outpoints: &[OutPoint],
-    ) -> Result<Vec<Option<Coin>>, ChainViewError> {
+    fn get_coins(&self, outpoints: &[OutPoint]) -> Result<Vec<Option<Coin>>, ChainViewError> {
         outpoints.iter().map(|op| self.get_coin(op)).collect()
     }
 
@@ -145,7 +142,10 @@ impl MemoryChainView {
     /// rules without building a full-length chain.
     #[must_use]
     pub fn with_height_base(base_height: BlockHeight) -> Self {
-        Self { height_base: base_height.0, ..Self::default() }
+        Self {
+            height_base: base_height.0,
+            ..Self::default()
+        }
     }
 
     /// Append a header to the canonical chain. Must be called in order.
@@ -234,7 +234,10 @@ impl ChainView for MemoryChainView {
             Some(h) => {
                 let idx = u32::try_from(self.headers.len() - 1).expect("chain height exceeds u32");
                 let height = BlockHeight(self.height_base.saturating_add(idx));
-                TipInfo { hash: h.hash(), height }
+                TipInfo {
+                    hash: h.hash(),
+                    height,
+                }
             }
         }
     }
@@ -278,9 +281,25 @@ mod tests {
     fn get_header_by_height() {
         let mut view = MemoryChainView::new();
         push_chain(&mut view, &[1_000, 2_000, 3_000]);
-        assert_eq!(view.get_header_at(BlockHeight(0)).expect("no error").expect("height 0 exists").time, 1_000);
-        assert_eq!(view.get_header_at(BlockHeight(2)).expect("no error").expect("height 2 exists").time, 3_000);
-        assert!(view.get_header_at(BlockHeight(3)).expect("no error").is_none());
+        assert_eq!(
+            view.get_header_at(BlockHeight(0))
+                .expect("no error")
+                .expect("height 0 exists")
+                .time,
+            1_000
+        );
+        assert_eq!(
+            view.get_header_at(BlockHeight(2))
+                .expect("no error")
+                .expect("height 2 exists")
+                .time,
+            3_000
+        );
+        assert!(
+            view.get_header_at(BlockHeight(3))
+                .expect("no error")
+                .is_none()
+        );
     }
 
     #[test]
@@ -289,14 +308,23 @@ mod tests {
         let h = header(9_999, Hash256::ZERO);
         view.push_header(h);
         let hash = h.hash();
-        assert_eq!(view.get_header(&hash).expect("no error").expect("header exists").time, 9_999);
+        assert_eq!(
+            view.get_header(&hash)
+                .expect("no error")
+                .expect("header exists")
+                .time,
+            9_999
+        );
         assert!(view.get_header(&Hash256::ZERO).expect("no error").is_none());
     }
 
     #[test]
     fn coin_insert_lookup_spend() {
         let mut view = MemoryChainView::new();
-        let op = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
+        let op = OutPoint {
+            txid: Hash256([1u8; 32]),
+            vout: 0,
+        };
         let coin = Coin {
             value: Satoshi::new(5_000_000_000),
             script_pubkey: vec![0xac].into(),
@@ -305,7 +333,10 @@ mod tests {
         };
         assert!(view.get_coin(&op).expect("no error").is_none());
         view.insert_coin(op, coin.clone());
-        assert_eq!(view.get_coin(&op).expect("no error").expect("coin exists"), coin);
+        assert_eq!(
+            view.get_coin(&op).expect("no error").expect("coin exists"),
+            coin
+        );
         view.spend_coin(&op);
         assert!(view.get_coin(&op).expect("no error").is_none());
     }
@@ -318,7 +349,10 @@ mod tests {
         let genesis_hash = view.tip().hash;
         let next = header(2_000, genesis_hash);
         // MTP for `next` = median of [1_000] = 1_000.
-        assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), 1_000);
+        assert_eq!(
+            view.median_time_past(&next).expect("mtp must succeed"),
+            1_000
+        );
     }
 
     #[test]
@@ -337,7 +371,10 @@ mod tests {
         let mut view = MemoryChainView::new();
         // 15 blocks with times 1..=15. MTP for next block uses heights 4..=14,
         // i.e., times [5,6,7,8,9,10,11,12,13,14,15], median = 10.
-        push_chain(&mut view, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        push_chain(
+            &mut view,
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        );
         let tip_hash = view.tip().hash;
         let next = header(99, tip_hash);
         assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), 10);
@@ -346,9 +383,20 @@ mod tests {
     #[test]
     fn batched_get_coins() {
         let mut view = MemoryChainView::new();
-        let op1 = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
-        let op2 = OutPoint { txid: Hash256([2u8; 32]), vout: 0 };
-        let coin = Coin { value: Satoshi::new(1000), script_pubkey: vec![].into(), height: BlockHeight(1), coinbase: false };
+        let op1 = OutPoint {
+            txid: Hash256([1u8; 32]),
+            vout: 0,
+        };
+        let op2 = OutPoint {
+            txid: Hash256([2u8; 32]),
+            vout: 0,
+        };
+        let coin = Coin {
+            value: Satoshi::new(1000),
+            script_pubkey: vec![].into(),
+            height: BlockHeight(1),
+            coinbase: false,
+        };
         view.insert_coin(op1, coin.clone());
 
         let results = view.get_coins(&[op1, op2]).expect("get_coins must succeed");

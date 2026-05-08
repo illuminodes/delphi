@@ -24,8 +24,8 @@ use crate::script::condition_stack::ConditionStack;
 use crate::script::error::ScriptError;
 use crate::script::flags::ScriptFlags;
 use crate::script::opcodes::Opcode;
-use crate::script::sighash::Bip341Cache;
 use crate::script::sig_version::SigVersion;
+use crate::script::sighash::Bip341Cache;
 use crate::script::stack::{Stack, StackElement};
 
 /// Convenience alias for the element type used by the interpreter's stacks.
@@ -203,9 +203,7 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             op if op.is_disabled() && self.sig_version.is_base() => {
                 return Err(ScriptError::DisabledOpcode);
             }
-            op if op.is_tapscript_success()
-                && self.sig_version == SigVersion::Tapscript =>
-            {
+            op if op.is_tapscript_success() && self.sig_version == SigVersion::Tapscript => {
                 // OP_SUCCESSx: entire script succeeds immediately.
                 return Ok(());
             }
@@ -254,12 +252,9 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
         match step.opcode {
             // ── Push opcodes ────────────────────────────────────────────────
             Opcode::Op0 => self.stack.push_checked(&[], self.altstack.len()),
-            Opcode::PushBytes(_)
-            | Opcode::PushData1
-            | Opcode::PushData2
-            | Opcode::PushData4 => self
-                .stack
-                .push_checked(step.data, self.altstack.len()),
+            Opcode::PushBytes(_) | Opcode::PushData1 | Opcode::PushData2 | Opcode::PushData4 => {
+                self.stack.push_checked(step.data, self.altstack.len())
+            }
             Opcode::Op1Negate => self.stack.push_num(-1, self.altstack.len()),
             Opcode::OpN(n) => self.stack.push_num(i64::from(n), self.altstack.len()),
 
@@ -364,10 +359,9 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
             // ── Always-fail-when-executed ──────────────────────────────────
             // OP_RESERVED, OP_VER, OP_RESERVED1/2 fail when reached during
             // execution. (Note OP_VERIF/OP_VERNOTIF are pre-scanned out.)
-            Opcode::OpReserved
-            | Opcode::Ver
-            | Opcode::Reserved1
-            | Opcode::Reserved2 => Err(ScriptError::BadOpcodeReserved),
+            Opcode::OpReserved | Opcode::Ver | Opcode::Reserved1 | Opcode::Reserved2 => {
+                Err(ScriptError::BadOpcodeReserved)
+            }
 
             // ── Disabled even-when-unexecuted in legacy ────────────────────
             // pre_scan rejects these in SigVersion::Base before we get here;

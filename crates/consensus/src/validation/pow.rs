@@ -157,12 +157,8 @@ impl U256 {
         for (i, limb) in limbs.iter_mut().enumerate() {
             // Limb i (LE order) sits at byte offset (7 - i) * 4 in big-endian.
             let off = (7 - i) * 4;
-            *limb = u32::from_be_bytes([
-                bytes[off],
-                bytes[off + 1],
-                bytes[off + 2],
-                bytes[off + 3],
-            ]);
+            *limb =
+                u32::from_be_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
         }
         Self(limbs)
     }

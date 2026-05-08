@@ -52,7 +52,7 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
     /// `OP_2DUP`. Duplicate the top two items: `a b → a b a b`.
     pub(super) fn op_2dup(&mut self) -> Result<(), ScriptError> {
         self.stack.dup_at(1, self.altstack.len())?; // a
-        self.stack.dup_at(1, self.altstack.len())   // b is now at depth 1
+        self.stack.dup_at(1, self.altstack.len()) // b is now at depth 1
     }
 
     /// `OP_3DUP`. `a b c → a b c a b c`.
@@ -158,8 +158,8 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
 
     /// `OP_DEPTH`. Push the current main-stack depth as a `ScriptNum`.
     pub(super) fn op_depth(&mut self) -> Result<(), ScriptError> {
-        let depth = i64::try_from(self.stack.len())
-            .map_err(|_| ScriptError::InvalidStackOperation)?;
+        let depth =
+            i64::try_from(self.stack.len()).map_err(|_| ScriptError::InvalidStackOperation)?;
         self.stack.push_num(depth, self.altstack.len())
     }
 

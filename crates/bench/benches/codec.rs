@@ -1,4 +1,6 @@
-use mantle::codec::{Decode, DecodeRef, Encode, VarInt, decode_bytes_limited, decode_string_limited};
+use mantle::codec::{
+    Decode, DecodeRef, Encode, VarInt, decode_bytes_limited, decode_string_limited,
+};
 use std::io::Cursor;
 
 fn main() {
@@ -10,22 +12,33 @@ fn main() {
 #[divan::bench(args = [0xfcu64, 0xfdu64, 0x1_0000u64, u64::MAX])]
 fn varint_encode(n: u64) -> Vec<u8> {
     let mut buf = Vec::with_capacity(9);
-    VarInt(n).encode(&mut buf).expect("Vec<u8> write cannot fail");
+    VarInt(n)
+        .encode(&mut buf)
+        .expect("Vec<u8> write cannot fail");
     buf
 }
 
 #[divan::bench(args = [0xfcu64, 0xfdu64, 0x1_0000u64, u64::MAX])]
 fn varint_decode(bencher: divan::Bencher, n: u64) {
     let mut buf = Vec::new();
-    VarInt(n).encode(&mut buf).expect("Vec<u8> write cannot fail");
-    bencher.bench(|| VarInt::decode(&mut Cursor::new(buf.as_slice())).expect("varint decode cannot fail on valid bytes"));
+    VarInt(n)
+        .encode(&mut buf)
+        .expect("Vec<u8> write cannot fail");
+    bencher.bench(|| {
+        VarInt::decode(&mut Cursor::new(buf.as_slice()))
+            .expect("varint decode cannot fail on valid bytes")
+    });
 }
 
 #[divan::bench(args = [0xfcu64, 0xfdu64, 0x1_0000u64, u64::MAX])]
 fn varint_decode_ref(bencher: divan::Bencher, n: u64) {
     let mut buf = Vec::new();
-    VarInt(n).encode(&mut buf).expect("Vec<u8> write cannot fail");
-    bencher.bench(|| VarInt::decode_ref(buf.as_slice()).expect("varint decode_ref cannot fail on valid bytes"));
+    VarInt(n)
+        .encode(&mut buf)
+        .expect("Vec<u8> write cannot fail");
+    bencher.bench(|| {
+        VarInt::decode_ref(buf.as_slice()).expect("varint decode_ref cannot fail on valid bytes")
+    });
 }
 
 // ── Primitives ────────────────────────────────────────────────────────────────
@@ -37,7 +50,8 @@ fn u32_decode_ref() -> (u32, &'static [u8]) {
 
 #[divan::bench]
 fn u64_decode_ref() -> (u64, &'static [u8]) {
-    u64::decode_ref(&[0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]).expect("u64 decode_ref cannot fail on 8 bytes")
+    u64::decode_ref(&[0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe])
+        .expect("u64 decode_ref cannot fail on 8 bytes")
 }
 
 // ── Integer primitives ────────────────────────────────────────────────────────
@@ -52,21 +66,27 @@ fn u8_encode() -> Vec<u8> {
 #[divan::bench]
 fn u16_encode() -> Vec<u8> {
     let mut buf = Vec::with_capacity(2);
-    0xabcdu16.encode(&mut buf).expect("Vec<u8> write cannot fail");
+    0xabcdu16
+        .encode(&mut buf)
+        .expect("Vec<u8> write cannot fail");
     buf
 }
 
 #[divan::bench]
 fn u32_encode() -> Vec<u8> {
     let mut buf = Vec::with_capacity(4);
-    0xdead_beef_u32.encode(&mut buf).expect("Vec<u8> write cannot fail");
+    0xdead_beef_u32
+        .encode(&mut buf)
+        .expect("Vec<u8> write cannot fail");
     buf
 }
 
 #[divan::bench]
 fn u64_encode() -> Vec<u8> {
     let mut buf = Vec::with_capacity(8);
-    0xdead_beef_cafe_babe_u64.encode(&mut buf).expect("Vec<u8> write cannot fail");
+    0xdead_beef_cafe_babe_u64
+        .encode(&mut buf)
+        .expect("Vec<u8> write cannot fail");
     buf
 }
 
@@ -80,7 +100,9 @@ fn i32_encode() -> Vec<u8> {
 #[divan::bench]
 fn i64_encode() -> Vec<u8> {
     let mut buf = Vec::with_capacity(8);
-    i64::MIN.encode(&mut buf).expect("Vec<u8> write cannot fail");
+    i64::MIN
+        .encode(&mut buf)
+        .expect("Vec<u8> write cannot fail");
     buf
 }
 
@@ -101,7 +123,8 @@ fn i32_decode_ref() -> (i32, &'static [u8]) {
 
 #[divan::bench]
 fn i64_decode_ref() -> (i64, &'static [u8]) {
-    i64::decode_ref(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80]).expect("i64 decode_ref cannot fail on 8 bytes")
+    i64::decode_ref(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80])
+        .expect("i64 decode_ref cannot fail on 8 bytes")
 }
 
 // ── decode_bytes_limited / decode_string_limited ──────────────────────────────
@@ -110,23 +133,33 @@ fn i64_decode_ref() -> (i64, &'static [u8]) {
 fn decode_bytes_limited_bench(bencher: divan::Bencher, len: usize) {
     let payload = vec![0xabu8; len];
     let mut buf = Vec::new();
-    VarInt(len as u64).encode(&mut buf).expect("Vec<u8> write cannot fail");
+    VarInt(len as u64)
+        .encode(&mut buf)
+        .expect("Vec<u8> write cannot fail");
     buf.extend_from_slice(&payload);
-    bencher.bench(|| decode_bytes_limited::<{ 1 << 20 }>(&mut Cursor::new(buf.as_slice())).expect("decode_bytes_limited cannot fail on valid bytes"));
+    bencher.bench(|| {
+        decode_bytes_limited::<{ 1 << 20 }>(&mut Cursor::new(buf.as_slice()))
+            .expect("decode_bytes_limited cannot fail on valid bytes")
+    });
 }
 
 #[divan::bench(args = [0usize, 16, 256])]
 fn decode_string_limited_bench(bencher: divan::Bencher, len: usize) {
     let s = "a".repeat(len);
     let mut buf = Vec::new();
-    s.as_str().encode(&mut buf).expect("Vec<u8> write cannot fail");
-    bencher.bench(|| decode_string_limited::<{ 1 << 20 }>(&mut Cursor::new(buf.as_slice())).expect("decode_string_limited cannot fail on valid bytes"));
+    s.as_str()
+        .encode(&mut buf)
+        .expect("Vec<u8> write cannot fail");
+    bencher.bench(|| {
+        decode_string_limited::<{ 1 << 20 }>(&mut Cursor::new(buf.as_slice()))
+            .expect("decode_string_limited cannot fail on valid bytes")
+    });
 }
 
 // ── VarStr ────────────────────────────────────────────────────────────────────
 
 mod varstr {
-    use super::{Encode, Decode, Cursor, DecodeRef};
+    use super::{Cursor, Decode, DecodeRef, Encode};
 
     fn encode_str(s: &str) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -148,24 +181,34 @@ mod varstr {
     #[divan::bench]
     fn decode_short(bencher: divan::Bencher) {
         let buf = encode_str("ping");
-        bencher.bench(|| String::decode(&mut Cursor::new(buf.as_slice())).expect("String decode cannot fail on valid bytes"));
+        bencher.bench(|| {
+            String::decode(&mut Cursor::new(buf.as_slice()))
+                .expect("String decode cannot fail on valid bytes")
+        });
     }
 
     #[divan::bench]
     fn decode_long_256(bencher: divan::Bencher) {
         let buf = encode_str(&"a".repeat(256));
-        bencher.bench(|| String::decode(&mut Cursor::new(buf.as_slice())).expect("String decode cannot fail on valid bytes"));
+        bencher.bench(|| {
+            String::decode(&mut Cursor::new(buf.as_slice()))
+                .expect("String decode cannot fail on valid bytes")
+        });
     }
 
     #[divan::bench]
     fn decode_ref_short(bencher: divan::Bencher) {
         let buf = encode_str("ping");
-        bencher.bench(|| <&str>::decode_ref(buf.as_slice()).expect("str decode_ref cannot fail on valid bytes"));
+        bencher.bench(|| {
+            <&str>::decode_ref(buf.as_slice()).expect("str decode_ref cannot fail on valid bytes")
+        });
     }
 
     #[divan::bench]
     fn decode_ref_long_256(bencher: divan::Bencher) {
         let buf = encode_str(&"a".repeat(256));
-        bencher.bench(|| <&str>::decode_ref(buf.as_slice()).expect("str decode_ref cannot fail on valid bytes"));
+        bencher.bench(|| {
+            <&str>::decode_ref(buf.as_slice()).expect("str decode_ref cannot fail on valid bytes")
+        });
     }
 }

@@ -31,7 +31,10 @@ impl<'a> ScriptReader<'a> {
     /// Wrap a script slice. The cursor starts at offset 0.
     #[must_use]
     pub const fn new(script: &'a [u8]) -> Self {
-        Self { full: script, cursor: script }
+        Self {
+            full: script,
+            cursor: script,
+        }
     }
 
     /// `true` if the cursor is at end of script.
@@ -76,8 +79,8 @@ impl<'a> ScriptReader<'a> {
             Opcode::PushData4 => {
                 // u32 may overflow usize on 16-bit platforms; we don't run
                 // there, but be conservative anyway.
-                let n = usize::try_from(self.take_u32_le()?)
-                    .map_err(|_| ScriptError::BadPushLength)?;
+                let n =
+                    usize::try_from(self.take_u32_le()?).map_err(|_| ScriptError::BadPushLength)?;
                 self.take(n)?
             }
             _ => &[],

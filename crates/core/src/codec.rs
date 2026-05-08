@@ -119,7 +119,9 @@ macro_rules! impl_codec_int {
                     return Err(Error::UnexpectedEof.into());
                 }
                 let (head, tail) = buf.split_at(N);
-                let arr: [u8; N] = head.try_into().map_err(|_| io::Error::from(Error::UnexpectedEof))?;
+                let arr: [u8; N] = head
+                    .try_into()
+                    .map_err(|_| io::Error::from(Error::UnexpectedEof))?;
                 Ok((<$t>::from_le_bytes(arr), tail))
             }
         }
@@ -199,11 +201,19 @@ impl VarInt {
             }
             0xfe => {
                 r.read_exact(&mut buf[..4])?;
-                u64::from(u32::from_le_bytes(buf[..4].try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?))
+                u64::from(u32::from_le_bytes(
+                    buf[..4]
+                        .try_into()
+                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                ))
             }
             0xfd => {
                 r.read_exact(&mut buf[..2])?;
-                u64::from(u16::from_le_bytes(buf[..2].try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?))
+                u64::from(u16::from_le_bytes(
+                    buf[..2]
+                        .try_into()
+                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                ))
             }
             n => u64::from(n),
         };
@@ -221,15 +231,27 @@ impl Decode for VarInt {
         let value = match buf[0] {
             0xff => {
                 r.read_exact(&mut buf[1..9])?;
-                u64::from_le_bytes(buf[1..9].try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?)
+                u64::from_le_bytes(
+                    buf[1..9]
+                        .try_into()
+                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                )
             }
             0xfe => {
                 r.read_exact(&mut buf[1..5])?;
-                u64::from(u32::from_le_bytes(buf[1..5].try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?))
+                u64::from(u32::from_le_bytes(
+                    buf[1..5]
+                        .try_into()
+                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                ))
             }
             0xfd => {
                 r.read_exact(&mut buf[1..3])?;
-                u64::from(u16::from_le_bytes(buf[1..3].try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?))
+                u64::from(u16::from_le_bytes(
+                    buf[1..3]
+                        .try_into()
+                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                ))
             }
             n => u64::from(n),
         };
@@ -246,15 +268,27 @@ impl<'a> DecodeRef<'a> for VarInt {
             .ok_or_else(|| io::Error::from(Error::UnexpectedEof))?;
         let (value, tail) = match tag {
             0xff if rest.len() >= 8 => (
-                u64::from_le_bytes(rest[..8].try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?),
+                u64::from_le_bytes(
+                    rest[..8]
+                        .try_into()
+                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                ),
                 &rest[8..],
             ),
             0xfe if rest.len() >= 4 => (
-                u64::from(u32::from_le_bytes(rest[..4].try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?)),
+                u64::from(u32::from_le_bytes(
+                    rest[..4]
+                        .try_into()
+                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                )),
                 &rest[4..],
             ),
             0xfd if rest.len() >= 2 => (
-                u64::from(u16::from_le_bytes(rest[..2].try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?)),
+                u64::from(u16::from_le_bytes(
+                    rest[..2]
+                        .try_into()
+                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                )),
                 &rest[2..],
             ),
             0xfd..=0xff => return Err(io::Error::from(Error::UnexpectedEof)),
@@ -289,7 +323,11 @@ impl<'a, const N: usize> DecodeRef<'a> for [u8; N] {
             return Err(Error::UnexpectedEof.into());
         }
         let (head, tail) = buf.split_at(N);
-        Ok((head.try_into().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?, tail))
+        Ok((
+            head.try_into()
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+            tail,
+        ))
     }
 }
 
@@ -312,8 +350,7 @@ impl<'a> DecodeRef<'a> for &'a [u8] {
 impl<'a> DecodeRef<'a> for &'a str {
     fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
         let (bytes, tail) = <&'a [u8]>::decode_ref(buf)?;
-        let s = std::str::from_utf8(bytes)
-            .map_err(|e| io::Error::from(Error::InvalidUtf8(e)))?;
+        let s = std::str::from_utf8(bytes).map_err(|e| io::Error::from(Error::InvalidUtf8(e)))?;
         Ok((s, tail))
     }
 }
@@ -362,7 +399,10 @@ pub fn decode_bytes_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> io::Re
     let VarInt(len) = VarInt::decode(r)?;
     let len = usize::try_from(len).map_err(|_| io::Error::from(Error::LengthOverflow(len)))?;
     if len > MAX_BYTES {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "byte blob exceeds length limit"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "byte blob exceeds length limit",
+        ));
     }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
@@ -544,7 +584,16 @@ mod tests {
     // VarInt: boundary values round-trip correctly.
     #[test]
     fn varint_boundary_values() {
-        for val in [0u64, 0xfc, 0xfd, 0xffff, 0x10000, 0xffff_ffff, 0x1_0000_0000, u64::MAX] {
+        for val in [
+            0u64,
+            0xfc,
+            0xfd,
+            0xffff,
+            0x10000,
+            0xffff_ffff,
+            0x1_0000_0000,
+            u64::MAX,
+        ] {
             let v = VarInt(val);
             let encoded = roundtrip_encode(&v);
             assert_eq!(roundtrip_decode::<VarInt>(&encoded), v, "VarInt({val})");
