@@ -1,8 +1,3 @@
-// `Fetcher`'s public API is consumed by `main.rs`, which lands in the next
-// commit. Until then every item below looks unused; the allow keeps that one
-// transitional commit warning-free.
-#![allow(dead_code)]
-
 //! Multi-peer P2P block fetcher with on-disk caching.
 //!
 //! Adapted from `crates/bench/src/fetch_fixtures.rs`. The shape is:
