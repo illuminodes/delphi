@@ -11,6 +11,7 @@
 
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
+use mantle::codec::Encode;
 use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, Witness};
 use mantle_consensus::script::consensus_crypto::Schnorr;
 use mantle_consensus::script::sighash::{
@@ -683,6 +684,148 @@ fn nested_if_script_btccore(bencher: divan::Bencher) {
         script.push(0x68); // OP_ENDIF
     }
     bencher.bench(|| eval_legacy(black_box(&script)));
+}
+
+// ── bitcoinconsensus (libbitcoinconsensus via FFI) ────────────────────────────
+// These benches call the same libbitcoinconsensus that ships with Bitcoin Core
+// v26.0, linked into this process via the `bitcoinconsensus` crate.  Run them
+// alongside the mantle equivalents to get a same-hardware, same-process
+// comparison — no need to build bench_bitcoin separately.
+//
+// Setup is identical to the mantle benches above: same keys, same sighash,
+// same wire encoding.  The only difference is the verifier.
+
+fn encode_tx(tx: &Transaction) -> Vec<u8> {
+    let mut buf = Vec::new();
+    tx.encode(&mut buf).expect("Vec<u8> write cannot fail");
+    buf
+}
+
+/// P2WPKH via libbitcoinconsensus — direct comparison point for `verify_p2wpkh`.
+#[divan::bench]
+fn btccore_verify_p2wpkh(bencher: divan::Bencher) {
+    let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
+    let pk: Vec<u8> = sk
+        .verifying_key()
+        .to_encoded_point(true)
+        .as_bytes()
+        .to_vec();
+    let pkh = hash160(&pk);
+
+    let mut spk = vec![0x00u8, 0x14];
+    spk.extend_from_slice(&pkh);
+
+    let mut script_code = vec![0x76u8, 0xa9, 0x14];
+    script_code.extend_from_slice(&pkh);
+    script_code.extend_from_slice(&[0x88, 0xac]);
+
+    let amount = Satoshi::new(100_000);
+    let tmp_tx = make_witness_tx(&[]);
+    let cache = Bip143Cache::new(&tmp_tx);
+    let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
+    let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
+
+    let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
+    let tx_wire = encode_tx(&tx);
+
+    bencher.bench(|| {
+        bitcoinconsensus::verify(
+            black_box(&spk),
+            black_box(amount.to_u64()),
+            black_box(&tx_wire),
+            None,
+            0,
+        )
+        .expect("p2wpkh must verify");
+    });
+}
+
+/// P2TR key-path via libbitcoinconsensus — direct comparison point for
+/// `verify_taproot_keypath`.
+#[divan::bench]
+fn btccore_verify_p2tr_keypath(bencher: divan::Bencher) {
+    let internal_key_secret = [0x11u8; 32];
+    let internal_key: [u8; 32] = {
+        use k256::schnorr::SigningKey;
+        SigningKey::from_bytes(&internal_key_secret)
+            .expect("nonzero")
+            .verifying_key()
+            .to_bytes()
+            .into()
+    };
+    let output_key = TapHasher::tweak_output_key(&internal_key, &[]).expect("valid key");
+    let tweaked_secret = tweaked_signing_key(&internal_key_secret, &[]);
+
+    let amount = Satoshi::new(100_000);
+    let mut spk = vec![0x51u8, 0x20];
+    spk.extend_from_slice(&output_key);
+
+    let placeholder = Transaction {
+        version: 2,
+        inputs: vec![TxIn {
+            previous_output: OutPoint {
+                txid: Hash256([0x11; 32]),
+                vout: 0,
+            },
+            script_sig: vec![].into(),
+            sequence: 0xffff_fffd,
+            witness: Witness::empty(),
+        }],
+        outputs: vec![TxOut {
+            value: amount,
+            script_pubkey: spk.clone().into(),
+        }],
+        locktime: 0,
+    };
+
+    let cache = Bip341Cache::new(&placeholder, &[amount], &[spk.as_slice()]);
+    let msg = placeholder.bip341_sighash(
+        0,
+        amount,
+        &spk,
+        TaprootSigHashType::DEFAULT,
+        &cache,
+        None,
+        None,
+    );
+    let sig64 = schnorr_sign(&tweaked_secret, &msg);
+
+    let tx = Transaction {
+        version: 2,
+        inputs: vec![TxIn {
+            previous_output: OutPoint {
+                txid: Hash256([0x11; 32]),
+                vout: 0,
+            },
+            script_sig: vec![].into(),
+            sequence: 0xffff_fffd,
+            witness: Witness::from_slice(&[sig64.as_slice()]),
+        }],
+        outputs: vec![TxOut {
+            value: amount,
+            script_pubkey: spk.clone().into(),
+        }],
+        locktime: 0,
+    };
+    let tx_wire = encode_tx(&tx);
+
+    let utxo = bitcoinconsensus::Utxo {
+        script_pubkey: spk.as_ptr(),
+        script_pubkey_len: spk.len() as u32,
+        value: amount.to_u64() as i64,
+    };
+
+    // bench_local: Utxo holds a raw pointer so it is !Sync; FnMut suffices here.
+    bencher.bench_local(|| {
+        bitcoinconsensus::verify(
+            black_box(&spk),
+            black_box(amount.to_u64()),
+            black_box(&tx_wire),
+            Some(black_box(std::slice::from_ref(&utxo))),
+            0,
+        )
+        .expect("p2tr key-path must verify");
+    });
 }
 
 /// P2WSH with caller-supplied stack buffers reused across iterations.

@@ -542,6 +542,7 @@ dependencies = [
 name = "mantle-bench"
 version = "0.1.0"
 dependencies = [
+ "bitcoinconsensus",
  "dhat",
  "divan",
  "k256",
