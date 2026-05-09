@@ -847,12 +847,14 @@ impl TapHasher {
     /// Returns `None` if `internal_key` is not a valid secp256k1 x-only point.
     #[must_use]
     pub fn tweak_output_key(internal_key: &[u8; 32], merkle_root: &[u8]) -> Option<[u8; 32]> {
-        use k256::elliptic_curve::ops::{MulByGenerator, Reduce};
+        use k256::elliptic_curve::bigint::Encoding;
+        use k256::elliptic_curve::ops::Reduce;
         use k256::elliptic_curve::point::AffineCoordinates;
+        use k256::elliptic_curve::Group;
         use k256::schnorr::VerifyingKey as SchnorrVK;
         use k256::{ProjectivePoint, Scalar, U256};
 
-        let internal_vk = SchnorrVK::from_bytes(internal_key).ok()?;
+        let internal_vk = SchnorrVK::from_bytes(internal_key.into()).ok()?;
         let internal_point: ProjectivePoint = (*internal_vk.as_affine()).into();
 
         let mut tweak_input = Vec::with_capacity(64);
@@ -860,7 +862,7 @@ impl TapHasher {
         tweak_input.extend_from_slice(merkle_root);
         let tweak_hash = Schnorr::tagged_hash(b"TapTweak", &tweak_input);
 
-        let tweak_scalar = <Scalar as Reduce<U256>>::reduce_bytes((&tweak_hash).into());
+        let tweak_scalar = <Scalar as Reduce<U256>>::reduce(&U256::from_be_bytes(tweak_hash.into()));
         let output_point = internal_point + ProjectivePoint::mul_by_generator(&tweak_scalar);
         let x: [u8; 32] = output_point.to_affine().x().into();
         Some(x)

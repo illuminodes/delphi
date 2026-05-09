@@ -290,7 +290,7 @@ fn hash160(data: &[u8]) -> [u8; 20] {
 
 fn ecdsa_sign(sk: &SigningKey, digest: &[u8; 32], hash_type: SigHashType) -> Vec<u8> {
     let sig: EcdsaSig = sk.sign_prehash(digest).expect("signing cannot fail");
-    let sig = sig.normalize_s().unwrap_or(sig);
+    let sig = sig.normalize_s();
     let mut bytes = sig.to_der().as_bytes().to_vec();
     bytes.push(u8::try_from(hash_type.0 & 0xff).expect("hashtype fits u8"));
     bytes
@@ -305,7 +305,7 @@ fn verify_p2wpkh(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
     let pk: Vec<u8> = sk
         .verifying_key()
-        .to_encoded_point(true)
+        .to_sec1_point(true)
         .as_bytes()
         .to_vec();
     let pkh = hash160(&pk);
@@ -347,7 +347,7 @@ fn verify_p2wsh(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
     let pk: Vec<u8> = sk
         .verifying_key()
-        .to_encoded_point(true)
+        .to_sec1_point(true)
         .as_bytes()
         .to_vec();
     let pkh = hash160(&pk);
@@ -388,7 +388,7 @@ fn verify_p2wpkh_with_bufs(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
     let pk: Vec<u8> = sk
         .verifying_key()
-        .to_encoded_point(true)
+        .to_sec1_point(true)
         .as_bytes()
         .to_vec();
     let pkh = hash160(&pk);
@@ -427,22 +427,23 @@ fn taproot_flags() -> ScriptFlags {
 fn schnorr_sign(secret: &[u8; 32], msg: &[u8; 32]) -> [u8; 64] {
     use k256::schnorr::SigningKey;
     use k256::schnorr::signature::hazmat::PrehashSigner;
-    let sk = SigningKey::from_bytes(secret).expect("nonzero secret");
+    let sk = SigningKey::from_bytes(secret.into()).expect("nonzero secret");
     let sig: k256::schnorr::Signature = sk.sign_prehash(msg).expect("signing cannot fail");
     sig.to_bytes()
 }
 
 fn tweaked_signing_key(internal_secret: &[u8; 32], merkle_root: &[u8]) -> [u8; 32] {
+    use k256::elliptic_curve::bigint::Encoding;
     use k256::elliptic_curve::ops::Reduce;
     use k256::schnorr::SigningKey;
     use k256::{NonZeroScalar, Scalar, U256};
-    let sk = SigningKey::from_bytes(internal_secret).expect("nonzero secret");
+    let sk = SigningKey::from_bytes(internal_secret.into()).expect("nonzero secret");
     let internal_pubkey: [u8; 32] = sk.verifying_key().to_bytes().into();
     let mut tweak_input = Vec::with_capacity(32 + merkle_root.len());
     tweak_input.extend_from_slice(&internal_pubkey);
     tweak_input.extend_from_slice(merkle_root);
     let tweak_bytes = Schnorr::tagged_hash(b"TapTweak", &tweak_input);
-    let t = <Scalar as Reduce<U256>>::reduce_bytes((&tweak_bytes).into());
+    let t = <Scalar as Reduce<U256>>::reduce(&U256::from_be_bytes(tweak_bytes.into()));
     let d: Scalar = *sk.as_nonzero_scalar().as_ref();
     let tweaked = NonZeroScalar::new(d + t).expect("tweaked scalar non-zero");
     tweaked.to_bytes().into()
@@ -456,7 +457,7 @@ fn verify_taproot_keypath(bencher: divan::Bencher) {
     let internal_key_secret = [0x11u8; 32];
     let internal_key: [u8; 32] = {
         use k256::schnorr::SigningKey;
-        SigningKey::from_bytes(&internal_key_secret)
+        SigningKey::from_bytes((&internal_key_secret).into())
             .expect("nonzero")
             .verifying_key()
             .to_bytes()
@@ -538,7 +539,7 @@ fn verify_taproot_scriptpath_op1(bencher: divan::Bencher) {
     let internal_key_secret = [0x22u8; 32];
     let internal_key: [u8; 32] = {
         use k256::schnorr::SigningKey;
-        SigningKey::from_bytes(&internal_key_secret)
+        SigningKey::from_bytes((&internal_key_secret).into())
             .expect("nonzero")
             .verifying_key()
             .to_bytes()
@@ -707,7 +708,7 @@ fn btccore_verify_p2wpkh(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
     let pk: Vec<u8> = sk
         .verifying_key()
-        .to_encoded_point(true)
+        .to_sec1_point(true)
         .as_bytes()
         .to_vec();
     let pkh = hash160(&pk);
@@ -747,7 +748,7 @@ fn btccore_verify_p2tr_keypath(bencher: divan::Bencher) {
     let internal_key_secret = [0x11u8; 32];
     let internal_key: [u8; 32] = {
         use k256::schnorr::SigningKey;
-        SigningKey::from_bytes(&internal_key_secret)
+        SigningKey::from_bytes((&internal_key_secret).into())
             .expect("nonzero")
             .verifying_key()
             .to_bytes()
@@ -835,7 +836,7 @@ fn verify_p2wsh_with_bufs(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
     let pk: Vec<u8> = sk
         .verifying_key()
-        .to_encoded_point(true)
+        .to_sec1_point(true)
         .as_bytes()
         .to_vec();
     let pkh = hash160(&pk);

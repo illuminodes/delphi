@@ -63,14 +63,14 @@ fn key_path_output_key(internal_key: &[u8; 32]) -> [u8; 32] {
 fn schnorr_sign(secret: &[u8; 32], msg: &[u8; 32]) -> [u8; 64] {
     use k256::schnorr::SigningKey;
     use k256::schnorr::signature::hazmat::PrehashSigner;
-    let sk = SigningKey::from_bytes(secret).expect("nonzero secret");
+    let sk = SigningKey::from_bytes(secret.into()).expect("nonzero secret");
     let sig: k256::schnorr::Signature = sk.sign_prehash(msg).expect("sign cannot fail");
     sig.to_bytes()
 }
 
 fn schnorr_pubkey(secret: &[u8; 32]) -> [u8; 32] {
     use k256::schnorr::SigningKey;
-    SigningKey::from_bytes(secret)
+    SigningKey::from_bytes(secret.into())
         .expect("nonzero secret")
         .verifying_key()
         .to_bytes()
@@ -89,7 +89,7 @@ fn tweaked_signing_key(internal_secret: &[u8; 32], merkle_root: &[u8]) -> [u8; 3
     use k256::{NonZeroScalar, Scalar, U256};
 
     // k256 normalises to even-Y on construction (negates d if pubkey.y is odd).
-    let sk = SigningKey::from_bytes(internal_secret).expect("nonzero secret");
+    let sk = SigningKey::from_bytes(internal_secret.into()).expect("nonzero secret");
     let internal_pubkey: [u8; 32] = sk.verifying_key().to_bytes().into();
 
     let mut tweak_input = Vec::with_capacity(32 + merkle_root.len());
@@ -97,7 +97,8 @@ fn tweaked_signing_key(internal_secret: &[u8; 32], merkle_root: &[u8]) -> [u8; 3
     tweak_input.extend_from_slice(merkle_root);
     let tweak_bytes =
         crate::script::consensus_crypto::Schnorr::tagged_hash(b"TapTweak", &tweak_input);
-    let t = <Scalar as Reduce<U256>>::reduce_bytes((&tweak_bytes).into());
+    use k256::elliptic_curve::bigint::Encoding;
+    let t = <Scalar as Reduce<U256>>::reduce(&U256::from_be_bytes(tweak_bytes.into()));
 
     let d: Scalar = *sk.as_nonzero_scalar().as_ref();
     let tweaked = d + t;
@@ -511,7 +512,7 @@ fn diag_schnorr_sign_verify_roundtrip() {
     use k256::schnorr::signature::hazmat::{PrehashSigner, PrehashVerifier};
 
     let secret = [0x42u8; 32];
-    let sk = SigningKey::from_bytes(&secret).expect("valid");
+    let sk = SigningKey::from_bytes((&secret).into()).expect("valid");
     let msg = [0xabu8; 32];
     let sig: k256::schnorr::Signature = sk.sign_prehash(&msg).expect("sign");
     let vk = sk.verifying_key();

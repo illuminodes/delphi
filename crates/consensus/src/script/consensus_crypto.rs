@@ -327,6 +327,9 @@ impl Schnorr {
         let Ok(sig) = SchnorrSig::try_from(sig64) else {
             return false;
         };
+        let Ok(pubkey32) = pubkey32.try_into() else {
+            return false;
+        };
         let Ok(vk) = SchnorrVerifyingKey::from_bytes(pubkey32) else {
             return false;
         };

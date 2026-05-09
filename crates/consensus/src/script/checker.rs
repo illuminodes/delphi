@@ -339,6 +339,7 @@ mod tests {
 
     use k256::ecdsa::signature::hazmat::PrehashSigner;
     use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
+    use k256::elliptic_curve::sec1::ToSec1Point;
     use mantle::primitives::{Hash256, OutPoint, Transaction, TxIn, TxOut, Witness};
     use ripemd::Ripemd160;
     use sha2::{Digest, Sha256};
@@ -364,7 +365,7 @@ mod tests {
     /// Compressed SEC1 pubkey bytes (33 bytes).
     fn compressed_pubkey(sk: &SigningKey) -> Vec<u8> {
         sk.verifying_key()
-            .to_encoded_point(true)
+            .to_sec1_point(true)
             .as_bytes()
             .to_vec()
     }
@@ -412,7 +413,7 @@ mod tests {
         let sig: EcdsaSig = sk
             .sign_prehash(sighash)
             .expect("signing a 32-byte digest cannot fail");
-        let sig = sig.normalize_s().unwrap_or(sig); // canonical low-S
+        let sig = sig.normalize_s(); // canonical low-S
         let mut der = sig.to_der().as_bytes().to_vec();
         der.push(u8::try_from(hashtype.0 & 0xff).expect("hashtype fits in u8"));
         der

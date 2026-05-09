@@ -218,7 +218,7 @@ fn main() {
         let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
         let pk: Vec<u8> = sk
             .verifying_key()
-            .to_encoded_point(true)
+            .to_sec1_point(true)
             .as_bytes()
             .to_vec();
         let pkh: [u8; 20] = {
@@ -260,7 +260,7 @@ fn main() {
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
         let raw_sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
-        let raw_sig = raw_sig.normalize_s().unwrap_or(raw_sig);
+        let raw_sig = raw_sig.normalize_s();
         let mut sig_bytes = raw_sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
 
@@ -304,7 +304,7 @@ fn main() {
         let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
         let pk: Vec<u8> = sk
             .verifying_key()
-            .to_encoded_point(true)
+            .to_sec1_point(true)
             .as_bytes()
             .to_vec();
         let pkh: [u8; 20] = {
@@ -346,7 +346,7 @@ fn main() {
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
         let raw_sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
-        let raw_sig = raw_sig.normalize_s().unwrap_or(raw_sig);
+        let raw_sig = raw_sig.normalize_s();
         let mut sig_bytes = raw_sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
 
@@ -394,7 +394,7 @@ fn main() {
         let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
         let pk: Vec<u8> = sk
             .verifying_key()
-            .to_encoded_point(true)
+            .to_sec1_point(true)
             .as_bytes()
             .to_vec();
         let pkh: [u8; 20] = {
@@ -437,7 +437,7 @@ fn main() {
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
         let raw_sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
-        let raw_sig = raw_sig.normalize_s().unwrap_or(raw_sig);
+        let raw_sig = raw_sig.normalize_s();
         let mut sig_bytes = raw_sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
 
@@ -484,7 +484,7 @@ fn main() {
         let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
         let pk: Vec<u8> = sk
             .verifying_key()
-            .to_encoded_point(true)
+            .to_sec1_point(true)
             .as_bytes()
             .to_vec();
         let pkh: [u8; 20] = {
@@ -527,7 +527,7 @@ fn main() {
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
         let raw_sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
-        let raw_sig = raw_sig.normalize_s().unwrap_or(raw_sig);
+        let raw_sig = raw_sig.normalize_s();
         let mut sig_bytes = raw_sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
 
@@ -579,7 +579,7 @@ fn main() {
         use k256::schnorr::signature::hazmat::PrehashSigner;
 
         let internal_secret = [0x55u8; 32];
-        let internal_key: [u8; 32] = SchnorrSK::from_bytes(&internal_secret)
+        let internal_key: [u8; 32] = SchnorrSK::from_bytes((&internal_secret).into())
             .expect("nonzero")
             .verifying_key()
             .to_bytes()
@@ -587,11 +587,12 @@ fn main() {
         let output_key = TapHasher::tweak_output_key(&internal_key, &[]).expect("valid key");
 
         let tweaked_secret: [u8; 32] = {
+            use k256::elliptic_curve::bigint::Encoding;
             use k256::elliptic_curve::ops::Reduce;
             use k256::{NonZeroScalar, Scalar, U256};
-            let sk = SchnorrSK::from_bytes(&internal_secret).expect("nonzero");
+            let sk = SchnorrSK::from_bytes((&internal_secret).into()).expect("nonzero");
             let tweak_bytes = Schnorr::tagged_hash(b"TapTweak", &internal_key);
-            let t = <Scalar as Reduce<U256>>::reduce_bytes((&tweak_bytes).into());
+            let t = <Scalar as Reduce<U256>>::reduce(&U256::from_be_bytes(tweak_bytes.into()));
             let d: Scalar = *sk.as_nonzero_scalar().as_ref();
             NonZeroScalar::new(d + t)
                 .expect("nonzero")
@@ -631,7 +632,7 @@ fn main() {
             None,
         );
         let sig64: [u8; 64] = {
-            let sk = SchnorrSK::from_bytes(&tweaked_secret).expect("nonzero");
+            let sk = SchnorrSK::from_bytes((&tweaked_secret).into()).expect("nonzero");
             let sig: k256::schnorr::Signature = sk.sign_prehash(&msg).expect("sign");
             sig.to_bytes()
         };
