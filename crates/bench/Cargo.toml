@@ -35,6 +35,10 @@ harness = false
 name = "replay"
 harness = false
 
+[[bench]]
+name = "replay_parity"
+harness = false
+
 [[bin]]
 name = "dhat-profile"
 path = "src/dhat_profile.rs"
