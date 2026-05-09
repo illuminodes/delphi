@@ -413,15 +413,13 @@ impl<'tx> TxView for TransactionRef<'tx> {
     fn inputs(&self) -> Self::InputIter<'_> {
         RefInputIter {
             inner: self.inputs(),
-            witnesses_buf: if self.is_segwit {
-                // Use the public WitnessRef walker to traverse witnesses lazily.
-                Some(())
+            // Cursor walks the per-input witness layout one step per next(),
+            // so total witness work is O(n) instead of O(n²).
+            witnesses_cursor: if self.is_segwit {
+                Some(self.witnesses_buf)
             } else {
                 None
             },
-            // Capture parent ref for per-input witness lookup by index.
-            tx: *self,
-            index: 0,
         }
     }
     fn outputs(&self) -> Self::OutputIter<'_> {
@@ -457,21 +455,30 @@ impl<'tx> TxView for TransactionRef<'tx> {
 
 pub struct RefInputIter<'a> {
     inner: mantle::primitives::TxInRefIter<'a>,
-    witnesses_buf: Option<()>,
-    tx: TransactionRef<'a>,
-    index: usize,
+    /// `Some` carries the remaining per-input witness bytes for a segwit tx.
+    /// Each `next()` pops one witness off the front in O(1) amortised, so a
+    /// full input pass is O(n) instead of the O(n²) cost of indexing each
+    /// input's witness independently.
+    witnesses_cursor: Option<&'a [u8]>,
 }
 
 impl<'a> Iterator for RefInputIter<'a> {
     type Item = RefInputView<'a>;
     fn next(&mut self) -> Option<Self::Item> {
         let inner = self.inner.next()?.ok()?;
-        let witness = if self.witnesses_buf.is_some() {
-            self.tx.witness(self.index)
-        } else {
-            WitnessRef::EMPTY
+        let witness = match self.witnesses_cursor {
+            Some(buf) => match WitnessRef::pop_from(buf) {
+                Ok((w, rest)) => {
+                    self.witnesses_cursor = Some(rest);
+                    w
+                }
+                Err(_) => {
+                    self.witnesses_cursor = None;
+                    WitnessRef::EMPTY
+                }
+            },
+            None => WitnessRef::EMPTY,
         };
-        self.index += 1;
         Some(RefInputView { inner, witness })
     }
 }

@@ -1347,7 +1347,7 @@ pub struct TransactionRef<'a> {
     /// Slice covering all per-input witness stacks for this tx (segwit only).
     /// Empty for legacy. The witness layout is `for each input: VarInt(count)
     /// || VarInt(len)+bytes per item` (BIP144).
-    witnesses_buf: &'a [u8],
+    pub witnesses_buf: &'a [u8],
 }
 
 impl<'a> TransactionRef<'a> {
@@ -1568,6 +1568,43 @@ impl<'a> WitnessRef<'a> {
             item_count: count,
             items_buf,
         })
+    }
+
+    /// Decode one witness at the start of `buf` and return both the decoded
+    /// `WitnessRef` and the trailing slice — i.e. `(this_witness, rest)`.
+    ///
+    /// Designed for streaming the per-input witness layout of a segwit tx:
+    /// after each call, pass `rest` back in to read the next input's witness.
+    /// One pass is O(n) total work across n inputs, vs the O(n²) cost of
+    /// computing each input's witness independently from the tx start.
+    ///
+    /// # Errors
+    /// Returns an error if the count or any item length is truncated.
+    pub fn pop_from(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+        let (VarInt(count), mut rest) = VarInt::decode_ref(buf)?;
+        let count = usize::try_from(count)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let items_start = rest;
+        for _ in 0..count {
+            let (VarInt(len), r2) = VarInt::decode_ref(rest)?;
+            let len = usize::try_from(len)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if r2.len() < len {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "witness item truncated",
+                ));
+            }
+            rest = &r2[len..];
+        }
+        let items_buf = &items_start[..items_start.len() - rest.len()];
+        Ok((
+            Self {
+                item_count: count,
+                items_buf,
+            },
+            rest,
+        ))
     }
 
     /// Skip one full witness (count + items) and return the trailing slice.
