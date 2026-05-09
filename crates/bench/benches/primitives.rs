@@ -334,3 +334,60 @@ fn block_decode(bencher: divan::Bencher, n: usize) {
             .expect("Block decode cannot fail on valid bytes")
     });
 }
+
+// ── Bitcoin Core parity ───────────────────────────────────────────────────────
+// These benchmarks use the same workload sizes as Bitcoin Core's
+// src/bench/parse_transaction.cpp / src/bench/connectblock.cpp so the numbers
+// can be compared directly.
+//
+// Core reference: ConnectBlock builds a block with 1,000 transactions, each
+// spending the previous tx's output.  parse_transaction.cpp uses 1 tx with
+// 1 P2WPKH input + 1 output (~200 bytes wire).
+
+/// Block encode + decode round-trip with 1,000 transactions — matches Bitcoin
+/// Core's `ConnectBlock` bench block size.  Each tx has 1 input and 1 output
+/// (no witness), giving a realistic non-trivial wire size.
+#[divan::bench]
+fn block_decode_1000_txs(bencher: divan::Bencher) {
+    let block = Block {
+        header: make_header(0),
+        transactions: (0..1_000).map(|_| make_tx(1, 1)).collect(),
+    };
+    let bytes = encode_bytes(&block);
+    bencher.bench(|| {
+        Block::decode(&mut Cursor::new(bytes.as_slice()))
+            .expect("Block decode cannot fail on valid bytes")
+    });
+}
+
+/// Single-transaction decode with a 1-input / 1-output P2PKH-sized script_sig
+/// (25 bytes) — matches Bitcoin Core's `ParseTransaction` bench wire shape.
+#[divan::bench]
+fn transaction_decode_p2pkh_btccore(bencher: divan::Bencher) {
+    let tx = Transaction {
+        version: 1,
+        inputs: vec![TxIn {
+            previous_output: OutPoint {
+                txid: Hash256([0xabu8; 32]),
+                vout: 0,
+            },
+            script_sig: vec![
+                0x76, 0xa9, 0x14, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
+                0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0x88, 0xac,
+            ]
+            .into(),
+            sequence: u32::MAX,
+            witness: Witness::empty(),
+        }],
+        outputs: vec![TxOut {
+            value: Satoshi::new(100_000),
+            script_pubkey: vec![0x76, 0xa9, 0x14].into(),
+        }],
+        locktime: 0,
+    };
+    let bytes = encode_bytes(&tx);
+    bencher.bench(|| {
+        Transaction::decode(&mut Cursor::new(bytes.as_slice()))
+            .expect("Transaction decode cannot fail on valid bytes")
+    });
+}

@@ -378,6 +378,45 @@ fn chain_view_get_coins_batch(bencher: divan::Bencher, n: usize) {
     bencher.bench(|| view.get_coins(black_box(&ops)).expect("storage error"));
 }
 
+// ── Bitcoin Core parity ───────────────────────────────────────────────────────
+// These benchmarks use the same workload sizes as Bitcoin Core's
+// src/bench/merkle_root.cpp so the numbers can be compared directly.
+//
+// Core reference: MerkleRoot over 9,001 pseudo-random hashes (hardcoded leaf
+// count in bench/merkle_root.cpp).
+
+/// Merkle root over 9,001 leaves — matches Bitcoin Core's `MerkleRoot` bench.
+#[divan::bench]
+fn merkle_root_9001(bencher: divan::Bencher) {
+    // Core uses FastRandomContext (deterministic) to fill the leaves.  We use
+    // a simple deterministic pattern; the hash values don't affect timing.
+    let txids: Vec<Hash256> = (0..9_001usize)
+        .map(|i| {
+            let mut h = [0u8; 32];
+            h[0] = u8::try_from(i & 0xff).unwrap();
+            h[1] = u8::try_from((i >> 8) & 0xff).unwrap();
+            Hash256(h)
+        })
+        .collect();
+    bencher.bench(|| compute_merkle_root(black_box(&txids)));
+}
+
+/// Same workload with the reusing variant — measures allocation savings vs
+/// Core's single-allocation path.
+#[divan::bench]
+fn merkle_root_9001_reusing(bencher: divan::Bencher) {
+    let txids: Vec<Hash256> = (0..9_001usize)
+        .map(|i| {
+            let mut h = [0u8; 32];
+            h[0] = u8::try_from(i & 0xff).unwrap();
+            h[1] = u8::try_from((i >> 8) & 0xff).unwrap();
+            Hash256(h)
+        })
+        .collect();
+    let mut buf: Vec<Hash256> = Vec::with_capacity(9_001);
+    bencher.bench_local(|| compute_merkle_root_reusing(black_box(&txids), &mut buf));
+}
+
 #[divan::bench]
 fn chain_view_median_time_past(bencher: divan::Bencher) {
     let view = build_chain(12);

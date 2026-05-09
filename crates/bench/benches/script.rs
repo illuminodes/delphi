@@ -657,6 +657,34 @@ fn csv_opcode_throughput(bencher: divan::Bencher) {
     });
 }
 
+// ── Bitcoin Core parity ───────────────────────────────────────────────────────
+// These benchmarks use the same script shapes as Bitcoin Core's
+// src/bench/verify_script.cpp so the numbers can be compared directly.
+//
+// Core reference workloads:
+//   - NestedIfScript: 100 OP_IF, 1000 OP_1, 100 OP_ENDIF
+//   - P2WPKH key-path: already covered by `verify_p2wpkh` above
+//   - P2TR key-path:   already covered by `verify_taproot_keypath` above
+
+/// 100 nested OP_IFs each preceded by OP_1, with 1000 OP_1 body pushes and
+/// 100 OP_ENDIFs — matches Bitcoin Core's `NestedIfScript` bench exactly.
+#[divan::bench]
+fn nested_if_script_btccore(bencher: divan::Bencher) {
+    // Core builds: [OP_1 OP_IF] × 100 ++ [OP_1] × 1000 ++ [OP_ENDIF] × 100
+    let mut script = Vec::with_capacity(200 + 1000 + 100);
+    for _ in 0..100 {
+        script.push(0x51); // OP_1
+        script.push(0x63); // OP_IF
+    }
+    for _ in 0..1000 {
+        script.push(0x51); // OP_1
+    }
+    for _ in 0..100 {
+        script.push(0x68); // OP_ENDIF
+    }
+    bencher.bench(|| eval_legacy(black_box(&script)));
+}
+
 /// P2WSH with caller-supplied stack buffers reused across iterations.
 /// The delta vs `verify_p2wsh` isolates the cost of per-call heap allocation.
 #[divan::bench]
