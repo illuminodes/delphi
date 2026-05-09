@@ -101,6 +101,15 @@ impl Ecdsa {
     /// [`Ecdsa::check_sig_encoding`] and [`Ecdsa::check_pubkey_encoding`],
     /// which the opcode handler must call before this one. An empty
     /// signature here always returns `false` (no DER body to parse).
+    ///
+    /// Bitcoin's *consensus* curve-check accepts both low-S and high-S
+    /// signatures; the LOW_S rule (BIP146, activated 2016) is enforced
+    /// separately by [`Ecdsa::is_low_s`] in [`Ecdsa::check_sig_encoding`].
+    /// k256's `verify_prehash` rejects high-S unconditionally for secp256k1
+    /// (`NORMALIZE_S = true` on the curve), so we must `normalize_s` before
+    /// the curve math — otherwise legitimate pre-LOW_S signatures (every
+    /// signature signed by Satoshi-era code that happened to land high)
+    /// fail to verify. Mainnet block 183 contains the canonical regression.
     #[must_use]
     pub fn verify(sig_der: &[u8], pubkey_bytes: &[u8], sighash: &[u8; 32]) -> bool {
         let Ok(sig) = EcdsaSig::from_der(sig_der) else {
@@ -109,7 +118,8 @@ impl Ecdsa {
         let Ok(vk) = VerifyingKey::from_sec1_bytes(pubkey_bytes) else {
             return false;
         };
-        vk.verify_prehash(sighash, &sig).is_ok()
+        let normalised = sig.normalize_s();
+        vk.verify_prehash(sighash, &normalised).is_ok()
     }
 
     /// Hand-rolled BIP66 strict-DER validator.
