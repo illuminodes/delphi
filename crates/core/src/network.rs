@@ -12,6 +12,7 @@ pub enum Magic {
     Testnet3,
     Testnet4,
     Signet,
+    Regtest,
     /// A 4-byte magic value that does not match any known network.
     Unknown([u8; 4]),
 }
@@ -24,6 +25,7 @@ impl Magic {
             Self::Testnet3 => [0x0b, 0x11, 0x09, 0x07],
             Self::Testnet4 => [0x1c, 0x16, 0x3f, 0x28],
             Self::Signet => [0x0a, 0x03, 0xcf, 0x40],
+            Self::Regtest => [0xfa, 0xbf, 0xb5, 0xda],
             Self::Unknown(b) => b,
         }
     }
@@ -37,6 +39,7 @@ impl Magic {
             [0x0b, 0x11, 0x09, 0x07] => Self::Testnet3,
             [0x1c, 0x16, 0x3f, 0x28] => Self::Testnet4,
             [0x0a, 0x03, 0xcf, 0x40] => Self::Signet,
+            [0xfa, 0xbf, 0xb5, 0xda] => Self::Regtest,
             other => Self::Unknown(other),
         }
     }
@@ -81,6 +84,127 @@ impl<'a> DecodeRef<'a> for Magic {
         Ok((Self::classify(b), tail))
     }
 }
+
+// ── Network ───────────────────────────────────────────────────────────────────
+
+/// One of the well-known Bitcoin networks. CLIs use this to look up the
+/// magic, default port, default seed peers, and genesis hash for a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Network {
+    Mainnet,
+    Testnet3,
+    Testnet4,
+    Signet,
+    Regtest,
+}
+
+impl Network {
+    /// Parse a `--network` flag value. Accepts the short names used by Bitcoin
+    /// Core (`main`/`test`/`testnet4`/`signet`/`regtest`) and the long form
+    /// (`mainnet`/`testnet3`/`testnet4`/`signet`/`regtest`), case-insensitive.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "main" | "mainnet" => Some(Self::Mainnet),
+            "test" | "testnet" | "testnet3" => Some(Self::Testnet3),
+            "testnet4" => Some(Self::Testnet4),
+            "signet" => Some(Self::Signet),
+            "regtest" => Some(Self::Regtest),
+            _ => None,
+        }
+    }
+
+    /// Short canonical name used in user-facing output.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mainnet => "mainnet",
+            Self::Testnet3 => "testnet3",
+            Self::Testnet4 => "testnet4",
+            Self::Signet => "signet",
+            Self::Regtest => "regtest",
+        }
+    }
+
+    /// P2P magic for this network.
+    #[must_use]
+    pub fn magic(self) -> Magic {
+        match self {
+            Self::Mainnet => Magic::Mainnet,
+            Self::Testnet3 => Magic::Testnet3,
+            Self::Testnet4 => Magic::Testnet4,
+            Self::Signet => Magic::Signet,
+            Self::Regtest => Magic::Regtest,
+        }
+    }
+
+    /// Default P2P port for this network. Used when `--peer` does not include a
+    /// port.
+    #[must_use]
+    pub fn default_port(self) -> u16 {
+        match self {
+            Self::Mainnet => 8333,
+            Self::Testnet3 => 18333,
+            Self::Testnet4 => 48333,
+            Self::Signet => 38333,
+            Self::Regtest => 18444,
+        }
+    }
+
+    /// Genesis block hash in *internal* (little-endian) byte order — this is
+    /// the form `Hash256` carries throughout the codebase, and the form a
+    /// `getheaders` locator wants. The display-hex version (what block
+    /// explorers show) is the byte-reverse of this.
+    ///
+    /// # Panics
+    /// Never in practice: parses a fixed compile-time string. The `expect` is
+    /// load-bearing only in the sense of guarding a typo if the constants are
+    /// edited.
+    #[must_use]
+    pub fn genesis_hash(self) -> Hash256 {
+        // Display-hex constants from Bitcoin Core's `chainparams.cpp`. Parsed
+        // via `Hash256::from_display_hex` which handles the byte reversal.
+        let display_hex = match self {
+            Self::Mainnet => {
+                "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+            }
+            Self::Testnet3 => {
+                "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943"
+            }
+            Self::Testnet4 => {
+                "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043"
+            }
+            Self::Signet => {
+                "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6"
+            }
+            Self::Regtest => {
+                "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
+            }
+        };
+        Hash256::from_display_hex(display_hex).expect("hardcoded genesis hash must parse")
+    }
+
+    /// Default seed peers as `host:port` strings. Mainnet has a hand-picked
+    /// list inherited from `crates/node` and `crates/bench`; other networks
+    /// return an empty slice — supply peers via `--peer` for those.
+    #[must_use]
+    pub fn default_seeds(self) -> &'static [&'static str] {
+        match self {
+            Self::Mainnet => MAINNET_SEEDS,
+            Self::Testnet3 | Self::Testnet4 | Self::Signet | Self::Regtest => &[],
+        }
+    }
+}
+
+/// Seed peers for mainnet bootstrap. Same set used by `mantle-node` and the
+/// bench `fetch-fixtures` tool.
+const MAINNET_SEEDS: &[&str] = &[
+    "5.161.244.95:8333",
+    "172.105.64.213:8333",
+    "61.68.41.135:8333",
+    "43.154.28.63:8333",
+    "62.93.65.111:8333",
+];
 
 // ── Command name ──────────────────────────────────────────────────────────────
 
@@ -727,6 +851,33 @@ impl Encode for GetHeadersMsg {
 }
 
 impl GetHeadersMsg {
+    /// Build a `getheaders` request that asks for headers built on top of
+    /// `locator`, with no stop. The protocol version is 70015 (the same value
+    /// every other place in this codebase that constructs `getheaders`
+    /// messages picks). The locator vector contains a single hash, which is
+    /// what every caller in this codebase needs — IBD bootstrap from genesis
+    /// and "give me 2000 more after this hash" both fit.
+    #[must_use]
+    pub fn single_locator(locator: Hash256) -> Self {
+        Self {
+            version: 70015,
+            locator_hashes: vec![locator],
+            stop_hash: Hash256::ZERO,
+        }
+    }
+
+    /// Encode this message into a fresh `Vec<u8>`. Convenience wrapper around
+    /// `Encode::encode` for the common "build a P2P payload" path.
+    ///
+    /// # Panics
+    /// Never in practice — `Vec<u8>` cannot return an I/O error from `Write`.
+    #[must_use]
+    pub fn encode_to_vec(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.encode(&mut buf).expect("Vec<u8> writes never fail");
+        buf
+    }
+
     /// # Errors
     /// Returns `InvalidData` if the locator count exceeds `MAX_LOCATORS`, or on any I/O error.
     pub fn decode_limited<const MAX_LOCATORS: usize>(r: &mut impl Read) -> io::Result<Self> {

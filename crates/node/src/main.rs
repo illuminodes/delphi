@@ -5,20 +5,12 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 use std::net::SocketAddrV4;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mantle::codec::Encode;
 use mantle::network::{
-    Command, GetHeadersMsg, HeadersMsg, Magic, NetworkAddr, VersionMsg, services,
+    Command, GetHeadersMsg, HeadersMsg, Network, NetworkAddr, VersionMsg, services,
 };
 use mantle::peer::{InboundMsg, Node, OutboundMsg};
-use mantle::primitives::Hash256;
 
-const SEED_PEERS: &[&str] = &[
-    "61.68.41.135:8333",
-    "62.93.65.111:8333",
-    "5.161.244.95:8333",
-    "172.105.64.213:8333",
-    "43.154.28.63:8333",
-];
+const NETWORK: Network = Network::Mainnet;
 
 fn our_version() -> VersionMsg {
     let now = i64::try_from(
@@ -49,18 +41,7 @@ fn our_version() -> VersionMsg {
 }
 
 fn getheaders_payload() -> Vec<u8> {
-    let genesis = Hash256::from_display_hex(
-        "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
-    )
-    .expect("hardcoded genesis hash must parse");
-    let msg = GetHeadersMsg {
-        version: 70015,
-        locator_hashes: vec![genesis],
-        stop_hash: Hash256::ZERO,
-    };
-    let mut payload = Vec::new();
-    msg.encode(&mut payload).expect("Vec<u8> write cannot fail");
-    payload
+    GetHeadersMsg::single_locator(NETWORK.genesis_hash()).encode_to_vec()
 }
 
 fn main() {
@@ -69,7 +50,7 @@ fn main() {
 
     println!("mantle-node starting");
 
-    for seed in SEED_PEERS {
+    for seed in NETWORK.default_seeds() {
         let addr: SocketAddrV4 = seed.parse().expect("valid addr");
         println!("\ntrying {addr} ...");
 
@@ -84,7 +65,7 @@ fn main() {
 }
 
 fn try_peer(addr: SocketAddrV4) -> Result<bool, mantle::peer::Error> {
-    let node = Node::new(Magic::Mainnet, our_version())?;
+    let node = Node::new(NETWORK.magic(), our_version())?;
     let (peer_id, fd) = node.connect(addr)?;
     let inbound = node.inbound_rx.clone();
 
@@ -117,7 +98,8 @@ fn try_peer(addr: SocketAddrV4) -> Result<bool, mantle::peer::Error> {
                     println!("  handshake complete — sending getheaders");
                     let raw = getheaders_payload();
                     let mut framed = Vec::new();
-                    Magic::Mainnet
+                    NETWORK
+                        .magic()
                         .frame(Command::GetHeaders, &raw, &mut framed)
                         .expect("frame cannot fail");
                     let _ = node.outbound_tx.push(OutboundMsg {

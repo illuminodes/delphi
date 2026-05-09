@@ -30,24 +30,21 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use mantle::codec::Encode;
 use mantle::network::{
-    Command, GetHeadersMsg, HeadersMsg, InvEntry, InvMsg, InvType, Magic, NetworkAddr, VersionMsg,
-    services,
+    Command, GetHeadersMsg, HeadersMsg, InvEntry, InvMsg, InvType, Network, NetworkAddr,
+    VersionMsg, services,
 };
 use mantle::peer::{InboundMsg, Node, OutboundMsg, PeerId};
 use mantle::primitives::{BlockHeader, Hash256};
+
+/// fetch-fixtures only ever pulls mainnet blocks (the presets are mainnet
+/// heights). The CLI does not yet expose a `--network` flag — keep the
+/// constant so the seed list, magic, and genesis hash come from one source.
+const NETWORK: Network = Network::Mainnet;
 
 /// Maximum blocks in-flight per peer at once.
 const PEER_WINDOW: usize = 8;
 /// Seconds without progress before a peer's in-flight blocks are reclaimed.
 const STALL_SECS: u64 = 30;
-
-const SEED_PEERS: &[&str] = &[
-    "5.161.244.95:8333",
-    "172.105.64.213:8333",
-    "61.68.41.135:8333",
-    "43.154.28.63:8333",
-    "62.93.65.111:8333",
-];
 
 // ── Presets ───────────────────────────────────────────────────────────────────
 
@@ -240,19 +237,13 @@ fn encode_getdata(hashes: &[Hash256]) -> Vec<u8> {
 }
 
 fn encode_getheaders(locator: Hash256) -> Vec<u8> {
-    let msg = GetHeadersMsg {
-        version: 70015,
-        locator_hashes: vec![locator],
-        stop_hash: Hash256::ZERO,
-    };
-    let mut buf = Vec::new();
-    msg.encode(&mut buf).expect("Vec write cannot fail");
-    buf
+    GetHeadersMsg::single_locator(locator).encode_to_vec()
 }
 
 fn frame_and_send(node: &Node, peer: PeerId, fd: i32, cmd: Command, payload: &[u8]) {
     let mut framed = Vec::new();
-    Magic::Mainnet
+    NETWORK
+        .magic()
         .frame(cmd, payload, &mut framed)
         .expect("frame cannot fail");
     let _ = node.outbound_tx.push(OutboundMsg {
@@ -325,11 +316,12 @@ struct PeerSlot {
 
 #[allow(clippy::too_many_lines)]
 fn run(fixtures: &Path, args: &Args, have: &mut [bool]) -> Result<bool, mantle::peer::Error> {
-    let node = Node::new(Magic::Mainnet, our_version())?;
+    let node = Node::new(NETWORK.magic(), our_version())?;
     let inbound = node.inbound_rx.clone();
 
-    let mut peers: Vec<PeerSlot> = Vec::with_capacity(SEED_PEERS.len());
-    for addr_str in SEED_PEERS {
+    let seeds = NETWORK.default_seeds();
+    let mut peers: Vec<PeerSlot> = Vec::with_capacity(seeds.len());
+    for addr_str in seeds {
         let addr: SocketAddrV4 = addr_str.parse().expect("valid addr");
         match node.connect(addr) {
             Ok((id, fd)) => {
