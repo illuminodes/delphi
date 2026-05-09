@@ -146,14 +146,23 @@ impl<'a> BenchView<'a> {
 
 impl ChainView for BenchView<'_> {
     fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<Coin>, ChainViewError> {
-        match self.coins.get(outpoint) {
-            Some(c) => Ok(c.clone()),
-            None if self.dummy_on_miss => Ok(Some(Coin {
-                value: mantle::primitives::Satoshi::new(50_000),
+        // In dummy mode (mid-chain replay), unknown OR known-absent outpoints
+        // both fall back to a dummy coin so the bench can keep going past
+        // inputs whose creating block isn't in the fixture range.
+        let dummy = || {
+            // Generous value so real-world ordinals txs never trip NegativeFee
+            // when an input's creating block is outside the fixture range.
+            Some(Coin {
+                value: mantle::primitives::Satoshi::new(2_100_000_000_000_000),
                 script_pubkey: vec![0x51].into(), // OP_1 — always valid
                 height: BlockHeight(0),           // mature (depth is huge)
                 coinbase: false,
-            })),
+            })
+        };
+        match self.coins.get(outpoint) {
+            Some(Some(c)) => Ok(Some(c.clone())),
+            Some(None) | None if self.dummy_on_miss => Ok(dummy()),
+            Some(None) => Ok(None),
             None => Err(ChainViewError::NotFound),
         }
     }

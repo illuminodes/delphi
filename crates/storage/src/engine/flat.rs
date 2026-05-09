@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
 use mantle::hash::ByteSliceExt;
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi, ScriptPubKey};
 use mantle_consensus::chain_view::{Coin, NewCoin, TipInfo};
@@ -32,7 +32,7 @@ pub struct FlatEngine {
     utxo_read: File,
     utxo_write_pos: u64,
     utxo_flushed_pos: u64,
-    utxo_index: HashMap<OutPoint, u64>,
+    utxo_index: PrehashedMap<OutPoint, u64>,
 
     // Headers are tiny (112 B each, one per block) and read by methods that
     // take `&self`. Keeping them unbuffered means reads always observe prior
@@ -40,7 +40,7 @@ pub struct FlatEngine {
     // bookkeeping cost.
     header_file: File,
     header_write_len: u64,
-    header_index: HashMap<Hash256, u32>,
+    header_index: PrehashedMap<Hash256, u32>,
 
     checkpoint_file: File,
     tip: TipInfo,
@@ -77,10 +77,10 @@ impl FlatEngine {
             utxo_read,
             utxo_write_pos: 0,
             utxo_flushed_pos: 0,
-            utxo_index: HashMap::new(),
+            utxo_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
             header_file,
             header_write_len: 0,
-            header_index: HashMap::new(),
+            header_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
             checkpoint_file,
             tip: TipInfo {
                 hash: Hash256::ZERO,
