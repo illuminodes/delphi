@@ -35,6 +35,13 @@ const PEER_WINDOW: usize = 8;
 const STALL_SECS: u64 = 30;
 /// Hard ceiling on how long a single sync phase (headers or blocks) may run.
 const PHASE_DEADLINE_SECS: u64 = 600;
+/// Seconds to wait for a peer to send its first non-handshake message before
+/// giving up on it. The peer module has no disconnect signal, so we discover
+/// dead/mute peers via this Tick-driven timeout.
+const HANDSHAKE_TIMEOUT_SECS: u64 = 15;
+/// Seconds to wait for the elected peer's `headers` response before
+/// re-electing a different peer.
+const HEADERS_RESPONSE_TIMEOUT_SECS: u64 = 30;
 
 /// Errors surfaced from fetcher operations. Either the underlying P2P stack
 /// returned an error, or local I/O failed, or no peer made progress.
@@ -108,10 +115,12 @@ impl Fetcher {
         self.data_dir.join("blocks").join(format!("{:07}.bin", height.0))
     }
 
-    /// On-disk path for the headers index.
+    /// On-disk path for the headers cache. Distinct from the storage
+    /// engine's `headers.bin` (which is a 112-byte-per-record file the
+    /// engine owns). The fetcher writes raw 80-byte BIP144 headers.
     #[must_use]
     pub fn headers_path(&self) -> PathBuf {
-        self.data_dir.join("headers.bin")
+        self.data_dir.join("chain_headers.bin")
     }
 
     /// Read a block's wire bytes from the on-disk cache. Errors with `NotFound`
@@ -197,7 +206,14 @@ impl Fetcher {
 // ── headers session ──────────────────────────────────────────────────────────
 
 /// Run one handshake-then-getheaders cycle and return the decoded headers.
-/// Tries every configured peer until one delivers a `headers` response.
+///
+/// Failover model: only one peer is "elected" to receive `getheaders` at a
+/// time (the protocol returns headers serially from a locator, so racing
+/// duplicate requests at multiple peers is wasted bandwidth). But if the
+/// elected peer goes silent — never speaks the protocol after TCP connect,
+/// or accepts `getheaders` and never replies — we time it out via Tick and
+/// fall over to another `Ready` (handshaked) peer. If we run out of peers,
+/// surface `AllPeersDead` instead of waiting for the global phase deadline.
 fn run_getheaders_session(
     network: Network,
     peer_addrs: &[SocketAddrV4],
@@ -206,12 +222,14 @@ fn run_getheaders_session(
     let node = Node::new(network.magic(), our_version())?;
     let inbound = node.inbound_rx.clone();
     let mut peers: Vec<PeerSlot> = Vec::new();
+    let connect_t0 = Instant::now();
     for addr in peer_addrs {
         match node.connect(*addr) {
             Ok((id, fd)) => peers.push(PeerSlot {
                 id,
                 fd,
                 phase: PeerPhase::WaitingHandshake,
+                connected_at: connect_t0,
                 in_flight: Vec::new(),
             }),
             Err(e) => eprintln!("  connect {addr}: {e}"),
@@ -221,9 +239,14 @@ fn run_getheaders_session(
         return Err(FetchError::AllPeersDead);
     }
 
-    let mut headers_peer_elected = false;
     let payload = GetHeadersMsg::single_locator(locator).encode_to_vec();
-    let deadline = Instant::now() + Duration::from_secs(PHASE_DEADLINE_SECS);
+    let phase_deadline = Instant::now() + Duration::from_secs(PHASE_DEADLINE_SECS);
+    let handshake_timeout = Duration::from_secs(HANDSHAKE_TIMEOUT_SECS);
+    let response_timeout = Duration::from_secs(HEADERS_RESPONSE_TIMEOUT_SECS);
+
+    // Index of the peer currently expected to deliver `headers`, plus the
+    // instant at which we sent it `getheaders` (so we can time the response).
+    let mut elected: Option<(usize, Instant)> = None;
 
     loop {
         let Some(msg) = inbound.pop_block() else {
@@ -232,10 +255,51 @@ fn run_getheaders_session(
 
         match msg {
             InboundMsg::Tick => {
-                if Instant::now() > deadline {
+                if Instant::now() > phase_deadline {
                     return Err(FetchError::Timeout);
                 }
-                if peers.iter().all(|p| p.phase == PeerPhase::Dead) {
+                let now = Instant::now();
+
+                // Mute peers in WaitingHandshake → mark Dead.
+                for peer in peers.iter_mut() {
+                    if peer.phase == PeerPhase::WaitingHandshake
+                        && now.duration_since(peer.connected_at) > handshake_timeout
+                    {
+                        eprintln!(
+                            "  peer {:?} handshake timeout — marking dead",
+                            peer.id
+                        );
+                        peer.phase = PeerPhase::Dead;
+                    }
+                }
+
+                // Elected peer that hasn't replied → demote and re-elect.
+                if let Some((idx, sent_at)) = elected
+                    && now.duration_since(sent_at) > response_timeout
+                {
+                    eprintln!(
+                        "  peer {:?} headers-response timeout — failing over",
+                        peers[idx].id
+                    );
+                    peers[idx].phase = PeerPhase::Dead;
+                    elected = None;
+                }
+
+                // No election → try to elect from a Ready peer.
+                if elected.is_none() {
+                    if let Some(idx) = peers.iter().position(|p| p.phase == PeerPhase::Ready) {
+                        let (pid, fd) = (peers[idx].id, peers[idx].fd);
+                        peers[idx].phase = PeerPhase::WaitingHeaders;
+                        eprintln!("  peer {pid:?} elected → getheaders");
+                        frame_and_send(&node, network, pid, fd, Command::GetHeaders, &payload);
+                        elected = Some((idx, now));
+                    }
+                }
+
+                if peers
+                    .iter()
+                    .all(|p| matches!(p.phase, PeerPhase::Dead))
+                {
                     return Err(FetchError::AllPeersDead);
                 }
             }
@@ -249,21 +313,18 @@ fn run_getheaders_session(
                 };
                 let cmd = Command::from_command_name(mantle::network::CommandName(command));
 
+                // First non-handshake message: handshake done. Either this is
+                // our first such peer (elect immediately) or a later one
+                // (park as Ready for failover).
                 if peers[idx].phase == PeerPhase::WaitingHandshake {
-                    if headers_peer_elected {
-                        peers[idx].phase = PeerPhase::Ready;
-                    } else {
-                        headers_peer_elected = true;
-                        peers[idx].phase = PeerPhase::WaitingHeaders;
+                    if elected.is_none() {
                         let (pid, fd) = (peers[idx].id, peers[idx].fd);
-                        frame_and_send(
-                            &node,
-                            network,
-                            pid,
-                            fd,
-                            Command::GetHeaders,
-                            &payload,
-                        );
+                        peers[idx].phase = PeerPhase::WaitingHeaders;
+                        eprintln!("  peer {pid:?} elected → getheaders");
+                        frame_and_send(&node, network, pid, fd, Command::GetHeaders, &payload);
+                        elected = Some((idx, Instant::now()));
+                    } else {
+                        peers[idx].phase = PeerPhase::Ready;
                     }
                     continue;
                 }
@@ -295,12 +356,14 @@ fn run_block_download_session(
     let node = Node::new(network.magic(), our_version())?;
     let inbound = node.inbound_rx.clone();
     let mut peers: Vec<PeerSlot> = Vec::new();
+    let connect_t0 = Instant::now();
     for addr in peer_addrs {
         match node.connect(*addr) {
             Ok((id, fd)) => peers.push(PeerSlot {
                 id,
                 fd,
                 phase: PeerPhase::WaitingHandshake,
+                connected_at: connect_t0,
                 in_flight: Vec::new(),
             }),
             Err(e) => eprintln!("  connect {addr}: {e}"),
@@ -461,6 +524,12 @@ struct PeerSlot {
     id: PeerId,
     fd: i32,
     phase: PeerPhase,
+    /// When we issued the `connect` for this peer. Used to time out peers
+    /// that are TCP-reachable but never speak our protocol — `WaitingHandshake`
+    /// is left silent until we get the first non-handshake message. The peer
+    /// module has no disconnect signal, so this Tick-driven check is how we
+    /// notice mute peers.
+    connected_at: Instant,
     in_flight: Vec<(Hash256, Instant)>,
 }
 

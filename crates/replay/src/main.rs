@@ -169,13 +169,17 @@ fn parse_args() -> Result<Args, String> {
 
 // ── headers cache I/O ────────────────────────────────────────────────────────
 
-/// Read a previously-persisted `headers.bin` (raw 80-byte records).
+/// Read a previously-persisted `chain_headers.bin` (raw 80-byte records).
 /// Returns `(start_height, headers)` if the file and its sidecar
 /// `metadata.bin` are both present; otherwise `Ok(None)`.
+///
+/// The fetcher's headers cache is named `chain_headers.bin` to avoid
+/// colliding with `<data-dir>/headers.bin`, which the storage engine owns
+/// and writes in a different (112-byte-per-record) format.
 fn try_load_headers(
     data_dir: &std::path::Path,
 ) -> std::io::Result<Option<(BlockHeight, Vec<BlockHeader>)>> {
-    let headers_path = data_dir.join("headers.bin");
+    let headers_path = data_dir.join("chain_headers.bin");
     let metadata_path = data_dir.join("metadata.bin");
     if !headers_path.exists() || !metadata_path.exists() {
         return Ok(None);
@@ -190,7 +194,7 @@ fn try_load_headers(
     if !bytes.len().is_multiple_of(80) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "headers.bin size is not a multiple of 80",
+            "chain_headers.bin size is not a multiple of 80",
         ));
     }
     let mut headers = Vec::with_capacity(bytes.len() / 80);
@@ -214,6 +218,7 @@ fn try_load_headers(
 fn build_snapshot(
     start: BlockHeight,
     headers: &[BlockHeader],
+    network: Network,
 ) -> Result<HeaderSnapshot, String> {
     if headers.is_empty() {
         return Err("no headers to build a snapshot from".to_string());
@@ -221,10 +226,22 @@ fn build_snapshot(
     let mut entries: Vec<(Hash256, BlockHeader)> =
         Vec::with_capacity(headers.len() + usize::from(start.0 == 1));
     let base = if start.0 == 1 {
-        // Pre-genesis slot at height 0 — needed so `prev_block` of height 1
-        // resolves. We use the first header's `prev_block` as both hash and
-        // header (header content beyond hash is unused for this slot).
-        entries.push((headers[0].prev_block, headers[0]));
+        // Pre-genesis slot at height 0 must carry the *real* genesis header
+        // so that block 1's BIP113 MTP check sees the correct timestamp
+        // (1231006505 for mainnet, the actual time genesis was mined).
+        // Earlier code pushed `headers[0]` (block 1's content) here, which
+        // made MTP at height 1 = block 1's own time, failing the strict-`>`
+        // rule. `Network::genesis_header()` is None for non-mainnet networks
+        // until their bytes are added.
+        let genesis = network
+            .genesis_header()
+            .ok_or_else(|| format!(
+                "{} genesis header not yet baked in; supply --start-height \
+                 along with a pre-populated headers.bin instead of starting \
+                 from height 1",
+                network.name()
+            ))?;
+        entries.push((genesis.hash(), genesis));
         BlockHeight(0)
     } else {
         start
@@ -386,7 +403,7 @@ fn run(args: Args) -> Result<(), String> {
         .map_err(format_fetch_err)?;
 
     // ── Header snapshot for context validation ──────────────────────────────
-    let snapshot = build_snapshot(start_height, &headers)?;
+    let snapshot = build_snapshot(start_height, &headers, args.network)?;
 
     // ── Validation loop ──────────────────────────────────────────────────────
     let mut cache = ScriptExecutionCache::new(SCRIPT_CACHE_ENTRIES);

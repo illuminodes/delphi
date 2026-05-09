@@ -184,6 +184,20 @@ impl Network {
         Hash256::from_display_hex(display_hex).expect("hardcoded genesis hash must parse")
     }
 
+    /// Decoded genesis block header. Currently mainnet only — the other
+    /// networks return `None` until their hardcoded bytes are added. Callers
+    /// that need a pre-genesis snapshot slot (so block 1's `prev_block` and
+    /// MTP lookups resolve) use this; callers that only need the hash should
+    /// use [`Self::genesis_hash`].
+    #[must_use]
+    pub fn genesis_header(self) -> Option<BlockHeader> {
+        match self {
+            Self::Mainnet => Some(mainnet_genesis_header()),
+            // Stubs — fill these in when Phase 1 grows beyond mainnet.
+            Self::Testnet3 | Self::Testnet4 | Self::Signet | Self::Regtest => None,
+        }
+    }
+
     /// Default seed peers as `host:port` strings. Mainnet has a hand-picked
     /// list inherited from `crates/node` and `crates/bench`; other networks
     /// return an empty slice — supply peers via `--peer` for those.
@@ -205,6 +219,25 @@ const MAINNET_SEEDS: &[&str] = &[
     "43.154.28.63:8333",
     "62.93.65.111:8333",
 ];
+
+/// The actual mainnet genesis block header. Field values from Bitcoin Core
+/// `chainparams.cpp::CMainParams` (genesis is 2009-01-03 18:15:05 UTC,
+/// `0x1d00ffff` difficulty, nonce `2083236893`). Verified by the
+/// `mainnet_genesis_header_hashes_correctly` unit test against the well-known
+/// mainnet genesis hash.
+fn mainnet_genesis_header() -> BlockHeader {
+    BlockHeader {
+        version: 1,
+        prev_block: Hash256::ZERO,
+        merkle_root: Hash256::from_display_hex(
+            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
+        )
+        .expect("hardcoded genesis merkle_root must parse"),
+        time: 1_231_006_505,
+        bits: crate::primitives::CompactBits(0x1d00_ffff),
+        nonce: 2_083_236_893,
+    }
+}
 
 // ── Command name ──────────────────────────────────────────────────────────────
 
@@ -1088,6 +1121,15 @@ mod tests {
 
     fn decode_ref<'a, T: DecodeRef<'a>>(buf: &'a [u8]) -> (T, &'a [u8]) {
         T::decode_ref(buf).expect("test data must decode")
+    }
+
+    #[test]
+    fn mainnet_genesis_header_hashes_correctly() {
+        // Load-bearing: catches a typo in the literal merkle_root / time /
+        // nonce / bits before it silently corrupts the replay loop's MTP
+        // check at block 1.
+        let hdr = Network::Mainnet.genesis_header().expect("mainnet has one");
+        assert_eq!(hdr.hash(), Network::Mainnet.genesis_hash());
     }
 
     #[test]
