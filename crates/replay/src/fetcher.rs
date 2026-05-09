@@ -33,8 +33,15 @@ use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
 const PEER_WINDOW: usize = 8;
 /// Seconds without progress before a peer's in-flight blocks are reclaimed.
 const STALL_SECS: u64 = 30;
-/// Hard ceiling on how long a single sync phase (headers or blocks) may run.
+/// Hard ceiling on how long a single *headers* sync phase may run. Block
+/// downloads use a per-progress watchdog instead (see
+/// `BLOCK_NO_PROGRESS_TIMEOUT_SECS`) since a contiguous chain of 10⁵+
+/// blocks legitimately takes much longer than 10 minutes.
 const PHASE_DEADLINE_SECS: u64 = 600;
+/// Seconds the block-download session may sit with *zero* arrivals across
+/// all peers before giving up. Resets on every successful block arrival,
+/// so long-running runs are unbounded as long as bytes keep flowing.
+const BLOCK_NO_PROGRESS_TIMEOUT_SECS: u64 = 120;
 /// Seconds to wait for a peer to send its first non-handshake message before
 /// giving up on it. The peer module has no disconnect signal, so we discover
 /// dead/mute peers via this Tick-driven timeout.
@@ -373,8 +380,10 @@ fn run_block_download_session(
         return Err(FetchError::AllPeersDead);
     }
 
-    // hash → height for arrival routing.
-    let pending: HashMap<Hash256, BlockHeight> =
+    // hash → height for arrival routing. `handle_block` takes-and-removes,
+    // so duplicate deliveries (from a retried getdata that both peers
+    // eventually answer) become no-ops instead of double-counting `saved`.
+    let mut pending: HashMap<Hash256, BlockHeight> =
         needed.iter().map(|(h, hash)| (*hash, *h)).collect();
     // Sequential cursor: next index in `needed` to assign.
     let mut next_assign = 0usize;
@@ -383,7 +392,11 @@ fn run_block_download_session(
 
     let mut saved = 0usize;
     let total = needed.len();
-    let deadline = Instant::now() + Duration::from_secs(PHASE_DEADLINE_SECS);
+    // Per-progress watchdog: as long as *some* block keeps arriving across
+    // all peers, the session is healthy and may run indefinitely. Reset on
+    // every successful arrival (in `handle_block`'s caller) below.
+    let mut last_progress = Instant::now();
+    let no_progress_limit = Duration::from_secs(BLOCK_NO_PROGRESS_TIMEOUT_SECS);
 
     loop {
         let Some(msg) = inbound.pop_block() else {
@@ -392,7 +405,7 @@ fn run_block_download_session(
 
         match msg {
             InboundMsg::Tick => {
-                if Instant::now() > deadline {
+                if last_progress.elapsed() > no_progress_limit {
                     return Err(FetchError::Timeout);
                 }
                 let stall = Duration::from_secs(STALL_SECS);
@@ -441,7 +454,7 @@ fn run_block_download_session(
                 }
 
                 if cmd == Some(Command::Block)
-                    && let Some(height) = handle_block(&payload, &pending, data_dir)?
+                    && let Some(height) = handle_block(&payload, &mut pending, data_dir)?
                 {
                     if let Some(pos) = peers[idx]
                         .in_flight
@@ -451,6 +464,7 @@ fn run_block_download_session(
                         peers[idx].in_flight.swap_remove(pos);
                     }
                     saved += 1;
+                    last_progress = Instant::now();
                     if saved == total {
                         return Ok(());
                     }
@@ -493,7 +507,7 @@ fn topup(
 
 fn handle_block(
     payload: &[u8],
-    pending: &HashMap<Hash256, BlockHeight>,
+    pending: &mut HashMap<Hash256, BlockHeight>,
     data_dir: &Path,
 ) -> Result<Option<BlockHeight>, FetchError> {
     if payload.len() < 80 {
@@ -502,7 +516,13 @@ fn handle_block(
     let hdr_bytes: &[u8; 80] = payload[..80].try_into().expect("slice is 80 bytes");
     let hdr = BlockHeader::from_bytes(hdr_bytes).map_err(mantle::peer::Error::Codec)?;
     let hash = hdr.hash();
-    let Some(&height) = pending.get(&hash) else {
+    // Take instead of get: a block can arrive twice (we sometimes re-issue a
+    // getdata to a different peer when the original peer stalls; if both
+    // peers eventually deliver, the second arrival is a duplicate). Removing
+    // from `pending` here makes the duplicate return `None` so the caller's
+    // `saved` counter doesn't double-count and prematurely declare success
+    // before every height is on disk.
+    let Some(height) = pending.remove(&hash) else {
         return Ok(None);
     };
     let path = data_dir.join("blocks").join(format!("{:07}.bin", height.0));
