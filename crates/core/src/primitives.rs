@@ -1548,13 +1548,13 @@ impl<'a> WitnessRef<'a> {
     /// Returns an error if the count or any item length is truncated.
     pub fn decode_at(buf: &'a [u8]) -> io::Result<Self> {
         let (VarInt(count), mut rest) = VarInt::decode_ref(buf)?;
-        let count = usize::try_from(count)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let count =
+            usize::try_from(count).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let items_start = rest;
         for _ in 0..count {
             let (VarInt(len), r2) = VarInt::decode_ref(rest)?;
-            let len = usize::try_from(len)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let len =
+                usize::try_from(len).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             if r2.len() < len {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -1582,13 +1582,13 @@ impl<'a> WitnessRef<'a> {
     /// Returns an error if the count or any item length is truncated.
     pub fn pop_from(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
         let (VarInt(count), mut rest) = VarInt::decode_ref(buf)?;
-        let count = usize::try_from(count)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let count =
+            usize::try_from(count).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let items_start = rest;
         for _ in 0..count {
             let (VarInt(len), r2) = VarInt::decode_ref(rest)?;
-            let len = usize::try_from(len)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let len =
+                usize::try_from(len).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             if r2.len() < len {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -1610,12 +1610,12 @@ impl<'a> WitnessRef<'a> {
     /// Skip one full witness (count + items) and return the trailing slice.
     fn skip_one(buf: &'a [u8]) -> io::Result<&'a [u8]> {
         let (VarInt(count), mut rest) = VarInt::decode_ref(buf)?;
-        let count = usize::try_from(count)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let count =
+            usize::try_from(count).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         for _ in 0..count {
             let (VarInt(len), r2) = VarInt::decode_ref(rest)?;
-            let len = usize::try_from(len)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let len =
+                usize::try_from(len).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             if r2.len() < len {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -1992,13 +1992,10 @@ impl<'a> BlockRef<'a> {
                         // borrows from the wire, so this difference is the
                         // byte index of the witnesses' first byte within
                         // `raw`.
-                        (tx.witnesses_buf.as_ptr() as usize)
-                            - (raw.as_ptr() as usize)
+                        (tx.witnesses_buf.as_ptr() as usize) - (raw.as_ptr() as usize)
                     };
                     arena_mut.extend_from_slice(&raw[..4]);
-                    arena_mut.extend_from_slice(
-                        &raw[inputs_region_start..witnesses_start_offset],
-                    );
+                    arena_mut.extend_from_slice(&raw[inputs_region_start..witnesses_start_offset]);
                     arena_mut.extend_from_slice(&raw[raw.len() - 4..]);
                     arena_end = arena_mut.len();
                 }
@@ -2670,8 +2667,8 @@ mod tests {
         let tx = make_segwit_tx();
         let bytes = encode(&tx);
         let mut arena = Vec::new();
-        let (tx_ref, tail) = transaction_ref_with_arena(&bytes, &mut arena)
-            .expect("arena decode must succeed");
+        let (tx_ref, tail) =
+            transaction_ref_with_arena(&bytes, &mut arena).expect("arena decode must succeed");
         assert!(tail.is_empty());
         assert!(tx_ref.is_segwit);
 
@@ -2718,8 +2715,8 @@ mod tests {
         let expected_legacy = legacy.txid().expect("legacy txid");
         let expected_segwit = segwit.txid().expect("segwit txid");
 
-        let block_ref = BlockRef::decode_with_arena(&bytes, &mut arena)
-            .expect("BlockRef decode must succeed");
+        let block_ref =
+            BlockRef::decode_with_arena(&bytes, &mut arena).expect("BlockRef decode must succeed");
         assert_eq!(block_ref.tx_count(), 2);
 
         let tx0 = &block_ref.txs[0];
@@ -2756,8 +2753,7 @@ mod tests {
         // First decode populates the arena; second decode must clear it
         // (otherwise the arena would grow unboundedly across IBD blocks).
         let len_after_first = {
-            let _br =
-                BlockRef::decode_with_arena(&bytes, &mut arena).expect("decode 1");
+            let _br = BlockRef::decode_with_arena(&bytes, &mut arena).expect("decode 1");
             // Read happens before the borrow ends — use a scope.
             // We just need the count, which is always > 0 for a segwit-only block.
             // Reborrow length via the binding.
@@ -2771,9 +2767,7 @@ mod tests {
         {
             let br2 = BlockRef::decode_with_arena(&bytes, &mut arena).expect("decode 2");
             assert_eq!(
-                br2.txs[0]
-                    .txid_into(&mut Vec::new())
-                    .expect("hash"),
+                br2.txs[0].txid_into(&mut Vec::new()).expect("hash"),
                 segwit.txid().expect("owned txid")
             );
         }

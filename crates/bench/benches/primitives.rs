@@ -360,7 +360,7 @@ fn block_decode_1000_txs(bencher: divan::Bencher) {
     });
 }
 
-/// Single-transaction decode with a 1-input / 1-output P2PKH-sized script_sig
+/// Single-transaction decode with a 1-input / 1-output P2PKH-sized `script_sig`
 /// (25 bytes) — matches Bitcoin Core's `ParseTransaction` bench wire shape.
 #[divan::bench]
 fn transaction_decode_p2pkh_btccore(bencher: divan::Bencher) {
@@ -372,8 +372,8 @@ fn transaction_decode_p2pkh_btccore(bencher: divan::Bencher) {
                 vout: 0,
             },
             script_sig: vec![
-                0x76, 0xa9, 0x14, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
-                0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0x88, 0xac,
+                0x76, 0xa9, 0x14, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
+                0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0x88, 0xac,
             ]
             .into(),
             sequence: u32::MAX,

@@ -165,21 +165,11 @@ impl Network {
         // Display-hex constants from Bitcoin Core's `chainparams.cpp`. Parsed
         // via `Hash256::from_display_hex` which handles the byte reversal.
         let display_hex = match self {
-            Self::Mainnet => {
-                "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
-            }
-            Self::Testnet3 => {
-                "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943"
-            }
-            Self::Testnet4 => {
-                "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043"
-            }
-            Self::Signet => {
-                "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6"
-            }
-            Self::Regtest => {
-                "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
-            }
+            Self::Mainnet => "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+            Self::Testnet3 => "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943",
+            Self::Testnet4 => "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043",
+            Self::Signet => "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6",
+            Self::Regtest => "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
         };
         Hash256::from_display_hex(display_hex).expect("hardcoded genesis hash must parse")
     }

@@ -41,6 +41,16 @@ use mantle_validator::prefetched_view::{HeaderSnapshot, PrefetchedView};
 use crate::fetcher::{FetchError, Fetcher};
 use crate::report::Reporter;
 
+type HeaderPairs = Vec<(BlockHeight, BlockHeader)>;
+type ResolvedRange = (BlockHeight, BlockHeight, HeaderPairs);
+
+struct ReplayCtx {
+    storage: StorageHandle,
+    skip_script: bool,
+    cache: ScriptExecutionCache,
+    token: u64,
+}
+
 /// Headers per `getheaders` response. Used to chunk header sync.
 const HEADERS_PER_PAGE: u32 = 2_000;
 /// Block at which `Durability::Synced` flushes everything to disk. Matches
@@ -117,15 +127,13 @@ fn parse_args() -> Result<Args, String> {
             "--network" => {
                 i += 1;
                 let v = raw.get(i).ok_or("--network requires a name")?;
-                network = Network::parse(v)
-                    .ok_or_else(|| format!("unknown network: {v}"))?;
+                network = Network::parse(v).ok_or_else(|| format!("unknown network: {v}"))?;
             }
             "--peer" => {
                 i += 1;
                 let v = raw.get(i).ok_or("--peer requires HOST:PORT")?;
-                let addr: SocketAddrV4 = v
-                    .parse()
-                    .map_err(|e| format!("invalid --peer {v}: {e}"))?;
+                let addr: SocketAddrV4 =
+                    v.parse().map_err(|e| format!("invalid --peer {v}: {e}"))?;
                 extra_peers.push(addr);
             }
             "--skip-script" => {
@@ -142,13 +150,17 @@ fn parse_args() -> Result<Args, String> {
             "--start-height" => {
                 i += 1;
                 let v = raw.get(i).ok_or("--start-height requires N")?;
-                let n: u32 = v.parse().map_err(|e| format!("invalid --start-height {v}: {e}"))?;
+                let n: u32 = v
+                    .parse()
+                    .map_err(|e| format!("invalid --start-height {v}: {e}"))?;
                 start_height = Some(BlockHeight(n));
             }
             "--stop-height" => {
                 i += 1;
                 let v = raw.get(i).ok_or("--stop-height requires N")?;
-                let n: u32 = v.parse().map_err(|e| format!("invalid --stop-height {v}: {e}"))?;
+                let n: u32 = v
+                    .parse()
+                    .map_err(|e| format!("invalid --stop-height {v}: {e}"))?;
                 stop_height = Some(BlockHeight(n));
             }
             other => return Err(format!("unknown argument: {other}")),
@@ -201,9 +213,8 @@ fn try_load_headers(
     for chunk in bytes.chunks_exact(80) {
         let arr: &[u8; 80] = chunk.try_into().expect("chunk is 80 bytes");
         headers.push(
-            BlockHeader::from_bytes(arr).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-            })?,
+            BlockHeader::from_bytes(arr)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
         );
     }
     Ok(Some((BlockHeight(start), headers)))
@@ -233,14 +244,14 @@ fn build_snapshot(
         // made MTP at height 1 = block 1's own time, failing the strict-`>`
         // rule. `Network::genesis_header()` is None for non-mainnet networks
         // until their bytes are added.
-        let genesis = network
-            .genesis_header()
-            .ok_or_else(|| format!(
+        let genesis = network.genesis_header().ok_or_else(|| {
+            format!(
                 "{} genesis header not yet baked in; supply --start-height \
                  along with a pre-populated headers.bin instead of starting \
                  from height 1",
                 network.name()
-            ))?;
+            )
+        })?;
         entries.push((genesis.hash(), genesis));
         BlockHeight(0)
     } else {
@@ -265,11 +276,14 @@ fn main() -> ExitCode {
     };
 
     if let Err(e) = std::fs::create_dir_all(&args.data_dir) {
-        eprintln!("error: cannot create data dir {}: {e}", args.data_dir.display());
+        eprintln!(
+            "error: cannot create data dir {}: {e}",
+            args.data_dir.display()
+        );
         return ExitCode::FAILURE;
     }
 
-    match run(args) {
+    match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("fatal: {e}");
@@ -278,7 +292,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: Args) -> Result<(), String> {
+fn run(args: &Args) -> Result<(), String> {
     eprintln!(
         "mantle-replay starting on {} (data-dir {})",
         args.network.name(),
@@ -286,8 +300,8 @@ fn run(args: Args) -> Result<(), String> {
     );
 
     // ── Storage ──────────────────────────────────────────────────────────────
-    let mut storage = StorageHandle::open(&args.data_dir)
-        .map_err(|e| format!("open storage: {e}"))?;
+    let storage =
+        StorageHandle::open(&args.data_dir).map_err(|e| format!("open storage: {e}"))?;
     let tip = storage.tip();
     let next_to_validate = BlockHeight(tip.height.0.saturating_add(1));
     let start_height = args.start_height.unwrap_or(next_to_validate);
@@ -319,22 +333,61 @@ fn run(args: Args) -> Result<(), String> {
     let fetcher = Fetcher::new(args.network, peer_addrs, args.data_dir.clone())
         .map_err(|e| format!("fetcher init: {e}"))?;
 
-    // ── Headers ──────────────────────────────────────────────────────────────
-    // Try the on-disk cache first. If it doesn't cover the range we want,
-    // fall back to a fresh `getheaders` from genesis (or the cached tail).
+    // ── Headers + blocks ─────────────────────────────────────────────────────
+    let (start_height, stop_height, header_pairs) =
+        resolve_headers_and_blocks(args, start_height, &fetcher)?;
+
+    // ── Header snapshot for context validation ──────────────────────────────
+    let headers: Vec<BlockHeader> = header_pairs.iter().map(|(_, h)| *h).collect();
+    let snapshot = build_snapshot(start_height, &headers, args.network)?;
+
+    // ── Validation loop ──────────────────────────────────────────────────────
+    eprintln!(
+        "  replaying ({} script verification)…",
+        if args.skip_script { "skipping" } else { "with" }
+    );
+    let mut ctx = ReplayCtx {
+        storage,
+        skip_script: args.skip_script,
+        cache: ScriptExecutionCache::new(SCRIPT_CACHE_ENTRIES),
+        token: u64::from(tip.height.0).saturating_add(1),
+    };
+    let mut reporter = Reporter::new(start_height, stop_height);
+    let mut last_committed = tip.height;
+
+    for (height, header) in &header_pairs {
+        replay_one_block(*height, *header, &fetcher, &snapshot, &mut ctx)?;
+        last_committed = *height;
+        reporter.tick(*height);
+    }
+
+    reporter.done(last_committed);
+    ctx.storage
+        .shutdown()
+        .map_err(|e| format!("shutdown storage: {e}"))?;
+    Ok(())
+}
+
+fn resolve_headers_and_blocks(
+    args: &Args,
+    start_height: BlockHeight,
+    fetcher: &Fetcher,
+) -> Result<ResolvedRange, String> {
     let (cache_start, cached_headers) = match try_load_headers(&args.data_dir) {
         Ok(Some((s, h))) => (Some(s), h),
         Ok(None) => (None, Vec::new()),
         Err(e) => return Err(format!("load headers.bin: {e}")),
     };
 
-    let cached_end = cache_start
-        .map(|s| BlockHeight(s.0.saturating_add(u32::try_from(cached_headers.len()).unwrap_or(u32::MAX)).saturating_sub(1)));
+    let cached_end = cache_start.map(|s| {
+        BlockHeight(
+            s.0.saturating_add(u32::try_from(cached_headers.len()).unwrap_or(u32::MAX))
+                .saturating_sub(1),
+        )
+    });
     let stop_height = match args.stop_height {
         Some(h) => h,
         None => {
-            // No explicit stop: take the cache tail if it's at or past the
-            // start, else page one getheaders ahead from genesis.
             if let Some(end) = cached_end
                 && end >= start_height
             {
@@ -349,44 +402,37 @@ fn run(args: Args) -> Result<(), String> {
         "  target range: heights {}..={} ({} blocks)",
         start_height.0,
         stop_height.0,
-        u64::from(stop_height.0).saturating_sub(u64::from(start_height.0)).saturating_add(1),
+        u64::from(stop_height.0)
+            .saturating_sub(u64::from(start_height.0))
+            .saturating_add(1),
     );
 
-    // Headers covering `[start_height..=stop_height]`. Use cache if it does;
-    // otherwise sync from the network. Sync result becomes the new cache.
-    let headers: Vec<BlockHeader> = if cache_start == Some(BlockHeight(1))
-        && cached_end.is_some_and(|e| e >= stop_height)
-    {
-        // Slice the cached headers to the requested range.
-        let cstart = cache_start.expect("checked above").0;
-        let lo = (start_height.0 - cstart) as usize;
-        let hi = (stop_height.0 - cstart) as usize + 1;
-        cached_headers[lo..hi].to_vec()
-    } else {
-        // Sync from the locator just before `start_height`. For the first run
-        // (start = 1) the locator is the genesis hash. For resumption from
-        // higher start we'd want a locator from storage; Phase 1 only
-        // supports clean-start runs, so we error out otherwise.
-        if start_height.0 != 1 {
-            return Err(format!(
-                "Phase 1 only supports replay from height 1 in fresh data dirs; \
+    let headers: Vec<BlockHeader> =
+        if cache_start == Some(BlockHeight(1)) && cached_end.is_some_and(|e| e >= stop_height) {
+            let cstart = cache_start.expect("checked above").0;
+            let lo = (start_height.0 - cstart) as usize;
+            let hi = (stop_height.0 - cstart) as usize + 1;
+            cached_headers[lo..hi].to_vec()
+        } else {
+            if start_height.0 != 1 {
+                return Err(format!(
+                    "Phase 1 only supports replay from height 1 in fresh data dirs; \
                  got start = {} with no covering header cache. \
                  Pre-populate `<data-dir>/headers.bin` (e.g. via fetch-fixtures), \
                  or start fresh with --start-height 1.",
-                start_height.0
-            ));
-        }
-        eprintln!("  syncing headers from {}.genesis…", args.network.name());
-        let pairs = fetcher
-            .sync_headers(start_height, stop_height, args.network.genesis_hash())
-            .map_err(format_fetch_err)?;
-        if pairs.is_empty() {
-            return Err("peer returned 0 headers".to_string());
-        }
-        pairs.into_iter().map(|(_, h)| h).collect()
-    };
+                    start_height.0
+                ));
+            }
+            eprintln!("  syncing headers from {}.genesis…", args.network.name());
+            let pairs = fetcher
+                .sync_headers(start_height, stop_height, args.network.genesis_hash())
+                .map_err(|e| format_fetch_err(&e))?;
+            if pairs.is_empty() {
+                return Err("peer returned 0 headers".to_string());
+            }
+            pairs.into_iter().map(|(_, h)| h).collect()
+        };
 
-    // ── Block bytes (download anything missing) ──────────────────────────────
     let header_pairs: Vec<(BlockHeight, BlockHeader)> = headers
         .iter()
         .enumerate()
@@ -400,81 +446,67 @@ fn run(args: Args) -> Result<(), String> {
     eprintln!("  downloading any missing blocks…");
     fetcher
         .fetch_blocks(&header_pairs)
-        .map_err(format_fetch_err)?;
+        .map_err(|e| format_fetch_err(&e))?;
 
-    // ── Header snapshot for context validation ──────────────────────────────
-    let snapshot = build_snapshot(start_height, &headers, args.network)?;
+    Ok((start_height, stop_height, header_pairs))
+}
 
-    // ── Validation loop ──────────────────────────────────────────────────────
-    let mut cache = ScriptExecutionCache::new(SCRIPT_CACHE_ENTRIES);
-    let mut reporter = Reporter::new(start_height, stop_height);
-    let mut token: u64 = u64::from(tip.height.0).saturating_add(1);
-    let mut last_committed = tip.height;
+fn replay_one_block(
+    height: BlockHeight,
+    header: BlockHeader,
+    fetcher: &Fetcher,
+    snapshot: &HeaderSnapshot,
+    ctx: &mut ReplayCtx,
+) -> Result<(), String> {
+    let bytes = fetcher
+        .read_block_bytes(height)
+        .map_err(|e| format!("read block {} from disk: {e}", height.0))?;
 
-    eprintln!(
-        "  replaying ({} script verification)…",
-        if args.skip_script { "skipping" } else { "with" }
-    );
+    let block = Block::decode(&mut std::io::Cursor::new(&bytes))
+        .map_err(|e| format!("decode block {}: {e}", height.0))?;
 
-    for (height, header) in &header_pairs {
-        let bytes = fetcher
-            .read_block_bytes(*height)
-            .map_err(|e| format!("read block {} from disk: {e}", height.0))?;
-
-        let block = Block::decode(&mut std::io::Cursor::new(&bytes))
-            .map_err(|e| format!("decode block {}: {e}", height.0))?;
-
-        if block.header.hash() != header.hash() {
-            return Err(format!(
-                "block {} hash mismatch: header says {}, payload says {}",
-                height.0,
-                header.hash().to_display_hex(),
-                block.header.hash().to_display_hex()
-            ));
-        }
-
-        validate_block_structure(&block)
-            .map_err(|e| format!("structure check at {}: {e:?}", height.0))?;
-        // Stage 2 (context) only reads header-side state from the view.
-        // We construct an empty-coins PrefetchedView per block; the empty
-        // PrehashedMap allocates nothing.
-        let context_view = PrefetchedView::new(
-            PrehashedMap::with_hasher(BuildPrehashedHasher),
-            &snapshot,
-            storage.tip(),
-        );
-        validate_block_context(&block, &context_view)
-            .map_err(|e| format!("context check at {}: {e:?}", height.0))?;
-
-        let durability = if height.0.is_multiple_of(SYNC_EVERY) {
-            Durability::Synced
-        } else {
-            Durability::Memory
-        };
-
-        validate_and_commit(
-            &block,
-            *height,
-            &mut storage,
-            &snapshot,
-            args.skip_script,
-            Some(&mut cache),
-            durability,
-            ReqToken(token),
-        )
-        .map_err(|e| format!("validate_and_commit at {}: {e}", height.0))?;
-
-        token = token.saturating_add(1);
-        last_committed = *height;
-        reporter.tick(*height);
+    if block.header.hash() != header.hash() {
+        return Err(format!(
+            "block {} hash mismatch: header says {}, payload says {}",
+            height.0,
+            header.hash().to_display_hex(),
+            block.header.hash().to_display_hex()
+        ));
     }
 
-    reporter.done(last_committed);
+    validate_block_structure(&block)
+        .map_err(|e| format!("structure check at {}: {e:?}", height.0))?;
 
-    storage.shutdown().map_err(|e| format!("shutdown storage: {e}"))?;
+    let context_view = PrefetchedView::new(
+        PrehashedMap::with_hasher(BuildPrehashedHasher),
+        snapshot,
+        ctx.storage.tip(),
+    );
+    validate_block_context(&block, &context_view)
+        .map_err(|e| format!("context check at {}: {e:?}", height.0))?;
+
+    let durability = if height.0.is_multiple_of(SYNC_EVERY) {
+        Durability::Synced
+    } else {
+        Durability::Memory
+    };
+
+    validate_and_commit(
+        &block,
+        height,
+        &mut ctx.storage,
+        snapshot,
+        ctx.skip_script,
+        Some(&mut ctx.cache),
+        durability,
+        ReqToken(ctx.token),
+    )
+    .map_err(|e| format!("validate_and_commit at {}: {e}", height.0))?;
+
+    ctx.token = ctx.token.saturating_add(1);
     Ok(())
 }
 
-fn format_fetch_err(e: FetchError) -> String {
+fn format_fetch_err(e: &FetchError) -> String {
     format!("fetch: {e}")
 }

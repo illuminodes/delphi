@@ -614,11 +614,7 @@ impl Bip341Cache {
     /// # Panics
     /// Panics if `spent_spks.len() != tx.input_count()`.
     #[must_use]
-    pub fn new<T: TxView>(
-        tx: &T,
-        spent_amounts: &[Satoshi],
-        spent_spks: &[&[u8]],
-    ) -> Self {
+    pub fn new<T: TxView>(tx: &T, spent_amounts: &[Satoshi], spent_spks: &[&[u8]]) -> Self {
         assert_eq!(spent_amounts.len(), tx.input_count());
         assert_eq!(spent_spks.len(), tx.input_count());
 
@@ -847,10 +843,10 @@ impl TapHasher {
     /// Returns `None` if `internal_key` is not a valid secp256k1 x-only point.
     #[must_use]
     pub fn tweak_output_key(internal_key: &[u8; 32], merkle_root: &[u8]) -> Option<[u8; 32]> {
+        use k256::elliptic_curve::Group;
         use k256::elliptic_curve::bigint::Encoding;
         use k256::elliptic_curve::ops::Reduce;
         use k256::elliptic_curve::point::AffineCoordinates;
-        use k256::elliptic_curve::Group;
         use k256::schnorr::VerifyingKey as SchnorrVK;
         use k256::{ProjectivePoint, Scalar, U256};
 
@@ -862,7 +858,8 @@ impl TapHasher {
         tweak_input.extend_from_slice(merkle_root);
         let tweak_hash = Schnorr::tagged_hash(b"TapTweak", &tweak_input);
 
-        let tweak_scalar = <Scalar as Reduce<U256>>::reduce(&U256::from_be_bytes(tweak_hash.into()));
+        let tweak_scalar =
+            <Scalar as Reduce<U256>>::reduce(&U256::from_be_bytes(tweak_hash.into()));
         let output_point = internal_point + ProjectivePoint::mul_by_generator(&tweak_scalar);
         let x: [u8; 32] = output_point.to_affine().x().into();
         Some(x)

@@ -270,11 +270,7 @@ fn main() {
     // matching real per-input validation.
     {
         let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk
-            .verifying_key()
-            .to_sec1_point(true)
-            .as_bytes()
-            .to_vec();
+        let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()
@@ -348,11 +344,7 @@ fn main() {
     // here versus a linear one in scenario 8.
     {
         let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk
-            .verifying_key()
-            .to_sec1_point(true)
-            .as_bytes()
-            .to_vec();
+        let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()
@@ -428,11 +420,7 @@ fn main() {
     // clean-stack enforcement. The witness script is a P2PKH-inside-P2WSH.
     {
         let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk
-            .verifying_key()
-            .to_sec1_point(true)
-            .as_bytes()
-            .to_vec();
+        let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()
@@ -508,11 +496,7 @@ fn main() {
     // Buffer-reuse counterpart to scenario 9.
     {
         let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk
-            .verifying_key()
-            .to_sec1_point(true)
-            .as_bytes()
-            .to_vec();
+        let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()

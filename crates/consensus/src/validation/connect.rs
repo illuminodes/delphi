@@ -90,8 +90,7 @@ where
     // fresh Vec per non-coinbase tx (~1.8 MB across 5 ordinals blocks).
     let max_tx_inputs = block.txs().map(TxView::input_count).max().unwrap_or(0);
     let mut outpoints_scratch: Vec<OutPoint> = Vec::with_capacity(max_tx_inputs);
-    let mut coins_scratch: Vec<Option<crate::chain_view::Coin>> =
-        Vec::with_capacity(max_tx_inputs);
+    let mut coins_scratch: Vec<Option<crate::chain_view::Coin>> = Vec::with_capacity(max_tx_inputs);
 
     let mut total_fees = Satoshi::ZERO;
     let mut total_sigops: u32 = 0;

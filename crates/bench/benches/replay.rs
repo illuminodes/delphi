@@ -354,12 +354,12 @@ fn replay_chain_k(bencher: divan::Bencher, k: usize) {
 use std::sync::OnceLock;
 
 use mantle::codec::Decode;
+use mantle::collections::PrehashedSet;
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
 use mantle_consensus::chain_view::{ChainView, Coin, TipInfo};
 use mantle_consensus::error::ChainViewError;
 use mantle_consensus::validation::connect_block;
 use mantle_storage::types::{CommitBlockReq, LookupResult};
-use mantle::collections::PrehashedSet;
 
 struct OrdinalFixtures {
     start: u32,
@@ -375,11 +375,15 @@ fn ordinals_fixtures() -> Option<&'static OrdinalFixtures> {
             .join("ordinals");
 
         let meta = std::fs::read(dir.join("metadata.bin")).ok()?;
-        if meta.len() < 4 { return None; }
+        if meta.len() < 4 {
+            return None;
+        }
         let start = u32::from_le_bytes([meta[0], meta[1], meta[2], meta[3]]);
 
         let hdr_bytes = std::fs::read(dir.join("headers.bin")).ok()?;
-        if hdr_bytes.len() % 80 != 0 { return None; }
+        if hdr_bytes.len() % 80 != 0 {
+            return None;
+        }
         let headers: Vec<BlockHeader> = hdr_bytes
             .chunks_exact(80)
             .map(|c| BlockHeader::from_bytes(c.try_into().unwrap()).expect("valid header"))
@@ -397,7 +401,11 @@ fn ordinals_fixtures() -> Option<&'static OrdinalFixtures> {
             headers.iter().map(|hdr| (hdr.hash(), *hdr)).collect();
         let snap = HeaderSnapshot::new(BlockHeight(start), entries).ok()?;
 
-        Some(OrdinalFixtures { start, blocks, snap })
+        Some(OrdinalFixtures {
+            start,
+            blocks,
+            snap,
+        })
     })
     .as_ref()
 }
@@ -430,9 +438,13 @@ impl ChainView for DummyView<'_> {
         Ok(self.snap.height_of(hash))
     }
     fn median_time_past(&self, hdr: &BlockHeader) -> Result<u32, ChainViewError> {
-        self.snap.median_time_past(hdr).ok_or(ChainViewError::NotFound)
+        self.snap
+            .median_time_past(hdr)
+            .ok_or(ChainViewError::NotFound)
     }
-    fn tip(&self) -> TipInfo { self.tip.clone() }
+    fn tip(&self) -> TipInfo {
+        self.tip.clone()
+    }
 }
 
 fn do_replay_ordinals_block(
@@ -453,30 +465,43 @@ fn do_replay_ordinals_block(
         PrehashedMap::with_capacity_and_hasher(spent_set.len(), BuildPrehashedHasher);
     let mut scratch = Vec::new();
     for (tx_idx, tx) in block.transactions.iter().enumerate() {
-        let Ok(txid) = tx.txid_into(&mut scratch) else { continue };
+        let Ok(txid) = tx.txid_into(&mut scratch) else {
+            continue;
+        };
         for (vout, out) in tx.outputs.iter().enumerate() {
             let Ok(v) = u32::try_from(vout) else { continue };
             let op = OutPoint { txid, vout: v };
             if spent_set.contains(&op) {
-                intra.insert(op, Some(Coin {
-                    value: out.value,
-                    script_pubkey: out.script_pubkey.clone(),
-                    height: BlockHeight::ZERO,
-                    coinbase: tx_idx == 0,
-                }));
+                intra.insert(
+                    op,
+                    Some(Coin {
+                        value: out.value,
+                        script_pubkey: out.script_pubkey.clone(),
+                        height: BlockHeight::ZERO,
+                        coinbase: tx_idx == 0,
+                    }),
+                );
             }
         }
     }
     let spend_ops: Vec<OutPoint> = block
-        .transactions.iter().skip(1)
+        .transactions
+        .iter()
+        .skip(1)
         .flat_map(|tx| tx.inputs.iter())
         .map(|inp| inp.previous_output)
         .filter(|op| !intra.contains_key(op))
         .collect();
     let spend_set: PrehashedSet<OutPoint> = spend_ops.iter().copied().collect();
     scratch.clear();
-    let bip30_ops: Vec<OutPoint> = block.transactions.iter()
-        .filter_map(|tx| tx.txid_into(&mut scratch).ok().map(|txid| OutPoint { txid, vout: 0 }))
+    let bip30_ops: Vec<OutPoint> = block
+        .transactions
+        .iter()
+        .filter_map(|tx| {
+            tx.txid_into(&mut scratch)
+                .ok()
+                .map(|txid| OutPoint { txid, vout: 0 })
+        })
         .filter(|op| !intra.contains_key(op) && !spend_set.contains(op))
         .collect();
     let mut all_ops = spend_ops;
@@ -489,23 +514,27 @@ fn do_replay_ordinals_block(
 
     let mut coins: PrehashedMap<OutPoint, Option<Coin>> =
         PrehashedMap::with_capacity_and_hasher(all_ops.len() + intra.len(), BuildPrehashedHasher);
-    for r in lookup { coins.insert(r.outpoint, r.coin); }
+    for r in lookup {
+        coins.insert(r.outpoint, r.coin);
+    }
     coins.extend(intra);
 
     let view = DummyView { coins, snap, tip };
     let mut scratch2 = Vec::new();
     let result = connect_block(block, height, &view, &mut scratch2, true, Some(cache), None)
         .unwrap_or_else(|e| panic!("connect_block {}: {e}", height.0));
-    storage.commit_block(CommitBlockReq {
-        token: mantle_storage::types::ReqToken(token),
-        height,
-        hash,
-        prev_hash: block.header.prev_block,
-        created: result.created,
-        spent: result.spent,
-        block_bytes: None,
-        durability: mantle_storage::types::Durability::Memory,
-    }).unwrap_or_else(|e| panic!("commit_block {}: {e}", height.0));
+    storage
+        .commit_block(CommitBlockReq {
+            token: mantle_storage::types::ReqToken(token),
+            height,
+            hash,
+            prev_hash: block.header.prev_block,
+            created: result.created,
+            spent: result.spent,
+            block_bytes: None,
+            durability: mantle_storage::types::Durability::Memory,
+        })
+        .unwrap_or_else(|e| panic!("commit_block {}: {e}", height.0));
 }
 
 // Indices into the fixture block array (0 = height 767430).
@@ -521,7 +550,10 @@ fn replay_ordinals_block(bencher: divan::Bencher, idx: usize) {
         return;
     };
     if idx >= fix.blocks.len() {
-        eprintln!("fixture index {idx} out of range ({} blocks)", fix.blocks.len());
+        eprintln!(
+            "fixture index {idx} out of range ({} blocks)",
+            fix.blocks.len()
+        );
         return;
     }
     let block = &fix.blocks[idx];

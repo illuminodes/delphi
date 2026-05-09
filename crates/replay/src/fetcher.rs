@@ -119,7 +119,9 @@ impl Fetcher {
     /// On-disk path for the block at `height` in this fetcher's data dir.
     #[must_use]
     pub fn block_path(&self, height: BlockHeight) -> PathBuf {
-        self.data_dir.join("blocks").join(format!("{:07}.bin", height.0))
+        self.data_dir
+            .join("blocks")
+            .join(format!("{:07}.bin", height.0))
     }
 
     /// On-disk path for the headers cache. Distinct from the storage
@@ -151,7 +153,9 @@ impl Fetcher {
         if self.peer_addrs.is_empty() {
             return Err(FetchError::NoPeers);
         }
-        let want = u64::from(end.0).saturating_sub(u64::from(start.0)).saturating_add(1);
+        let want = u64::from(end.0)
+            .saturating_sub(u64::from(start.0))
+            .saturating_add(1);
         let want_usize = usize::try_from(want).unwrap_or(usize::MAX);
 
         let mut collected: Vec<(BlockHeight, BlockHeader)> = Vec::with_capacity(want_usize);
@@ -191,10 +195,7 @@ impl Fetcher {
     /// Ensure every block in `headers` is on disk under
     /// `<data-dir>/blocks/NNNNNN.bin`. Already-present blocks are skipped.
     /// Downloads missing ones via a single multi-peer session.
-    pub fn fetch_blocks(
-        &self,
-        headers: &[(BlockHeight, BlockHeader)],
-    ) -> Result<(), FetchError> {
+    pub fn fetch_blocks(&self, headers: &[(BlockHeight, BlockHeader)]) -> Result<(), FetchError> {
         if self.peer_addrs.is_empty() {
             return Err(FetchError::NoPeers);
         }
@@ -268,14 +269,11 @@ fn run_getheaders_session(
                 let now = Instant::now();
 
                 // Mute peers in WaitingHandshake → mark Dead.
-                for peer in peers.iter_mut() {
+                for peer in &mut peers {
                     if peer.phase == PeerPhase::WaitingHandshake
                         && now.duration_since(peer.connected_at) > handshake_timeout
                     {
-                        eprintln!(
-                            "  peer {:?} handshake timeout — marking dead",
-                            peer.id
-                        );
+                        eprintln!("  peer {:?} handshake timeout — marking dead", peer.id);
                         peer.phase = PeerPhase::Dead;
                     }
                 }
@@ -293,20 +291,16 @@ fn run_getheaders_session(
                 }
 
                 // No election → try to elect from a Ready peer.
-                if elected.is_none() {
-                    if let Some(idx) = peers.iter().position(|p| p.phase == PeerPhase::Ready) {
+                if elected.is_none()
+                    && let Some(idx) = peers.iter().position(|p| p.phase == PeerPhase::Ready) {
                         let (pid, fd) = (peers[idx].id, peers[idx].fd);
                         peers[idx].phase = PeerPhase::WaitingHeaders;
                         eprintln!("  peer {pid:?} elected → getheaders");
                         frame_and_send(&node, network, pid, fd, Command::GetHeaders, &payload);
                         elected = Some((idx, now));
                     }
-                }
 
-                if peers
-                    .iter()
-                    .all(|p| matches!(p.phase, PeerPhase::Dead))
-                {
+                if peers.iter().all(|p| matches!(p.phase, PeerPhase::Dead)) {
                     return Err(FetchError::AllPeersDead);
                 }
             }
@@ -336,9 +330,7 @@ fn run_getheaders_session(
                     continue;
                 }
 
-                if cmd == Some(Command::Headers)
-                    && peers[idx].phase == PeerPhase::WaitingHeaders
-                {
+                if cmd == Some(Command::Headers) && peers[idx].phase == PeerPhase::WaitingHeaders {
                     let mut headers: Vec<BlockHeader> = Vec::new();
                     HeadersMsg::decode_into_limited::<2_000>(
                         &mut std::io::Cursor::new(&pl),
@@ -408,71 +400,120 @@ fn run_block_download_session(
                 if last_progress.elapsed() > no_progress_limit {
                     return Err(FetchError::Timeout);
                 }
-                let stall = Duration::from_secs(STALL_SECS);
-                for peer in &mut peers {
-                    if peer.phase != PeerPhase::Ready {
-                        continue;
-                    }
-                    let stalled: Vec<Hash256> = peer
-                        .in_flight
-                        .iter()
-                        .filter(|(_, t)| t.elapsed() > stall)
-                        .map(|(h, _)| *h)
-                        .collect();
-                    if !stalled.is_empty() {
-                        peer.in_flight.retain(|(h, _)| !stalled.contains(h));
-                        retry.extend(stalled);
-                    }
-                }
-                for i in 0..peers.len() {
-                    if peers[i].phase == PeerPhase::Ready
-                        && peers[i].in_flight.len() < PEER_WINDOW
-                    {
-                        topup(&node, network, &mut peers,i, needed, &mut next_assign, &mut retry);
-                    }
-                }
-                if peers.iter().all(|p| p.phase == PeerPhase::Dead) {
-                    return Err(FetchError::AllPeersDead);
-                }
+                on_block_tick(
+                    &node,
+                    network,
+                    needed,
+                    &mut peers,
+                    &mut retry,
+                    &mut next_assign,
+                )?;
             }
-
-            InboundMsg::Network {
-                peer: peer_id,
-                command,
-                payload,
-            } => {
-                let Some(idx) = peers.iter().position(|p| p.id == peer_id) else {
-                    continue;
-                };
-                let cmd = Command::from_command_name(mantle::network::CommandName(command));
-
-                // First application message → handshake done; promote to Ready.
-                if peers[idx].phase == PeerPhase::WaitingHandshake {
-                    peers[idx].phase = PeerPhase::Ready;
-                    topup(&node, network, &mut peers,idx, needed, &mut next_assign, &mut retry);
-                    continue;
-                }
-
-                if cmd == Some(Command::Block)
-                    && let Some(height) = handle_block(&payload, &mut pending, data_dir)?
-                {
-                    if let Some(pos) = peers[idx]
-                        .in_flight
-                        .iter()
-                        .position(|(h, _)| pending.get(h) == Some(&height))
-                    {
-                        peers[idx].in_flight.swap_remove(pos);
-                    }
-                    saved += 1;
-                    last_progress = Instant::now();
-                    if saved == total {
-                        return Ok(());
-                    }
-                    topup(&node, network, &mut peers,idx, needed, &mut next_assign, &mut retry);
+            InboundMsg::Network { peer: peer_id, command, payload } => {
+                if let Some(done) = on_block_network_msg(
+                    &node,
+                    network,
+                    data_dir,
+                    needed,
+                    peer_id,
+                    command,
+                    &payload,
+                    &mut peers,
+                    &mut pending,
+                    &mut retry,
+                    &mut next_assign,
+                    &mut saved,
+                    &mut last_progress,
+                    total,
+                )? {
+                    return Ok(done);
                 }
             }
         }
     }
+}
+
+fn on_block_tick(
+    node: &Node,
+    network: Network,
+    needed: &[(BlockHeight, Hash256)],
+    peers: &mut [PeerSlot],
+    retry: &mut Vec<Hash256>,
+    next_assign: &mut usize,
+) -> Result<(), FetchError> {
+    let stall = Duration::from_secs(STALL_SECS);
+    for peer in peers.iter_mut() {
+        if peer.phase != PeerPhase::Ready {
+            continue;
+        }
+        let stalled: Vec<Hash256> = peer
+            .in_flight
+            .iter()
+            .filter(|(_, t)| t.elapsed() > stall)
+            .map(|(h, _)| *h)
+            .collect();
+        if !stalled.is_empty() {
+            peer.in_flight.retain(|(h, _)| !stalled.contains(h));
+            retry.extend(stalled);
+        }
+    }
+    for i in 0..peers.len() {
+        if peers[i].phase == PeerPhase::Ready && peers[i].in_flight.len() < PEER_WINDOW {
+            topup(node, network, peers, i, needed, next_assign, retry);
+        }
+    }
+    if peers.iter().all(|p| p.phase == PeerPhase::Dead) {
+        return Err(FetchError::AllPeersDead);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn on_block_network_msg(
+    node: &Node,
+    network: Network,
+    data_dir: &Path,
+    needed: &[(BlockHeight, Hash256)],
+    peer_id: PeerId,
+    command: [u8; 12],
+    payload: &[u8],
+    peers: &mut [PeerSlot],
+    pending: &mut HashMap<Hash256, BlockHeight>,
+    retry: &mut Vec<Hash256>,
+    next_assign: &mut usize,
+    saved: &mut usize,
+    last_progress: &mut Instant,
+    total: usize,
+) -> Result<Option<()>, FetchError> {
+    let Some(idx) = peers.iter().position(|p| p.id == peer_id) else {
+        return Ok(None);
+    };
+    let cmd = Command::from_command_name(mantle::network::CommandName(command));
+
+    if peers[idx].phase == PeerPhase::WaitingHandshake {
+        peers[idx].phase = PeerPhase::Ready;
+        topup(node, network, peers, idx, needed, next_assign, retry);
+        return Ok(None);
+    }
+
+    if cmd == Some(Command::Block)
+        && let Some(height) = handle_block(payload, pending, data_dir)?
+    {
+        if let Some(pos) = peers[idx]
+            .in_flight
+            .iter()
+            .position(|(h, _)| pending.get(h) == Some(&height))
+        {
+            peers[idx].in_flight.swap_remove(pos);
+        }
+        *saved += 1;
+        *last_progress = Instant::now();
+        if *saved == total {
+            return Ok(Some(()));
+        }
+        topup(node, network, peers, idx, needed, next_assign, retry);
+    }
+    Ok(None)
 }
 
 fn topup(
@@ -500,9 +541,18 @@ fn topup(
         return;
     }
     let (pid, fd) = (peers[peer_idx].id, peers[peer_idx].fd);
-    frame_and_send(node, network, pid, fd, Command::GetData, &encode_getdata(&hashes));
+    frame_and_send(
+        node,
+        network,
+        pid,
+        fd,
+        Command::GetData,
+        &encode_getdata(&hashes),
+    );
     let now = Instant::now();
-    peers[peer_idx].in_flight.extend(hashes.iter().map(|&h| (h, now)));
+    peers[peer_idx]
+        .in_flight
+        .extend(hashes.iter().map(|&h| (h, now)));
 }
 
 fn handle_block(
@@ -596,7 +646,14 @@ fn encode_getdata(hashes: &[Hash256]) -> Vec<u8> {
     buf
 }
 
-fn frame_and_send(node: &Node, network: Network, peer: PeerId, fd: i32, cmd: Command, payload: &[u8]) {
+fn frame_and_send(
+    node: &Node,
+    network: Network,
+    peer: PeerId,
+    fd: i32,
+    cmd: Command,
+    payload: &[u8],
+) {
     let mut framed = Vec::new();
     network
         .magic()

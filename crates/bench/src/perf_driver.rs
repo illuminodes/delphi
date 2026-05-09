@@ -216,11 +216,7 @@ fn main() {
     // Bip143Cache) built per call, matching real per-input validation cost.
     {
         let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk
-            .verifying_key()
-            .to_sec1_point(true)
-            .as_bytes()
-            .to_vec();
+        let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()
@@ -302,11 +298,7 @@ fn main() {
     // threaded through every call. Measures the zero-alloc ceiling.
     {
         let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk
-            .verifying_key()
-            .to_sec1_point(true)
-            .as_bytes()
-            .to_vec();
+        let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()
@@ -392,11 +384,7 @@ fn main() {
     // P2WSH), clean-stack enforcement, BIP143 sighash.
     {
         let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk
-            .verifying_key()
-            .to_sec1_point(true)
-            .as_bytes()
-            .to_vec();
+        let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()
@@ -482,11 +470,7 @@ fn main() {
     // Same as H but with buffer reuse.
     {
         let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
-        let pk: Vec<u8> = sk
-            .verifying_key()
-            .to_sec1_point(true)
-            .as_bytes()
-            .to_vec();
+        let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
         let pkh: [u8; 20] = {
             let mid = Sha256::digest(&pk);
             Ripemd160::digest(mid).into()

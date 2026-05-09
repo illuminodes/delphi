@@ -646,8 +646,16 @@ fn connect_setup(height: u32) -> (MemoryChainView, Block, Hash256) {
 fn connect_coinbase_only_block() {
     let (view, block, coinbase_txid) = connect_setup(1);
     let mut scratch = Vec::new();
-    let result = connect_block(&block, BlockHeight(1), &view, &mut scratch, false, None, None)
-        .expect("coinbase-only block must connect");
+    let result = connect_block(
+        &block,
+        BlockHeight(1),
+        &view,
+        &mut scratch,
+        false,
+        None,
+        None,
+    )
+    .expect("coinbase-only block must connect");
     assert_eq!(result.fees, Satoshi::ZERO);
     assert!(result.spent.is_empty());
     assert_eq!(result.created.len(), 1);
@@ -682,8 +690,16 @@ fn connect_block_with_spend() {
     let spend = regular_tx(prev_op.txid, 0, 40_000); // 10_000 fee
     let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
     let mut scratch = Vec::new();
-    let result = connect_block(&block, BlockHeight(200), &view, &mut scratch, false, None, None)
-        .expect("block with valid spend must connect");
+    let result = connect_block(
+        &block,
+        BlockHeight(200),
+        &view,
+        &mut scratch,
+        false,
+        None,
+        None,
+    )
+    .expect("block with valid spend must connect");
     assert_eq!(result.fees, Satoshi::new(10_000));
     assert_eq!(result.spent, vec![prev_op]);
     // created: coinbase output + spend output
@@ -699,7 +715,15 @@ fn connect_missing_input_rejected() {
     let block = make_block(vec![cb, ghost], CompactBits(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
-        connect_block(&block, BlockHeight(200), &view, &mut scratch, false, None, None),
+        connect_block(
+            &block,
+            BlockHeight(200),
+            &view,
+            &mut scratch,
+            false,
+            None,
+            None
+        ),
         Err(ValidationError::MissingInput {
             tx_index: 1,
             input_index: 0
@@ -729,7 +753,15 @@ fn connect_coinbase_maturity_rejected() {
     let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
-        connect_block(&block, BlockHeight(50), &view, &mut scratch, false, None, None),
+        connect_block(
+            &block,
+            BlockHeight(50),
+            &view,
+            &mut scratch,
+            false,
+            None,
+            None
+        ),
         Err(ValidationError::CoinbaseMaturityViolation {
             tx_index: 1,
             input_index: 0
@@ -763,7 +795,15 @@ fn connect_script_verify_failure_propagates() {
     let spend = regular_tx(prev_op.txid, 0, 40_000);
     let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
     let mut scratch = Vec::new();
-    let r = connect_block(&block, BlockHeight(200), &view, &mut scratch, false, None, None);
+    let r = connect_block(
+        &block,
+        BlockHeight(200),
+        &view,
+        &mut scratch,
+        false,
+        None,
+        None,
+    );
     assert!(
         matches!(
             r,
@@ -800,8 +840,16 @@ fn connect_skip_script_bypasses_verification() {
     let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
     let mut scratch = Vec::new();
     // With skip_script=false this would be ScriptVerifyFailed.
-    connect_block(&block, BlockHeight(200), &view, &mut scratch, true, None, None)
-        .expect("skip_script=true must succeed even with OP_RETURN scriptPubKey");
+    connect_block(
+        &block,
+        BlockHeight(200),
+        &view,
+        &mut scratch,
+        true,
+        None,
+        None,
+    )
+    .expect("skip_script=true must succeed even with OP_RETURN scriptPubKey");
 }
 
 /// Cache hit: second call returns same verdict without re-running the interpreter.
@@ -878,7 +926,15 @@ fn connect_negative_fee_rejected() {
     let block = make_block(vec![cb, overspend], CompactBits(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
-        connect_block(&block, BlockHeight(200), &view, &mut scratch, false, None, None),
+        connect_block(
+            &block,
+            BlockHeight(200),
+            &view,
+            &mut scratch,
+            false,
+            None,
+            None
+        ),
         Err(ValidationError::NegativeFee { tx_index: 1 })
     );
 }
@@ -904,7 +960,15 @@ fn connect_coinbase_reward_exceeds_subsidy_rejected() {
     let block = make_block(vec![greedy_cb], CompactBits(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
-        connect_block(&block, BlockHeight(1), &view, &mut scratch, false, None, None),
+        connect_block(
+            &block,
+            BlockHeight(1),
+            &view,
+            &mut scratch,
+            false,
+            None,
+            None
+        ),
         Err(ValidationError::CoinbaseRewardExceedsSubsidy)
     );
 }
@@ -958,8 +1022,16 @@ fn connect_sigops_limit_exceeded() {
     };
     let block = make_block(vec![cb], CompactBits(0x207f_ffff));
     let mut scratch = Vec::new();
-    let err = connect_block(&block, BlockHeight(1), &view, &mut scratch, false, None, None)
-        .expect_err("block with too many sigops must be rejected");
+    let err = connect_block(
+        &block,
+        BlockHeight(1),
+        &view,
+        &mut scratch,
+        false,
+        None,
+        None,
+    )
+    .expect_err("block with too many sigops must be rejected");
     assert!(matches!(err, ValidationError::SigopsLimitExceeded { .. }));
 }
 
@@ -988,7 +1060,15 @@ fn connect_bip30_violation_rejected() {
     let block = make_block(vec![cb], CompactBits(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
-        connect_block(&block, BlockHeight(200), &view, &mut scratch, false, None, None),
+        connect_block(
+            &block,
+            BlockHeight(200),
+            &view,
+            &mut scratch,
+            false,
+            None,
+            None
+        ),
         Err(ValidationError::Bip30Violation { tx_index: 0 })
     );
 }

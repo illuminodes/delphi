@@ -84,6 +84,7 @@ fn schnorr_pubkey(secret: &[u8; 32]) -> [u8; 32] {
 ///   t = int(TapTweak(`internal_pubkey` || `merkle_root`))  mod n
 ///   `tweaked_secret` = (d + t) mod n
 fn tweaked_signing_key(internal_secret: &[u8; 32], merkle_root: &[u8]) -> [u8; 32] {
+    use k256::elliptic_curve::bigint::Encoding;
     use k256::elliptic_curve::ops::Reduce;
     use k256::schnorr::SigningKey;
     use k256::{NonZeroScalar, Scalar, U256};
@@ -97,7 +98,6 @@ fn tweaked_signing_key(internal_secret: &[u8; 32], merkle_root: &[u8]) -> [u8; 3
     tweak_input.extend_from_slice(merkle_root);
     let tweak_bytes =
         crate::script::consensus_crypto::Schnorr::tagged_hash(b"TapTweak", &tweak_input);
-    use k256::elliptic_curve::bigint::Encoding;
     let t = <Scalar as Reduce<U256>>::reduce(&U256::from_be_bytes(tweak_bytes.into()));
 
     let d: Scalar = *sk.as_nonzero_scalar().as_ref();

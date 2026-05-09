@@ -47,7 +47,10 @@ pub fn load_metadata(fixtures: &Path) -> u32 {
 pub fn load_headers(fixtures: &Path) -> Vec<BlockHeader> {
     let bytes = std::fs::read(fixtures.join("headers.bin"))
         .expect("headers.bin not found — run fetch-fixtures first");
-    assert!(bytes.len() % 80 == 0, "headers.bin size not a multiple of 80");
+    assert!(
+        bytes.len() % 80 == 0,
+        "headers.bin size not a multiple of 80"
+    );
     bytes
         .chunks_exact(80)
         .map(|chunk| {
@@ -111,7 +114,12 @@ impl<'a> BenchView<'a> {
         tip: TipInfo,
         dummy_on_miss: bool,
     ) -> Self {
-        Self { coins, headers, tip, dummy_on_miss }
+        Self {
+            coins,
+            headers,
+            tip,
+            dummy_on_miss,
+        }
     }
 }
 
@@ -177,17 +185,27 @@ pub fn replay_block(
         PrehashedMap::with_capacity_and_hasher(spent_set.len(), BuildPrehashedHasher);
     let mut scratch = Vec::new();
     for (tx_index, tx) in block.transactions.iter().enumerate() {
-        let Ok(txid) = tx.txid_into(&mut scratch) else { continue };
+        let Ok(txid) = tx.txid_into(&mut scratch) else {
+            continue;
+        };
         for (vout, output) in tx.outputs.iter().enumerate() {
-            let Ok(vout_u32) = u32::try_from(vout) else { continue };
-            let op = OutPoint { txid, vout: vout_u32 };
+            let Ok(vout_u32) = u32::try_from(vout) else {
+                continue;
+            };
+            let op = OutPoint {
+                txid,
+                vout: vout_u32,
+            };
             if spent_set.contains(&op) {
-                intra.insert(op, Some(Coin {
-                    value: output.value,
-                    script_pubkey: output.script_pubkey.clone(),
-                    height: BlockHeight::ZERO,
-                    coinbase: tx_index == 0,
-                }));
+                intra.insert(
+                    op,
+                    Some(Coin {
+                        value: output.value,
+                        script_pubkey: output.script_pubkey.clone(),
+                        height: BlockHeight::ZERO,
+                        coinbase: tx_index == 0,
+                    }),
+                );
             }
         }
     }
@@ -271,95 +289,7 @@ pub fn replay_block_ref(
     let block_ref = BlockRef::decode_with_arena(wire, arena)
         .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.0));
 
-    let tx_count = block_ref.tx_count();
-
-    // Sum of inputs across non-coinbase txs — used as upper bound for
-    // pre-sizing the spend/dedup containers below.
-    let total_non_coinbase_inputs: usize = block_ref
-        .transactions()
-        .skip(1)
-        .map(mantle::primitives::TransactionRef::input_count)
-        .sum();
-
-    // Compute every txid exactly once. Shared by the intra-block dep pass,
-    // the BIP30 probe pass, and `connect_block`.
-    let mut hash_scratch = Vec::new();
-    let mut txids: Vec<Hash256> = Vec::with_capacity(tx_count);
-    for tx in block_ref.transactions() {
-        txids.push(
-            tx.txid_into(&mut hash_scratch)
-                .expect("txid hash never fails"),
-        );
-    }
-
-    // ── intra-block deps ─────────────────────────────────────────────────────
-    let mut spent_set: PrehashedSet<OutPoint> =
-        PrehashedSet::with_capacity_and_hasher(total_non_coinbase_inputs, BuildPrehashedHasher);
-    for tx in block_ref.transactions().skip(1) {
-        for inp in tx.inputs() {
-            let outpoint = match inp {
-                Ok(i) => i.previous_output,
-                Err(_) => continue,
-            };
-            spent_set.insert(outpoint);
-        }
-    }
-
-    let mut intra: PrehashedMap<OutPoint, Option<Coin>> =
-        PrehashedMap::with_capacity_and_hasher(spent_set.len(), BuildPrehashedHasher);
-
-    for (tx_index, tx) in block_ref.transactions().enumerate() {
-        let txid = txids[tx_index];
-        for (vout, output) in tx.outputs().enumerate() {
-            let Ok(out) = output else { continue };
-            let Ok(vout_u32) = u32::try_from(vout) else {
-                continue;
-            };
-            let op = OutPoint {
-                txid,
-                vout: vout_u32,
-            };
-            if spent_set.contains(&op) {
-                intra.insert(
-                    op,
-                    Some(Coin {
-                        value: out.value,
-                        script_pubkey: out.script_pubkey.into(),
-                        height: BlockHeight::ZERO,
-                        coinbase: tx_index == 0,
-                    }),
-                );
-            }
-        }
-    }
-
-    // ── external spend outpoints ─────────────────────────────────────────────
-    let mut spend_ops: Vec<OutPoint> = Vec::with_capacity(total_non_coinbase_inputs);
-    for tx in block_ref.transactions().skip(1) {
-        for inp in tx.inputs() {
-            let Ok(i) = inp else { continue };
-            let op = i.previous_output;
-            if !intra.contains_key(&op) {
-                spend_ops.push(op);
-            }
-        }
-    }
-
-    // ── BIP30 probes (reuse precomputed txids) ───────────────────────────────
-    let mut spend_op_set: PrehashedSet<OutPoint> =
-        PrehashedSet::with_capacity_and_hasher(spend_ops.len(), BuildPrehashedHasher);
-    spend_op_set.extend(spend_ops.iter().copied());
-    let mut bip30_ops: Vec<OutPoint> = Vec::with_capacity(tx_count);
-    for &txid in &txids {
-        let op = OutPoint { txid, vout: 0 };
-        if !intra.contains_key(&op) && !spend_op_set.contains(&op) {
-            bip30_ops.push(op);
-        }
-    }
-
-    let mut all_ops = spend_ops;
-    all_ops.reserve(bip30_ops.len());
-    all_ops.extend_from_slice(&bip30_ops);
+    let (txids, intra, all_ops) = build_ref_outpoints(&block_ref);
 
     storage.send_lookup(&all_ops).expect("send_lookup");
     let hash = block_ref.header.hash();
@@ -375,18 +305,9 @@ pub fn replay_block_ref(
     coins.extend(intra);
 
     let view = BenchView::new(coins, snap, tip, dummy_on_miss);
-
-    let mut scratch2 = Vec::new();
-    let result = connect_block(
-        &block_ref,
-        height,
-        &view,
-        &mut scratch2,
-        true,
-        Some(cache),
-        Some(&txids),
-    )
-    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+    let mut scratch = Vec::new();
+    let result = connect_block(&block_ref, height, &view, &mut scratch, true, Some(cache), Some(&txids))
+        .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage
         .commit_block(CommitBlockReq {
@@ -400,6 +321,73 @@ pub fn replay_block_ref(
             durability: Durability::Memory,
         })
         .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.0));
+}
+
+fn build_ref_outpoints(
+    block_ref: &BlockRef<'_>,
+) -> (Vec<Hash256>, PrehashedMap<OutPoint, Option<Coin>>, Vec<OutPoint>) {
+    let tx_count = block_ref.tx_count();
+    let total_inputs: usize = block_ref
+        .transactions()
+        .skip(1)
+        .map(mantle::primitives::TransactionRef::input_count)
+        .sum();
+
+    let mut hash_scratch = Vec::new();
+    let mut txids: Vec<Hash256> = Vec::with_capacity(tx_count);
+    for tx in block_ref.transactions() {
+        txids.push(tx.txid_into(&mut hash_scratch).expect("txid hash never fails"));
+    }
+
+    let mut spent_set: PrehashedSet<OutPoint> =
+        PrehashedSet::with_capacity_and_hasher(total_inputs, BuildPrehashedHasher);
+    for tx in block_ref.transactions().skip(1) {
+        for i in tx.inputs().flatten() { spent_set.insert(i.previous_output); }
+    }
+
+    let mut intra: PrehashedMap<OutPoint, Option<Coin>> =
+        PrehashedMap::with_capacity_and_hasher(spent_set.len(), BuildPrehashedHasher);
+    for (tx_index, tx) in block_ref.transactions().enumerate() {
+        let txid = txids[tx_index];
+        for (vout, output) in tx.outputs().enumerate() {
+            let Ok(out) = output else { continue };
+            let Ok(vout_u32) = u32::try_from(vout) else { continue };
+            let op = OutPoint { txid, vout: vout_u32 };
+            if spent_set.contains(&op) {
+                intra.insert(op, Some(Coin {
+                    value: out.value,
+                    script_pubkey: out.script_pubkey.into(),
+                    height: BlockHeight::ZERO,
+                    coinbase: tx_index == 0,
+                }));
+            }
+        }
+    }
+
+    let mut spend_ops: Vec<OutPoint> = Vec::with_capacity(total_inputs);
+    for tx in block_ref.transactions().skip(1) {
+        for inp in tx.inputs() {
+            let Ok(i) = inp else { continue };
+            if !intra.contains_key(&i.previous_output) {
+                spend_ops.push(i.previous_output);
+            }
+        }
+    }
+
+    let mut spend_op_set: PrehashedSet<OutPoint> =
+        PrehashedSet::with_capacity_and_hasher(spend_ops.len(), BuildPrehashedHasher);
+    spend_op_set.extend(spend_ops.iter().copied());
+    let mut bip30_ops: Vec<OutPoint> = Vec::with_capacity(tx_count);
+    for &txid in &txids {
+        let op = OutPoint { txid, vout: 0 };
+        if !intra.contains_key(&op) && !spend_op_set.contains(&op) {
+            bip30_ops.push(op);
+        }
+    }
+
+    let mut all_ops = spend_ops;
+    all_ops.extend_from_slice(&bip30_ops);
+    (txids, intra, all_ops)
 }
 
 // ── tmp storage ───────────────────────────────────────────────────────────────
@@ -416,8 +404,7 @@ pub fn tmp_storage(tag: &str) -> (StorageHandle, TmpDir) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .subsec_nanos();
-    let path =
-        std::env::temp_dir().join(format!("mantle-{tag}-{}-{ns}", std::process::id()));
+    let path = std::env::temp_dir().join(format!("mantle-{tag}-{}-{ns}", std::process::id()));
     std::fs::create_dir_all(&path).expect("create tmp dir");
     let handle = StorageHandle::open(&path).expect("StorageHandle::open");
     (handle, TmpDir(path))

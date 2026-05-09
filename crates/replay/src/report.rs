@@ -44,21 +44,21 @@ impl Reporter {
             return;
         }
 
-        let bps_window =
-            f64::from(u32::try_from(self.blocks_since_last).unwrap_or(u32::MAX))
-                / since_print.as_secs_f64().max(1e-9);
+        let blocks_in_window = self.blocks_since_last.max(1);
+        let bps_window = f64::from(u32::try_from(blocks_in_window).unwrap_or(u32::MAX))
+            / since_print.as_secs_f64().max(1e-9);
         let elapsed = now.duration_since(self.start).as_secs_f64().max(1e-9);
         let total_done = u64::from(height.0).saturating_sub(u64::from(self.last_height.0))
-            + self.blocks_since_last
+            + self
+                .blocks_since_last
                 .saturating_sub(u64::from(height.0).saturating_sub(u64::from(self.last_height.0)));
-        // The cumulative blocks/sec since we started.
-        let bps_overall = total_done as f64 / elapsed;
+        let bps_overall =
+            f64::from(u32::try_from(total_done).unwrap_or(u32::MAX)) / elapsed;
         let remaining = u64::from(self.target_height.0).saturating_sub(u64::from(height.0));
-        let eta_secs = if bps_window > 0.0 {
-            (remaining as f64 / bps_window) as u64
-        } else {
-            u64::MAX
-        };
+        // ETA: remaining * (window_duration / blocks_in_window), integer only.
+        let eta = remaining
+            .checked_mul(since_print.as_secs())
+            .map(|t| t / blocks_in_window);
 
         eprintln!(
             "  [{:>7}/{:>7}]  {:>5.1}%  {:>6.1} bps (window) / {:>6.1} bps (avg)  ETA {}",
@@ -67,7 +67,7 @@ impl Reporter {
             100.0 * f64::from(height.0) / f64::from(self.target_height.0).max(1.0),
             bps_window,
             bps_overall,
-            format_eta(eta_secs),
+            format_eta(eta),
         );
         self.last_print = now;
         self.last_height = height;
@@ -77,19 +77,18 @@ impl Reporter {
     /// Called once after the final commit. Prints a summary line.
     pub fn done(&self, final_height: BlockHeight) {
         let elapsed = self.start.elapsed().as_secs_f64();
-        let total = u64::from(final_height.0);
-        let bps = total as f64 / elapsed.max(1e-9);
+        let bps = f64::from(final_height.0) / elapsed.max(1e-9);
         eprintln!(
-            "Replay complete: {} blocks in {:.1}s ({:.1} blocks/s)",
-            total, elapsed, bps,
+            "Replay complete: {} blocks in {elapsed:.1}s ({bps:.1} blocks/s)",
+            final_height.0,
         );
     }
 }
 
-fn format_eta(secs: u64) -> String {
-    if secs == u64::MAX {
+fn format_eta(secs: Option<u64>) -> String {
+    let Some(secs) = secs else {
         return "—".to_string();
-    }
+    };
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
     let s = secs % 60;

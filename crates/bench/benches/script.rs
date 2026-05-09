@@ -303,11 +303,7 @@ fn ecdsa_sign(sk: &SigningKey, digest: &[u8; 32], hash_type: SigHashType) -> Vec
 #[divan::bench]
 fn verify_p2wpkh(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-    let pk: Vec<u8> = sk
-        .verifying_key()
-        .to_sec1_point(true)
-        .as_bytes()
-        .to_vec();
+    let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
     let pkh = hash160(&pk);
 
     let mut spk = vec![0x00u8, 0x14];
@@ -345,11 +341,7 @@ fn verify_p2wpkh(bencher: divan::Bencher) {
 #[divan::bench]
 fn verify_p2wsh(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
-    let pk: Vec<u8> = sk
-        .verifying_key()
-        .to_sec1_point(true)
-        .as_bytes()
-        .to_vec();
+    let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
     let pkh = hash160(&pk);
 
     let mut witness_script = vec![0x76u8, 0xa9, 0x14];
@@ -386,11 +378,7 @@ fn verify_p2wsh(bencher: divan::Bencher) {
 #[divan::bench]
 fn verify_p2wpkh_with_bufs(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-    let pk: Vec<u8> = sk
-        .verifying_key()
-        .to_sec1_point(true)
-        .as_bytes()
-        .to_vec();
+    let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
     let pkh = hash160(&pk);
 
     let mut spk = vec![0x00u8, 0x14];
@@ -668,8 +656,8 @@ fn csv_opcode_throughput(bencher: divan::Bencher) {
 //   - P2WPKH key-path: already covered by `verify_p2wpkh` above
 //   - P2TR key-path:   already covered by `verify_taproot_keypath` above
 
-/// 100 nested OP_IFs each preceded by OP_1, with 1000 OP_1 body pushes and
-/// 100 OP_ENDIFs — matches Bitcoin Core's `NestedIfScript` bench exactly.
+/// 100 nested `OP_IFs` each preceded by `OP_1`, with 1000 `OP_1` body pushes and
+/// 100 `OP_ENDIFs` — matches Bitcoin Core's `NestedIfScript` bench exactly.
 #[divan::bench]
 fn nested_if_script_btccore(bencher: divan::Bencher) {
     // Core builds: [OP_1 OP_IF] × 100 ++ [OP_1] × 1000 ++ [OP_ENDIF] × 100
@@ -678,12 +666,8 @@ fn nested_if_script_btccore(bencher: divan::Bencher) {
         script.push(0x51); // OP_1
         script.push(0x63); // OP_IF
     }
-    for _ in 0..1000 {
-        script.push(0x51); // OP_1
-    }
-    for _ in 0..100 {
-        script.push(0x68); // OP_ENDIF
-    }
+    script.extend(std::iter::repeat_n(0x51u8, 1000)); // OP_1 × 1000
+    script.extend(std::iter::repeat_n(0x68u8, 100));  // OP_ENDIF × 100
     bencher.bench(|| eval_legacy(black_box(&script)));
 }
 
@@ -706,11 +690,7 @@ fn encode_tx(tx: &Transaction) -> Vec<u8> {
 #[divan::bench]
 fn btccore_verify_p2wpkh(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[11u8; 32].into()).expect("nonzero secret");
-    let pk: Vec<u8> = sk
-        .verifying_key()
-        .to_sec1_point(true)
-        .as_bytes()
-        .to_vec();
+    let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
     let pkh = hash160(&pk);
 
     let mut spk = vec![0x00u8, 0x14];
@@ -812,8 +792,8 @@ fn btccore_verify_p2tr_keypath(bencher: divan::Bencher) {
 
     let utxo = bitcoinconsensus::Utxo {
         script_pubkey: spk.as_ptr(),
-        script_pubkey_len: spk.len() as u32,
-        value: amount.to_u64() as i64,
+        script_pubkey_len: u32::try_from(spk.len()).expect("spk fits u32"),
+        value: i64::try_from(amount.to_u64()).expect("amount fits i64"),
     };
 
     // bench_local: Utxo holds a raw pointer so it is !Sync; FnMut suffices here.
@@ -834,11 +814,7 @@ fn btccore_verify_p2tr_keypath(bencher: divan::Bencher) {
 #[divan::bench]
 fn verify_p2wsh_with_bufs(bencher: divan::Bencher) {
     let sk = SigningKey::from_bytes(&[13u8; 32].into()).expect("nonzero secret");
-    let pk: Vec<u8> = sk
-        .verifying_key()
-        .to_sec1_point(true)
-        .as_bytes()
-        .to_vec();
+    let pk: Vec<u8> = sk.verifying_key().to_sec1_point(true).as_bytes().to_vec();
     let pkh = hash160(&pk);
 
     let mut witness_script = vec![0x76u8, 0xa9, 0x14];

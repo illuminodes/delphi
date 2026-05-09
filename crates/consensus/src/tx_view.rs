@@ -467,15 +467,12 @@ impl<'a> Iterator for RefInputIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let inner = self.inner.next()?.ok()?;
         let witness = match self.witnesses_cursor {
-            Some(buf) => match WitnessRef::pop_from(buf) {
-                Ok((w, rest)) => {
-                    self.witnesses_cursor = Some(rest);
-                    w
-                }
-                Err(_) => {
-                    self.witnesses_cursor = None;
-                    WitnessRef::EMPTY
-                }
+            Some(buf) => if let Ok((w, rest)) = WitnessRef::pop_from(buf) {
+                self.witnesses_cursor = Some(rest);
+                w
+            } else {
+                self.witnesses_cursor = None;
+                WitnessRef::EMPTY
             },
             None => WitnessRef::EMPTY,
         };
@@ -534,9 +531,8 @@ mod tests {
         let tx = make_segwit_tx();
         let bytes = encode_tx(&tx);
         let mut arena = Vec::new();
-        let (tx_ref, _) =
-            mantle::primitives::transaction_ref_with_arena(&bytes, &mut arena)
-                .expect("arena decode");
+        let (tx_ref, _) = mantle::primitives::transaction_ref_with_arena(&bytes, &mut arena)
+            .expect("arena decode");
 
         // Header fields.
         assert_eq!(TxView::version(&tx), TxView::version(&tx_ref));
