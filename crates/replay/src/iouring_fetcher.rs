@@ -57,10 +57,40 @@ use ququmatz::types::{
     AF_INET, MsgFlags, SOCK_NONBLOCK, SOCK_STREAM, SockAddrIn, SqeFlags, TimeoutFlags, Timespec,
 };
 
-/// Size of each peer's per-recv scratch buffer. Every recv SQE asks the
-/// kernel to copy up to this many bytes; oversize messages are reassembled
-/// over multiple recv CQEs by the per-peer parse buffer.
-const RECV_CHUNK: usize = 64 * 1024;
+/// Size of each kernel-managed receive buffer in the provided-buffer
+/// ring. The kernel hands one buffer to each multishot-recv arrival;
+/// large frames span multiple buffers and are stitched together by
+/// `Peer::recv_buf` on the userland side.
+const PROVIDED_BUF_SIZE: u32 = 256 * 1024;
+
+/// Number of buffers in the provided-buffer ring. Must be a power of
+/// two (kernel ABI). Sized so 32 peers each in the middle of streaming
+/// a 4 MiB block plus handshake/inv noise stays comfortably inside
+/// the pool.
+const PROVIDED_BUF_COUNT: u32 = 1_024;
+
+/// `io_uring` buffer-group id we register the provided-buffer ring
+/// under. The recv SQE references this same id via `buffer_select`.
+const PROVIDED_BUF_GROUP_ID: u16 = 1;
+
+/// Per-slot capacity of the send arena. Bitcoin's outbound frames the
+/// fetcher emits — version, verack, pong, getheaders, getdata — all
+/// fit in well under 4 KiB. Oversize frames are rejected at
+/// `frame_into` time so a runaway message length can't corrupt
+/// neighbouring slots.
+const SEND_SLOT_SIZE: usize = 4 * 1024;
+
+/// Number of slots in the send arena. Bounded above by `u16::MAX`
+/// because the slot index rides in the upper 16 bits of `user_data`.
+const SEND_SLOT_COUNT: u16 = 8_192;
+
+/// Cap on CQEs drained per session-loop pass. Multishot recv can
+/// produce a torrent of CQEs from one fast peer; if we let the inner
+/// drain run to empty we never call `submit_and_wait` again, so
+/// recently-pushed SEND SQEs sit in the SQ ring with no chance of
+/// surfacing their CQEs. Capping the drain forces a round-trip
+/// through the kernel between bursts.
+const CQE_DRAIN_CAP: usize = 256;
 
 /// Maximum simultaneous in-flight `getdata` requests per peer. Small on
 /// purpose: with the global pull queue + hedging, a per-peer window of 2
@@ -189,11 +219,15 @@ struct Peer {
     /// outlive the SQE so we keep it on the peer struct.
     sockaddr: SockAddrIn,
     state: PeerState,
-    /// Bytes accumulated from recv CQEs, awaiting frame parsing.
+    /// Bytes accumulated from recv CQEs, awaiting frame parsing. Each
+    /// multishot-recv arrival hands us a kernel-owned buffer; we copy
+    /// its contents in here, recycle the buffer, then parse.
     recv_buf: Vec<u8>,
-    /// One-shot recv scratch the kernel writes into. Kept in `Box<[u8]>`
-    /// so the address is stable across submit boundaries.
-    recv_scratch: Box<[u8]>,
+    /// `true` while a multishot recv SQE is armed against this peer's
+    /// fd. Cleared when the kernel terminates the multishot (CQE
+    /// without `MORE`) and re-armed in the per-iteration sweep at the
+    /// bottom of the session loop.
+    recv_armed: bool,
     /// Block hashes currently requested from this peer, with the time we
     /// asked. Bounded by `PEER_INFLIGHT_CAP`; the global pull queue +
     /// hedging logic in `run_block_download_session` decides what to
@@ -224,6 +258,88 @@ enum PeerState {
     Ready,
     WaitingHeaders,
     Dead,
+}
+
+/// Single-allocation, slot-indexed staging area for outbound SQE
+/// payloads.
+///
+/// The kernel reads the bytes pointed to by `Sqe::send` when it
+/// processes the SQE during `submit_and_wait`. The buffer must stay
+/// live and at a stable address until the matching SEND CQE arrives.
+/// We satisfy that by partitioning a single `Box<[u8]>` into
+/// fixed-size slots once at session start; framing happens in-place
+/// via `Magic::frame(cmd, payload, &mut Cursor<&mut [u8]>)`, and the
+/// slot index rides in the upper 16 bits of `user_data` so the SEND
+/// CQE handler can free the slot.
+///
+/// No per-frame allocation. The free-list and the slab are both
+/// owned by the arena; both have fixed capacity and never resize.
+struct SendArena {
+    slab: Box<[u8]>,
+    /// LIFO of free slot indices. Pre-populated `[0..SEND_SLOT_COUNT)`.
+    free: Vec<u16>,
+    /// Length of the framed bytes in each currently-allocated slot,
+    /// indexed by slot id. 0 means the slot is free.
+    used_len: Box<[u32]>,
+}
+
+impl SendArena {
+    fn new() -> Self {
+        let slot_count_usize = SEND_SLOT_COUNT as usize;
+        let slab = vec![0u8; slot_count_usize * SEND_SLOT_SIZE].into_boxed_slice();
+        let used_len = vec![0u32; slot_count_usize].into_boxed_slice();
+        // Push indices in descending order so popping the back yields
+        // ascending slots — easier to reason about in logs.
+        let mut free = Vec::with_capacity(slot_count_usize);
+        for i in (0..SEND_SLOT_COUNT).rev() {
+            free.push(i);
+        }
+        Self {
+            slab,
+            free,
+            used_len,
+        }
+    }
+
+    /// Frame `(cmd, payload)` into a freshly-claimed slot. Returns the
+    /// slot index on success; `None` if the arena is empty or the
+    /// framed bytes wouldn't fit. Caller borrows the bytes via
+    /// [`SendArena::slice`] for SQE submission.
+    fn frame_into(
+        &mut self,
+        magic: mantle::network::Magic,
+        cmd: Command,
+        payload: &[u8],
+    ) -> Option<u16> {
+        let slot = self.free.pop()?;
+        let off = (slot as usize) * SEND_SLOT_SIZE;
+        let dst = &mut self.slab[off..off + SEND_SLOT_SIZE];
+        let mut cursor = std::io::Cursor::new(dst);
+        if magic.frame(cmd, payload, &mut cursor).is_err() {
+            self.free.push(slot);
+            return None;
+        }
+        let written = u32::try_from(cursor.position()).expect("frame fits u32");
+        self.used_len[slot as usize] = written;
+        Some(slot)
+    }
+
+    fn slice(&self, slot: u16) -> &[u8] {
+        let off = (slot as usize) * SEND_SLOT_SIZE;
+        let len = self.used_len[slot as usize] as usize;
+        &self.slab[off..off + len]
+    }
+
+    fn release(&mut self, slot: u16) {
+        if (slot as usize) >= self.used_len.len() {
+            return;
+        }
+        if self.used_len[slot as usize] == 0 {
+            return; // already released; defensive against double-release
+        }
+        self.used_len[slot as usize] = 0;
+        self.free.push(slot);
+    }
 }
 
 /// Per-hash bookkeeping for the global pull-queue + hedging model. The
@@ -406,6 +522,14 @@ impl Fetcher {
         locator: Hash256,
     ) -> Result<Vec<BlockHeader>, FetchError> {
         let mut ring = make_ring()?;
+        let mut pbr = ring
+            .register_provided_buffers(
+                PROVIDED_BUF_GROUP_ID,
+                PROVIDED_BUF_COUNT,
+                PROVIDED_BUF_SIZE,
+            )
+            .map_err(|e| FetchError::UringErr(format!("register_provided_buffers: {e:?}")))?;
+        let mut send_arena = SendArena::new();
         let mut peers: HashMap<u16, Peer> = HashMap::new();
         let mut next_slot: u16 = 0;
         // Top up with TARGET_LIVE_PEERS dials.
@@ -430,11 +554,17 @@ impl Fetcher {
             push_tick(&mut ring, Duration::from_secs(1))?;
             ring.submit_and_wait(1).map_err(uring_err)?;
 
-            // Drain CQEs.
-            while let Some(cqe) = ring.complete() {
+            // Drain CQEs, capped so a recv torrent can't starve SEND CQEs.
+            let mut drained = 0usize;
+            while drained < CQE_DRAIN_CAP {
+                let Some(cqe) = ring.complete() else { break };
+                drained += 1;
                 let (slot, op, g) = decode_user_data(cqe.user_data);
                 if op == OP_TICK {
                     continue;
+                }
+                if op == OP_SEND {
+                    send_arena.release(decode_send_seq(cqe.user_data));
                 }
                 let res = cqe.result;
                 let Some(peer) = peers.get_mut(&slot) else {
@@ -443,15 +573,35 @@ impl Fetcher {
                 if peer.generation != g {
                     continue; // stale CQE for a recycled slot
                 }
-                if let Some(headers) = handle_getheaders_cqe(
+                handle_getheaders_cqe(
                     &mut ring,
+                    &mut pbr,
+                    &mut send_arena,
                     self.network,
                     slot,
                     peer,
                     op,
                     res,
-                    &payload,
-                    &mut elected,
+                    cqe.flags,
+                )?;
+            }
+
+            // After draining CQEs, walk every peer's recv_buf once to
+            // parse complete frames. Per-iteration parsing (not
+            // per-CQE) bounds outbound sends — otherwise a multishot
+            // recv torrent generates dozens of pong/verack sends per
+            // CQE drain pass and exhausts the send arena before SEND
+            // CQEs surface.
+            for (slot, peer) in &mut peers {
+                if peer.state == PeerState::Dead {
+                    continue;
+                }
+                if let Some(headers) = consume_handshake_frames(
+                    &mut ring,
+                    &mut send_arena,
+                    self.network,
+                    *slot,
+                    peer,
                 )? {
                     return Ok(headers);
                 }
@@ -519,6 +669,10 @@ impl Fetcher {
                     peers.insert(next_slot, peer);
                     next_slot = next_slot.wrapping_add(1);
                 }
+                // Note: send_arena/pbr threading would be cleaner with
+                // dial_next taking them, but we don't push send/recv
+                // until OP_CONNECT-success — so the dial path doesn't
+                // need them.
             }
             if peers.is_empty() {
                 return Err(FetchError::PoolExhausted);
@@ -526,14 +680,42 @@ impl Fetcher {
 
             // Election: any Ready peer with no current pick → send getheaders.
             if elected.is_none()
-                && let Some((&slot, peer)) = peers.iter_mut().find(|(_, p)| p.state == PeerState::Ready)
+                && let Some((&slot, peer)) =
+                    peers.iter_mut().find(|(_, p)| p.state == PeerState::Ready)
             {
-                let fd = peer.fd;
-                push_send(&mut ring, slot, peer.generation, fd, frame(self.network, Command::GetHeaders, &payload))?;
+                push_send(
+                    &mut ring,
+                    &mut send_arena,
+                    self.network,
+                    Command::GetHeaders,
+                    &payload,
+                    slot,
+                    peer.generation,
+                    peer.fd,
+                )?;
                 peer.state = PeerState::WaitingHeaders;
                 elected = Some((slot, Instant::now()));
             }
 
+            // Re-arm any peers whose multishot recv terminated this
+            // pass. Doing this here rather than inline in the recv
+            // handler keeps the SQE ring's pending-work mix balanced
+            // across submit_and_wait cycles.
+            for (slot, peer) in &mut peers {
+                if !peer.recv_armed
+                    && peer.state != PeerState::Dead
+                    && peer.state != PeerState::Connecting
+                    && peer.fd >= 0
+                {
+                    push_recv_multishot(&mut ring, *slot, peer.generation, peer.fd)?;
+                    peer.recv_armed = true;
+                }
+            }
+
+            // Publish recycled buffers + arena releases before the
+            // next submit_and_wait. Both must be visible to the
+            // kernel for the multishot recv to keep firing.
+            pbr.commit();
         }
     }
 
@@ -545,6 +727,14 @@ impl Fetcher {
         needed: &[(BlockHeight, Hash256)],
     ) -> Result<(), FetchError> {
         let mut ring = make_ring()?;
+        let mut pbr = ring
+            .register_provided_buffers(
+                PROVIDED_BUF_GROUP_ID,
+                PROVIDED_BUF_COUNT,
+                PROVIDED_BUF_SIZE,
+            )
+            .map_err(|e| FetchError::UringErr(format!("register_provided_buffers: {e:?}")))?;
+        let mut send_arena = SendArena::new();
         let mut peers: HashMap<u16, Peer> = HashMap::new();
         let mut next_slot: u16 = 0;
         for _ in 0..TARGET_LIVE_PEERS.min(self.peer_pool.len()) {
@@ -590,10 +780,16 @@ impl Fetcher {
             ring.submit_and_wait(1).map_err(uring_err)?;
 
             let mut got_block_hashes: Vec<Hash256> = Vec::new();
-            while let Some(cqe) = ring.complete() {
+            let mut drained = 0usize;
+            while drained < CQE_DRAIN_CAP {
+                let Some(cqe) = ring.complete() else { break };
+                drained += 1;
                 let (slot, op, g) = decode_user_data(cqe.user_data);
                 if op == OP_TICK {
                     continue;
+                }
+                if op == OP_SEND {
+                    send_arena.release(decode_send_seq(cqe.user_data));
                 }
                 let Some(peer) = peers.get_mut(&slot) else {
                     continue;
@@ -603,11 +799,31 @@ impl Fetcher {
                 }
                 handle_block_cqe(
                     &mut ring,
+                    &mut pbr,
+                    &mut send_arena,
                     self.network,
                     slot,
                     peer,
                     op,
                     cqe.result,
+                    cqe.flags,
+                )?;
+            }
+
+            // After draining CQEs, walk every peer's recv_buf once to
+            // parse complete frames. Per-iteration parsing (not
+            // per-CQE) bounds outbound sends so the arena can't be
+            // exhausted by a multishot recv torrent.
+            for (slot, peer) in &mut peers {
+                if peer.state == PeerState::Dead {
+                    continue;
+                }
+                consume_block_frames(
+                    &mut ring,
+                    &mut send_arena,
+                    self.network,
+                    *slot,
+                    peer,
                     &mut pending,
                     &self.data_dir,
                     &mut saved,
@@ -767,10 +983,13 @@ impl Fetcher {
                     let pl = encode_getdata(&[hash]);
                     push_send(
                         &mut ring,
+                        &mut send_arena,
+                        self.network,
+                        Command::GetData,
+                        &pl,
                         *slot,
                         peer.generation,
                         peer.fd,
-                        frame(self.network, Command::GetData, &pl),
                     )?;
                     peer.in_flight.push((hash, now));
                     peer.assigned_count = peer.assigned_count.saturating_add(1);
@@ -793,10 +1012,13 @@ impl Fetcher {
                     let pl = encode_getdata(&[hash]);
                     push_send(
                         &mut ring,
+                        &mut send_arena,
+                        self.network,
+                        Command::GetData,
+                        &pl,
                         *slot,
                         peer.generation,
                         peer.fd,
-                        frame(self.network, Command::GetData, &pl),
                     )?;
                     peer.in_flight.push((hash, now));
                     peer.assigned_count = peer.assigned_count.saturating_add(1);
@@ -810,6 +1032,23 @@ impl Fetcher {
                     );
                 }
             }
+
+            // Re-arm any peers whose multishot recv terminated this
+            // pass.
+            for (slot, peer) in &mut peers {
+                if !peer.recv_armed
+                    && peer.state != PeerState::Dead
+                    && peer.state != PeerState::Connecting
+                    && peer.fd >= 0
+                {
+                    push_recv_multishot(&mut ring, *slot, peer.generation, peer.fd)?;
+                    peer.recv_armed = true;
+                }
+            }
+
+            // Publish recycled buffers + arena releases before the
+            // next submit_and_wait so multishot recv keeps firing.
+            pbr.commit();
 
             if peers.is_empty() && in_flight.is_empty() && todo.is_empty() {
                 return Err(FetchError::PoolExhausted);
@@ -845,13 +1084,20 @@ impl Fetcher {
             sin_zero: [0; 8],
         };
 
-        let mut peer = Peer {
+        let peer = Peer {
             addr,
             fd,
             sockaddr,
             state: PeerState::Connecting,
             recv_buf: Vec::with_capacity(RECV_BUF_CAPACITY),
-            recv_scratch: vec![0u8; RECV_CHUNK].into_boxed_slice(),
+            // Multishot recv is armed in the OP_CONNECT-success branch
+            // of the CQE handler. Submitting `recv_multishot` on a
+            // not-yet-connected socket fires `-ENOTCONN` immediately
+            // (multishot doesn't queue-then-deliver like one-shot
+            // recv) and on some kernels poisons the io_wq enough to
+            // abort the linked connect with `-EAFNOSUPPORT`. The
+            // version send is deferred for the same reason.
+            recv_armed: false,
             in_flight: Vec::new(),
             connected_at: Instant::now(),
             generation: 0,
@@ -861,15 +1107,6 @@ impl Fetcher {
         };
 
         push_connect(ring, slot, peer.generation, fd, &peer.sockaddr, &self.connect_timeout)?;
-        // Submit a recv straight away — the kernel will hold it until the
-        // socket is connected (then deliver the first version frame in one
-        // CQE). If connect fails, the recv CQE arrives with -ECANCELED.
-        push_recv(ring, slot, peer.generation, fd, &mut peer.recv_scratch)?;
-        // Stage the version send for after handshake — actually send it
-        // immediately via the SQE chain (kernel queues sends until the
-        // socket is connected, just like recv).
-        let payload = our_version().encode_to_vec();
-        push_send(ring, slot, peer.generation, fd, frame(self.network, Command::Version, &payload))?;
 
         Ok(Some(peer))
     }
@@ -920,6 +1157,34 @@ fn decode_user_data(raw: u64) -> (u16, u8, u16) {
     #[allow(clippy::cast_possible_truncation)]
     let g = ((raw >> 32) & 0xffff) as u16;
     (slot, op, g)
+}
+
+/// `user_data` for SEND SQEs additionally carries the `SendArena` slot
+/// index in bits 48..64 so the SEND CQE handler can release the slot.
+#[inline]
+fn make_send_user_data(slot: u16, g: u16, send_seq: u16) -> u64 {
+    make_user_data(slot, g, OP_SEND) | (u64::from(send_seq) << 48)
+}
+
+#[inline]
+fn decode_send_seq(raw: u64) -> u16 {
+    #[allow(clippy::cast_possible_truncation)]
+    let s = (raw >> 48) as u16;
+    s
+}
+
+/// Decode the buffer id selected by the kernel from a CQE's flags.
+/// Mirrors `Completion::buffer_id` — the kernel stores the id in the
+/// upper 16 bits of `flags` when `CqeFlags::BUFFER` is set.
+#[inline]
+fn decode_cqe_buffer_id(flags: ququmatz::types::CqeFlags) -> Option<u16> {
+    use ququmatz::types::CqeFlags;
+    if flags.contains(CqeFlags::BUFFER) {
+        #[allow(clippy::cast_possible_truncation)]
+        Some((flags.bits() >> 16) as u16)
+    } else {
+        None
+    }
 }
 
 fn make_ring() -> Result<IoUring, FetchError> {
@@ -982,34 +1247,57 @@ fn push_connect(
     Ok(())
 }
 
+/// Frame `(cmd, payload)` into the next free slot of `arena` and push
+/// a SEND SQE that points into that slot. The slot index rides in the
+/// upper 16 bits of `user_data` so the SEND CQE handler can release
+/// the slot. No per-call allocation: the slab and free-list are
+/// owned by the arena and live for the session.
+#[allow(clippy::too_many_arguments)]
 fn push_send(
     ring: &mut IoUring,
+    arena: &mut SendArena,
+    network: Network,
+    cmd: Command,
+    payload: &[u8],
     slot: u16,
     g: u16,
     fd: i32,
-    framed: Vec<u8>,
 ) -> Result<(), FetchError> {
-    // The kernel takes a snapshot of the buffer at send-time, but ququmatz's
-    // `send` borrows the slice — we'd ideally keep the Vec alive until the
-    // CQE returns. Leak it for now via Box and `into_raw`; a real impl
-    // pools these. Acceptable for an initial cut.
-    let leaked: &'static [u8] = Box::leak(framed.into_boxed_slice());
+    let send_seq = arena
+        .frame_into(network.magic(), cmd, payload)
+        .ok_or_else(|| {
+            FetchError::UringErr(format!(
+                "send arena exhausted (peer slot={slot} g={g}, free={} cap={SEND_SLOT_COUNT})",
+                arena.free.len()
+            ))
+        })?;
+    // SAFETY: extending the borrow's lifetime is sound because the
+    // slab outlives the SQE — the arena slot stays reserved
+    // (used_len != 0) until the SEND CQE handler calls `release`.
+    let bytes = arena.slice(send_seq);
+    let bytes_static: &[u8] =
+        unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
     ring.push(
-        Sqe::send(fd, leaked, MsgFlags::default())
-            .user_data(make_user_data(slot, g, OP_SEND)),
+        Sqe::send(fd, bytes_static, MsgFlags::default())
+            .user_data(make_send_user_data(slot, g, send_seq)),
     )
     .map_err(uring_err)
 }
 
-fn push_recv(
+/// Submit one multishot recv SQE. The kernel will deliver one CQE per
+/// arrival (with `BUFFER` flag set and the buffer id in the upper 16
+/// bits of `flags`) until either the peer closes, the kernel hits an
+/// error, or the provided-buffer pool runs dry. On termination the
+/// final CQE clears `MORE`; we re-arm in the per-iteration sweep.
+fn push_recv_multishot(
     ring: &mut IoUring,
     slot: u16,
     g: u16,
     fd: i32,
-    scratch: &mut [u8],
 ) -> Result<(), FetchError> {
     ring.push(
-        Sqe::recv(fd, scratch, MsgFlags::default())
+        Sqe::recv_multishot(fd, MsgFlags::default())
+            .buffer_select(PROVIDED_BUF_GROUP_ID)
             .user_data(make_user_data(slot, g, OP_RECV)),
     )
     .map_err(uring_err)
@@ -1111,26 +1399,74 @@ fn write_headers_bin(
 
 // ── CQE handlers ────────────────────────────────────────────────────────
 
+/// Common multishot-recv CQE handling shared by both sessions. Copies
+/// the kernel-selected provided buffer into `peer.recv_buf`, recycles
+/// the buffer, and clears `recv_armed` if the kernel terminated the
+/// multishot (CQE without `MORE`). Re-arming happens at the bottom
+/// of the session loop, *not* here, so SEND CQEs get a chance to
+/// surface between recv-CQE bursts.
+fn ingest_recv_cqe(
+    pbr: &mut ququmatz::ProvidedBufferRing,
+    peer: &mut Peer,
+    cqe_flags: ququmatz::types::CqeFlags,
+    res: i32,
+    ring: &mut IoUring,
+) {
+    use ququmatz::types::CqeFlags;
+    if res <= 0 {
+        peer.state = PeerState::Dead;
+        peer.recv_armed = false;
+        close_peer(ring, peer);
+        return;
+    }
+    #[allow(clippy::cast_sign_loss)]
+    let n = res as u32;
+    if let Some(buf_id) = decode_cqe_buffer_id(cqe_flags) {
+        if let Some(bytes) = pbr.buffer(buf_id, n) {
+            peer.recv_buf.extend_from_slice(bytes);
+        }
+        pbr.recycle(buf_id);
+    }
+    if !cqe_flags.contains(CqeFlags::MORE) {
+        peer.recv_armed = false;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_getheaders_cqe(
     ring: &mut IoUring,
+    pbr: &mut ququmatz::ProvidedBufferRing,
+    send_arena: &mut SendArena,
     network: Network,
     slot: u16,
     peer: &mut Peer,
     op: u8,
     res: i32,
-    payload: &[u8],
-    elected: &mut Option<(u16, Instant)>,
-) -> Result<Option<Vec<BlockHeader>>, FetchError> {
+    cqe_flags: ququmatz::types::CqeFlags,
+) -> Result<(), FetchError> {
     match op {
         OP_CONNECT => {
             if res < 0 {
                 peer.state = PeerState::Dead;
                 close_peer(ring, peer);
-                return Ok(None);
+                return Ok(());
             }
-            // Connect succeeded; the version send was already submitted in
-            // dial_next, so we're already in HandshakeSendVersion implicitly.
+            // Connect succeeded — arm multishot recv against the
+            // provided-buffer pool, then send our version. Both wait
+            // until success so a connect-failed peer doesn't leak
+            // SQEs into the kernel without producing CQEs.
+            push_recv_multishot(ring, slot, peer.generation, peer.fd)?;
+            peer.recv_armed = true;
+            push_send(
+                ring,
+                send_arena,
+                network,
+                Command::Version,
+                &our_version().encode_to_vec(),
+                slot,
+                peer.generation,
+                peer.fd,
+            )?;
             peer.state = PeerState::HandshakeSendVersion;
         }
         OP_SEND => {
@@ -1140,37 +1476,33 @@ fn handle_getheaders_cqe(
             }
         }
         OP_RECV => {
-            if res <= 0 {
-                peer.state = PeerState::Dead;
-                close_peer(ring, peer);
-                return Ok(None);
-            }
-            #[allow(clippy::cast_sign_loss)]
-            let n = res as usize;
-            peer.recv_buf
-                .extend_from_slice(&peer.recv_scratch[..n.min(peer.recv_scratch.len())]);
-            // Resubmit recv to keep the pipeline running.
-            push_recv(ring, slot, peer.generation, peer.fd, &mut peer.recv_scratch)?;
-            // Drain any complete frames.
-            return consume_handshake_frames(ring, network, slot, peer, payload, elected);
+            ingest_recv_cqe(pbr, peer, cqe_flags, res, ring);
+            // Frame parsing happens once per loop iteration, *not* per
+            // CQE — see the per-iter sweep that calls
+            // `consume_handshake_frames`. With multishot recv the
+            // kernel can deliver dozens of CQEs in one
+            // submit_and_wait cycle; parsing each one inline would
+            // generate dozens of pong/verack sends and exhaust the
+            // send arena before the kernel surfaces their CQEs.
         }
         _ => {}
     }
-    Ok(None)
+    Ok(())
 }
 
 fn consume_handshake_frames(
     ring: &mut IoUring,
+    send_arena: &mut SendArena,
     network: Network,
     slot: u16,
     peer: &mut Peer,
-    _payload: &[u8],
-    _elected: &mut Option<(u16, Instant)>,
 ) -> Result<Option<Vec<BlockHeader>>, FetchError> {
     while peer.recv_buf.len() >= MessageHeader::ENCODED_LEN {
         let Ok(header) = MessageHeader::decode(&mut std::io::Cursor::new(
             &peer.recv_buf[..MessageHeader::ENCODED_LEN],
-        )) else { break };
+        )) else {
+            break;
+        };
         let total = MessageHeader::ENCODED_LEN + header.length as usize;
         if peer.recv_buf.len() < total {
             break;
@@ -1186,10 +1518,13 @@ fn consume_handshake_frames(
             (PeerState::HandshakeSendVersion | PeerState::HandshakeRecving, "version") => {
                 push_send(
                     ring,
+                    send_arena,
+                    network,
+                    Command::Verack,
+                    &[],
                     slot,
                     peer.generation,
                     peer.fd,
-                    frame(network, Command::Verack, &[]),
                 )?;
                 peer.state = PeerState::HandshakeRecving;
             }
@@ -1197,13 +1532,21 @@ fn consume_handshake_frames(
                 peer.state = PeerState::Ready;
             }
             (PeerState::Ready | PeerState::WaitingHeaders, "ping") => {
-                let pong: Vec<u8> = payload_slice.to_owned();
+                // Echo nonce back. ping payload is 8 bytes; copy out
+                // via a stack array so we don't keep a borrow into
+                // recv_buf (which we drain below).
+                let mut nonce = [0u8; 8];
+                let copy_len = payload_slice.len().min(8);
+                nonce[..copy_len].copy_from_slice(&payload_slice[..copy_len]);
                 push_send(
                     ring,
+                    send_arena,
+                    network,
+                    Command::Pong,
+                    &nonce[..copy_len],
                     slot,
                     peer.generation,
                     peer.fd,
-                    frame(network, Command::Pong, &pong),
                 )?;
             }
             (PeerState::WaitingHeaders, "headers") => {
@@ -1222,19 +1565,17 @@ fn consume_handshake_frames(
     Ok(None)
 }
 
-
 #[allow(clippy::too_many_arguments)]
 fn handle_block_cqe(
     ring: &mut IoUring,
+    pbr: &mut ququmatz::ProvidedBufferRing,
+    send_arena: &mut SendArena,
     network: Network,
     slot: u16,
     peer: &mut Peer,
     op: u8,
     res: i32,
-    pending: &mut PrehashedMap<Hash256, BlockHeight>,
-    data_dir: &Path,
-    saved: &mut usize,
-    arrived: &mut Vec<Hash256>,
+    cqe_flags: ququmatz::types::CqeFlags,
 ) -> Result<(), FetchError> {
     match op {
         OP_CONNECT => {
@@ -1243,24 +1584,33 @@ fn handle_block_cqe(
                 close_peer(ring, peer);
                 return Ok(());
             }
+            push_recv_multishot(ring, slot, peer.generation, peer.fd)?;
+            peer.recv_armed = true;
+            push_send(
+                ring,
+                send_arena,
+                network,
+                Command::Version,
+                &our_version().encode_to_vec(),
+                slot,
+                peer.generation,
+                peer.fd,
+            )?;
             peer.state = PeerState::HandshakeSendVersion;
             Ok(())
         }
-        OP_RECV => {
-            if res <= 0 {
-                // Peer disconnected. The coordinator will detect Dead in
-                // the next sweep and reclaim this peer's in_flight hashes
-                // back to the global queue.
+        OP_SEND => {
+            if res < 0 {
                 peer.state = PeerState::Dead;
                 close_peer(ring, peer);
-                return Ok(());
             }
-            #[allow(clippy::cast_sign_loss)]
-            let n = res as usize;
-            peer.recv_buf
-                .extend_from_slice(&peer.recv_scratch[..n.min(peer.recv_scratch.len())]);
-            push_recv(ring, slot, peer.generation, peer.fd, &mut peer.recv_scratch)?;
-            consume_block_frames(ring, network, slot, peer, pending, data_dir, saved, arrived)
+            Ok(())
+        }
+        OP_RECV => {
+            ingest_recv_cqe(pbr, peer, cqe_flags, res, ring);
+            // Frame parsing happens per-iteration, see the per-iter
+            // sweep that calls `consume_block_frames`.
+            Ok(())
         }
         _ => Ok(()),
     }
@@ -1269,6 +1619,7 @@ fn handle_block_cqe(
 #[allow(clippy::too_many_arguments)]
 fn consume_block_frames(
     ring: &mut IoUring,
+    send_arena: &mut SendArena,
     network: Network,
     slot: u16,
     peer: &mut Peer,
@@ -1298,10 +1649,13 @@ fn consume_block_frames(
             (PeerState::HandshakeSendVersion | PeerState::HandshakeRecving, "version") => {
                 push_send(
                     ring,
+                    send_arena,
+                    network,
+                    Command::Verack,
+                    &[],
                     slot,
                     peer.generation,
                     peer.fd,
-                    frame(network, Command::Verack, &[]),
                 )?;
                 peer.state = PeerState::HandshakeRecving;
             }
@@ -1315,9 +1669,6 @@ fn consume_block_frames(
                     continue;
                 };
                 let hash = block.header.hash();
-                // `pending.remove` returns `Some` only on the first
-                // arrival of a hash — duplicates from hedged requests
-                // become silent no-ops here.
                 if let Some(height) = pending.remove(&hash) {
                     let path = data_dir.join("blocks").join(format!("{:07}.bin", height.0));
                     fs::write(&path, payload_slice)?;
@@ -1328,13 +1679,18 @@ fn consume_block_frames(
                 }
             }
             (_, "ping") => {
-                let pong: Vec<u8> = payload_slice.to_owned();
+                let mut nonce = [0u8; 8];
+                let copy_len = payload_slice.len().min(8);
+                nonce[..copy_len].copy_from_slice(&payload_slice[..copy_len]);
                 push_send(
                     ring,
+                    send_arena,
+                    network,
+                    Command::Pong,
+                    &nonce[..copy_len],
                     slot,
                     peer.generation,
                     peer.fd,
-                    frame(network, Command::Pong, &pong),
                 )?;
             }
             _ => {}
