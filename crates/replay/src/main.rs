@@ -24,7 +24,7 @@ mod fetcher;
 mod iouring_fetcher;
 mod report;
 
-use std::net::{SocketAddr, SocketAddrV4, ToSocketAddrs};
+use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -436,36 +436,14 @@ fn run(args: &Args) -> Result<(), String> {
     );
 
     // ── Peers ────────────────────────────────────────────────────────────────
-    // Seeds may be either literal `IP:PORT` (mainnet's hand-picked list) or
-    // DNS `HOST:PORT` (e.g. testnet4 / signet). Try literal parse first; on
-    // failure, fall back to a system DNS lookup and take any v4 results.
-    let mut peer_addrs: Vec<SocketAddrV4> = args.extra_peers.clone();
-    for seed in args.network.default_seeds() {
-        if let Ok(addr) = seed.parse::<SocketAddrV4>() {
-            peer_addrs.push(addr);
-            continue;
-        }
-        match seed.to_socket_addrs() {
-            Ok(iter) => {
-                let before = peer_addrs.len();
-                for addr in iter {
-                    if let SocketAddr::V4(v4) = addr {
-                        peer_addrs.push(v4);
-                    }
-                }
-                let resolved = peer_addrs.len() - before;
-                if resolved == 0 {
-                    eprintln!("  seed {seed} resolved to 0 IPv4 addresses (skipped)");
-                } else {
-                    eprintln!("  seed {seed} resolved to {resolved} address(es)");
-                }
-            }
-            Err(e) => eprintln!("  failed to resolve seed {seed}: {e}"),
-        }
-    }
+    // Peer list comes exclusively from `--peer` / `--peer-file`. DNS seeds
+    // were unreliable in practice (stale entries that aggressively close on
+    // version handshake, polluting the pool) — the curated lists from
+    // `rank-peers` give us live peers without the seed-induced flakiness.
+    let peer_addrs: Vec<SocketAddrV4> = args.extra_peers.clone();
     if peer_addrs.is_empty() {
         return Err(format!(
-            "no peers: {} has no reachable seeds; supply --peer HOST:PORT",
+            "no peers: supply --peer HOST:PORT or --peer-file PATH (network={})",
             args.network.name()
         ));
     }

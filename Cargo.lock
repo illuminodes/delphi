@@ -706,9 +706,9 @@ dependencies = [
 
 [[package]]
 name = "ququmatz"
-version = "0.10.0"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13f96824f07aa927e115e99fdc94d75fed23d60756915a895952329d8771067b"
+checksum = "549d5e490086b1cf5587540b4a0765c33a068c6355a29e61b6b0d3439bbb6c5b"
 
 [[package]]
 name = "r-efi"

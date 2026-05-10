@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use mantle::network::Network;
 use ququmatz::{IoUring, Sqe};
 use ququmatz::types::{
-    AF_INET, SOCK_NONBLOCK, SOCK_STREAM, SockAddrIn, SqeFlags, TimeoutFlags, Timespec,
+    AddressFamily, SockAddrIn, SocketFlags, SocketType, SqeFlags, TimeoutFlags, Timespec,
 };
 
 const HELP: &str = "\
@@ -398,14 +398,20 @@ fn launch_probe(
     // Open a fresh socket per probe. The Close SQE submitted on Connect
     // completion (success or timeout) frees the fd via io_uring rather
     // than blocking syscall.
-    let sock = ququmatz::Socket::new(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
+    let sock = ququmatz::Socket::with_typed_flags(
+        AddressFamily::Inet,
+        SocketType::Stream,
+        0,
+        SocketFlags::NONBLOCK,
+    )
         .map_err(|e| format!("socket: {e:?}"))?;
     let fd = sock.into_fd();
 
     slot.addr = addr;
     slot.fd = fd;
     slot.sockaddr = SockAddrIn {
-        sin_family: u16::try_from(AF_INET).expect("AF_INET fits u16"),
+        sin_family: u16::try_from(AddressFamily::Inet.as_raw())
+            .expect("AF_INET fits u16"),
         sin_port: addr.port().to_be(),
         sin_addr: u32::from_ne_bytes(addr.ip().octets()),
         sin_zero: [0; 8],

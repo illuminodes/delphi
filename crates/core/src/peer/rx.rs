@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use quetzalcoatl::{mpsc, spmc};
 use ququmatz::types::{
-    AF_INET, MsgFlags, SOCK_NONBLOCK, SOCK_STREAM, SockAddrIn, TimeoutFlags, Timespec,
+    AddressFamily, MsgFlags, SockAddrIn, SocketFlags, SocketType, TimeoutFlags, Timespec,
 };
 use ququmatz::{IoUring, Sqe};
 
@@ -151,12 +151,18 @@ impl RxThread {
         let id = PeerId(self.next_id);
         self.next_id += 1;
 
-        let sock = ququmatz::Socket::new(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
-            .map_err(Error::SocketCreate)?;
+        let sock = ququmatz::Socket::with_typed_flags(
+            AddressFamily::Inet,
+            SocketType::Stream,
+            0,
+            SocketFlags::NONBLOCK,
+        )
+        .map_err(Error::SocketCreate)?;
         let fd = sock.into_fd();
 
         let sockaddr = SockAddrIn {
-            sin_family: u16::try_from(AF_INET).expect("AF_INET fits u16"),
+            sin_family: u16::try_from(AddressFamily::Inet.as_raw())
+                .expect("AF_INET fits u16"),
             sin_port: addr.port().to_be(),
             sin_addr: u32::from_ne_bytes(addr.ip().octets()),
             sin_zero: [0; 8],

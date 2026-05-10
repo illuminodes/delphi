@@ -54,7 +54,7 @@ use mantle::network::{
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
 use ququmatz::{IoUring, Sqe};
 use ququmatz::types::{
-    AF_INET, MsgFlags, SOCK_NONBLOCK, SOCK_STREAM, SockAddrIn, SqeFlags, TimeoutFlags, Timespec,
+    AddressFamily, MsgFlags, SockAddrIn, SocketFlags, SocketType, SqeFlags, TimeoutFlags, Timespec,
 };
 
 /// Size of each kernel-managed receive buffer in the provided-buffer
@@ -106,6 +106,13 @@ const CONNECT_TIMEOUT_SECS: u64 = 5;
 /// How long to wait for a single peer to deliver a `headers` message after
 /// we sent it `getheaders` before re-electing a different peer.
 const HEADERS_RESPONSE_TIMEOUT_SECS: u64 = 30;
+
+/// How long a peer can sit in `HandshakeSendVersion` / `HandshakeRecving`
+/// (TCP connected, but no `version`/`verack` exchange completed) before
+/// we evict it. Silent peers are common on testnet4: they accept the
+/// connection but never reply, leaving the slot — and the arena entry
+/// holding our queued Version send — pinned indefinitely.
+const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
 /// Floor for the hedge threshold. We re-issue an outstanding hash to a
 /// second peer once it has been outstanding longer than
@@ -216,8 +223,12 @@ struct Peer {
     addr: SocketAddrV4,
     fd: i32,
     /// Owned sockaddr bytes the kernel reads for the connect SQE; must
-    /// outlive the SQE so we keep it on the peer struct.
-    sockaddr: SockAddrIn,
+    /// outlive the SQE *and* sit at a stable memory address. Boxed so
+    /// the address survives the `Peer` being moved into the `peers`
+    /// HashMap after the SQE is queued — without `Box`, the kernel
+    /// reads stale stack memory at submission time and rejects the
+    /// connect with `-EAFNOSUPPORT`.
+    sockaddr: Box<SockAddrIn>,
     state: PeerState,
     /// Bytes accumulated from recv CQEs, awaiting frame parsing. Each
     /// multishot-recv arrival hands us a kernel-owned buffer; we copy
@@ -248,7 +259,25 @@ struct Peer {
     /// Last time this peer produced a block. Initialized to the dial time
     /// so a freshly-dialed peer gets the full grace window.
     last_delivery: Instant,
+    /// Arena slot indices for SENDs we've issued but whose CQEs haven't
+    /// arrived yet. Bounded by `PEER_SEND_OUTSTANDING_CAP`.
+    ///
+    /// Tracking the actual slot indices (not just a count) lets
+    /// `close_peer` proactively release them: with
+    /// `SendRecvFlag::PollFirst` the kernel only posts the SEND CQE once
+    /// the socket becomes writable, so a backpressured peer's slots
+    /// would otherwise be stuck until eventual `-ECANCELED` (after fd
+    /// close) drains them — and the arena can fill up before that
+    /// happens if peers churn faster than CQEs arrive.
+    pending_send_seqs: Vec<u16>,
 }
+
+/// Maximum SENDs a single peer may have in-flight at once. Crossing this
+/// means the peer is not draining its recv buffer (TCP backpressure) —
+/// the kernel won't post our SEND CQEs until it does, so further SENDs
+/// just leak arena slots. Tuned to leave headroom for the handshake's
+/// version+verack burst plus a couple of pongs.
+const PEER_SEND_OUTSTANDING_CAP: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PeerState {
@@ -281,6 +310,10 @@ struct SendArena {
     /// Length of the framed bytes in each currently-allocated slot,
     /// indexed by slot id. 0 means the slot is free.
     used_len: Box<[u32]>,
+    /// Debug: cumulative successful allocations (`frame_into` -> Some).
+    dbg_alloc: u64,
+    /// Debug: cumulative releases (matched `OP_SEND` CQEs).
+    dbg_release: u64,
 }
 
 impl SendArena {
@@ -298,6 +331,8 @@ impl SendArena {
             slab,
             free,
             used_len,
+            dbg_alloc: 0,
+            dbg_release: 0,
         }
     }
 
@@ -315,12 +350,21 @@ impl SendArena {
         let off = (slot as usize) * SEND_SLOT_SIZE;
         let dst = &mut self.slab[off..off + SEND_SLOT_SIZE];
         let mut cursor = std::io::Cursor::new(dst);
-        if magic.frame(cmd, payload, &mut cursor).is_err() {
+        if let Err(e) = magic.frame(cmd, payload, &mut cursor) {
+            // The only realistic cause is payload-size-too-big for the
+            // slot. Surface so it doesn't masquerade as a generic
+            // `arena exhausted` later.
+            eprintln!(
+                "  iouring-fetcher: frame_into({cmd:?}, {} bytes) failed: {e:?} \
+                 (slot {slot} reclaimed)",
+                payload.len()
+            );
             self.free.push(slot);
             return None;
         }
         let written = u32::try_from(cursor.position()).expect("frame fits u32");
         self.used_len[slot as usize] = written;
+        self.dbg_alloc += 1;
         Some(slot)
     }
 
@@ -339,6 +383,7 @@ impl SendArena {
         }
         self.used_len[slot as usize] = 0;
         self.free.push(slot);
+        self.dbg_release += 1;
     }
 }
 
@@ -546,25 +591,47 @@ impl Fetcher {
         let phase_deadline = Instant::now() + Duration::from_secs(HEADERS_PHASE_DEADLINE_SECS);
         let payload = GetHeadersMsg::single_locator(locator).encode_to_vec();
         let mut elected: Option<(u16, Instant)> = None;
+        let dbg_arena = std::env::var_os("MANTLE_URING_DEBUG").is_some_and(|v| v == "1");
+        let mut dbg_iter: u64 = 0;
 
         loop {
             // Submit any pending SQEs and wait for at least one CQE, but
             // also poll a 1s tick so timeouts can fire even if no peer
             // produces a CQE on its own.
             push_tick(&mut ring, Duration::from_secs(1))?;
-            ring.submit_and_wait(1).map_err(uring_err)?;
+            let dbg_submitted = ring.submit_and_wait(1).map_err(uring_err)?;
+            let dbg_alloc_pre = send_arena.dbg_alloc;
+            let dbg_release_pre = send_arena.dbg_release;
 
             // Drain CQEs, capped so a recv torrent can't starve SEND CQEs.
             let mut drained = 0usize;
+            let mut dbg_op_hist = [0u32; 6]; // CONNECT, LINK_TIMEOUT, SEND, RECV, CLOSE, OTHER
+            let mut dbg_send_res_min: i32 = i32::MAX;
+            let mut dbg_send_res_max: i32 = i32::MIN;
             while drained < CQE_DRAIN_CAP {
                 let Some(cqe) = ring.complete() else { break };
                 drained += 1;
                 let (slot, op, g) = decode_user_data(cqe.user_data);
+                let dbg_idx = match op {
+                    OP_CONNECT => 0,
+                    OP_LINK_TIMEOUT => 1,
+                    OP_SEND => 2,
+                    OP_RECV => 3,
+                    OP_CLOSE => 4,
+                    _ => 5,
+                };
+                dbg_op_hist[dbg_idx] += 1;
                 if op == OP_TICK {
                     continue;
                 }
                 if op == OP_SEND {
-                    send_arena.release(decode_send_seq(cqe.user_data));
+                    if cqe.result < dbg_send_res_min { dbg_send_res_min = cqe.result; }
+                    if cqe.result > dbg_send_res_max { dbg_send_res_max = cqe.result; }
+                    let send_seq = decode_send_seq(cqe.user_data);
+                    send_arena.release(send_seq);
+                    if let Some(p) = peers.get_mut(&slot) {
+                        p.pending_send_seqs.retain(|s| *s != send_seq);
+                    }
                 }
                 let res = cqe.result;
                 let Some(peer) = peers.get_mut(&slot) else {
@@ -607,6 +674,54 @@ impl Fetcher {
                 }
             }
 
+            if dbg_arena {
+                let alloc_iter = send_arena.dbg_alloc - dbg_alloc_pre;
+                let release_iter = send_arena.dbg_release - dbg_release_pre;
+                let in_flight = send_arena.dbg_alloc - send_arena.dbg_release;
+                let free = send_arena.free.len();
+                // Only log meaningful iterations: any send activity, or
+                // arena pressure (in_flight > 0). Skip the millions of
+                // pure dial-redial iterations that produce no signal.
+                let interesting = alloc_iter > 0
+                    || release_iter > 0
+                    || in_flight > 0
+                    || dbg_iter % 1000 == 0;
+                if interesting {
+                    let overflow = ring.cq_overflow();
+                    let send_res_str = if dbg_send_res_min == i32::MAX {
+                        String::from("-")
+                    } else {
+                        format!("{dbg_send_res_min}..{dbg_send_res_max}")
+                    };
+                    let states: Vec<String> = peers
+                        .iter()
+                        .map(|(s, p)| {
+                            format!(
+                                "{s}:{:?}/snd={}/buf={}/armed={}",
+                                p.state,
+                                p.pending_send_seqs.len(),
+                                p.recv_buf.len(),
+                                p.recv_armed,
+                            )
+                        })
+                        .collect();
+                    eprintln!(
+                        "  arena[h iter={dbg_iter}]: submitted={dbg_submitted} drained={drained} \
+                         ovfl={overflow} CQE[con={c} lto={l} snd={s} rcv={r} cls={cl} oth={o}] \
+                         send_res={send_res_str} alloc+={alloc_iter} release+={release_iter} \
+                         in_flight={in_flight} free={free} peers=[{states_joined}]",
+                        c = dbg_op_hist[0],
+                        l = dbg_op_hist[1],
+                        s = dbg_op_hist[2],
+                        r = dbg_op_hist[3],
+                        cl = dbg_op_hist[4],
+                        o = dbg_op_hist[5],
+                        states_joined = states.join(","),
+                    );
+                }
+                dbg_iter += 1;
+            }
+
             // Timeouts and election.
             let now = Instant::now();
             if now > phase_deadline {
@@ -626,7 +741,23 @@ impl Fetcher {
                         "  iouring-fetcher: peer {} ({}) connect-timeout",
                         slot, peer.addr
                     );
-                    close_peer(&mut ring, peer);
+                    close_peer(&mut ring, &mut send_arena, peer);
+                    peer.state = PeerState::Dead;
+                }
+                // Handshake-stall: connect succeeded but peer never sent
+                // their Version. Without this, silent peers occupy slots
+                // (and arena entries for our queued Version) indefinitely.
+                if matches!(
+                    peer.state,
+                    PeerState::HandshakeSendVersion | PeerState::HandshakeRecving
+                ) && now.duration_since(peer.connected_at)
+                    > Duration::from_secs(HANDSHAKE_TIMEOUT_SECS)
+                {
+                    eprintln!(
+                        "  iouring-fetcher: peer {} ({}) handshake-timeout",
+                        slot, peer.addr
+                    );
+                    close_peer(&mut ring, &mut send_arena, peer);
                     peer.state = PeerState::Dead;
                 }
             }
@@ -635,7 +766,7 @@ impl Fetcher {
             {
                 eprintln!("  iouring-fetcher: elected peer {slot} headers-timeout, demoting");
                 if let Some(peer) = peers.get_mut(&slot) {
-                    close_peer(&mut ring, peer);
+                    close_peer(&mut ring, &mut send_arena, peer);
                     peer.state = PeerState::Dead;
                 }
                 elected = None;
@@ -683,7 +814,7 @@ impl Fetcher {
                 && let Some((&slot, peer)) =
                     peers.iter_mut().find(|(_, p)| p.state == PeerState::Ready)
             {
-                push_send(
+                let seq = push_send(
                     &mut ring,
                     &mut send_arena,
                     self.network,
@@ -693,6 +824,7 @@ impl Fetcher {
                     peer.generation,
                     peer.fd,
                 )?;
+                peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::WaitingHeaders;
                 elected = Some((slot, Instant::now()));
             }
@@ -774,10 +906,14 @@ impl Fetcher {
         let mut last_log = Instant::now();
         let mut saved_at_last_log = 0usize;
         let log_interval = Duration::from_secs(2);
+        let dbg_arena = std::env::var_os("MANTLE_URING_DEBUG").is_some_and(|v| v == "1");
+        let mut dbg_iter: u64 = 0;
 
         loop {
             push_tick(&mut ring, Duration::from_secs(1))?;
             ring.submit_and_wait(1).map_err(uring_err)?;
+            let dbg_alloc_pre = send_arena.dbg_alloc;
+            let dbg_release_pre = send_arena.dbg_release;
 
             let mut got_block_hashes: Vec<Hash256> = Vec::new();
             let mut drained = 0usize;
@@ -829,6 +965,25 @@ impl Fetcher {
                     &mut saved,
                     &mut got_block_hashes,
                 )?;
+            }
+
+            if dbg_arena {
+                let alloc_iter = send_arena.dbg_alloc - dbg_alloc_pre;
+                let release_iter = send_arena.dbg_release - dbg_release_pre;
+                let arena_in_flight = send_arena.dbg_alloc - send_arena.dbg_release;
+                let free = send_arena.free.len();
+                eprintln!(
+                    "  arena[b iter={dbg_iter}]: drained={drained} alloc+={alloc_iter} \
+                     release+={release_iter} in_flight={arena_in_flight} free={free} \
+                     peers_live={live} blocks_in_flight={bif} blocks_todo={todo_n} saved={saved}",
+                    live = peers
+                        .values()
+                        .filter(|p| p.state != PeerState::Dead)
+                        .count(),
+                    bif = in_flight.len(),
+                    todo_n = todo.len(),
+                );
+                dbg_iter += 1;
             }
 
             // For every arrived block: update EWMA from the *original*
@@ -910,7 +1065,7 @@ impl Fetcher {
                     && now.duration_since(peer.connected_at)
                         > Duration::from_secs(CONNECT_TIMEOUT_SECS + 2)
                 {
-                    close_peer(&mut ring, peer);
+                    close_peer(&mut ring, &mut send_arena, peer);
                     peer.state = PeerState::Dead;
                     continue;
                 }
@@ -925,7 +1080,7 @@ impl Fetcher {
                          (assigned={} delivered=0 grace={}s) — evicting",
                         peer.addr, peer.assigned_count, BLACK_HOLE_GRACE_SECS,
                     );
-                    close_peer(&mut ring, peer);
+                    close_peer(&mut ring, &mut send_arena, peer);
                     peer.state = PeerState::Dead;
                 }
             }
@@ -981,7 +1136,7 @@ impl Fetcher {
                 });
                 if let Some((slot, peer)) = pick {
                     let pl = encode_getdata(&[hash]);
-                    push_send(
+                    let seq = push_send(
                         &mut ring,
                         &mut send_arena,
                         self.network,
@@ -991,6 +1146,7 @@ impl Fetcher {
                         peer.generation,
                         peer.fd,
                     )?;
+                    peer.pending_send_seqs.push(seq);
                     peer.in_flight.push((hash, now));
                     peer.assigned_count = peer.assigned_count.saturating_add(1);
                     if let Some(info) = in_flight.get_mut(&hash) {
@@ -1010,7 +1166,7 @@ impl Fetcher {
                 while peer.in_flight.len() < PEER_INFLIGHT_CAP {
                     let Some(hash) = todo.pop_front() else { break };
                     let pl = encode_getdata(&[hash]);
-                    push_send(
+                    let seq = push_send(
                         &mut ring,
                         &mut send_arena,
                         self.network,
@@ -1020,6 +1176,7 @@ impl Fetcher {
                         peer.generation,
                         peer.fd,
                     )?;
+                    peer.pending_send_seqs.push(seq);
                     peer.in_flight.push((hash, now));
                     peer.assigned_count = peer.assigned_count.saturating_add(1);
                     in_flight.insert(
@@ -1074,15 +1231,21 @@ impl Fetcher {
         let Some(addr) = self.next_pool_addr(active) else {
             return Ok(None);
         };
-        let sock = ququmatz::Socket::new(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
-            .map_err(|e| FetchError::UringErr(format!("socket: {e:?}")))?;
+        let sock = ququmatz::Socket::with_typed_flags(
+            AddressFamily::Inet,
+            SocketType::Stream,
+            0,
+            SocketFlags::NONBLOCK,
+        )
+        .map_err(|e| FetchError::UringErr(format!("socket: {e:?}")))?;
         let fd = sock.into_fd();
-        let sockaddr = SockAddrIn {
-            sin_family: u16::try_from(AF_INET).expect("AF_INET fits u16"),
+        let sockaddr = Box::new(SockAddrIn {
+            sin_family: u16::try_from(AddressFamily::Inet.as_raw())
+                .expect("AF_INET fits u16"),
             sin_port: addr.port().to_be(),
             sin_addr: u32::from_ne_bytes(addr.ip().octets()),
             sin_zero: [0; 8],
-        };
+        });
 
         let peer = Peer {
             addr,
@@ -1104,6 +1267,7 @@ impl Fetcher {
             assigned_count: 0,
             delivered_count: 0,
             last_delivery: Instant::now(),
+            pending_send_seqs: Vec::with_capacity(PEER_SEND_OUTSTANDING_CAP as usize),
         };
 
         push_connect(ring, slot, peer.generation, fd, &peer.sockaddr, &self.connect_timeout)?;
@@ -1195,12 +1359,18 @@ fn make_ring() -> Result<IoUring, FetchError> {
     // racing us. All three require Linux ≥ 6.0 in practice; older
     // kernels return EINVAL on builder.build(), so we fall back to a
     // bare `IoUring::new`.
-    if let Ok(ring) = IoUring::builder(RING_ENTRIES)
+    // A/B knob: `MANTLE_URING_BARE=1` skips the fast-loop flags so we can
+    // measure their effect against a baseline `IoUring::new`.
+    let bare = std::env::var_os("MANTLE_URING_BARE").is_some_and(|v| v == "1");
+    if bare {
+        eprintln!("  io_uring: bare (MANTLE_URING_BARE=1)");
+    } else if let Ok(ring) = IoUring::builder(RING_ENTRIES)
         .single_issuer()
         .defer_taskrun()
         .coop_taskrun()
         .build()
     {
+        eprintln!("  io_uring: builder flags (single_issuer+defer_taskrun+coop_taskrun)");
         return Ok(ring);
     }
     IoUring::new(RING_ENTRIES).map_err(|e| FetchError::UringErr(format!("IoUring::new: {e:?}")))
@@ -1248,10 +1418,12 @@ fn push_connect(
 }
 
 /// Frame `(cmd, payload)` into the next free slot of `arena` and push
-/// a SEND SQE that points into that slot. The slot index rides in the
-/// upper 16 bits of `user_data` so the SEND CQE handler can release
-/// the slot. No per-call allocation: the slab and free-list are
-/// owned by the arena and live for the session.
+/// a SEND SQE that points into that slot. Returns the arena slot index
+/// (`send_seq`) on success — callers track it on the peer so they can
+/// proactively release on eviction (see [`Peer::pending_send_seqs`]).
+/// The slot index rides in the upper 16 bits of `user_data` so the
+/// SEND CQE handler can release the slot. No per-call allocation: the
+/// slab and free-list are owned by the arena and live for the session.
 #[allow(clippy::too_many_arguments)]
 fn push_send(
     ring: &mut IoUring,
@@ -1262,7 +1434,7 @@ fn push_send(
     slot: u16,
     g: u16,
     fd: i32,
-) -> Result<(), FetchError> {
+) -> Result<u16, FetchError> {
     let send_seq = arena
         .frame_into(network.magic(), cmd, payload)
         .ok_or_else(|| {
@@ -1277,11 +1449,21 @@ fn push_send(
     let bytes = arena.slice(send_seq);
     let bytes_static: &[u8] =
         unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
-    ring.push(
-        Sqe::send(fd, bytes_static, MsgFlags::default())
-            .user_data(make_send_user_data(slot, g, send_seq)),
-    )
-    .map_err(uring_err)
+    let r = ring
+        .push(
+            Sqe::send(fd, bytes_static, MsgFlags::default())
+                .user_data(make_send_user_data(slot, g, send_seq)),
+        )
+        .map_err(uring_err);
+    match r {
+        Ok(()) => Ok(send_seq),
+        Err(e) => {
+            // SQE push failed — kernel never sees this send, so no CQE
+            // will arrive to release the slot. Release here.
+            arena.release(send_seq);
+            Err(e)
+        }
+    }
 }
 
 /// Submit one multishot recv SQE. The kernel will deliver one CQE per
@@ -1303,7 +1485,17 @@ fn push_recv_multishot(
     .map_err(uring_err)
 }
 
-fn close_peer(ring: &mut IoUring, peer: &mut Peer) {
+fn close_peer(ring: &mut IoUring, send_arena: &mut SendArena, peer: &mut Peer) {
+    // Eagerly release any arena slots the kernel still owes us a CQE for.
+    // With `SendRecvFlag::PollFirst` a SEND on a backpressured peer doesn't
+    // get a CQE until the socket becomes writable, which on a peer we're
+    // about to close may be never. The fd close below will eventually
+    // produce `-ECANCELED` SEND CQEs that hit the same `arena.release`
+    // path, so we tag the pending seqs here as already-released — late
+    // CQEs become idempotent no-ops via `release`'s guard on `used_len`.
+    for seq in peer.pending_send_seqs.drain(..) {
+        send_arena.release(seq);
+    }
     if peer.fd >= 0 {
         // Cancel the outstanding recv first so its CQE arrives with
         // `-ECANCELED` rather than racing the close: the kernel matches
@@ -1319,13 +1511,31 @@ fn close_peer(ring: &mut IoUring, peer: &mut Peer) {
         // it here; encode 0 as slot to match the pre-close `slot=…,
         // op=OP_RECV` patterns that have already been submitted). The
         // generation field is the discriminator that makes this match.
-        let _ = ring.push(
+        if let Err(e) = ring.push(
             Sqe::cancel(make_user_data(0, peer.generation, OP_RECV))
                 .user_data(make_user_data(0, peer.generation, OP_CLOSE)),
-        );
-        let _ = ring.push(
+        ) {
+            eprintln!(
+                "  iouring-fetcher: close_peer cancel-recv push failed for fd={}: {e:?}",
+                peer.fd
+            );
+        }
+        if let Err(e) = ring.push(
             Sqe::close(peer.fd).user_data(make_user_data(0, peer.generation, OP_CLOSE)),
-        );
+        ) {
+            // SQE push failed: kernel won't close the fd via the ring.
+            // Fall back to a synchronous close so we don't leak the
+            // fd. This is the only safe path — a quiet leak compounds
+            // into EMFILE on long runs.
+            // Wrap the fd in a Socket and let Drop close it. Safe
+            // because we just established (via the failed push) that
+            // the kernel doesn't own this fd via the ring.
+            drop(unsafe { ququmatz::Socket::from_fd(peer.fd) });
+            eprintln!(
+                "  iouring-fetcher: close_peer close push failed for fd={}: {e:?} (closed synchronously)",
+                peer.fd
+            );
+        }
         peer.fd = -1;
     }
 }
@@ -1407,6 +1617,7 @@ fn write_headers_bin(
 /// surface between recv-CQE bursts.
 fn ingest_recv_cqe(
     pbr: &mut ququmatz::ProvidedBufferRing,
+    send_arena: &mut SendArena,
     peer: &mut Peer,
     cqe_flags: ququmatz::types::CqeFlags,
     res: i32,
@@ -1416,16 +1627,35 @@ fn ingest_recv_cqe(
     if res <= 0 {
         peer.state = PeerState::Dead;
         peer.recv_armed = false;
-        close_peer(ring, peer);
+        close_peer(ring, send_arena, peer);
         return;
     }
     #[allow(clippy::cast_sign_loss)]
     let n = res as u32;
     if let Some(buf_id) = decode_cqe_buffer_id(cqe_flags) {
-        if let Some(bytes) = pbr.buffer(buf_id, n) {
-            peer.recv_buf.extend_from_slice(bytes);
+        match pbr.buffer(buf_id, n) {
+            Some(bytes) => peer.recv_buf.extend_from_slice(bytes),
+            None => {
+                // buf_id out of range or n > buf_size — both indicate
+                // the kernel returned something outside the contract
+                // we registered. Surface; do NOT silently drop the
+                // bytes (that masks framing loss).
+                eprintln!(
+                    "  iouring-fetcher: pbr.buffer({buf_id}, {n}) returned None \
+                     (buf_size={}, entries={})",
+                    pbr.buf_size(),
+                    pbr.entries(),
+                );
+            }
         }
         pbr.recycle(buf_id);
+    } else {
+        // No BUFFER flag on a multishot recv CQE: should never happen
+        // when we set buffer_select. If it does, we've lost track of
+        // `n` bytes the kernel wrote somewhere we can't retrieve.
+        eprintln!(
+            "  iouring-fetcher: recv CQE with res={n} has no BUFFER flag (multishot setup is broken)"
+        );
     }
     if !cqe_flags.contains(CqeFlags::MORE) {
         peer.recv_armed = false;
@@ -1446,9 +1676,15 @@ fn handle_getheaders_cqe(
 ) -> Result<(), FetchError> {
     match op {
         OP_CONNECT => {
+            if std::env::var_os("MANTLE_URING_DEBUG").is_some_and(|v| v == "1") {
+                eprintln!(
+                    "  iouring-fetcher: peer slot={slot} ({}) connect-cqe res={res}",
+                    peer.addr
+                );
+            }
             if res < 0 {
                 peer.state = PeerState::Dead;
-                close_peer(ring, peer);
+                close_peer(ring, send_arena, peer);
                 return Ok(());
             }
             // Connect succeeded — arm multishot recv against the
@@ -1457,7 +1693,7 @@ fn handle_getheaders_cqe(
             // SQEs into the kernel without producing CQEs.
             push_recv_multishot(ring, slot, peer.generation, peer.fd)?;
             peer.recv_armed = true;
-            push_send(
+            let seq = push_send(
                 ring,
                 send_arena,
                 network,
@@ -1467,16 +1703,17 @@ fn handle_getheaders_cqe(
                 peer.generation,
                 peer.fd,
             )?;
+            peer.pending_send_seqs.push(seq);
             peer.state = PeerState::HandshakeSendVersion;
         }
         OP_SEND => {
             if res < 0 {
                 peer.state = PeerState::Dead;
-                close_peer(ring, peer);
+                close_peer(ring, send_arena, peer);
             }
         }
         OP_RECV => {
-            ingest_recv_cqe(pbr, peer, cqe_flags, res, ring);
+            ingest_recv_cqe(pbr, send_arena, peer, cqe_flags, res, ring);
             // Frame parsing happens once per loop iteration, *not* per
             // CQE — see the per-iter sweep that calls
             // `consume_handshake_frames`. With multishot recv the
@@ -1510,13 +1747,30 @@ fn consume_handshake_frames(
         let payload_slice = &peer.recv_buf[MessageHeader::ENCODED_LEN..total];
         if checksum(payload_slice) != header.checksum {
             peer.state = PeerState::Dead;
-            close_peer(ring, peer);
+            close_peer(ring, send_arena, peer);
             return Ok(None);
         }
         let cmd = header.command.as_str();
+        // Per-peer SEND backpressure cap, enforced uniformly across all
+        // send-emitting branches below (verack, pong). If a peer is at
+        // cap, the kernel is sitting on too many outbound CQEs for it
+        // — evict instead of issuing another send that would just
+        // pile onto the arena. Without a uniform check, e.g. duplicate
+        // version messages from a misbehaving peer in HandshakeRecving
+        // state would leak Verack sends without bound.
+        let needs_send = matches!(
+            (peer.state, cmd),
+            (PeerState::HandshakeSendVersion | PeerState::HandshakeRecving, "version")
+                | (PeerState::Ready | PeerState::WaitingHeaders, "ping")
+        );
+        if needs_send && peer.pending_send_seqs.len() >= PEER_SEND_OUTSTANDING_CAP as usize {
+            peer.state = PeerState::Dead;
+            close_peer(ring, send_arena, peer);
+            return Ok(None);
+        }
         match (peer.state, cmd) {
             (PeerState::HandshakeSendVersion | PeerState::HandshakeRecving, "version") => {
-                push_send(
+                let seq = push_send(
                     ring,
                     send_arena,
                     network,
@@ -1526,6 +1780,7 @@ fn consume_handshake_frames(
                     peer.generation,
                     peer.fd,
                 )?;
+                peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::HandshakeRecving;
             }
             (PeerState::HandshakeRecving | PeerState::HandshakeSendVersion, "verack") => {
@@ -1538,7 +1793,7 @@ fn consume_handshake_frames(
                 let mut nonce = [0u8; 8];
                 let copy_len = payload_slice.len().min(8);
                 nonce[..copy_len].copy_from_slice(&payload_slice[..copy_len]);
-                push_send(
+                let seq = push_send(
                     ring,
                     send_arena,
                     network,
@@ -1548,13 +1803,29 @@ fn consume_handshake_frames(
                     peer.generation,
                     peer.fd,
                 )?;
+                peer.pending_send_seqs.push(seq);
             }
             (PeerState::WaitingHeaders, "headers") => {
                 let mut headers: Vec<BlockHeader> = Vec::new();
-                let _ = HeadersMsg::decode_into_limited::<2_000>(
+                if let Err(e) = HeadersMsg::decode_into_limited::<2_000>(
                     &mut std::io::Cursor::new(payload_slice),
                     &mut headers,
-                );
+                ) {
+                    // Don't swallow: parse failures usually mean the
+                    // stream was misframed (corruption or wrong magic),
+                    // not a recoverable hiccup. Surface so the caller
+                    // re-elects rather than spin on a broken peer.
+                    eprintln!(
+                        "  iouring-fetcher: peer slot={slot} headers decode error: {e:?} \
+                         (payload {} bytes, parsed {} headers before failing)",
+                        payload_slice.len(),
+                        headers.len(),
+                    );
+                    peer.recv_buf.drain(..total);
+                    peer.state = PeerState::Dead;
+                    close_peer(ring, send_arena, peer);
+                    return Ok(None);
+                }
                 peer.recv_buf.drain(..total);
                 return Ok(Some(headers));
             }
@@ -1581,12 +1852,12 @@ fn handle_block_cqe(
         OP_CONNECT => {
             if res < 0 {
                 peer.state = PeerState::Dead;
-                close_peer(ring, peer);
+                close_peer(ring, send_arena, peer);
                 return Ok(());
             }
             push_recv_multishot(ring, slot, peer.generation, peer.fd)?;
             peer.recv_armed = true;
-            push_send(
+            let seq = push_send(
                 ring,
                 send_arena,
                 network,
@@ -1596,18 +1867,19 @@ fn handle_block_cqe(
                 peer.generation,
                 peer.fd,
             )?;
+            peer.pending_send_seqs.push(seq);
             peer.state = PeerState::HandshakeSendVersion;
             Ok(())
         }
         OP_SEND => {
             if res < 0 {
                 peer.state = PeerState::Dead;
-                close_peer(ring, peer);
+                close_peer(ring, send_arena, peer);
             }
             Ok(())
         }
         OP_RECV => {
-            ingest_recv_cqe(pbr, peer, cqe_flags, res, ring);
+            ingest_recv_cqe(pbr, send_arena, peer, cqe_flags, res, ring);
             // Frame parsing happens per-iteration, see the per-iter
             // sweep that calls `consume_block_frames`.
             Ok(())
@@ -1641,13 +1913,13 @@ fn consume_block_frames(
         let payload_slice = &peer.recv_buf[MessageHeader::ENCODED_LEN..total];
         if checksum(payload_slice) != header.checksum {
             peer.state = PeerState::Dead;
-            close_peer(ring, peer);
+            close_peer(ring, send_arena, peer);
             return Ok(());
         }
         let cmd = header.command.as_str();
         match (peer.state, cmd) {
             (PeerState::HandshakeSendVersion | PeerState::HandshakeRecving, "version") => {
-                push_send(
+                let seq = push_send(
                     ring,
                     send_arena,
                     network,
@@ -1657,6 +1929,7 @@ fn consume_block_frames(
                     peer.generation,
                     peer.fd,
                 )?;
+                peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::HandshakeRecving;
             }
             (PeerState::HandshakeRecving | PeerState::HandshakeSendVersion, "verack") => {
@@ -1679,10 +1952,15 @@ fn consume_block_frames(
                 }
             }
             (_, "ping") => {
+                if peer.pending_send_seqs.len() >= PEER_SEND_OUTSTANDING_CAP as usize {
+                    peer.state = PeerState::Dead;
+                    close_peer(ring, send_arena, peer);
+                    return Ok(());
+                }
                 let mut nonce = [0u8; 8];
                 let copy_len = payload_slice.len().min(8);
                 nonce[..copy_len].copy_from_slice(&payload_slice[..copy_len]);
-                push_send(
+                let seq = push_send(
                     ring,
                     send_arena,
                     network,
@@ -1692,6 +1970,7 @@ fn consume_block_frames(
                     peer.generation,
                     peer.fd,
                 )?;
+                peer.pending_send_seqs.push(seq);
             }
             _ => {}
         }
@@ -1708,7 +1987,12 @@ trait EncodeToVec {
 impl<T: Encode> EncodeToVec for T {
     fn encode_to_vec(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        let _ = self.encode(&mut out);
+        // `Vec<u8>` as `Write` cannot fail (its `write_all` returns
+        // `Ok(())` for any input). If `encode` itself returns an error
+        // we'd want to know — that signals the message is malformed
+        // before it ever leaves us.
+        self.encode(&mut out)
+            .expect("Vec<u8> Write is infallible; encode failure indicates a bug");
         out
     }
 }
