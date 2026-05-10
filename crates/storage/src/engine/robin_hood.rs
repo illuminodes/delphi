@@ -454,12 +454,16 @@ impl RobinHoodTable {
     /// # Panics
     /// Panics if `arena` is shorter than `ops.len() * BUCKET_SIZE`.
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     pub fn get_batch_uring(
         &self,
         ops: &[OutPoint],
         results: &mut Vec<Option<Coin>>,
         ring: &mut ququmatz::IoUring,
         arena: &mut Vec<u8>,
+        slots: &mut Vec<u64>,
+        dists: &mut Vec<u8>,
+        resolved: &mut Vec<bool>,
     ) -> io::Result<()> {
         let n = ops.len();
         if n == 0 {
@@ -472,9 +476,12 @@ impl RobinHoodTable {
         let fd = self.fd();
 
         // Per-outpoint state: current probe slot and distance.
-        let mut slots: Vec<u64> = ops.iter().map(|op| self.ideal_slot(op)).collect();
-        let mut dists: Vec<u8> = vec![1; n];
-        let mut resolved: Vec<bool> = vec![false; n];
+        slots.clear();
+        slots.extend(ops.iter().map(|op| self.ideal_slot(op)));
+        dists.clear();
+        dists.resize(n, 1);
+        resolved.clear();
+        resolved.resize(n, false);
         // Arena for bucket reads — reused across calls, capacity grows to max block size.
         let needed = n * BUCKET_SIZE;
         arena.clear();
@@ -583,6 +590,14 @@ pub struct RobinHoodEngine {
     write_buffer: PrehashedMap<OutPoint, BufferEntry>,
     pending_disk_deletes: Vec<OutPoint>,
     read_arena: Vec<u8>,
+    // Scratch buffers reused across read_coins / get_batch_uring calls.
+    rc_results: Vec<Option<Coin>>,
+    rc_disk_indices: Vec<usize>,
+    rc_disk_outpoints: Vec<OutPoint>,
+    rc_disk_coins: Vec<Option<Coin>>,
+    uring_slots: Vec<u64>,
+    uring_dists: Vec<u8>,
+    uring_resolved: Vec<bool>,
     header_file: File,
     header_write_len: u64,
     header_index: PrehashedMap<Hash256, u32>,
@@ -624,8 +639,15 @@ impl RobinHoodEngine {
             table,
             ring,
             write_buffer: PrehashedMap::with_hasher(BuildPrehashedHasher),
-            pending_disk_deletes: Vec::new(),
+            pending_disk_deletes: Vec::with_capacity(16_384),
             read_arena: Vec::new(),
+            rc_results: Vec::new(),
+            rc_disk_indices: Vec::new(),
+            rc_disk_outpoints: Vec::new(),
+            rc_disk_coins: Vec::new(),
+            uring_slots: Vec::new(),
+            uring_dists: Vec::new(),
+            uring_resolved: Vec::new(),
             header_file,
             header_write_len: 0,
             header_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
@@ -669,28 +691,40 @@ impl Engine for RobinHoodEngine {
         ops: &[OutPoint],
         out: &mut Vec<LookupResult>,
     ) -> Result<(), EngineError> {
-        let mut disk_ops: Vec<(usize, OutPoint)> = Vec::new();
-        let mut results: Vec<Option<Coin>> = Vec::with_capacity(ops.len());
+        let results = &mut self.rc_results;
+        let disk_indices = &mut self.rc_disk_indices;
+        let disk_outpoints = &mut self.rc_disk_outpoints;
+        let disk_coins = &mut self.rc_disk_coins;
+
+        results.clear();
+        disk_indices.clear();
+        disk_outpoints.clear();
+
+        results.resize(ops.len(), None);
 
         for (i, &op) in ops.iter().enumerate() {
             match self.write_buffer.get(&op) {
-                Some(BufferEntry::Live(coin)) => results.push(Some(coin.clone())),
+                Some(BufferEntry::Live(coin)) => results[i] = Some(coin.clone()),
                 None => {
-                    disk_ops.push((i, op));
-                    results.push(None);
+                    disk_indices.push(i);
+                    disk_outpoints.push(op);
                 }
             }
         }
 
-        if !disk_ops.is_empty() {
-            let disk_outpoints: Vec<OutPoint> = disk_ops.iter().map(|(_, op)| *op).collect();
-            let mut disk_coins: Vec<Option<Coin>> = Vec::new();
-            let ring = &mut self.ring;
-            let arena = &mut self.read_arena;
+        if !disk_outpoints.is_empty() {
             self.table
-                .get_batch_uring(&disk_outpoints, &mut disk_coins, ring, arena)
+                .get_batch_uring(
+                    disk_outpoints,
+                    disk_coins,
+                    &mut self.ring,
+                    &mut self.read_arena,
+                    &mut self.uring_slots,
+                    &mut self.uring_dists,
+                    &mut self.uring_resolved,
+                )
                 .map_err(io_err)?;
-            for (j, &(i, _)) in disk_ops.iter().enumerate() {
+            for (j, &i) in disk_indices.iter().enumerate() {
                 if let Some(coin) = disk_coins.get(j).and_then(|c| c.as_ref()) {
                     results[i] = Some(coin.clone());
                 }
@@ -1141,8 +1175,9 @@ mod tests {
 
         let ops: Vec<OutPoint> = (0..count).map(make_op).collect();
         let mut results = Vec::new();
+        let (mut slots, mut dists, mut resolved) = (Vec::new(), Vec::new(), Vec::new());
         table
-            .get_batch_uring(&ops, &mut results, &mut ring, &mut arena)
+            .get_batch_uring(&ops, &mut results, &mut ring, &mut arena, &mut slots, &mut dists, &mut resolved)
             .unwrap();
 
         assert_eq!(results.len(), count as usize);
@@ -1155,7 +1190,7 @@ mod tests {
         let miss_ops: Vec<OutPoint> = (200..210u8).map(make_op).collect();
         let mut miss_results = Vec::new();
         table
-            .get_batch_uring(&miss_ops, &mut miss_results, &mut ring, &mut arena)
+            .get_batch_uring(&miss_ops, &mut miss_results, &mut ring, &mut arena, &mut slots, &mut dists, &mut resolved)
             .unwrap();
         assert!(miss_results.iter().all(Option::is_none));
     }

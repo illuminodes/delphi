@@ -117,28 +117,30 @@ fn make_snapshot(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
 }
 
 fn main() {
-    let _profiler = dhat::Profiler::new_heap();
     let args = parse_args();
 
     let dir: PathBuf = fixtures_dir(&args.preset);
+    // Load blocks+1 so the first block can be used as a warm-up outside the
+    // profiler window, leaving exactly `blocks` measured.
+    let total = args.blocks + 1;
     let (start, end, headers, dummy_on_miss) = match args.preset.as_str() {
         "early" => {
             let start = 1u32;
-            let end = start + args.blocks - 1;
+            let end = start + total - 1;
             let headers = headers_from_blocks(&dir, start, end);
             (start, end, headers, false)
         }
         "ordinals" => {
             let start = 767_430u32;
-            let end = start + args.blocks - 1;
+            let end = start + total - 1;
             let headers = load_headers_file(&dir);
             assert!(
-                headers.len() >= args.blocks as usize,
+                headers.len() >= total as usize,
                 "ordinals headers.bin has {} headers, need {}",
                 headers.len(),
-                args.blocks
+                total
             );
-            (start, end, headers[..args.blocks as usize].to_vec(), true)
+            (start, end, headers[..total as usize].to_vec(), true)
         }
         other => panic!("unknown preset: {other} (expected 'early' or 'ordinals')"),
     };
@@ -160,13 +162,29 @@ fn main() {
     let mut cache = ScriptExecutionCache::new(64 * 1024);
     let mut arena: Vec<u8> = Vec::new();
 
-    eprintln!("[dhat-{}] replaying...", args.preset);
-
+    // Warm up all scratch buffers (BenchReplayBufs, arena, engine internals) with
+    // the first block before starting the profiler, so harness growth doesn't
+    // pollute the allocation profile.
+    eprintln!("[dhat-{}] warming up...", args.preset);
     if args.reuse {
         let mut bufs = BenchReplayBufs::new();
-        for (i, wire) in wires.iter().enumerate() {
-            let height = BlockHeight(start + u32::try_from(i).expect("fits"));
-            let token = u64::try_from(i + 1).expect("fits");
+        replay_block_ref_reusing(
+            &wires[0],
+            BlockHeight(start),
+            &mut storage,
+            &snap,
+            &mut cache,
+            1,
+            dummy_on_miss,
+            &mut arena,
+            &mut bufs,
+        );
+
+        eprintln!("[dhat-{}] replaying...", args.preset);
+        let _profiler = dhat::Profiler::new_heap();
+        for (i, wire) in wires[1..].iter().enumerate() {
+            let height = BlockHeight(start + 1 + u32::try_from(i).expect("fits"));
+            let token = u64::try_from(i + 2).expect("fits");
             replay_block_ref_reusing(
                 wire,
                 height,
@@ -180,9 +198,22 @@ fn main() {
             );
         }
     } else {
-        for (i, wire) in wires.iter().enumerate() {
-            let height = BlockHeight(start + u32::try_from(i).expect("fits"));
-            let token = u64::try_from(i + 1).expect("fits");
+        replay_block_ref(
+            &wires[0],
+            BlockHeight(start),
+            &mut storage,
+            &snap,
+            &mut cache,
+            1,
+            dummy_on_miss,
+            &mut arena,
+        );
+
+        eprintln!("[dhat-{}] replaying...", args.preset);
+        let _profiler = dhat::Profiler::new_heap();
+        for (i, wire) in wires[1..].iter().enumerate() {
+            let height = BlockHeight(start + 1 + u32::try_from(i).expect("fits"));
+            let token = u64::try_from(i + 2).expect("fits");
             replay_block_ref(
                 wire,
                 height,
