@@ -267,6 +267,12 @@ impl RobinHoodTable {
         pwrite_all(&self.file, &buf, 0)
     }
 
+    #[cfg(unix)]
+    pub fn fd(&self) -> i32 {
+        use std::os::unix::io::AsRawFd;
+        self.file.as_raw_fd()
+    }
+
     // ── Public API ───────────────────────────────────────────────────────────
 
     pub fn get(&self, op: &OutPoint) -> io::Result<Option<Coin>> {
@@ -404,15 +410,125 @@ impl RobinHoodTable {
         self.flush_header()?;
         self.file.sync_all()
     }
+
+    /// Batched UTXO lookup using io_uring.
+    ///
+    /// Submits one `pread` per outpoint for the ideal bucket, waits for all
+    /// completions, then submits follow-up reads for Robin Hood probe chains.
+    /// Typically completes in 1–2 rounds.
+    ///
+    /// `arena` must be pre-sized to `ops.len() * BUCKET_SIZE`. Results are
+    /// written into `results` in the same order as `ops`.
+    #[allow(clippy::too_many_lines)]
+    pub fn get_batch_uring(
+        &self,
+        ops: &[OutPoint],
+        results: &mut Vec<Option<Coin>>,
+        ring: &mut ququmatz::IoUring,
+    ) -> io::Result<()> {
+        let n = ops.len();
+        if n == 0 {
+            return Ok(());
+        }
+
+        results.clear();
+        results.resize(n, None);
+
+        let fd = self.fd();
+
+        // Per-outpoint state: current probe slot and distance.
+        let mut slots: Vec<u64> = ops.iter().map(|op| self.ideal_slot(op)).collect();
+        let mut dists: Vec<u8> = vec![1; n];
+        let mut resolved: Vec<bool> = vec![false; n];
+        // Arena for bucket reads — one bucket per outpoint.
+        let mut arena: Vec<u8> = vec![0u8; n * BUCKET_SIZE];
+
+        loop {
+            // Submit reads for all unresolved outpoints.
+            let mut submitted = 0u32;
+            for i in 0..n {
+                if resolved[i] {
+                    continue;
+                }
+                let offset = self.slot_offset(slots[i]);
+                let buf_start = i * BUCKET_SIZE;
+                let sqe = unsafe {
+                    ququmatz::Sqe::read_ptr(
+                        fd,
+                        arena[buf_start..].as_mut_ptr(),
+                        BUCKET_SIZE as u32,
+                        offset,
+                    )
+                }
+                .user_data(i as u64);
+                ring.push(sqe).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e:?}")))?;
+                submitted += 1;
+            }
+
+            if submitted == 0 {
+                break;
+            }
+
+            ring.submit_and_wait(submitted)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e:?}")))?;
+
+            // Process completions.
+            let mut need_reprobe = false;
+            while let Some(cqe) = ring.complete() {
+                let i = cqe.user_data as usize;
+                if i >= n {
+                    continue;
+                }
+
+                let res = cqe.result;
+                if res < 0 {
+                    return Err(io::Error::from_raw_os_error(-res));
+                }
+
+                let buf_start = i * BUCKET_SIZE;
+                let buf: &[u8; BUCKET_SIZE] = arena[buf_start..buf_start + BUCKET_SIZE]
+                    .try_into()
+                    .unwrap();
+                let bucket = Bucket::decode(buf);
+
+                if bucket.is_empty() || bucket.probe_distance < dists[i] {
+                    // Not found — empty slot or Robin Hood invariant says stop.
+                    resolved[i] = true;
+                    continue;
+                }
+
+                if bucket.matches(&ops[i]) {
+                    // Found.
+                    results[i] = Some(bucket.to_coin());
+                    resolved[i] = true;
+                    continue;
+                }
+
+                // Probe miss — advance to next slot for next round.
+                dists[i] += 1;
+                slots[i] = (slots[i] + 1) & self.mask;
+                need_reprobe = true;
+            }
+
+            if !need_reprobe {
+                break;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 // ── RobinHoodEngine — Engine trait impl ──────────────────────────────────────
 
 const HEADER_RECORD_SIZE: usize = 116;
 
+const STORAGE_RING_ENTRIES: u32 = 4096;
+
 pub struct RobinHoodEngine {
     data_dir: PathBuf,
     table: RobinHoodTable,
+    ring: ququmatz::IoUring,
     header_file: File,
     header_write_len: u64,
     header_index: PrehashedMap<Hash256, u32>,
@@ -446,9 +562,13 @@ impl RobinHoodEngine {
             .open(&checkpoint_path)
             .map_err(io_err)?;
 
+        let ring = ququmatz::IoUring::new(STORAGE_RING_ENTRIES)
+            .map_err(|e| EngineError::Io(io::Error::new(io::ErrorKind::Other, format!("{e:?}"))))?;
+
         let mut engine = Self {
             data_dir: data_dir.to_owned(),
             table,
+            ring,
             header_file,
             header_write_len: 0,
             header_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
@@ -477,9 +597,15 @@ impl Engine for RobinHoodEngine {
         ops: &[OutPoint],
         out: &mut Vec<LookupResult>,
     ) -> Result<(), EngineError> {
-        for &op in ops {
-            let coin = self.table.get(&op).map_err(io_err)?;
-            out.push(LookupResult { outpoint: op, coin });
+        let mut coins: Vec<Option<Coin>> = Vec::new();
+        self.table
+            .get_batch_uring(ops, &mut coins, &mut self.ring)
+            .map_err(io_err)?;
+        for (i, &op) in ops.iter().enumerate() {
+            out.push(LookupResult {
+                outpoint: op,
+                coin: coins.get(i).cloned().flatten(),
+            });
         }
         Ok(())
     }
@@ -871,6 +997,36 @@ mod tests {
                 "{name} script round-trip failed"
             );
         }
+    }
+
+    #[test]
+    fn batched_uring_lookup() {
+        let tmp = TmpFile::new("uring-batch");
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), 64).unwrap();
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+
+        let count = 50u8;
+        for i in 0..count {
+            let op = make_op(i);
+            let coin = make_coin(u64::from(i) * 100, &[0x51]);
+            table.insert(&op, &coin).unwrap();
+        }
+
+        let ops: Vec<OutPoint> = (0..count).map(make_op).collect();
+        let mut results = Vec::new();
+        table.get_batch_uring(&ops, &mut results, &mut ring).unwrap();
+
+        assert_eq!(results.len(), count as usize);
+        for (i, result) in results.iter().enumerate() {
+            let coin = result.as_ref().unwrap();
+            assert_eq!(coin.value.to_u64(), i as u64 * 100);
+        }
+
+        // Also test miss: outpoints not in the table.
+        let miss_ops: Vec<OutPoint> = (200..210u8).map(make_op).collect();
+        let mut miss_results = Vec::new();
+        table.get_batch_uring(&miss_ops, &mut miss_results, &mut ring).unwrap();
+        assert!(miss_results.iter().all(Option::is_none));
     }
 
     // ── Engine integration tests ─────────────────────────────────────────

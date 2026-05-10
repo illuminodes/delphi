@@ -13,3 +13,4 @@ storage-dbg = []
 mantle = { path = "../core" }
 mantle-consensus = { path = "../consensus" }
 quetzalcoatl.workspace = true
+ququmatz.workspace = true
