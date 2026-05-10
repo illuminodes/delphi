@@ -923,6 +923,21 @@ fn decode_user_data(raw: u64) -> (u16, u8, u16) {
 }
 
 fn make_ring() -> Result<IoUring, FetchError> {
+    // `single_issuer` + `defer_taskrun` + `coop_taskrun` is the modern
+    // "tight event loop" combo: the kernel knows only one thread will
+    // submit, defers task-run work to the issuer thread (avoiding IPI
+    // wakeups), and lets us cooperatively reap CQEs without the kernel
+    // racing us. All three require Linux ≥ 6.0 in practice; older
+    // kernels return EINVAL on builder.build(), so we fall back to a
+    // bare `IoUring::new`.
+    if let Ok(ring) = IoUring::builder(RING_ENTRIES)
+        .single_issuer()
+        .defer_taskrun()
+        .coop_taskrun()
+        .build()
+    {
+        return Ok(ring);
+    }
     IoUring::new(RING_ENTRIES).map_err(|e| FetchError::UringErr(format!("IoUring::new: {e:?}")))
 }
 
@@ -1002,6 +1017,24 @@ fn push_recv(
 
 fn close_peer(ring: &mut IoUring, peer: &mut Peer) {
     if peer.fd >= 0 {
+        // Cancel the outstanding recv first so its CQE arrives with
+        // `-ECANCELED` rather than racing the close: the kernel matches
+        // `target_user_data` against pending SQEs and terminates the
+        // matching op cleanly. Without this, the recv may produce a
+        // surprising CQE *after* close completes, against an fd we
+        // believe to be released. The generation counter on user_data
+        // already protects against confusing late CQEs with new ones,
+        // so this is belt-and-suspenders — but cheap.
+        //
+        // Cancel target = the user_data we'd have used for that recv
+        // (slot is implicit in the peer's identity but we don't track
+        // it here; encode 0 as slot to match the pre-close `slot=…,
+        // op=OP_RECV` patterns that have already been submitted). The
+        // generation field is the discriminator that makes this match.
+        let _ = ring.push(
+            Sqe::cancel(make_user_data(0, peer.generation, OP_RECV))
+                .user_data(make_user_data(0, peer.generation, OP_CLOSE)),
+        );
         let _ = ring.push(
             Sqe::close(peer.fd).user_data(make_user_data(0, peer.generation, OP_CLOSE)),
         );
