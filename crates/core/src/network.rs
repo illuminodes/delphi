@@ -1,6 +1,6 @@
 use std::io::{self, Read, Write};
 
-use crate::codec::{Decode, DecodeRef, Encode, VarInt, decode_string_limited};
+use crate::codec::{Decode, DecodeRef, Encode, Error as CodecError, VarInt, decode_string_limited};
 use crate::hash::checksum;
 use crate::primitives::{BlockHeader, Hash256};
 
@@ -58,28 +58,33 @@ impl Magic {
     /// # Errors
     /// Returns `InvalidData` if the payload exceeds `u32::MAX` bytes, or any
     /// I/O error from writing to `w`.
-    pub fn frame(self, command: Command, payload: &[u8], w: &mut impl Write) -> io::Result<()> {
+    pub fn frame(
+        self,
+        command: Command,
+        payload: &[u8],
+        w: &mut impl Write,
+    ) -> Result<(), CodecError> {
         encode_message(self, command, payload, w)
     }
 }
 
 impl Encode for Magic {
     #[inline]
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(&self.bytes())
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
+        w.write_all(&self.bytes()).map_err(CodecError::Io)
     }
 }
 
 impl Decode for Magic {
     #[inline]
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         Ok(Self::classify(<[u8; 4]>::decode(r)?))
     }
 }
 
 impl<'a> DecodeRef<'a> for Magic {
     #[inline]
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
         let (b, tail) = <[u8; 4]>::decode_ref(buf)?;
         Ok((Self::classify(b), tail))
     }
@@ -430,16 +435,16 @@ impl MessageHeader {
 }
 
 impl Encode for MessageHeader {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
         self.magic.encode(w)?;
-        w.write_all(&self.command.0)?;
+        w.write_all(&self.command.0).map_err(CodecError::Io)?;
         self.length.encode(w)?;
-        w.write_all(&self.checksum)
+        w.write_all(&self.checksum).map_err(CodecError::Io)
     }
 }
 
 impl Decode for MessageHeader {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         let magic = Magic::decode(r)?;
         let command = CommandName(<[u8; 12]>::decode(r)?);
         let length = u32::decode(r)?;
@@ -454,7 +459,7 @@ impl Decode for MessageHeader {
 }
 
 impl<'a> DecodeRef<'a> for MessageHeader {
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
         let (magic, buf) = Magic::decode_ref(buf)?;
         let (cmd, buf) = <[u8; 12]>::decode_ref(buf)?;
         let (length, buf) = u32::decode_ref(buf)?;
@@ -480,16 +485,16 @@ pub fn encode_message(
     command: Command,
     payload: &[u8],
     w: &mut impl Write,
-) -> io::Result<()> {
+) -> Result<(), CodecError> {
     let header = MessageHeader {
         magic,
         command: CommandName::from(command),
         length: u32::try_from(payload.len())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?,
         checksum: checksum(payload),
     };
     header.encode(w)?;
-    w.write_all(payload)
+    w.write_all(payload).map_err(CodecError::Io)
 }
 
 // ── Services bitfield ─────────────────────────────────────────────────────────
@@ -514,20 +519,21 @@ pub struct NetworkAddr {
 }
 
 impl Encode for NetworkAddr {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
         self.services.encode(w)?;
-        w.write_all(&self.ip)?;
+        w.write_all(&self.ip).map_err(CodecError::Io)?;
         // port is big-endian on the wire
         w.write_all(&self.port.to_be_bytes())
+            .map_err(CodecError::Io)
     }
 }
 
 impl Decode for NetworkAddr {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         let services = u64::decode(r)?;
         let ip = <[u8; 16]>::decode(r)?;
         let mut port_bytes = [0u8; 2];
-        r.read_exact(&mut port_bytes)?;
+        r.read_exact(&mut port_bytes).map_err(CodecError::Io)?;
         Ok(Self {
             services,
             ip,
@@ -537,20 +543,17 @@ impl Decode for NetworkAddr {
 }
 
 impl<'a> DecodeRef<'a> for NetworkAddr {
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
         let (services, buf) = u64::decode_ref(buf)?;
         let (ip, buf) = <[u8; 16]>::decode_ref(buf)?;
         if buf.len() < 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "not enough bytes",
-            ));
+            return Err(CodecError::UnexpectedEof);
         }
         let (port_bytes, buf) = buf.split_at(2);
         let port = u16::from_be_bytes(
             port_bytes
                 .try_into()
-                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))?,
         );
         Ok((Self { services, ip, port }, buf))
     }
@@ -573,7 +576,7 @@ pub struct VersionMsg {
 }
 
 impl Encode for VersionMsg {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
         self.version.encode(w)?;
         self.services.encode(w)?;
         self.timestamp.encode(w)?;
@@ -587,7 +590,7 @@ impl Encode for VersionMsg {
 }
 
 impl Decode for VersionMsg {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         Ok(Self {
             version: i32::decode(r)?,
             services: u64::decode(r)?,
@@ -609,13 +612,13 @@ pub struct PingMsg {
 }
 
 impl Encode for PingMsg {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
         self.nonce.encode(w)
     }
 }
 
 impl Decode for PingMsg {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         Ok(Self {
             nonce: u64::decode(r)?,
         })
@@ -693,34 +696,31 @@ impl InvEntry {
 
 impl Encode for InvEntry {
     #[inline]
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(&self.to_bytes())
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
+        w.write_all(&self.to_bytes()).map_err(CodecError::Io)
     }
 }
 
 impl Decode for InvEntry {
     #[inline]
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         let mut buf = [0u8; Self::ENCODED_LEN];
-        r.read_exact(&mut buf)?;
+        r.read_exact(&mut buf).map_err(CodecError::Io)?;
         Ok(Self::from_bytes(&buf))
     }
 }
 
 impl<'a> DecodeRef<'a> for InvEntry {
     #[inline]
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
         if buf.len() < Self::ENCODED_LEN {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "not enough bytes",
-            ));
+            return Err(CodecError::UnexpectedEof);
         }
         let (head, tail) = buf.split_at(Self::ENCODED_LEN);
         Ok((
             Self::from_bytes(
                 head.try_into()
-                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                    .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))?,
             ),
             tail,
         ))
@@ -732,7 +732,7 @@ impl<'a> DecodeRef<'a> for InvEntry {
 pub struct InvMsg(pub Vec<InvEntry>);
 
 impl Encode for InvMsg {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
         VarInt(self.0.len() as u64).encode(w)?;
         for entry in &self.0 {
             entry.encode(w)?;
@@ -743,7 +743,7 @@ impl Encode for InvMsg {
 
 /// Zero-alloc lazy iterator over `InvEntry` values parsed from a raw byte slice.
 ///
-/// Created by [`InvMsg::iter_entries`]. Yields `io::Result<InvEntry>` so
+/// Created by [`InvMsg::iter_entries`]. Yields `Result<InvEntry, CodecError>` so
 /// the caller can handle truncation errors entry-by-entry.
 #[derive(Debug)]
 pub struct InvEntryIter<'a> {
@@ -753,7 +753,7 @@ pub struct InvEntryIter<'a> {
 }
 
 impl Iterator for InvEntryIter<'_> {
-    type Item = io::Result<InvEntry>;
+    type Item = Result<InvEntry, CodecError>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -762,17 +762,14 @@ impl Iterator for InvEntryIter<'_> {
         }
         if self.remaining.len() < InvEntry::ENCODED_LEN {
             self.left = 0; // prevent further iteration after error
-            return Some(Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "truncated inv entry",
-            )));
+            return Some(Err(CodecError::UnexpectedEof));
         }
         let (head, tail) = self.remaining.split_at(InvEntry::ENCODED_LEN);
         self.remaining = tail;
         self.left -= 1;
         Some(
             head.try_into()
-                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+                .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))
                 .map(InvEntry::from_bytes),
         )
     }
@@ -794,15 +791,17 @@ impl InvMsg {
     /// # Errors
     /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES` or if the `VarInt`
     /// cannot be decoded. Individual entries surface truncation errors as `Err` items.
-    pub fn iter_entries<const MAX_ENTRIES: usize>(buf: &[u8]) -> io::Result<InvEntryIter<'_>> {
+    pub fn iter_entries<const MAX_ENTRIES: usize>(
+        buf: &[u8],
+    ) -> Result<InvEntryIter<'_>, CodecError> {
         let (varint, rest) = VarInt::decode_ref(buf)?;
-        let count =
-            usize::try_from(varint.0).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let count = usize::try_from(varint.0)
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if count > MAX_ENTRIES {
-            return Err(io::Error::new(
+            return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "inv entry count exceeds limit",
-            ));
+            )));
         }
         Ok(InvEntryIter {
             remaining: rest,
@@ -813,28 +812,28 @@ impl InvMsg {
     /// # Errors
     /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES`, or on any I/O error.
     #[allow(clippy::missing_panics_doc)] // chunks_exact guarantees chunk size — unwrap cannot panic
-    pub fn decode_limited<const MAX_ENTRIES: usize>(r: &mut impl Read) -> io::Result<Self> {
+    pub fn decode_limited<const MAX_ENTRIES: usize>(r: &mut impl Read) -> Result<Self, CodecError> {
         let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if count > MAX_ENTRIES {
-            return Err(io::Error::new(
+            return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "inv entry count exceeds limit",
-            ));
+            )));
         }
         // Read all entry bytes in one shot, then decode via the zero-copy path.
         let byte_len = count * InvEntry::ENCODED_LEN;
         let mut buf = vec![0u8; byte_len];
-        r.read_exact(&mut buf)?;
+        r.read_exact(&mut buf).map_err(CodecError::Io)?;
         let entries = buf
             .chunks_exact(InvEntry::ENCODED_LEN)
             .map(|chunk| {
                 chunk
                     .try_into()
                     .map(InvEntry::from_bytes)
-                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+                    .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))
             })
-            .collect::<io::Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, CodecError>>()?;
         Ok(Self(entries))
     }
 
@@ -849,14 +848,14 @@ impl InvMsg {
     pub fn decode_into_limited<const MAX_ENTRIES: usize>(
         r: &mut impl Read,
         out: &mut Vec<InvEntry>,
-    ) -> io::Result<()> {
+    ) -> Result<(), CodecError> {
         let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if count > MAX_ENTRIES {
-            return Err(io::Error::new(
+            return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "inv entry count exceeds limit",
-            ));
+            )));
         }
         let byte_len = count * InvEntry::ENCODED_LEN;
         // Reuse a scratch buffer stored temporarily on the stack for small messages,
@@ -864,16 +863,16 @@ impl InvMsg {
         // owns `out`, not a byte scratch buffer. Use a thread-local would over-
         // engineer; just allocate the byte buf once and decode in-place.
         let mut buf = vec![0u8; byte_len];
-        r.read_exact(&mut buf)?;
+        r.read_exact(&mut buf).map_err(CodecError::Io)?;
         let entries = buf
             .chunks_exact(InvEntry::ENCODED_LEN)
             .map(|chunk| {
                 chunk
                     .try_into()
                     .map(InvEntry::from_bytes)
-                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+                    .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))
             })
-            .collect::<io::Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, CodecError>>()?;
         out.clear();
         out.extend(entries);
         Ok(())
@@ -881,7 +880,7 @@ impl InvMsg {
 }
 
 impl Decode for InvMsg {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         Self::decode_limited::<50_000>(r)
     }
 }
@@ -909,12 +908,12 @@ impl AddrEntry {
 }
 
 impl Decode for AddrEntry {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         let time = u32::decode(r)?;
         let services = u64::decode(r)?;
         let ip = <[u8; 16]>::decode(r)?;
         let mut port_bytes = [0u8; 2];
-        r.read_exact(&mut port_bytes)?;
+        r.read_exact(&mut port_bytes).map_err(CodecError::Io)?;
         Ok(Self {
             time,
             services,
@@ -938,14 +937,14 @@ impl AddrMsg {
 
     /// # Errors
     /// `InvalidData` if the entry count exceeds [`Self::MAX_ENTRIES`], or on I/O error.
-    pub fn decode_limited(r: &mut impl Read) -> io::Result<Self> {
+    pub fn decode_limited(r: &mut impl Read) -> Result<Self, CodecError> {
         let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if count > Self::MAX_ENTRIES {
-            return Err(io::Error::new(
+            return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "addr entry count exceeds MAX_ADDR_TO_SEND",
-            ));
+            )));
         }
         let mut entries = Vec::with_capacity(count);
         for _ in 0..count {
@@ -956,7 +955,7 @@ impl AddrMsg {
 }
 
 impl Decode for AddrMsg {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         Self::decode_limited(r)
     }
 }
@@ -978,7 +977,10 @@ pub enum AddrV2Addr {
     /// Forward-compat: a network-id byte we don't recognise. Address bytes
     /// preserved verbatim so the entry round-trips through serialisation if
     /// we ever re-encode. Bounded by [`AddrV2Addr::MAX_UNKNOWN_LEN`] on decode.
-    Unknown { network_id: u8, addr: Vec<u8> },
+    Unknown {
+        network_id: u8,
+        addr: Vec<u8>,
+    },
 }
 
 impl AddrV2Addr {
@@ -1012,23 +1014,23 @@ impl AddrV2Addr {
     /// `InvalidData` if a defined network ID arrives with an address length
     /// other than the BIP155-mandated size, or if an `Unknown` entry exceeds
     /// [`Self::MAX_UNKNOWN_LEN`], or on I/O error.
-    pub fn decode(r: &mut impl Read) -> io::Result<Self> {
+    pub fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         let mut nid = [0u8; 1];
-        r.read_exact(&mut nid)?;
+        r.read_exact(&mut nid).map_err(CodecError::Io)?;
         let addr_len = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if let Some(expected) = Self::expected_len(nid[0]) {
             if addr_len != expected {
-                return Err(io::Error::new(
+                return Err(CodecError::Io(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "addrv2 addr length does not match network_id",
-                ));
+                )));
             }
         } else if addr_len > Self::MAX_UNKNOWN_LEN {
-            return Err(io::Error::new(
+            return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "addrv2 addr length exceeds MAX_UNKNOWN_LEN",
-            ));
+            )));
         }
 
         // Defined networks decode into stack-resident fixed arrays; only the
@@ -1036,37 +1038,37 @@ impl AddrV2Addr {
         match nid[0] {
             0x01 => {
                 let mut a = [0u8; 4];
-                r.read_exact(&mut a)?;
+                r.read_exact(&mut a).map_err(CodecError::Io)?;
                 Ok(Self::Ipv4(a))
             }
             0x02 => {
                 let mut a = [0u8; 16];
-                r.read_exact(&mut a)?;
+                r.read_exact(&mut a).map_err(CodecError::Io)?;
                 Ok(Self::Ipv6(a))
             }
             0x03 => {
                 let mut a = [0u8; 10];
-                r.read_exact(&mut a)?;
+                r.read_exact(&mut a).map_err(CodecError::Io)?;
                 Ok(Self::TorV2(a))
             }
             0x04 => {
                 let mut a = [0u8; 32];
-                r.read_exact(&mut a)?;
+                r.read_exact(&mut a).map_err(CodecError::Io)?;
                 Ok(Self::TorV3(a))
             }
             0x05 => {
                 let mut a = [0u8; 32];
-                r.read_exact(&mut a)?;
+                r.read_exact(&mut a).map_err(CodecError::Io)?;
                 Ok(Self::I2p(a))
             }
             0x06 => {
                 let mut a = [0u8; 16];
-                r.read_exact(&mut a)?;
+                r.read_exact(&mut a).map_err(CodecError::Io)?;
                 Ok(Self::Cjdns(a))
             }
             n => {
                 let mut buf = vec![0u8; addr_len];
-                r.read_exact(&mut buf)?;
+                r.read_exact(&mut buf).map_err(CodecError::Io)?;
                 Ok(Self::Unknown {
                     network_id: n,
                     addr: buf,
@@ -1102,12 +1104,12 @@ impl AddrV2Entry {
 }
 
 impl Decode for AddrV2Entry {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         let time = u32::decode(r)?;
         let services = VarInt::decode(r)?.0;
         let addr = AddrV2Addr::decode(r)?;
         let mut port_bytes = [0u8; 2];
-        r.read_exact(&mut port_bytes)?;
+        r.read_exact(&mut port_bytes).map_err(CodecError::Io)?;
         Ok(Self {
             time,
             services,
@@ -1127,14 +1129,14 @@ impl AddrV2Msg {
 
     /// # Errors
     /// `InvalidData` if the entry count exceeds [`Self::MAX_ENTRIES`], or on I/O error.
-    pub fn decode_limited(r: &mut impl Read) -> io::Result<Self> {
+    pub fn decode_limited(r: &mut impl Read) -> Result<Self, CodecError> {
         let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if count > Self::MAX_ENTRIES {
-            return Err(io::Error::new(
+            return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "addrv2 entry count exceeds MAX_ADDR_TO_SEND",
-            ));
+            )));
         }
         let mut entries = Vec::with_capacity(count);
         for _ in 0..count {
@@ -1145,7 +1147,7 @@ impl AddrV2Msg {
 }
 
 impl Decode for AddrV2Msg {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         Self::decode_limited(r)
     }
 }
@@ -1159,7 +1161,7 @@ pub struct GetHeadersMsg {
 }
 
 impl Encode for GetHeadersMsg {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
         self.version.encode(w)?;
         VarInt(self.locator_hashes.len() as u64).encode(w)?;
         for h in &self.locator_hashes {
@@ -1199,15 +1201,17 @@ impl GetHeadersMsg {
 
     /// # Errors
     /// Returns `InvalidData` if the locator count exceeds `MAX_LOCATORS`, or on any I/O error.
-    pub fn decode_limited<const MAX_LOCATORS: usize>(r: &mut impl Read) -> io::Result<Self> {
+    pub fn decode_limited<const MAX_LOCATORS: usize>(
+        r: &mut impl Read,
+    ) -> Result<Self, CodecError> {
         let version = u32::decode(r)?;
         let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if count > MAX_LOCATORS {
-            return Err(io::Error::new(
+            return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "locator count exceeds limit",
-            ));
+            )));
         }
         let mut locator_hashes = Vec::with_capacity(count);
         for _ in 0..count {
@@ -1223,7 +1227,7 @@ impl GetHeadersMsg {
 }
 
 impl Decode for GetHeadersMsg {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         Self::decode_limited::<2_000>(r)
     }
 }
@@ -1234,11 +1238,11 @@ impl Decode for GetHeadersMsg {
 pub struct HeadersMsg(pub Vec<BlockHeader>);
 
 impl Encode for HeadersMsg {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
         VarInt(self.0.len() as u64).encode(w)?;
         for header in &self.0 {
             header.encode(w)?;
-            w.write_all(&[0x00])?; // tx_count placeholder (always zero)
+            w.write_all(&[0x00]).map_err(CodecError::Io)?; // tx_count placeholder (always zero)
         }
         Ok(())
     }
@@ -1256,7 +1260,7 @@ pub struct BlockHeaderIter<'a> {
 }
 
 impl Iterator for BlockHeaderIter<'_> {
-    type Item = io::Result<BlockHeader>;
+    type Item = Result<BlockHeader, CodecError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.left == 0 {
@@ -1264,15 +1268,12 @@ impl Iterator for BlockHeaderIter<'_> {
         }
         if self.remaining.len() < BlockHeader::ENCODED_LEN {
             self.left = 0;
-            return Some(Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "truncated block header",
-            )));
+            return Some(Err(CodecError::UnexpectedEof));
         }
         let (head, tail) = self.remaining.split_at(BlockHeader::ENCODED_LEN);
         let arr = match head
             .try_into()
-            .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+            .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))
         {
             Ok(a) => a,
             Err(e) => {
@@ -1318,15 +1319,17 @@ impl HeadersMsg {
     /// # Errors
     /// Returns `InvalidData` if the header count exceeds `MAX_HEADERS` or if the `VarInt`
     /// cannot be decoded. Individual entries surface truncation errors as `Err` items.
-    pub fn iter_entries<const MAX_HEADERS: usize>(buf: &[u8]) -> io::Result<BlockHeaderIter<'_>> {
+    pub fn iter_entries<const MAX_HEADERS: usize>(
+        buf: &[u8],
+    ) -> Result<BlockHeaderIter<'_>, CodecError> {
         let (varint, rest) = VarInt::decode_ref(buf)?;
-        let count =
-            usize::try_from(varint.0).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let count = usize::try_from(varint.0)
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if count > MAX_HEADERS {
-            return Err(io::Error::new(
+            return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "header count exceeds limit",
-            ));
+            )));
         }
         Ok(BlockHeaderIter {
             remaining: rest,
@@ -1336,14 +1339,14 @@ impl HeadersMsg {
 
     /// # Errors
     /// Returns `InvalidData` if the header count exceeds `MAX_HEADERS`, or on any I/O error.
-    pub fn decode_limited<const MAX_HEADERS: usize>(r: &mut impl Read) -> io::Result<Self> {
+    pub fn decode_limited<const MAX_HEADERS: usize>(r: &mut impl Read) -> Result<Self, CodecError> {
         let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if count > MAX_HEADERS {
-            return Err(io::Error::new(
+            return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "header count exceeds limit",
-            ));
+            )));
         }
         let mut headers = Vec::with_capacity(count);
         for _ in 0..count {
@@ -1363,14 +1366,14 @@ impl HeadersMsg {
     pub fn decode_into_limited<const MAX_HEADERS: usize>(
         r: &mut impl Read,
         out: &mut Vec<BlockHeader>,
-    ) -> io::Result<()> {
+    ) -> Result<(), CodecError> {
         let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if count > MAX_HEADERS {
-            return Err(io::Error::new(
+            return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "header count exceeds limit",
-            ));
+            )));
         }
         out.clear();
         for _ in 0..count {
@@ -1382,7 +1385,7 @@ impl HeadersMsg {
 }
 
 impl Decode for HeadersMsg {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         Self::decode_limited::<2_000>(r)
     }
 }
@@ -1422,7 +1425,9 @@ mod tests {
     fn testnet4_genesis_header_hashes_correctly() {
         // Same load-bearing role as the mainnet test: tying the literal
         // header bytes to the documented testnet4 genesis hash.
-        let hdr = Network::Testnet4.genesis_header().expect("testnet4 has one");
+        let hdr = Network::Testnet4
+            .genesis_header()
+            .expect("testnet4 has one");
         assert_eq!(hdr.hash(), Network::Testnet4.genesis_hash());
     }
 
@@ -1580,16 +1585,12 @@ mod tests {
         // entry 0: time=1, services=NODE_NETWORK, ip=::ffff:1.2.3.4, port=18333
         bytes.extend_from_slice(&1u32.to_le_bytes());
         bytes.extend_from_slice(&services::NODE_NETWORK.to_le_bytes());
-        bytes.extend_from_slice(&[
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4,
-        ]);
+        bytes.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4]);
         bytes.extend_from_slice(&18_333u16.to_be_bytes());
         // entry 1: same shape, different ip/port
         bytes.extend_from_slice(&2u32.to_le_bytes());
         bytes.extend_from_slice(&services::NODE_NETWORK.to_le_bytes());
-        bytes.extend_from_slice(&[
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0, 5, 6, 7, 8,
-        ]);
+        bytes.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0, 5, 6, 7, 8]);
         bytes.extend_from_slice(&8333u16.to_be_bytes());
 
         let msg = decode::<AddrMsg>(&bytes);
@@ -1724,7 +1725,7 @@ mod tests {
 
     // ── Adversarial / edge-case tests ─────────────────────────────────────────
 
-    fn decode_err<T: Decode + std::fmt::Debug>(bytes: &[u8]) -> std::io::Error {
+    fn decode_err<T: Decode + std::fmt::Debug>(bytes: &[u8]) -> CodecError {
         T::decode(&mut std::io::Cursor::new(bytes)).unwrap_err()
     }
 
@@ -1732,7 +1733,7 @@ mod tests {
     #[test]
     fn message_header_truncated_at_magic() {
         let e = decode_err::<MessageHeader>(&[0xf9, 0xbe]);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
     }
 
     #[test]
@@ -1740,7 +1741,7 @@ mod tests {
         // 4 magic bytes, then only 6 of the 12 command bytes.
         let buf = [0xf9, 0xbe, 0xb4, 0xd9, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f];
         let e = decode_err::<MessageHeader>(&buf);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
     }
 
     #[test]
@@ -1749,7 +1750,7 @@ mod tests {
         let mut buf = vec![0u8; 18];
         buf[0..4].copy_from_slice(&Magic::Mainnet.bytes());
         let e = decode_err::<MessageHeader>(&buf);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
     }
 
     // MessageHeader: exactly 24 bytes decodes without error.
@@ -1853,7 +1854,7 @@ mod tests {
         // 8 services bytes + 8 of 16 IP bytes.
         let buf = [0u8; 16];
         let e = decode_err::<NetworkAddr>(&buf);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
     }
 
     // NetworkAddr: truncated port (only 1 of 2 bytes).
@@ -1861,7 +1862,7 @@ mod tests {
     fn network_addr_truncated_port() {
         let buf = [0u8; 25]; // 8 + 16 + 1 = 25, needs 26
         let e = decode_err::<NetworkAddr>(&buf);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
     }
 
     // InvMsg: zero entries is a valid message.
@@ -1902,7 +1903,7 @@ mod tests {
         // Truncate to cut off the second entry.
         bytes.truncate(1 + 36); // VarInt(2) + one full entry
         let e = decode_err::<InvMsg>(&bytes);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
     }
 
     // GetHeadersMsg: zero locator hashes is valid.
@@ -1928,7 +1929,7 @@ mod tests {
         let mut bytes = encode(&msg);
         bytes.truncate(bytes.len() - 1); // shave one byte off stop_hash
         let e = decode_err::<GetHeadersMsg>(&bytes);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
     }
 
     // HeadersMsg: zero headers is valid.
@@ -1979,7 +1980,7 @@ mod tests {
         let mut bytes = encode(&HeadersMsg(vec![header]));
         bytes.truncate(bytes.len() - 5); // truncate inside the header
         let e = decode_err::<HeadersMsg>(&bytes);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
     }
 
     // VersionMsg: extreme field values round-trip without panic.
@@ -2031,7 +2032,7 @@ mod tests {
         bytes[ua_offset + 1] = 0xff; // corrupt first byte of "ok"
         bytes[ua_offset + 2] = 0xfe;
         let e = decode_err::<VersionMsg>(&bytes);
-        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert!(matches!(e, CodecError::InvalidUtf8(_) | CodecError::Io(_)));
     }
 
     // PingMsg: zero nonce is valid.
@@ -2054,7 +2055,7 @@ mod tests {
     #[test]
     fn ping_truncated() {
         let e = decode_err::<PingMsg>(&[0x00; 4]); // needs 8 bytes
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
     }
 
     // ── InvMsg iterator and reuse paths ───────────────────────────────────────
@@ -2124,7 +2125,10 @@ mod tests {
         ]);
         let bytes = encode(&inv);
         let err = InvMsg::iter_entries::<1>(&bytes).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(matches!(
+            err,
+            CodecError::Io(_) | CodecError::LengthOverflow(_)
+        ));
     }
 
     #[test]
@@ -2144,13 +2148,12 @@ mod tests {
         let mut iter = InvMsg::iter_entries::<50_000>(&bytes)
             .expect("iter_entries must succeed on valid bytes");
         assert!(iter.next().expect("first entry must be present").is_ok());
-        assert_eq!(
+        assert!(matches!(
             iter.next()
                 .expect("second entry must be present")
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::UnexpectedEof
-        );
+                .unwrap_err(),
+            CodecError::UnexpectedEof | CodecError::Io(_)
+        ));
         assert!(iter.next().is_none()); // stops after error
     }
 
@@ -2196,7 +2199,10 @@ mod tests {
         let mut buf = Vec::new();
         let err = InvMsg::decode_into_limited::<1>(&mut std::io::Cursor::new(&bytes), &mut buf)
             .unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(matches!(
+            err,
+            CodecError::Io(_) | CodecError::LengthOverflow(_)
+        ));
     }
 
     // ── HeadersMsg iterator and reuse paths ───────────────────────────────────
@@ -2246,7 +2252,10 @@ mod tests {
         let msg = HeadersMsg(vec![sample_header(0), sample_header(1)]);
         let bytes = encode(&msg);
         let err = HeadersMsg::iter_entries::<1>(&bytes).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(matches!(
+            err,
+            CodecError::Io(_) | CodecError::LengthOverflow(_)
+        ));
     }
 
     #[test]
@@ -2258,13 +2267,12 @@ mod tests {
         let mut iter = HeadersMsg::iter_entries::<2_000>(&bytes)
             .expect("iter_entries must succeed on valid bytes");
         assert!(iter.next().expect("first entry must be present").is_ok());
-        assert_eq!(
+        assert!(matches!(
             iter.next()
                 .expect("second entry must be present")
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::UnexpectedEof
-        );
+                .unwrap_err(),
+            CodecError::UnexpectedEof | CodecError::Io(_)
+        ));
         assert!(iter.next().is_none());
     }
 
@@ -2291,6 +2299,9 @@ mod tests {
         let mut buf = Vec::new();
         let err = HeadersMsg::decode_into_limited::<1>(&mut std::io::Cursor::new(&bytes), &mut buf)
             .unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(matches!(
+            err,
+            CodecError::Io(_) | CodecError::LengthOverflow(_)
+        ));
     }
 }

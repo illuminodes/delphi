@@ -309,8 +309,16 @@ pub fn replay_block_ref(
 
     let view = BenchView::new(&coins, snap, tip, dummy_on_miss);
     let mut scratch = Vec::new();
-    let result = connect_block(&block_ref, height, &view, &mut scratch, true, Some(cache), Some(&txids))
-        .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+    let result = connect_block(
+        &block_ref,
+        height,
+        &view,
+        &mut scratch,
+        true,
+        Some(cache),
+        Some(&txids),
+    )
+    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage
         .commit_block_borrowed(CommitBlockReq {
@@ -329,7 +337,11 @@ pub fn replay_block_ref(
 
 fn build_ref_outpoints(
     block_ref: &BlockRef<'_>,
-) -> (Vec<Hash256>, PrehashedMap<OutPoint, Option<Coin>>, Vec<OutPoint>) {
+) -> (
+    Vec<Hash256>,
+    PrehashedMap<OutPoint, Option<Coin>>,
+    Vec<OutPoint>,
+) {
     let tx_count = block_ref.tx_count();
     let total_inputs: usize = block_ref
         .transactions()
@@ -340,13 +352,18 @@ fn build_ref_outpoints(
     let mut hash_scratch = Vec::new();
     let mut txids: Vec<Hash256> = Vec::with_capacity(tx_count);
     for tx in block_ref.transactions() {
-        txids.push(tx.txid_into(&mut hash_scratch).expect("txid hash never fails"));
+        txids.push(
+            tx.txid_into(&mut hash_scratch)
+                .expect("txid hash never fails"),
+        );
     }
 
     let mut spent_set: PrehashedSet<OutPoint> =
         PrehashedSet::with_capacity_and_hasher(total_inputs, BuildPrehashedHasher);
     for tx in block_ref.transactions().skip(1) {
-        for i in tx.inputs().flatten() { spent_set.insert(i.previous_output); }
+        for i in tx.inputs().flatten() {
+            spent_set.insert(i.previous_output);
+        }
     }
 
     let mut intra: PrehashedMap<OutPoint, Option<Coin>> =
@@ -355,15 +372,23 @@ fn build_ref_outpoints(
         let txid = txids[tx_index];
         for (vout, output) in tx.outputs().enumerate() {
             let Ok(out) = output else { continue };
-            let Ok(vout_u32) = u32::try_from(vout) else { continue };
-            let op = OutPoint { txid, vout: vout_u32 };
+            let Ok(vout_u32) = u32::try_from(vout) else {
+                continue;
+            };
+            let op = OutPoint {
+                txid,
+                vout: vout_u32,
+            };
             if spent_set.contains(&op) {
-                intra.insert(op, Some(Coin {
-                    value: out.value,
-                    script_pubkey: out.script_pubkey.into(),
-                    height: BlockHeight::ZERO,
-                    coinbase: tx_index == 0,
-                }));
+                intra.insert(
+                    op,
+                    Some(Coin {
+                        value: out.value,
+                        script_pubkey: out.script_pubkey.into(),
+                        height: BlockHeight::ZERO,
+                        coinbase: tx_index == 0,
+                    }),
+                );
             }
         }
     }
@@ -435,7 +460,7 @@ impl BenchReplayBufs {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn replay_block_ref_reusing(
     wire: &[u8],
     height: BlockHeight,
@@ -460,27 +485,40 @@ pub fn replay_block_ref_reusing(
         .sum();
 
     for tx in block_ref.transactions() {
-        bufs.txids.push(tx.txid_into(&mut bufs.hash_scratch).expect("txid hash never fails"));
+        bufs.txids.push(
+            tx.txid_into(&mut bufs.hash_scratch)
+                .expect("txid hash never fails"),
+        );
     }
 
     bufs.spent_set.reserve(total_inputs);
     for tx in block_ref.transactions().skip(1) {
-        for i in tx.inputs().flatten() { bufs.spent_set.insert(i.previous_output); }
+        for i in tx.inputs().flatten() {
+            bufs.spent_set.insert(i.previous_output);
+        }
     }
 
     for (tx_index, tx) in block_ref.transactions().enumerate() {
         let txid = bufs.txids[tx_index];
         for (vout, output) in tx.outputs().enumerate() {
             let Ok(out) = output else { continue };
-            let Ok(vout_u32) = u32::try_from(vout) else { continue };
-            let op = OutPoint { txid, vout: vout_u32 };
+            let Ok(vout_u32) = u32::try_from(vout) else {
+                continue;
+            };
+            let op = OutPoint {
+                txid,
+                vout: vout_u32,
+            };
             if bufs.spent_set.contains(&op) {
-                bufs.intra.insert(op, Some(Coin {
-                    value: out.value,
-                    script_pubkey: out.script_pubkey.into(),
-                    height: BlockHeight::ZERO,
-                    coinbase: tx_index == 0,
-                }));
+                bufs.intra.insert(
+                    op,
+                    Some(Coin {
+                        value: out.value,
+                        script_pubkey: out.script_pubkey.into(),
+                        height: BlockHeight::ZERO,
+                        coinbase: tx_index == 0,
+                    }),
+                );
             }
         }
     }
@@ -523,8 +561,16 @@ pub fn replay_block_ref_reusing(
 
     let view = BenchView::new(&bufs.coins, snap, tip, dummy_on_miss);
     bufs.connect_scratch.clear();
-    let result = connect_block(&block_ref, height, &view, &mut bufs.connect_scratch, true, Some(cache), Some(&bufs.txids))
-        .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+    let result = connect_block(
+        &block_ref,
+        height,
+        &view,
+        &mut bufs.connect_scratch,
+        true,
+        Some(cache),
+        Some(&bufs.txids),
+    )
+    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage
         .commit_block_borrowed(CommitBlockReq {

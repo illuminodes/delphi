@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 
-use crate::codec::{Decode, DecodeRef, Encode, VarInt, decode_bytes_limited};
+use crate::codec::{Decode, DecodeRef, Encode, Error, VarInt, decode_bytes_limited};
 use crate::hash::ByteSliceExt;
 
 // ── Hash256 ───────────────────────────────────────────────────────────────────
@@ -81,14 +81,15 @@ impl fmt::Display for Hash256 {
 
 impl Encode for Hash256 {
     #[inline]
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(&self.0)
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+        w.write_all(&self.0)?;
+        Ok(())
     }
 }
 
 impl Decode for Hash256 {
     #[inline]
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         let mut buf = [0u8; 32];
         r.read_exact(&mut buf)?;
         Ok(Self(buf))
@@ -97,19 +98,13 @@ impl Decode for Hash256 {
 
 impl<'a> DecodeRef<'a> for Hash256 {
     #[inline]
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         if buf.len() < 32 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "not enough bytes",
-            ));
+            return Err(Error::UnexpectedEof);
         }
         let (head, tail) = buf.split_at(32);
         Ok((
-            Self(
-                head.try_into()
-                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
-            ),
+            Self(head.try_into().map_err(|_| Error::UnexpectedEof)?),
             tail,
         ))
     }
@@ -139,21 +134,21 @@ impl From<CompactBits> for u32 {
 
 impl Encode for CompactBits {
     #[inline]
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         self.0.encode(w)
     }
 }
 
 impl Decode for CompactBits {
     #[inline]
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         u32::decode(r).map(Self)
     }
 }
 
 impl<'a> DecodeRef<'a> for CompactBits {
     #[inline]
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         u32::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
     }
 }
@@ -353,21 +348,21 @@ impl fmt::Display for Satoshi {
 
 impl Encode for Satoshi {
     #[inline]
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         self.0.encode(w)
     }
 }
 
 impl Decode for Satoshi {
     #[inline]
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         u64::decode(r).map(Self)
     }
 }
 
 impl<'a> DecodeRef<'a> for Satoshi {
     #[inline]
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         u64::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
     }
 }
@@ -411,7 +406,7 @@ impl BlockHeader {
     /// # Errors
     /// Returns an error if the bytes are malformed (in practice, never for a
     /// fixed-size 80-byte input).
-    pub fn from_bytes(b: &[u8; Self::ENCODED_LEN]) -> io::Result<Self> {
+    pub fn from_bytes(b: &[u8; Self::ENCODED_LEN]) -> Result<Self, Error> {
         let mut r = b.as_slice();
         let version = i32::decode(&mut r)?;
         let prev_block = Hash256::decode(&mut r)?;
@@ -432,7 +427,7 @@ impl BlockHeader {
 
 impl Encode for BlockHeader {
     #[inline]
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         self.version.encode(w)?;
         self.prev_block.encode(w)?;
         self.merkle_root.encode(w)?;
@@ -444,7 +439,7 @@ impl Encode for BlockHeader {
 
 impl Decode for BlockHeader {
     #[inline]
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         let mut buf = [0u8; Self::ENCODED_LEN];
         r.read_exact(&mut buf)?;
         Self::from_bytes(&buf)
@@ -453,19 +448,13 @@ impl Decode for BlockHeader {
 
 impl<'a> DecodeRef<'a> for BlockHeader {
     #[inline]
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         if buf.len() < Self::ENCODED_LEN {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "not enough bytes",
-            ));
+            return Err(Error::UnexpectedEof);
         }
         let (head, tail) = buf.split_at(Self::ENCODED_LEN);
         Ok((
-            Self::from_bytes(
-                head.try_into()
-                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
-            )?,
+            Self::from_bytes(head.try_into().map_err(|_| Error::UnexpectedEof)?)?,
             tail,
         ))
     }
@@ -497,14 +486,14 @@ impl OutPoint {
 }
 
 impl Encode for OutPoint {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         self.txid.encode(w)?;
         self.vout.encode(w)
     }
 }
 
 impl Decode for OutPoint {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         Ok(Self {
             txid: Hash256::decode(r)?,
             vout: u32::decode(r)?,
@@ -513,7 +502,7 @@ impl Decode for OutPoint {
 }
 
 impl<'a> DecodeRef<'a> for OutPoint {
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let (txid, buf) = Hash256::decode_ref(buf)?;
         let (vout, buf) = u32::decode_ref(buf)?;
         Ok((Self { txid, vout }, buf))
@@ -636,15 +625,16 @@ impl<const N: usize> fmt::Debug for ScriptBuf<N> {
 }
 
 impl<const N: usize> Encode for ScriptBuf<N> {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         let s = self.as_slice();
         VarInt(s.len() as u64).encode(w)?;
-        w.write_all(s)
+        w.write_all(s)?;
+        Ok(())
     }
 }
 
 impl<const N: usize> Decode for ScriptBuf<N> {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         decode_bytes_limited::<10_000>(r).map(Self::from)
     }
 }
@@ -857,7 +847,7 @@ impl<const ITEMS: usize, const BYTES: usize> fmt::Debug for WitnessBuf<ITEMS, BY
 }
 
 impl<const ITEMS: usize, const BYTES: usize> Encode for WitnessBuf<ITEMS, BYTES> {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         VarInt(self.len() as u64).encode(w)?;
         for item in self {
             VarInt(item.len() as u64).encode(w)?;
@@ -868,9 +858,9 @@ impl<const ITEMS: usize, const BYTES: usize> Encode for WitnessBuf<ITEMS, BYTES>
 }
 
 impl<const ITEMS: usize, const BYTES: usize> Decode for WitnessBuf<ITEMS, BYTES> {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
-        let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
+        let n = VarInt::decode(r)?.0;
+        let count = usize::try_from(n).map_err(|_| Error::LengthOverflow(n))?;
         let mut items: Vec<Vec<u8>> = Vec::with_capacity(count.min(16));
         for _ in 0..count {
             // Witness stack items have no per-item consensus size limit (unlike
@@ -905,7 +895,7 @@ pub struct TxIn {
 impl Encode for TxIn {
     /// Non-witness serialisation: outpoint + scriptSig + sequence.
     /// Witness data is serialised separately by `Transaction::encode`.
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         self.previous_output.encode(w)?;
         self.script_sig.encode(w)?;
         self.sequence.encode(w)
@@ -915,7 +905,7 @@ impl Encode for TxIn {
 impl Decode for TxIn {
     /// Decodes the non-witness fields only. Use `Transaction::decode` to
     /// parse a full BIP144 witness transaction including witness stacks.
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         Ok(Self {
             previous_output: OutPoint::decode(r)?,
             script_sig: ScriptSig::decode(r)?,
@@ -934,7 +924,7 @@ pub struct TxInRef<'a> {
 }
 
 impl<'a> DecodeRef<'a> for TxInRef<'a> {
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let (previous_output, buf) = OutPoint::decode_ref(buf)?;
         let (script_sig, buf) = <&'a [u8]>::decode_ref(buf)?;
         let (sequence, buf) = u32::decode_ref(buf)?;
@@ -958,14 +948,14 @@ pub struct TxOut {
 }
 
 impl Encode for TxOut {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         self.value.encode(w)?;
         self.script_pubkey.encode(w)
     }
 }
 
 impl Decode for TxOut {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         Ok(Self {
             value: Satoshi::decode(r)?,
             script_pubkey: ScriptPubKey::decode(r)?,
@@ -981,7 +971,7 @@ pub struct TxOutRef<'a> {
 }
 
 impl<'a> DecodeRef<'a> for TxOutRef<'a> {
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let (value, buf) = Satoshi::decode_ref(buf)?;
         let (script_pubkey, buf) = <&'a [u8]>::decode_ref(buf)?;
         Ok((
@@ -1012,13 +1002,13 @@ pub trait TxHash {
     /// # Errors
     /// Propagates any I/O error from encoding (encoding into `Vec<u8>` never
     /// fails in practice).
-    fn txid_into(&self, buf: &mut Vec<u8>) -> io::Result<Hash256>;
+    fn txid_into(&self, buf: &mut Vec<u8>) -> Result<Hash256, Error>;
 
     /// Compute the txid, allocating a fresh buffer internally.
     ///
     /// # Errors
     /// Propagates any I/O error from encoding.
-    fn txid(&self) -> io::Result<Hash256> {
+    fn txid(&self) -> Result<Hash256, Error> {
         self.txid_into(&mut Vec::new())
     }
 }
@@ -1034,7 +1024,7 @@ pub struct Transaction {
 }
 
 impl TxHash for Transaction {
-    fn txid_into(&self, buf: &mut Vec<u8>) -> io::Result<Hash256> {
+    fn txid_into(&self, buf: &mut Vec<u8>) -> Result<Hash256, Error> {
         buf.clear();
         buf.reserve(self.base_encoded_len());
         self.encode_base(buf)?;
@@ -1123,7 +1113,7 @@ impl Transaction {
 
     /// Write the non-witness serialisation (version, inputs, outputs, locktime).
     /// Used for txid computation and as the base of BIP144 encoding.
-    fn encode_base(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode_base(&self, w: &mut impl Write) -> Result<(), Error> {
         self.version.encode(w)?;
         VarInt(self.inputs.len() as u64).encode(w)?;
         for input in &self.inputs {
@@ -1140,7 +1130,7 @@ impl Transaction {
 impl Encode for Transaction {
     /// BIP144 serialisation: non-witness form for legacy transactions; marker +
     /// flag + per-input witness stacks appended after outputs for segwit ones.
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         if !self.is_segwit() {
             return self.encode_base(w);
         }
@@ -1169,7 +1159,7 @@ impl Transaction {
     /// Returns `InvalidData` if either list count exceeds its cap, or on any I/O error.
     pub fn decode_limited<const MAX_INPUTS: usize, const MAX_OUTPUTS: usize>(
         r: &mut impl Read,
-    ) -> io::Result<Self> {
+    ) -> Result<Self, Error> {
         let version = i32::decode(r)?;
 
         // BIP144: read the input-count VarInt byte. If it is 0x00 we may be
@@ -1182,8 +1172,8 @@ impl Transaction {
             let flag = u8::decode(r)?;
             if flag == 0x01 {
                 // Segwit: read the real input count.
-                let n = usize::try_from(VarInt::decode(r)?.0)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let raw = VarInt::decode(r)?.0;
+                let n = usize::try_from(raw).map_err(|_| Error::LengthOverflow(raw))?;
                 (true, n, None)
             } else {
                 // Legacy 0-input tx: `first`=0x00 was the input count (0
@@ -1191,16 +1181,13 @@ impl Transaction {
                 (false, 0usize, Some(flag))
             }
         } else {
-            let n = usize::try_from(VarInt::decode_from_first_byte(first, r)?.0)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let raw = VarInt::decode_from_first_byte(first, r)?.0;
+            let n = usize::try_from(raw).map_err(|_| Error::LengthOverflow(raw))?;
             (false, n, None)
         };
 
         if input_count > MAX_INPUTS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "input count exceeds limit",
-            ));
+            return Err(Error::LengthOverflow(input_count as u64));
         }
         let mut inputs = Vec::with_capacity(input_count);
         for _ in 0..input_count {
@@ -1208,17 +1195,14 @@ impl Transaction {
         }
 
         let output_count = if let Some(b) = legacy_output_count_first {
-            usize::try_from(VarInt::decode_from_first_byte(b, r)?.0)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            let raw = VarInt::decode_from_first_byte(b, r)?.0;
+            usize::try_from(raw).map_err(|_| Error::LengthOverflow(raw))?
         } else {
-            usize::try_from(VarInt::decode(r)?.0)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            let raw = VarInt::decode(r)?.0;
+            usize::try_from(raw).map_err(|_| Error::LengthOverflow(raw))?
         };
         if output_count > MAX_OUTPUTS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "output count exceeds limit",
-            ));
+            return Err(Error::LengthOverflow(output_count as u64));
         }
         let mut outputs = Vec::with_capacity(output_count);
         for _ in 0..output_count {
@@ -1242,7 +1226,7 @@ impl Transaction {
 }
 
 impl Decode for Transaction {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         Self::decode_limited::<10_000, 10_000>(r)
     }
 }
@@ -1257,7 +1241,7 @@ pub struct TxInRefIter<'a> {
 }
 
 impl<'a> Iterator for TxInRefIter<'a> {
-    type Item = io::Result<TxInRef<'a>>;
+    type Item = Result<TxInRef<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -1289,7 +1273,7 @@ pub struct TxOutRefIter<'a> {
 }
 
 impl<'a> Iterator for TxOutRefIter<'a> {
-    type Item = io::Result<TxOutRef<'a>>;
+    type Item = Result<TxOutRef<'a>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -1392,7 +1376,7 @@ impl<'a> TransactionRef<'a> {
     ///
     /// # Errors
     /// Returns an error if any input or output is malformed.
-    pub fn to_owned(self) -> io::Result<Transaction> {
+    pub fn to_owned(self) -> Result<Transaction, Error> {
         let inputs = self
             .inputs()
             .map(|r| {
@@ -1403,7 +1387,7 @@ impl<'a> TransactionRef<'a> {
                     witness: Witness::empty(),
                 })
             })
-            .collect::<io::Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
         let outputs = self
             .outputs()
             .map(|r| {
@@ -1412,7 +1396,7 @@ impl<'a> TransactionRef<'a> {
                     script_pubkey: o.script_pubkey.to_vec().into(),
                 })
             })
-            .collect::<io::Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
         Ok(Transaction {
             version: self.version,
             inputs,
@@ -1463,7 +1447,7 @@ impl<'a> TransactionRef<'a> {
 pub fn transaction_ref_with_arena<'a>(
     wire: &'a [u8],
     arena: &'a mut Vec<u8>,
-) -> io::Result<(TransactionRef<'a>, &'a [u8])> {
+) -> Result<(TransactionRef<'a>, &'a [u8]), Error> {
     let (mut tx, rest) = TransactionRef::decode_ref(wire)?;
     if !tx.is_segwit {
         // Already correct — `non_witness_raw == raw` aliases the wire bytes.
@@ -1546,20 +1530,15 @@ impl<'a> WitnessRef<'a> {
     ///
     /// # Errors
     /// Returns an error if the count or any item length is truncated.
-    pub fn decode_at(buf: &'a [u8]) -> io::Result<Self> {
+    pub fn decode_at(buf: &'a [u8]) -> Result<Self, Error> {
         let (VarInt(count), mut rest) = VarInt::decode_ref(buf)?;
-        let count =
-            usize::try_from(count).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let count = usize::try_from(count).map_err(|_| Error::LengthOverflow(count))?;
         let items_start = rest;
         for _ in 0..count {
             let (VarInt(len), r2) = VarInt::decode_ref(rest)?;
-            let len =
-                usize::try_from(len).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
             if r2.len() < len {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "witness item truncated",
-                ));
+                return Err(Error::UnexpectedEof);
             }
             rest = &r2[len..];
         }
@@ -1580,20 +1559,15 @@ impl<'a> WitnessRef<'a> {
     ///
     /// # Errors
     /// Returns an error if the count or any item length is truncated.
-    pub fn pop_from(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    pub fn pop_from(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let (VarInt(count), mut rest) = VarInt::decode_ref(buf)?;
-        let count =
-            usize::try_from(count).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let count = usize::try_from(count).map_err(|_| Error::LengthOverflow(count))?;
         let items_start = rest;
         for _ in 0..count {
             let (VarInt(len), r2) = VarInt::decode_ref(rest)?;
-            let len =
-                usize::try_from(len).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
             if r2.len() < len {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "witness item truncated",
-                ));
+                return Err(Error::UnexpectedEof);
             }
             rest = &r2[len..];
         }
@@ -1608,19 +1582,14 @@ impl<'a> WitnessRef<'a> {
     }
 
     /// Skip one full witness (count + items) and return the trailing slice.
-    fn skip_one(buf: &'a [u8]) -> io::Result<&'a [u8]> {
+    fn skip_one(buf: &'a [u8]) -> Result<&'a [u8], Error> {
         let (VarInt(count), mut rest) = VarInt::decode_ref(buf)?;
-        let count =
-            usize::try_from(count).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let count = usize::try_from(count).map_err(|_| Error::LengthOverflow(count))?;
         for _ in 0..count {
             let (VarInt(len), r2) = VarInt::decode_ref(rest)?;
-            let len =
-                usize::try_from(len).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
             if r2.len() < len {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "witness item truncated",
-                ));
+                return Err(Error::UnexpectedEof);
             }
             rest = &r2[len..];
         }
@@ -1699,20 +1668,21 @@ impl<'a> Iterator for WitnessRefIter<'a> {
 
 impl Encode for TransactionRef<'_> {
     #[inline]
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(self.raw)
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+        w.write_all(self.raw)?;
+        Ok(())
     }
 }
 
 impl TxHash for TransactionRef<'_> {
     #[inline]
-    fn txid_into(&self, _buf: &mut Vec<u8>) -> io::Result<Hash256> {
+    fn txid_into(&self, _buf: &mut Vec<u8>) -> Result<Hash256, Error> {
         Ok(self.non_witness_raw.sha256d())
     }
 }
 
 impl<'a> DecodeRef<'a> for TransactionRef<'a> {
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let tx_start = buf;
         let (version, buf) = i32::decode_ref(buf)?;
 
@@ -1724,8 +1694,7 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
             let (flag, buf) = u8::decode_ref(buf)?;
             if flag == 0x01 {
                 let (VarInt(n), buf) = VarInt::decode_ref(buf)?;
-                let count = usize::try_from(n)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let count = usize::try_from(n).map_err(|_| Error::LengthOverflow(n))?;
                 (true, count, buf, None)
             } else {
                 // Legacy 0-input tx; `flag` is first byte of output-count VarInt.
@@ -1735,10 +1704,8 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
             // Re-decode the VarInt with `first` as its initial byte using a cursor.
             let mut cursor = std::io::Cursor::new(buf);
             let VarInt(n) = VarInt::decode_from_first_byte(first, &mut cursor)?;
-            let consumed = usize::try_from(cursor.position())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let count =
-                usize::try_from(n).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let consumed = usize::try_from(cursor.position()).map_err(|_| Error::UnexpectedEof)?;
+            let count = usize::try_from(n).map_err(|_| Error::LengthOverflow(n))?;
             (false, count, &buf[consumed..], None)
         };
 
@@ -1752,15 +1719,12 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
         let (output_count, rest) = if let Some(b) = legacy_output_first {
             let mut cursor = std::io::Cursor::new(rest);
             let VarInt(m) = VarInt::decode_from_first_byte(b, &mut cursor)?;
-            let consumed = usize::try_from(cursor.position())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let count =
-                usize::try_from(m).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let consumed = usize::try_from(cursor.position()).map_err(|_| Error::UnexpectedEof)?;
+            let count = usize::try_from(m).map_err(|_| Error::LengthOverflow(m))?;
             (count, &rest[consumed..])
         } else {
             let (VarInt(m), rest) = VarInt::decode_ref(rest)?;
-            let count =
-                usize::try_from(m).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let count = usize::try_from(m).map_err(|_| Error::LengthOverflow(m))?;
             (count, rest)
         };
         let outputs_buf = rest;
@@ -1778,13 +1742,9 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
                 let (VarInt(item_count), mut r) = VarInt::decode_ref(rest)?;
                 for _ in 0..item_count {
                     let (VarInt(len), r2) = VarInt::decode_ref(r)?;
-                    let len = usize::try_from(len)
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                    let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
                     if r2.len() < len {
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "witness item truncated",
-                        ));
+                        return Err(Error::UnexpectedEof);
                     }
                     r = &r2[len..];
                 }
@@ -1834,7 +1794,7 @@ pub struct Block {
 }
 
 impl Encode for Block {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         self.header.encode(w)?;
         VarInt(self.transactions.len() as u64).encode(w)?;
         for tx in &self.transactions {
@@ -1879,15 +1839,15 @@ impl Block {
         const MAX_OUTPUTS: usize,
     >(
         r: &mut impl Read,
-    ) -> io::Result<Self> {
+    ) -> Result<Self, Error> {
         let header = BlockHeader::decode(r)?;
         let tx_count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
         if tx_count > MAX_TXS {
-            return Err(io::Error::new(
+            return Err(Error::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "tx count exceeds limit",
-            ));
+            )));
         }
         let mut transactions = Vec::with_capacity(tx_count);
         for _ in 0..tx_count {
@@ -1901,7 +1861,7 @@ impl Block {
 }
 
 impl Decode for Block {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         Self::decode_limited::<10_000, 10_000, 10_000>(r)
     }
 }
@@ -1939,14 +1899,14 @@ impl<'a> BlockRef<'a> {
     ///
     /// # Errors
     /// Propagates I/O errors from the decoder.
-    pub fn decode_with_arena(wire: &'a [u8], arena: &'a mut Vec<u8>) -> io::Result<Self> {
+    pub fn decode_with_arena(wire: &'a [u8], arena: &'a mut Vec<u8>) -> Result<Self, Error> {
         arena.clear();
 
         // Header is fixed-size (80 bytes) and never aliases the arena.
         let (header, rest) = BlockHeader::decode_ref(wire)?;
         let (VarInt(tx_count_raw), mut rest) = VarInt::decode_ref(rest)?;
         let tx_count = usize::try_from(tx_count_raw)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
 
         // Pre-grow the arena: a generous upper bound is the wire length minus
         // 80-byte header. Reserving up front turns the per-tx push into a
@@ -2202,11 +2162,11 @@ mod tests {
 
     // ── Adversarial / edge-case tests ─────────────────────────────────────────
 
-    fn decode_err<T: Decode + std::fmt::Debug>(bytes: &[u8]) -> std::io::Error {
+    fn decode_err<T: Decode + std::fmt::Debug>(bytes: &[u8]) -> Error {
         T::decode(&mut std::io::Cursor::new(bytes)).unwrap_err()
     }
 
-    fn decode_ref_err<'a, T: DecodeRef<'a> + std::fmt::Debug>(buf: &'a [u8]) -> std::io::Error {
+    fn decode_ref_err<'a, T: DecodeRef<'a> + std::fmt::Debug>(buf: &'a [u8]) -> Error {
         T::decode_ref(buf).unwrap_err()
     }
 
@@ -2214,13 +2174,13 @@ mod tests {
     #[test]
     fn hash256_truncated() {
         let e = decode_err::<Hash256>(&[0u8; 31]);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     #[test]
     fn hash256_decode_ref_truncated() {
         let e = decode_ref_err::<Hash256>(&[0u8; 16]);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // Hash256: all-ones round-trips (not just the ZERO sentinel).
@@ -2241,21 +2201,21 @@ mod tests {
     #[test]
     fn block_header_truncated_version() {
         let e = decode_err::<BlockHeader>(&[0u8; 2]);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     #[test]
     fn block_header_truncated_prev_block() {
         // version (4) + partial prev_block (10)
         let e = decode_err::<BlockHeader>(&[0u8; 14]);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     #[test]
     fn block_header_truncated_nonce() {
         // version(4) + prev_block(32) + merkle_root(32) + time(4) + bits(4) + partial nonce(2)
         let e = decode_err::<BlockHeader>(&[0u8; 78]);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // BlockHeader: negative version and extreme field values round-trip.
@@ -2290,7 +2250,7 @@ mod tests {
     #[test]
     fn outpoint_truncated_txid() {
         let e = decode_err::<OutPoint>(&[0u8; 16]);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // TxIn: empty script_sig (valid — e.g. native segwit inputs).
@@ -2329,7 +2289,7 @@ mod tests {
         let mut bytes = encode(&txin);
         bytes.truncate(bytes.len() - 6); // cut into script_sig + sequence
         let e = decode_err::<TxIn>(&bytes);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // TxOut: zero value (valid — OP_RETURN outputs often carry 0 satoshis).
@@ -2365,7 +2325,7 @@ mod tests {
         let mut bytes = encode(&txout);
         bytes.truncate(bytes.len() - 2);
         let e = decode_err::<TxOut>(&bytes);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // Transaction: zero inputs and zero outputs is syntactically decodable.
@@ -2400,7 +2360,7 @@ mod tests {
         // version(4) + VarInt(1) then nothing.
         let buf = [0x01, 0x00, 0x00, 0x00, 0x01];
         let e = decode_err::<Transaction>(&buf);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // Transaction: input-count VarInt claims more entries than bytes available.
@@ -2410,7 +2370,7 @@ mod tests {
         let mut buf = vec![0x01, 0x00, 0x00, 0x00]; // version = 1
         buf.push(0x64); // VarInt(100)
         let e = decode_err::<Transaction>(&buf);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // Block: zero transactions is valid (header-only, used in `headers` messages
@@ -2451,7 +2411,7 @@ mod tests {
         let tx_count_offset = BlockHeader::ENCODED_LEN;
         bytes[tx_count_offset] = 0x05;
         let e = decode_err::<Block>(&bytes);
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // Block: tx-count VarInt uses 0xfd-prefix (3-byte encoding) and round-trips.
@@ -2602,7 +2562,7 @@ mod tests {
         let bytes = encode(&tx);
         // Cut the buffer in half — must not panic, must return an error.
         let e = TransactionRef::decode_ref(&bytes[..bytes.len() / 2]).unwrap_err();
-        assert_eq!(e.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     #[test]

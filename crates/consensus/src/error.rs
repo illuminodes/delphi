@@ -108,6 +108,12 @@ impl From<std::io::Error> for ValidationError {
     }
 }
 
+impl From<mantle::codec::Error> for ValidationError {
+    fn from(e: mantle::codec::Error) -> Self {
+        Self::from(std::io::Error::from(e))
+    }
+}
+
 /// Errors returned by a `ChainView` implementation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChainViewError {

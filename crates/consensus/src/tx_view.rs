@@ -272,7 +272,7 @@ impl TxView for Transaction {
 
     fn compute_txid(&self, scratch: &mut Vec<u8>) -> std::io::Result<Hash256> {
         use mantle::primitives::TxHash;
-        TxHash::txid_into(self, scratch)
+        Ok(TxHash::txid_into(self, scratch)?)
     }
 
     fn to_owned_tx(&self) -> std::io::Result<Transaction> {
@@ -437,7 +437,7 @@ impl<'tx> TxView for TransactionRef<'tx> {
         // TransactionRef::txid_into ignores the scratch and hashes
         // non_witness_raw directly; we still take it for trait uniformity.
         use mantle::primitives::TxHash;
-        TxHash::txid_into(self, scratch)
+        Ok(TxHash::txid_into(self, scratch)?)
     }
 
     fn to_owned_tx(&self) -> std::io::Result<Transaction> {
@@ -472,13 +472,15 @@ impl<'a> Iterator for RefInputIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let inner = self.inner.next()?.ok()?;
         let witness = match self.witnesses_cursor {
-            Some(buf) => if let Ok((w, rest)) = WitnessRef::pop_from(buf) {
-                self.witnesses_cursor = Some(rest);
-                w
-            } else {
-                self.witnesses_cursor = None;
-                WitnessRef::EMPTY
-            },
+            Some(buf) => {
+                if let Ok((w, rest)) = WitnessRef::pop_from(buf) {
+                    self.witnesses_cursor = Some(rest);
+                    w
+                } else {
+                    self.witnesses_cursor = None;
+                    WitnessRef::EMPTY
+                }
+            }
             None => WitnessRef::EMPTY,
         };
         Some(RefInputView { inner, witness })

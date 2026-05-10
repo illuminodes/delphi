@@ -258,7 +258,7 @@ fn scan_tx_wire<S>(
 where
     S: std::hash::BuildHasher,
 {
-    let malformed = |_: std::io::Error| ValidationError::MalformedTransaction { tx_index };
+    let malformed = |_: mantle::codec::Error| ValidationError::MalformedTransaction { tx_index };
 
     let (_, buf) = i32::decode_ref(wire).map_err(malformed)?; // version
 
@@ -339,18 +339,18 @@ where
 ///
 /// Implemented for both owned `Transaction` and zero-copy `TransactionRef<'_>`
 /// so the check is written once and reused on either path. Iterators yield
-/// `io::Result<_>` to handle truncated wire bytes uniformly; owned txs simply
-/// produce `Ok` items unconditionally.
+/// `Result<_, codec::Error>` to handle truncated wire bytes uniformly; owned
+/// txs simply produce `Ok` items unconditionally.
 trait TxStructureView {
     fn input_count(&self) -> usize;
     fn output_count(&self) -> usize;
-    fn first_input(&self) -> std::io::Result<(OutPoint, usize)>;
+    fn first_input(&self) -> Result<(OutPoint, usize), mantle::codec::Error>;
     fn for_each_output<E>(&self, f: impl FnMut(usize, Satoshi) -> Result<(), E>) -> Result<(), E>
     where
-        E: From<std::io::Error>;
+        E: From<mantle::codec::Error>;
     fn for_each_input_outpoint<E>(&self, f: impl FnMut(OutPoint) -> Result<(), E>) -> Result<(), E>
     where
-        E: From<std::io::Error>;
+        E: From<mantle::codec::Error>;
 }
 
 impl TxStructureView for Transaction {
@@ -362,7 +362,7 @@ impl TxStructureView for Transaction {
         self.outputs.len()
     }
 
-    fn first_input(&self) -> std::io::Result<(OutPoint, usize)> {
+    fn first_input(&self) -> Result<(OutPoint, usize), mantle::codec::Error> {
         let i = &self.inputs[0];
         Ok((i.previous_output, i.script_sig.len()))
     }
@@ -372,7 +372,7 @@ impl TxStructureView for Transaction {
         mut f: impl FnMut(usize, Satoshi) -> Result<(), E>,
     ) -> Result<(), E>
     where
-        E: From<std::io::Error>,
+        E: From<mantle::codec::Error>,
     {
         for (i, o) in self.outputs.iter().enumerate() {
             f(i, o.value)?;
@@ -385,7 +385,7 @@ impl TxStructureView for Transaction {
         mut f: impl FnMut(OutPoint) -> Result<(), E>,
     ) -> Result<(), E>
     where
-        E: From<std::io::Error>,
+        E: From<mantle::codec::Error>,
     {
         for input in &self.inputs {
             f(input.previous_output)?;
@@ -403,11 +403,11 @@ impl TxStructureView for TransactionRef<'_> {
         TransactionRef::output_count(self)
     }
 
-    fn first_input(&self) -> std::io::Result<(OutPoint, usize)> {
+    fn first_input(&self) -> Result<(OutPoint, usize), mantle::codec::Error> {
         let r = self
             .inputs()
             .next()
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))??;
+            .ok_or(mantle::codec::Error::UnexpectedEof)??;
         Ok((r.previous_output, r.script_sig.len()))
     }
 
@@ -416,7 +416,7 @@ impl TxStructureView for TransactionRef<'_> {
         mut f: impl FnMut(usize, Satoshi) -> Result<(), E>,
     ) -> Result<(), E>
     where
-        E: From<std::io::Error>,
+        E: From<mantle::codec::Error>,
     {
         for (i, r) in self.outputs().enumerate() {
             let o = r.map_err(E::from)?;
@@ -430,7 +430,7 @@ impl TxStructureView for TransactionRef<'_> {
         mut f: impl FnMut(OutPoint) -> Result<(), E>,
     ) -> Result<(), E>
     where
-        E: From<std::io::Error>,
+        E: From<mantle::codec::Error>,
     {
         for r in self.inputs() {
             let input = r.map_err(E::from)?;

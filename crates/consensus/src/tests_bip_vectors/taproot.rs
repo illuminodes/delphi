@@ -710,6 +710,7 @@ fn bip341_key_path_two_input_succeeds() {
 /// `SIGHASH_SINGLE | ANYONECANPAY` (0x83) — the variant the ordinals
 /// parity bench discovered failing in mantle.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn bip341_key_path_two_input_single_anyonecanpay() {
     use crate::script::SpentOutputs;
     use crate::script::sighash::TaprootSigHashType;

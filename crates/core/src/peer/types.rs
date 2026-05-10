@@ -23,7 +23,7 @@ pub enum Error {
     /// Received message checksum did not match payload.
     ChecksumMismatch { peer: PeerId },
     /// Frame encode / decode failed.
-    Codec(std::io::Error),
+    Codec(crate::codec::Error),
     /// OS thread could not be spawned.
     ThreadSpawn(std::io::Error),
 }
@@ -49,14 +49,15 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Codec(e) | Self::ThreadSpawn(e) => Some(e),
+            Self::Codec(e) => Some(e),
+            Self::ThreadSpawn(e) => Some(e),
             _ => None,
         }
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
+impl From<crate::codec::Error> for Error {
+    fn from(e: crate::codec::Error) -> Self {
         Self::Codec(e)
     }
 }

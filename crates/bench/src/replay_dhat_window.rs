@@ -42,27 +42,42 @@ fn parse_args() -> Args {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--preset" => preset = it.next().expect("--preset needs value"),
-            "--blocks" => blocks = it.next().expect("--blocks needs value").parse().expect("u32"),
+            "--blocks" => {
+                blocks = it
+                    .next()
+                    .expect("--blocks needs value")
+                    .parse()
+                    .expect("u32");
+            }
             "--reuse" => reuse = true,
             "--robin-hood" => robin_hood = true,
             "--help" | "-h" => {
-                eprintln!("usage: replay-dhat-window --preset {{early|ordinals}} [--blocks N] [--reuse] [--robin-hood]");
+                eprintln!(
+                    "usage: replay-dhat-window --preset {{early|ordinals}} [--blocks N] [--reuse] [--robin-hood]"
+                );
                 std::process::exit(0);
             }
             other => panic!("unknown arg: {other}"),
         }
     }
-    Args { preset, blocks, reuse, robin_hood }
+    Args {
+        preset,
+        blocks,
+        reuse,
+        robin_hood,
+    }
 }
 
 fn headers_from_blocks(dir: &Path, start: u32, end: u32) -> Vec<BlockHeader> {
     (start..=end)
         .map(|h| {
             let path = dir.join("blocks").join(format!("{h:07}.bin"));
-            let bytes = std::fs::read(&path)
-                .unwrap_or_else(|_| panic!("{} not found", path.display()));
+            let bytes =
+                std::fs::read(&path).unwrap_or_else(|_| panic!("{} not found", path.display()));
             BlockHeader::from_bytes(
-                bytes[..80].try_into().expect("block file is at least 80 bytes"),
+                bytes[..80]
+                    .try_into()
+                    .expect("block file is at least 80 bytes"),
             )
             .expect("valid header bytes")
         })
@@ -72,7 +87,10 @@ fn headers_from_blocks(dir: &Path, start: u32, end: u32) -> Vec<BlockHeader> {
 fn load_headers_file(dir: &Path) -> Vec<BlockHeader> {
     let bytes = std::fs::read(dir.join("headers.bin"))
         .expect("headers.bin not found — run fetch-fixtures first");
-    assert!(bytes.len() % 80 == 0, "headers.bin size not a multiple of 80");
+    assert!(
+        bytes.len() % 80 == 0,
+        "headers.bin size not a multiple of 80"
+    );
     bytes
         .chunks_exact(80)
         .map(|chunk| {

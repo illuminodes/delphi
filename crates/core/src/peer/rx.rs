@@ -161,8 +161,7 @@ impl RxThread {
         let fd = sock.into_fd();
 
         let sockaddr = SockAddrIn {
-            sin_family: u16::try_from(AddressFamily::Inet.as_raw())
-                .expect("AF_INET fits u16"),
+            sin_family: u16::try_from(AddressFamily::Inet.as_raw()).expect("AF_INET fits u16"),
             sin_port: addr.port().to_be(),
             sin_addr: u32::from_ne_bytes(addr.ip().octets()),
             sin_zero: [0; 8],

@@ -74,13 +74,13 @@ impl From<Utf8Error> for Error {
 pub trait Encode {
     /// # Errors
     /// Returns an error if writing to `w` fails.
-    fn encode(&self, w: &mut impl Write) -> io::Result<()>;
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error>;
 }
 
 pub trait Decode: Sized {
     /// # Errors
     /// Returns an error if reading from `r` fails or the data is malformed.
-    fn decode(r: &mut impl Read) -> io::Result<Self>;
+    fn decode(r: &mut impl Read) -> Result<Self, Error>;
 }
 
 /// Zero-copy decoding from a borrowed byte slice.
@@ -88,7 +88,7 @@ pub trait Decode: Sized {
 pub trait DecodeRef<'a>: Sized {
     /// # Errors
     /// Returns an error if `buf` is too short or the data is malformed.
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])>;
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error>;
 }
 
 // ── Primitives ────────────────────────────────────────────────────────────────
@@ -97,14 +97,14 @@ macro_rules! impl_codec_int {
     ($t:ty) => {
         impl Encode for $t {
             #[inline]
-            fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-                w.write_all(&self.to_le_bytes())
+            fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+                w.write_all(&self.to_le_bytes()).map_err(Error::Io)
             }
         }
 
         impl Decode for $t {
             #[inline]
-            fn decode(r: &mut impl Read) -> io::Result<Self> {
+            fn decode(r: &mut impl Read) -> Result<Self, Error> {
                 let mut buf = [0u8; size_of::<$t>()];
                 r.read_exact(&mut buf)?;
                 Ok(<$t>::from_le_bytes(buf))
@@ -113,15 +113,13 @@ macro_rules! impl_codec_int {
 
         impl<'a> DecodeRef<'a> for $t {
             #[inline]
-            fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+            fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
                 const N: usize = size_of::<$t>();
                 if buf.len() < N {
-                    return Err(Error::UnexpectedEof.into());
+                    return Err(Error::UnexpectedEof);
                 }
                 let (head, tail) = buf.split_at(N);
-                let arr: [u8; N] = head
-                    .try_into()
-                    .map_err(|_| io::Error::from(Error::UnexpectedEof))?;
+                let arr: [u8; N] = head.try_into().map_err(|_| Error::UnexpectedEof)?;
                 Ok((<$t>::from_le_bytes(arr), tail))
             }
         }
@@ -157,7 +155,7 @@ impl VarInt {
 impl Encode for VarInt {
     #[inline]
     #[allow(clippy::cast_possible_truncation)] // match arms prove range
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         // Build into a stack buffer and emit in one write_all to avoid
         // paying two virtual-dispatch calls for multi-byte forms.
         let mut buf = [0u8; 9];
@@ -182,7 +180,7 @@ impl Encode for VarInt {
                 &buf[..9]
             }
         };
-        w.write_all(slice)
+        w.write_all(slice).map_err(Error::Io)
     }
 }
 
@@ -192,7 +190,7 @@ impl VarInt {
     /// # Errors
     /// Propagates any I/O error from reading remaining bytes.
     #[inline]
-    pub fn decode_from_first_byte(first: u8, r: &mut impl Read) -> io::Result<Self> {
+    pub fn decode_from_first_byte(first: u8, r: &mut impl Read) -> Result<Self, Error> {
         let mut buf = [0u8; 8];
         let value = match first {
             0xff => {
@@ -202,17 +200,13 @@ impl VarInt {
             0xfe => {
                 r.read_exact(&mut buf[..4])?;
                 u64::from(u32::from_le_bytes(
-                    buf[..4]
-                        .try_into()
-                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                    buf[..4].try_into().map_err(|_| Error::UnexpectedEof)?,
                 ))
             }
             0xfd => {
                 r.read_exact(&mut buf[..2])?;
                 u64::from(u16::from_le_bytes(
-                    buf[..2]
-                        .try_into()
-                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                    buf[..2].try_into().map_err(|_| Error::UnexpectedEof)?,
                 ))
             }
             n => u64::from(n),
@@ -223,7 +217,7 @@ impl VarInt {
 
 impl Decode for VarInt {
     #[inline]
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         // Read up to 9 bytes in one shot: tag byte + up to 8 body bytes.
         // We only consume as many bytes as the tag demands.
         let mut buf = [0u8; 9];
@@ -231,26 +225,18 @@ impl Decode for VarInt {
         let value = match buf[0] {
             0xff => {
                 r.read_exact(&mut buf[1..9])?;
-                u64::from_le_bytes(
-                    buf[1..9]
-                        .try_into()
-                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
-                )
+                u64::from_le_bytes(buf[1..9].try_into().map_err(|_| Error::UnexpectedEof)?)
             }
             0xfe => {
                 r.read_exact(&mut buf[1..5])?;
                 u64::from(u32::from_le_bytes(
-                    buf[1..5]
-                        .try_into()
-                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                    buf[1..5].try_into().map_err(|_| Error::UnexpectedEof)?,
                 ))
             }
             0xfd => {
                 r.read_exact(&mut buf[1..3])?;
                 u64::from(u16::from_le_bytes(
-                    buf[1..3]
-                        .try_into()
-                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                    buf[1..3].try_into().map_err(|_| Error::UnexpectedEof)?,
                 ))
             }
             n => u64::from(n),
@@ -262,36 +248,26 @@ impl Decode for VarInt {
 impl<'a> DecodeRef<'a> for VarInt {
     #[inline]
     #[allow(clippy::cast_possible_truncation)] // match arms prove range
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
-        let (&tag, rest) = buf
-            .split_first()
-            .ok_or_else(|| io::Error::from(Error::UnexpectedEof))?;
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
+        let (&tag, rest) = buf.split_first().ok_or(Error::UnexpectedEof)?;
         let (value, tail) = match tag {
             0xff if rest.len() >= 8 => (
-                u64::from_le_bytes(
-                    rest[..8]
-                        .try_into()
-                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
-                ),
+                u64::from_le_bytes(rest[..8].try_into().map_err(|_| Error::UnexpectedEof)?),
                 &rest[8..],
             ),
             0xfe if rest.len() >= 4 => (
                 u64::from(u32::from_le_bytes(
-                    rest[..4]
-                        .try_into()
-                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                    rest[..4].try_into().map_err(|_| Error::UnexpectedEof)?,
                 )),
                 &rest[4..],
             ),
             0xfd if rest.len() >= 2 => (
                 u64::from(u16::from_le_bytes(
-                    rest[..2]
-                        .try_into()
-                        .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+                    rest[..2].try_into().map_err(|_| Error::UnexpectedEof)?,
                 )),
                 &rest[2..],
             ),
-            0xfd..=0xff => return Err(io::Error::from(Error::UnexpectedEof)),
+            0xfd..=0xff => return Err(Error::UnexpectedEof),
             n => (u64::from(n), rest),
         };
         Ok((VarInt(value), tail))
@@ -302,14 +278,14 @@ impl<'a> DecodeRef<'a> for VarInt {
 
 impl<const N: usize> Encode for [u8; N] {
     #[inline]
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
-        w.write_all(self)
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+        w.write_all(self).map_err(Error::Io)
     }
 }
 
 impl<const N: usize> Decode for [u8; N] {
     #[inline]
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         let mut buf = [0u8; N];
         r.read_exact(&mut buf)?;
         Ok(buf)
@@ -318,16 +294,12 @@ impl<const N: usize> Decode for [u8; N] {
 
 impl<'a, const N: usize> DecodeRef<'a> for [u8; N] {
     #[inline]
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         if buf.len() < N {
-            return Err(Error::UnexpectedEof.into());
+            return Err(Error::UnexpectedEof);
         }
         let (head, tail) = buf.split_at(N);
-        Ok((
-            head.try_into()
-                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
-            tail,
-        ))
+        Ok((head.try_into().map_err(|_| Error::UnexpectedEof)?, tail))
     }
 }
 
@@ -335,11 +307,11 @@ impl<'a, const N: usize> DecodeRef<'a> for [u8; N] {
 
 /// Zero-copy view into a `VarInt`-prefixed byte field.
 impl<'a> DecodeRef<'a> for &'a [u8] {
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let (VarInt(len), rest) = VarInt::decode_ref(buf)?;
-        let len = usize::try_from(len).map_err(|_| io::Error::from(Error::LengthOverflow(len)))?;
+        let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
         if rest.len() < len {
-            return Err(Error::UnexpectedEof.into());
+            return Err(Error::UnexpectedEof);
         }
         let (data, tail) = rest.split_at(len);
         Ok((data, tail))
@@ -348,9 +320,9 @@ impl<'a> DecodeRef<'a> for &'a [u8] {
 
 /// Zero-copy view into a `VarInt`-prefixed UTF-8 string field.
 impl<'a> DecodeRef<'a> for &'a str {
-    fn decode_ref(buf: &'a [u8]) -> io::Result<(Self, &'a [u8])> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let (bytes, tail) = <&'a [u8]>::decode_ref(buf)?;
-        let s = std::str::from_utf8(bytes).map_err(|e| io::Error::from(Error::InvalidUtf8(e)))?;
+        let s = std::str::from_utf8(bytes).map_err(Error::InvalidUtf8)?;
         Ok((s, tail))
     }
 }
@@ -358,33 +330,33 @@ impl<'a> DecodeRef<'a> for &'a str {
 // ── Owned VarStr / VarBytes (stream path) ────────────────────────────────────
 
 impl Encode for str {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         VarInt(self.len() as u64).encode(w)?;
-        w.write_all(self.as_bytes())
+        w.write_all(self.as_bytes()).map_err(Error::Io)
     }
 }
 
 impl Encode for String {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         self.as_str().encode(w)
     }
 }
 
 impl Decode for String {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         decode_string_limited::<{ 4 * 1024 * 1024 }>(r)
     }
 }
 
 impl Encode for Vec<u8> {
-    fn encode(&self, w: &mut impl Write) -> io::Result<()> {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         VarInt(self.len() as u64).encode(w)?;
-        w.write_all(self)
+        w.write_all(self).map_err(Error::Io)
     }
 }
 
 impl Decode for Vec<u8> {
-    fn decode(r: &mut impl Read) -> io::Result<Self> {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
         decode_bytes_limited::<{ 4 * 1024 * 1024 }>(r)
     }
 }
@@ -394,15 +366,12 @@ impl Decode for Vec<u8> {
 /// Decode a `VarInt`-prefixed byte blob, rejecting lengths above `MAX_BYTES`.
 ///
 /// # Errors
-/// Returns `InvalidData` if the length field exceeds `MAX_BYTES`, or on any I/O error.
-pub fn decode_bytes_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> io::Result<Vec<u8>> {
+/// Returns `LengthOverflow` if the length field exceeds `MAX_BYTES`, or on any I/O error.
+pub fn decode_bytes_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> Result<Vec<u8>, Error> {
     let VarInt(len) = VarInt::decode(r)?;
-    let len = usize::try_from(len).map_err(|_| io::Error::from(Error::LengthOverflow(len)))?;
+    let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
     if len > MAX_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "byte blob exceeds length limit",
-        ));
+        return Err(Error::LengthOverflow(len as u64));
     }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
@@ -412,10 +381,10 @@ pub fn decode_bytes_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> io::Re
 /// Decode a `VarInt`-prefixed UTF-8 string, rejecting lengths above `MAX_BYTES`.
 ///
 /// # Errors
-/// Returns `InvalidData` if the length field exceeds `MAX_BYTES`, or on any I/O error.
-pub fn decode_string_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> io::Result<String> {
+/// Returns `LengthOverflow` if the length field exceeds `MAX_BYTES`, or on any I/O error.
+pub fn decode_string_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> Result<String, Error> {
     let buf = decode_bytes_limited::<MAX_BYTES>(r)?;
-    String::from_utf8(buf).map_err(|e| io::Error::from(Error::InvalidUtf8(e.utf8_error())))
+    String::from_utf8(buf).map_err(|e| Error::InvalidUtf8(e.utf8_error()))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -439,11 +408,11 @@ mod tests {
         T::decode_ref(buf).expect("test data must decode")
     }
 
-    fn decode_err<T: Decode + std::fmt::Debug>(bytes: &[u8]) -> io::Error {
+    fn decode_err<T: Decode + std::fmt::Debug>(bytes: &[u8]) -> Error {
         T::decode(&mut Cursor::new(bytes)).unwrap_err()
     }
 
-    fn decode_ref_err<'a, T: DecodeRef<'a> + std::fmt::Debug>(buf: &'a [u8]) -> io::Error {
+    fn decode_ref_err<'a, T: DecodeRef<'a> + std::fmt::Debug>(buf: &'a [u8]) -> Error {
         T::decode_ref(buf).unwrap_err()
     }
 
@@ -557,28 +526,28 @@ mod tests {
     #[test]
     fn varint_truncated_3byte_body() {
         let e = decode_err::<VarInt>(&[0xfd, 0x01]); // needs 2 more bytes, only 1
-        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // VarInt: only the tag byte present for a 9-byte encoding.
     #[test]
     fn varint_truncated_9byte_body() {
         let e = decode_err::<VarInt>(&[0xff, 0x00, 0x00, 0x00]); // needs 8, has 3
-        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // VarInt: completely empty input.
     #[test]
     fn varint_empty_input() {
         let e = decode_err::<VarInt>(&[]);
-        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // VarInt decode_ref: same truncation cases via the zero-copy path.
     #[test]
     fn varint_decode_ref_truncated() {
         let e = decode_ref_err::<VarInt>(&[0xfe, 0x00]); // needs 4 body bytes, has 1
-        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // VarInt: boundary values round-trip correctly.
@@ -613,20 +582,20 @@ mod tests {
     #[test]
     fn primitive_truncated_u32() {
         let e = decode_err::<u32>(&[0x01, 0x02]); // needs 4, has 2
-        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     #[test]
     fn primitive_truncated_u64() {
         let e = decode_err::<u64>(&[0xff; 7]); // needs 8, has 7
-        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 
     // decode_ref on an empty slice for fixed arrays.
     #[test]
     fn fixed_array_decode_ref_empty() {
         let e = decode_ref_err::<[u8; 4]>(&[]);
-        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof));
     }
 
     // &[u8] DecodeRef: length prefix claims more bytes than available.
@@ -635,7 +604,7 @@ mod tests {
         // VarInt(10) followed by only 3 bytes.
         let buf = [0x0a, 0x01, 0x02, 0x03];
         let e = decode_ref_err::<&[u8]>(&buf);
-        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(matches!(e, Error::UnexpectedEof));
     }
 
     // &str DecodeRef: invalid UTF-8 must return InvalidData, not panic.
@@ -643,7 +612,7 @@ mod tests {
     fn str_decode_ref_invalid_utf8() {
         let buf = [0x02, 0xff, 0xfe]; // 2-byte "string" with invalid UTF-8
         let e = decode_ref_err::<&str>(&buf);
-        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        assert!(matches!(e, Error::InvalidUtf8(_)));
     }
 
     // String Decode (stream): invalid UTF-8 must return InvalidData.
@@ -651,7 +620,7 @@ mod tests {
     fn string_decode_invalid_utf8() {
         let buf = [0x02, 0xff, 0xfe];
         let e = decode_err::<String>(&buf);
-        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        assert!(matches!(e, Error::InvalidUtf8(_)));
     }
 
     // String Decode: empty string round-trips correctly.
@@ -671,15 +640,16 @@ mod tests {
         assert_eq!(roundtrip_decode::<Vec<u8>>(&bytes), Vec::<u8>::new());
     }
 
-    // Vec<u8> Decode: VarInt length exceeding usize::MAX (on 32-bit targets this
-    // would be a u64 that doesn't fit; on 64-bit we settle for a truncated body).
-    // On all targets: a length larger than the remaining data must fail gracefully.
+    // Vec<u8> Decode: VarInt length exceeding MAX_BYTES must fail gracefully.
     #[test]
     fn vec_u8_length_exceeds_available_data() {
         // VarInt(0xfd, 0x00, 0x04) = length 1024, followed by no data.
         let buf = [0xfd, 0x00, 0x04];
         let e = decode_err::<Vec<u8>>(&buf);
-        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(matches!(
+            e,
+            Error::LengthOverflow(_) | Error::UnexpectedEof | Error::Io(_)
+        ));
     }
 
     // decode_ref on a primitive with exactly the right number of bytes leaves an

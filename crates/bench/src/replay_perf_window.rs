@@ -55,16 +55,28 @@ fn parse_args() -> Args {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--preset" => preset = it.next().expect("--preset needs value"),
-            "--blocks" => blocks = it.next().expect("--blocks needs value").parse().expect("u32"),
+            "--blocks" => {
+                blocks = it
+                    .next()
+                    .expect("--blocks needs value")
+                    .parse()
+                    .expect("u32");
+            }
             "--skip-script" => skip_script = true,
             "--help" | "-h" => {
-                eprintln!("usage: replay-perf-window --preset {{early|ordinals}} [--blocks N] [--skip-script]");
+                eprintln!(
+                    "usage: replay-perf-window --preset {{early|ordinals}} [--blocks N] [--skip-script]"
+                );
                 std::process::exit(0);
             }
             other => panic!("unknown arg: {other}"),
         }
     }
-    Args { preset, blocks, skip_script }
+    Args {
+        preset,
+        blocks,
+        skip_script,
+    }
 }
 
 // ── header sourcing ──────────────────────────────────────────────────────────
@@ -76,10 +88,12 @@ fn headers_from_blocks(dir: &Path, start: u32, end: u32) -> Vec<BlockHeader> {
     (start..=end)
         .map(|h| {
             let path = dir.join("blocks").join(format!("{h:07}.bin"));
-            let bytes = std::fs::read(&path)
-                .unwrap_or_else(|_| panic!("{} not found", path.display()));
+            let bytes =
+                std::fs::read(&path).unwrap_or_else(|_| panic!("{} not found", path.display()));
             BlockHeader::from_bytes(
-                bytes[..80].try_into().expect("block file is at least 80 bytes"),
+                bytes[..80]
+                    .try_into()
+                    .expect("block file is at least 80 bytes"),
             )
             .expect("valid header bytes")
         })
@@ -89,7 +103,10 @@ fn headers_from_blocks(dir: &Path, start: u32, end: u32) -> Vec<BlockHeader> {
 fn load_headers_file(dir: &Path) -> Vec<BlockHeader> {
     let bytes = std::fs::read(dir.join("headers.bin"))
         .expect("headers.bin not found — run fetch-fixtures first");
-    assert!(bytes.len() % 80 == 0, "headers.bin size not a multiple of 80");
+    assert!(
+        bytes.len() % 80 == 0,
+        "headers.bin size not a multiple of 80"
+    );
     bytes
         .chunks_exact(80)
         .map(|chunk| {
@@ -175,7 +192,10 @@ fn replay_block_timed(
     let mut hash_scratch = Vec::new();
     let mut txids: Vec<Hash256> = Vec::with_capacity(tx_count);
     for tx in block_ref.transactions() {
-        txids.push(tx.txid_into(&mut hash_scratch).expect("txid hash never fails"));
+        txids.push(
+            tx.txid_into(&mut hash_scratch)
+                .expect("txid hash never fails"),
+        );
     }
 
     let mut spent_set: PrehashedSet<OutPoint> =
@@ -192,8 +212,13 @@ fn replay_block_timed(
         let txid = txids[tx_index];
         for (vout, output) in tx.outputs().enumerate() {
             let Ok(out) = output else { continue };
-            let Ok(vout_u32) = u32::try_from(vout) else { continue };
-            let op = OutPoint { txid, vout: vout_u32 };
+            let Ok(vout_u32) = u32::try_from(vout) else {
+                continue;
+            };
+            let op = OutPoint {
+                txid,
+                vout: vout_u32,
+            };
             if spent_set.contains(&op) {
                 intra.insert(
                     op,
@@ -280,11 +305,17 @@ fn replay_block_timed(
         .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.0));
     let commit = t0.elapsed();
 
-    PhaseTimings { decode, lookup, connect, commit }
+    PhaseTimings {
+        decode,
+        lookup,
+        connect,
+        commit,
+    }
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let args = parse_args();
 
@@ -317,7 +348,10 @@ fn main() {
 
     let snap = make_snapshot(&headers, start);
 
-    eprint!("[{}] loading {} blocks (heights {}..={})... ", args.preset, args.blocks, start, end);
+    eprint!(
+        "[{}] loading {} blocks (heights {}..={})... ",
+        args.preset, args.blocks, start, end
+    );
     let load_start = Instant::now();
     let wires: Vec<Vec<u8>> = (start..=end).map(|h| load_block_bytes(&dir, h)).collect();
     eprintln!("done in {:.2?}", load_start.elapsed());
@@ -336,7 +370,10 @@ fn main() {
     let mut arena = Vec::new();
     let mut totals = PhaseTimings::zero();
 
-    eprintln!("[{}] replay running (skip_script={})...", args.preset, args.skip_script);
+    eprintln!(
+        "[{}] replay running (skip_script={})...",
+        args.preset, args.skip_script
+    );
     let t0 = Instant::now();
     for (i, wire) in wires.iter().enumerate() {
         let height = BlockHeight(start + u32::try_from(i).expect("fits"));
@@ -361,16 +398,46 @@ fn main() {
     let n = f64::from(args.blocks);
     let pct = |d: Duration| 100.0 * d.as_secs_f64() / wall.as_secs_f64();
     println!();
-    println!("=== replay-perf-window: preset={} blocks={}  (skip_script={})", args.preset, args.blocks, args.skip_script);
-    println!("wall              : {:>10.3?}   ({:.1} blocks/s, {:.2} ms/block)",
-        wall, n / wall.as_secs_f64(), wall.as_secs_f64() * 1000.0 / n);
+    println!(
+        "=== replay-perf-window: preset={} blocks={}  (skip_script={})",
+        args.preset, args.blocks, args.skip_script
+    );
+    println!(
+        "wall              : {:>10.3?}   ({:.1} blocks/s, {:.2} ms/block)",
+        wall,
+        n / wall.as_secs_f64(),
+        wall.as_secs_f64() * 1000.0 / n
+    );
     println!("phase totals (sum across blocks; phases run sequentially):");
-    println!("  decode          : {:>10.3?}   {:>5.1}%   ({:.3} ms/block)", totals.decode, pct(totals.decode), totals.decode.as_secs_f64() * 1000.0 / n);
-    println!("  lookup          : {:>10.3?}   {:>5.1}%   ({:.3} ms/block)", totals.lookup, pct(totals.lookup), totals.lookup.as_secs_f64() * 1000.0 / n);
-    println!("  connect (script): {:>10.3?}   {:>5.1}%   ({:.3} ms/block)", totals.connect, pct(totals.connect), totals.connect.as_secs_f64() * 1000.0 / n);
-    println!("  commit          : {:>10.3?}   {:>5.1}%   ({:.3} ms/block)", totals.commit, pct(totals.commit), totals.commit.as_secs_f64() * 1000.0 / n);
+    println!(
+        "  decode          : {:>10.3?}   {:>5.1}%   ({:.3} ms/block)",
+        totals.decode,
+        pct(totals.decode),
+        totals.decode.as_secs_f64() * 1000.0 / n
+    );
+    println!(
+        "  lookup          : {:>10.3?}   {:>5.1}%   ({:.3} ms/block)",
+        totals.lookup,
+        pct(totals.lookup),
+        totals.lookup.as_secs_f64() * 1000.0 / n
+    );
+    println!(
+        "  connect (script): {:>10.3?}   {:>5.1}%   ({:.3} ms/block)",
+        totals.connect,
+        pct(totals.connect),
+        totals.connect.as_secs_f64() * 1000.0 / n
+    );
+    println!(
+        "  commit          : {:>10.3?}   {:>5.1}%   ({:.3} ms/block)",
+        totals.commit,
+        pct(totals.commit),
+        totals.commit.as_secs_f64() * 1000.0 / n
+    );
     let attributed = totals.total();
     println!("  ---------------");
-    println!("  sum             : {:>10.3?}   ({:.1}% of wall, rest is loop overhead)",
-        attributed, pct(attributed));
+    println!(
+        "  sum             : {:>10.3?}   ({:.1}% of wall, rest is loop overhead)",
+        attributed,
+        pct(attributed)
+    );
 }

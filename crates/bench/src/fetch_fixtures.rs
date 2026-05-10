@@ -619,7 +619,7 @@ fn handle_block(
     };
 
     let path = block_path(fixtures, height);
-    std::fs::write(&path, payload).map_err(mantle::peer::Error::Codec)?;
+    std::fs::write(&path, payload).map_err(|e| mantle::peer::Error::Codec(e.into()))?;
 
     Ok(Some(height))
 }
