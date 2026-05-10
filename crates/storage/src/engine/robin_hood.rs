@@ -525,10 +525,21 @@ const HEADER_RECORD_SIZE: usize = 116;
 
 const STORAGE_RING_ENTRIES: u32 = 4096;
 
+const WRITE_BUFFER_FLUSH_THRESHOLD: usize = 500_000;
+
+// ── Write buffer ─────────────────────────────────────────────────────────────
+
+enum BufferEntry {
+    Live(Coin),
+    Spent,
+}
+
 pub struct RobinHoodEngine {
     data_dir: PathBuf,
     table: RobinHoodTable,
     ring: ququmatz::IoUring,
+    write_buffer: PrehashedMap<OutPoint, BufferEntry>,
+    pending_disk_deletes: Vec<OutPoint>,
     header_file: File,
     header_write_len: u64,
     header_index: PrehashedMap<Hash256, u32>,
@@ -569,6 +580,8 @@ impl RobinHoodEngine {
             data_dir: data_dir.to_owned(),
             table,
             ring,
+            write_buffer: PrehashedMap::with_hasher(BuildPrehashedHasher),
+            pending_disk_deletes: Vec::new(),
             header_file,
             header_write_len: 0,
             header_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
@@ -585,10 +598,27 @@ impl RobinHoodEngine {
     fn header_path(&self) -> PathBuf {
         self.data_dir.join("headers.bin")
     }
+
+    fn flush_write_buffer(&mut self) -> Result<(), EngineError> {
+        for (op, entry) in self.write_buffer.drain() {
+            if let BufferEntry::Live(coin) = entry {
+                self.table.insert(&op, &coin).map_err(io_err)?;
+            }
+        }
+        for op in self.pending_disk_deletes.drain(..) {
+            self.table.remove(&op).map_err(io_err)?;
+        }
+        Ok(())
+    }
 }
 
 impl Engine for RobinHoodEngine {
     fn read_coin(&mut self, op: &OutPoint) -> Result<Option<Coin>, EngineError> {
+        match self.write_buffer.get(op) {
+            Some(BufferEntry::Live(coin)) => return Ok(Some(coin.clone())),
+            Some(BufferEntry::Spent) => return Ok(None),
+            None => {}
+        }
         self.table.get(op).map_err(io_err)
     }
 
@@ -597,14 +627,37 @@ impl Engine for RobinHoodEngine {
         ops: &[OutPoint],
         out: &mut Vec<LookupResult>,
     ) -> Result<(), EngineError> {
-        let mut coins: Vec<Option<Coin>> = Vec::new();
-        self.table
-            .get_batch_uring(ops, &mut coins, &mut self.ring)
-            .map_err(io_err)?;
+        let mut disk_ops: Vec<(usize, OutPoint)> = Vec::new();
+        let mut results: Vec<Option<Coin>> = Vec::with_capacity(ops.len());
+
+        for (i, &op) in ops.iter().enumerate() {
+            match self.write_buffer.get(&op) {
+                Some(BufferEntry::Live(coin)) => results.push(Some(coin.clone())),
+                Some(BufferEntry::Spent) => results.push(None),
+                None => {
+                    disk_ops.push((i, op));
+                    results.push(None);
+                }
+            }
+        }
+
+        if !disk_ops.is_empty() {
+            let disk_outpoints: Vec<OutPoint> = disk_ops.iter().map(|(_, op)| *op).collect();
+            let mut disk_coins: Vec<Option<Coin>> = Vec::new();
+            self.table
+                .get_batch_uring(&disk_outpoints, &mut disk_coins, &mut self.ring)
+                .map_err(io_err)?;
+            for (j, &(i, _)) in disk_ops.iter().enumerate() {
+                if let Some(coin) = disk_coins.get(j).and_then(|c| c.as_ref()) {
+                    results[i] = Some(coin.clone());
+                }
+            }
+        }
+
         for (i, &op) in ops.iter().enumerate() {
             out.push(LookupResult {
                 outpoint: op,
-                coin: coins.get(i).cloned().flatten(),
+                coin: results[i].take(),
             });
         }
         Ok(())
@@ -618,10 +671,22 @@ impl Engine for RobinHoodEngine {
                 height: nc.height,
                 coinbase: nc.coinbase,
             };
-            self.table.insert(&nc.outpoint, &coin).map_err(io_err)?;
+            self.write_buffer.insert(nc.outpoint, BufferEntry::Live(coin));
         }
         for op in &req.spent {
-            self.table.remove(op).map_err(io_err)?;
+            match self.write_buffer.remove(op) {
+                Some(BufferEntry::Live(_)) => {
+                    // Created and spent within the buffer window — elided.
+                }
+                Some(BufferEntry::Spent) | None => {
+                    // Coin is on disk — schedule deletion for next flush.
+                    self.pending_disk_deletes.push(*op);
+                }
+            }
+        }
+
+        if self.write_buffer.len() + self.pending_disk_deletes.len() > WRITE_BUFFER_FLUSH_THRESHOLD {
+            self.flush_write_buffer()?;
         }
 
         debug_assert_eq!(
@@ -678,6 +743,7 @@ impl Engine for RobinHoodEngine {
 
     fn flush(&mut self, d: Durability) -> Result<(), EngineError> {
         if d == Durability::Synced {
+            self.flush_write_buffer()?;
             self.table.sync().map_err(io_err)?;
             self.header_file.flush().map_err(io_err)?;
             self.header_file.sync_all().map_err(io_err)?;
@@ -1027,6 +1093,97 @@ mod tests {
         let mut miss_results = Vec::new();
         table.get_batch_uring(&miss_ops, &mut miss_results, &mut ring).unwrap();
         assert!(miss_results.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn write_buffer_elides_create_then_spend() {
+        let dir = TmpFile::new("wb-elide");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
+
+        let op = OutPoint { txid: Hash256([10u8; 32]), vout: 0 };
+
+        // Create a coin — goes into write buffer, not disk.
+        let req1 = CommitBlockReq {
+            token: crate::types::ReqToken(1),
+            height: BlockHeight(1),
+            hash: Hash256([11u8; 32]),
+            prev_hash: Hash256::ZERO,
+            header: make_header(0),
+            created: vec![mantle_consensus::chain_view::NewCoin {
+                outpoint: op,
+                value: Satoshi::new(1000),
+                script_pubkey: &[0x51],
+                coinbase: false,
+                height: BlockHeight(1),
+            }],
+            spent: vec![],
+            block_bytes: None,
+            durability: Durability::Memory,
+        };
+        eng.write_block(&req1).unwrap();
+
+        // Read from buffer — should find it.
+        assert!(eng.read_coin(&op).unwrap().is_some());
+
+        // Disk table should be empty (not flushed yet).
+        assert_eq!(eng.table.len(), 0);
+
+        // Spend the coin — should elide (never hits disk).
+        let req2 = CommitBlockReq {
+            token: crate::types::ReqToken(2),
+            height: BlockHeight(2),
+            hash: Hash256([12u8; 32]),
+            prev_hash: Hash256([11u8; 32]),
+            header: BlockHeader { prev_block: Hash256([11u8; 32]), ..make_header(0) },
+            created: vec![],
+            spent: vec![op],
+            block_bytes: None,
+            durability: Durability::Memory,
+        };
+        eng.write_block(&req2).unwrap();
+
+        // Coin should be gone from buffer and disk.
+        assert!(eng.read_coin(&op).unwrap().is_none());
+        assert_eq!(eng.table.len(), 0);
+        assert!(eng.pending_disk_deletes.is_empty());
+    }
+
+    #[test]
+    fn write_buffer_flushes_on_sync() {
+        let dir = TmpFile::new("wb-flush");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
+
+        let op = OutPoint { txid: Hash256([20u8; 32]), vout: 0 };
+        let req = CommitBlockReq {
+            token: crate::types::ReqToken(1),
+            height: BlockHeight(1),
+            hash: Hash256([21u8; 32]),
+            prev_hash: Hash256::ZERO,
+            header: make_header(0),
+            created: vec![mantle_consensus::chain_view::NewCoin {
+                outpoint: op,
+                value: Satoshi::new(2000),
+                script_pubkey: &[0x51],
+                coinbase: false,
+                height: BlockHeight(1),
+            }],
+            spent: vec![],
+            block_bytes: None,
+            durability: Durability::Memory,
+        };
+        eng.write_block(&req).unwrap();
+
+        // Not on disk yet.
+        assert_eq!(eng.table.len(), 0);
+
+        // Flush with Synced durability.
+        eng.flush(Durability::Synced).unwrap();
+
+        // Now on disk.
+        assert_eq!(eng.table.len(), 1);
+        assert!(eng.write_buffer.is_empty());
     }
 
     // ── Engine integration tests ─────────────────────────────────────────
