@@ -46,10 +46,10 @@ use mantle::network::{
     Network, NetworkAddr, VersionMsg, services,
 };
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
-use ququmatz::{IoUring, Sqe};
 use ququmatz::types::{
     AddressFamily, MsgFlags, SockAddrIn, SocketFlags, SocketType, SqeFlags, TimeoutFlags, Timespec,
 };
+use ququmatz::{IoUring, Sqe};
 
 /// Size of each kernel-managed receive buffer in the provided-buffer
 /// ring. The kernel hands one buffer to each multishot-recv arrival;
@@ -219,7 +219,7 @@ struct Peer {
     /// Owned sockaddr bytes the kernel reads for the connect SQE; must
     /// outlive the SQE *and* sit at a stable memory address. Boxed so
     /// the address survives the `Peer` being moved into the `peers`
-    /// HashMap after the SQE is queued — without `Box`, the kernel
+    /// `HashMap` after the SQE is queued — without `Box`, the kernel
     /// reads stale stack memory at submission time and rejects the
     /// connect with `-EAFNOSUPPORT`.
     sockaddr: Box<SockAddrIn>,
@@ -441,7 +441,6 @@ impl EwmaLatency {
     }
 }
 
-
 /// Single-ring fetcher. Owns the `IoUring`, peer pool, and download state.
 pub struct Fetcher {
     network: Network,
@@ -556,17 +555,10 @@ impl Fetcher {
     // ── headers session ──────────────────────────────────────────────────
 
     #[allow(clippy::too_many_lines)]
-    fn run_getheaders_session(
-        &mut self,
-        locator: Hash256,
-    ) -> Result<Vec<BlockHeader>, FetchError> {
+    fn run_getheaders_session(&mut self, locator: Hash256) -> Result<Vec<BlockHeader>, FetchError> {
         let mut ring = make_ring()?;
         let mut pbr = ring
-            .register_provided_buffers(
-                PROVIDED_BUF_GROUP_ID,
-                PROVIDED_BUF_COUNT,
-                PROVIDED_BUF_SIZE,
-            )
+            .register_provided_buffers(PROVIDED_BUF_GROUP_ID, PROVIDED_BUF_COUNT, PROVIDED_BUF_SIZE)
             .map_err(|e| FetchError::UringErr(format!("register_provided_buffers: {e:?}")))?;
         let mut send_arena = SendArena::new();
         let mut peers: HashMap<u16, Peer> = HashMap::new();
@@ -583,7 +575,7 @@ impl Fetcher {
         }
 
         let phase_deadline = Instant::now() + Duration::from_secs(HEADERS_PHASE_DEADLINE_SECS);
-        let payload = GetHeadersMsg::single_locator(locator).encode_to_vec();
+        let payload = getheaders_msg(locator).encode_to_vec();
         let mut elected: Option<(u16, Instant)> = None;
         let dbg_arena = std::env::var_os("MANTLE_URING_DEBUG").is_some_and(|v| v == "1");
         let mut dbg_iter: u64 = 0;
@@ -619,8 +611,12 @@ impl Fetcher {
                     continue;
                 }
                 if op == OP_SEND {
-                    if cqe.result < dbg_send_res_min { dbg_send_res_min = cqe.result; }
-                    if cqe.result > dbg_send_res_max { dbg_send_res_max = cqe.result; }
+                    if cqe.result < dbg_send_res_min {
+                        dbg_send_res_min = cqe.result;
+                    }
+                    if cqe.result > dbg_send_res_max {
+                        dbg_send_res_max = cqe.result;
+                    }
                     let send_seq = decode_send_seq(cqe.user_data);
                     send_arena.release(send_seq);
                     if let Some(p) = peers.get_mut(&slot) {
@@ -657,13 +653,9 @@ impl Fetcher {
                 if peer.state == PeerState::Dead {
                     continue;
                 }
-                if let Some(headers) = consume_handshake_frames(
-                    &mut ring,
-                    &mut send_arena,
-                    self.network,
-                    *slot,
-                    peer,
-                )? {
+                if let Some(headers) =
+                    consume_handshake_frames(&mut ring, &mut send_arena, self.network, *slot, peer)?
+                {
                     return Ok(headers);
                 }
             }
@@ -676,10 +668,8 @@ impl Fetcher {
                 // Only log meaningful iterations: any send activity, or
                 // arena pressure (in_flight > 0). Skip the millions of
                 // pure dial-redial iterations that produce no signal.
-                let interesting = alloc_iter > 0
-                    || release_iter > 0
-                    || in_flight > 0
-                    || dbg_iter % 1000 == 0;
+                let interesting =
+                    alloc_iter > 0 || release_iter > 0 || in_flight > 0 || dbg_iter % 1000 == 0;
                 if interesting {
                     let overflow = ring.cq_overflow();
                     let send_res_str = if dbg_send_res_min == i32::MAX {
@@ -774,9 +764,7 @@ impl Fetcher {
             // For simplicity here, return as soon as the elected peer
             // hits Ready *after* sending getheaders.
             for peer in peers.values_mut() {
-                if peer.state == PeerState::Ready
-                    && peer.recv_buf.iter().any(|_| false)
-                {
+                if peer.state == PeerState::Ready && peer.recv_buf.iter().any(|_| false) {
                     // Placeholder — actual parse happens in handle path.
                 }
             }
@@ -854,11 +842,7 @@ impl Fetcher {
     ) -> Result<(), FetchError> {
         let mut ring = make_ring()?;
         let mut pbr = ring
-            .register_provided_buffers(
-                PROVIDED_BUF_GROUP_ID,
-                PROVIDED_BUF_COUNT,
-                PROVIDED_BUF_SIZE,
-            )
+            .register_provided_buffers(PROVIDED_BUF_GROUP_ID, PROVIDED_BUF_COUNT, PROVIDED_BUF_SIZE)
             .map_err(|e| FetchError::UringErr(format!("register_provided_buffers: {e:?}")))?;
         let mut send_arena = SendArena::new();
         let mut peers: HashMap<u16, Peer> = HashMap::new();
@@ -1012,7 +996,10 @@ impl Fetcher {
                 let window = now.duration_since(last_log).as_secs_f64().max(1e-9);
                 #[allow(clippy::cast_precision_loss)]
                 let bps = (saved - saved_at_last_log) as f64 / window;
-                let ready = peers.values().filter(|p| p.state == PeerState::Ready).count();
+                let ready = peers
+                    .values()
+                    .filter(|p| p.state == PeerState::Ready)
+                    .count();
                 let in_flight_count = in_flight.len();
                 eprintln!(
                     "  iouring-fetcher: {saved}/{total}  {bps:.1} blk/s  ready={ready} \
@@ -1234,8 +1221,7 @@ impl Fetcher {
         .map_err(|e| FetchError::UringErr(format!("socket: {e:?}")))?;
         let fd = sock.into_fd();
         let sockaddr = Box::new(SockAddrIn {
-            sin_family: u16::try_from(AddressFamily::Inet.as_raw())
-                .expect("AF_INET fits u16"),
+            sin_family: u16::try_from(AddressFamily::Inet.as_raw()).expect("AF_INET fits u16"),
             sin_port: addr.port().to_be(),
             sin_addr: u32::from_ne_bytes(addr.ip().octets()),
             sin_zero: [0; 8],
@@ -1264,7 +1250,14 @@ impl Fetcher {
             pending_send_seqs: Vec::with_capacity(PEER_SEND_OUTSTANDING_CAP as usize),
         };
 
-        push_connect(ring, slot, peer.generation, fd, &peer.sockaddr, &self.connect_timeout)?;
+        push_connect(
+            ring,
+            slot,
+            peer.generation,
+            fd,
+            &peer.sockaddr,
+            &self.connect_timeout,
+        )?;
 
         Ok(Some(peer))
     }
@@ -1377,8 +1370,7 @@ fn uring_err(e: ququmatz::Error) -> FetchError {
 fn push_tick(ring: &mut IoUring, dur: Duration) -> Result<(), FetchError> {
     let ts = Timespec::from_millis(u64::try_from(dur.as_millis()).unwrap_or(u64::MAX));
     ring.push(
-        Sqe::timeout(&ts, 1, TimeoutFlags::default())
-            .user_data(make_user_data(0, 0, OP_TICK)),
+        Sqe::timeout(&ts, 1, TimeoutFlags::default()).user_data(make_user_data(0, 0, OP_TICK)),
     )
     .map_err(uring_err)
 }
@@ -1404,8 +1396,11 @@ fn push_connect(
     )
     .map_err(uring_err)?;
     ring.push(
-        Sqe::link_timeout(timeout, TimeoutFlags::default())
-            .user_data(make_user_data(slot, g, OP_LINK_TIMEOUT)),
+        Sqe::link_timeout(timeout, TimeoutFlags::default()).user_data(make_user_data(
+            slot,
+            g,
+            OP_LINK_TIMEOUT,
+        )),
     )
     .map_err(uring_err)?;
     Ok(())
@@ -1441,8 +1436,7 @@ fn push_send(
     // slab outlives the SQE — the arena slot stays reserved
     // (used_len != 0) until the SEND CQE handler calls `release`.
     let bytes = arena.slice(send_seq);
-    let bytes_static: &[u8] =
-        unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
+    let bytes_static: &[u8] = unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
     let r = ring
         .push(
             Sqe::send(fd, bytes_static, MsgFlags::default())
@@ -1465,12 +1459,7 @@ fn push_send(
 /// bits of `flags`) until either the peer closes, the kernel hits an
 /// error, or the provided-buffer pool runs dry. On termination the
 /// final CQE clears `MORE`; we re-arm in the per-iteration sweep.
-fn push_recv_multishot(
-    ring: &mut IoUring,
-    slot: u16,
-    g: u16,
-    fd: i32,
-) -> Result<(), FetchError> {
+fn push_recv_multishot(ring: &mut IoUring, slot: u16, g: u16, fd: i32) -> Result<(), FetchError> {
     ring.push(
         Sqe::recv_multishot(fd, MsgFlags::default())
             .buffer_select(PROVIDED_BUF_GROUP_ID)
@@ -1506,17 +1495,20 @@ fn close_peer(ring: &mut IoUring, send_arena: &mut SendArena, peer: &mut Peer) {
         // op=OP_RECV` patterns that have already been submitted). The
         // generation field is the discriminator that makes this match.
         if let Err(e) = ring.push(
-            Sqe::cancel(make_user_data(0, peer.generation, OP_RECV))
-                .user_data(make_user_data(0, peer.generation, OP_CLOSE)),
+            Sqe::cancel(make_user_data(0, peer.generation, OP_RECV)).user_data(make_user_data(
+                0,
+                peer.generation,
+                OP_CLOSE,
+            )),
         ) {
             eprintln!(
                 "  iouring-fetcher: close_peer cancel-recv push failed for fd={}: {e:?}",
                 peer.fd
             );
         }
-        if let Err(e) = ring.push(
-            Sqe::close(peer.fd).user_data(make_user_data(0, peer.generation, OP_CLOSE)),
-        ) {
+        if let Err(e) =
+            ring.push(Sqe::close(peer.fd).user_data(make_user_data(0, peer.generation, OP_CLOSE)))
+        {
             // SQE push failed: kernel won't close the fd via the ring.
             // Fall back to a synchronous close so we don't leak the
             // fd. This is the only safe path — a quiet leak compounds
@@ -1532,15 +1524,6 @@ fn close_peer(ring: &mut IoUring, send_arena: &mut SendArena, peer: &mut Peer) {
         }
         peer.fd = -1;
     }
-}
-
-fn frame(network: Network, cmd: Command, payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(MessageHeader::ENCODED_LEN + payload.len());
-    network
-        .magic()
-        .frame(cmd, payload, &mut out)
-        .expect("Vec write cannot fail");
-    out
 }
 
 fn encode_getdata(hashes: &[Hash256]) -> Vec<u8> {
@@ -1754,8 +1737,10 @@ fn consume_handshake_frames(
         // state would leak Verack sends without bound.
         let needs_send = matches!(
             (peer.state, cmd),
-            (PeerState::HandshakeSendVersion | PeerState::HandshakeRecving, "version")
-                | (PeerState::Ready | PeerState::WaitingHeaders, "ping")
+            (
+                PeerState::HandshakeSendVersion | PeerState::HandshakeRecving,
+                "version"
+            ) | (PeerState::Ready | PeerState::WaitingHeaders, "ping")
         );
         if needs_send && peer.pending_send_seqs.len() >= PEER_SEND_OUTSTANDING_CAP as usize {
             peer.state = PeerState::Dead;
@@ -1991,19 +1976,11 @@ impl<T: Encode> EncodeToVec for T {
     }
 }
 
-// ── Helpers required by GetHeadersMsg single_locator ────────────────────
-
-trait GetHeadersMsgExt {
-    fn single_locator(locator: Hash256) -> GetHeadersMsg;
-}
-
-impl GetHeadersMsgExt for GetHeadersMsg {
-    fn single_locator(locator: Hash256) -> Self {
-        Self {
-            version: 70016,
-            locator_hashes: vec![locator],
-            stop_hash: Hash256::ZERO,
-        }
+fn getheaders_msg(locator: Hash256) -> GetHeadersMsg {
+    GetHeadersMsg {
+        version: 70016,
+        locator_hashes: vec![locator],
+        stop_hash: Hash256::ZERO,
     }
 }
 

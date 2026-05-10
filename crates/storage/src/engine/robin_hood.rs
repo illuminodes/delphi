@@ -3,7 +3,7 @@
 //! Fixed 88-byte buckets stored in `utxo_table.bin`. Power-of-two slot count.
 //! Standard scriptPubKeys (≤34 bytes) stored inline; nonstandard overflow to
 //! a sidecar file. Phase 1 uses synchronous `pread`/`pwrite`; Phase 2 replaces
-//! with io_uring batched I/O.
+//! with `io_uring` batched I/O.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
 use mantle::hash::ByteSliceExt;
-use mantle::primitives::{BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, ScriptPubKey};
+use mantle::primitives::{
+    BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, ScriptPubKey,
+};
 use mantle_consensus::chain_view::{Coin, TipInfo};
 
 use super::{Engine, EngineError};
@@ -82,7 +84,7 @@ impl Bucket {
             probe_distance,
             coinbase: coin.coinbase,
             spk_len: if spk_len <= MAX_INLINE_SPK {
-                spk_len as u16
+                u16::try_from(spk_len).expect("spk_len <= MAX_INLINE_SPK <= u16::MAX")
             } else {
                 OVERFLOW_MARKER
             },
@@ -149,7 +151,10 @@ impl TableHeader {
 
     fn decode(buf: &[u8; BUCKET_SIZE]) -> io::Result<Self> {
         if buf[0..8] != MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad UTXO table magic"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad UTXO table magic",
+            ));
         }
         let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
         if version != FORMAT_VERSION {
@@ -176,6 +181,8 @@ pub struct RobinHoodTable {
 }
 
 impl RobinHoodTable {
+    /// # Errors
+    /// Returns an error if the file cannot be created or opened.
     pub fn open(path: &Path) -> io::Result<Self> {
         if path.exists() {
             Self::open_existing(path)
@@ -184,6 +191,8 @@ impl RobinHoodTable {
         }
     }
 
+    /// # Errors
+    /// Returns an error if the file cannot be created or opened.
     pub fn open_with_capacity(path: &Path, min_slots: u64) -> io::Result<Self> {
         if path.exists() {
             Self::open_existing(path)
@@ -205,7 +214,10 @@ impl RobinHoodTable {
         let file_size = (slot_count + 1) * BUCKET_SIZE as u64;
         file.set_len(file_size)?;
 
-        let header = TableHeader { slot_count, live_count: 0 };
+        let header = TableHeader {
+            slot_count,
+            live_count: 0,
+        };
         let mut buf = [0u8; BUCKET_SIZE];
         header.encode(&mut buf);
         pwrite_all(&file, &buf, 0)?;
@@ -233,25 +245,25 @@ impl RobinHoodTable {
         })
     }
 
-    fn slot_offset(&self, slot: u64) -> u64 {
+    fn slot_offset(slot: u64) -> u64 {
         (slot + 1) * BUCKET_SIZE as u64
     }
 
     fn read_bucket(&self, slot: u64) -> io::Result<Bucket> {
         let mut buf = [0u8; BUCKET_SIZE];
-        pread_exact(&self.file, &mut buf, self.slot_offset(slot))?;
+        pread_exact(&self.file, &mut buf, Self::slot_offset(slot))?;
         Ok(Bucket::decode(&buf))
     }
 
     fn write_bucket(&self, slot: u64, bucket: &Bucket) -> io::Result<()> {
         let mut buf = [0u8; BUCKET_SIZE];
         bucket.encode(&mut buf);
-        pwrite_all(&self.file, &buf, self.slot_offset(slot))
+        pwrite_all(&self.file, &buf, Self::slot_offset(slot))
     }
 
     fn write_empty(&self, slot: u64) -> io::Result<()> {
         let buf = [0u8; BUCKET_SIZE];
-        pwrite_all(&self.file, &buf, self.slot_offset(slot))
+        pwrite_all(&self.file, &buf, Self::slot_offset(slot))
     }
 
     fn ideal_slot(&self, op: &OutPoint) -> u64 {
@@ -273,6 +285,7 @@ impl RobinHoodTable {
     }
 
     #[cfg(unix)]
+    #[must_use]
     pub fn fd(&self) -> i32 {
         use std::os::unix::io::AsRawFd;
         self.file.as_raw_fd()
@@ -280,6 +293,8 @@ impl RobinHoodTable {
 
     // ── Public API ───────────────────────────────────────────────────────────
 
+    /// # Errors
+    /// Returns an error on I/O failure.
     pub fn get(&self, op: &OutPoint) -> io::Result<Option<Coin>> {
         let ideal = self.ideal_slot(op);
         let mut dist: u8 = 1;
@@ -303,6 +318,8 @@ impl RobinHoodTable {
         }
     }
 
+    /// # Errors
+    /// Returns an error on I/O failure.
     pub fn insert(&mut self, op: &OutPoint, coin: &Coin) -> io::Result<()> {
         if self.needs_resize() {
             self.resize()?;
@@ -337,6 +354,8 @@ impl RobinHoodTable {
         }
     }
 
+    /// # Errors
+    /// Returns an error on I/O failure.
     pub fn remove(&mut self, op: &OutPoint) -> io::Result<bool> {
         let ideal = self.ideal_slot(op);
         let mut dist: u8 = 1;
@@ -403,20 +422,24 @@ impl RobinHoodTable {
         Ok(())
     }
 
+    #[must_use]
     pub fn len(&self) -> u64 {
         self.live_count
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.live_count == 0
     }
 
+    /// # Errors
+    /// Returns an error on I/O failure.
     pub fn sync(&self) -> io::Result<()> {
         self.flush_header()?;
         self.file.sync_all()
     }
 
-    /// Batched UTXO lookup using io_uring.
+    /// Batched UTXO lookup using `io_uring`.
     ///
     /// Submits one `pread` per outpoint for the ideal bucket, waits for all
     /// completions, then submits follow-up reads for Robin Hood probe chains.
@@ -424,6 +447,12 @@ impl RobinHoodTable {
     ///
     /// `arena` must be pre-sized to `ops.len() * BUCKET_SIZE`. Results are
     /// written into `results` in the same order as `ops`.
+    ///
+    /// # Errors
+    /// Returns an error on I/O failure.
+    ///
+    /// # Panics
+    /// Panics if `arena` is shorter than `ops.len() * BUCKET_SIZE`.
     #[allow(clippy::too_many_lines)]
     pub fn get_batch_uring(
         &self,
@@ -458,18 +487,19 @@ impl RobinHoodTable {
                 if resolved[i] {
                     continue;
                 }
-                let offset = self.slot_offset(slots[i]);
+                let offset = Self::slot_offset(slots[i]);
                 let buf_start = i * BUCKET_SIZE;
                 let sqe = unsafe {
                     ququmatz::Sqe::read_ptr(
                         fd,
                         arena[buf_start..].as_mut_ptr(),
-                        BUCKET_SIZE as u32,
+                        u32::try_from(BUCKET_SIZE).expect("BUCKET_SIZE fits u32"),
                         offset,
                     )
                 }
                 .user_data(i as u64);
-                ring.push(sqe).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e:?}")))?;
+                ring.push(sqe)
+                    .map_err(|e| io::Error::other(format!("{e:?}")))?;
                 submitted += 1;
             }
 
@@ -478,12 +508,12 @@ impl RobinHoodTable {
             }
 
             ring.submit_and_wait(submitted)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e:?}")))?;
+                .map_err(|e| io::Error::other(format!("{e:?}")))?;
 
             // Process completions.
             let mut need_reprobe = false;
             while let Some(cqe) = ring.complete() {
-                let i = cqe.user_data as usize;
+                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
                 if i >= n {
                     continue;
                 }
@@ -539,7 +569,6 @@ const WRITE_BUFFER_FLUSH_THRESHOLD: usize = 500_000;
 
 enum BufferEntry {
     Live(Coin),
-    Spent,
 }
 
 // SAFETY: RobinHoodEngine is only accessed from the single storage thread
@@ -588,7 +617,7 @@ impl RobinHoodEngine {
             .map_err(io_err)?;
 
         let ring = ququmatz::IoUring::new(STORAGE_RING_ENTRIES)
-            .map_err(|e| EngineError::Io(io::Error::new(io::ErrorKind::Other, format!("{e:?}"))))?;
+            .map_err(|e| EngineError::Io(io::Error::other(format!("{e:?}"))))?;
 
         let mut engine = Self {
             data_dir: data_dir.to_owned(),
@@ -616,9 +645,8 @@ impl RobinHoodEngine {
 
     fn flush_write_buffer(&mut self) -> Result<(), EngineError> {
         for (op, entry) in self.write_buffer.drain() {
-            if let BufferEntry::Live(coin) = entry {
-                self.table.insert(&op, &coin).map_err(io_err)?;
-            }
+            let BufferEntry::Live(coin) = entry;
+            self.table.insert(&op, &coin).map_err(io_err)?;
         }
         for op in self.pending_disk_deletes.drain(..) {
             self.table.remove(&op).map_err(io_err)?;
@@ -631,7 +659,6 @@ impl Engine for RobinHoodEngine {
     fn read_coin(&mut self, op: &OutPoint) -> Result<Option<Coin>, EngineError> {
         match self.write_buffer.get(op) {
             Some(BufferEntry::Live(coin)) => return Ok(Some(coin.clone())),
-            Some(BufferEntry::Spent) => return Ok(None),
             None => {}
         }
         self.table.get(op).map_err(io_err)
@@ -648,7 +675,6 @@ impl Engine for RobinHoodEngine {
         for (i, &op) in ops.iter().enumerate() {
             match self.write_buffer.get(&op) {
                 Some(BufferEntry::Live(coin)) => results.push(Some(coin.clone())),
-                Some(BufferEntry::Spent) => results.push(None),
                 None => {
                     disk_ops.push((i, op));
                     results.push(None);
@@ -688,21 +714,23 @@ impl Engine for RobinHoodEngine {
                 height: nc.height,
                 coinbase: nc.coinbase,
             };
-            self.write_buffer.insert(nc.outpoint, BufferEntry::Live(coin));
+            self.write_buffer
+                .insert(nc.outpoint, BufferEntry::Live(coin));
         }
         for op in &req.spent {
             match self.write_buffer.remove(op) {
                 Some(BufferEntry::Live(_)) => {
                     // Created and spent within the buffer window — elided.
                 }
-                Some(BufferEntry::Spent) | None => {
+                None => {
                     // Coin is on disk — schedule deletion for next flush.
                     self.pending_disk_deletes.push(*op);
                 }
             }
         }
 
-        if self.write_buffer.len() + self.pending_disk_deletes.len() > WRITE_BUFFER_FLUSH_THRESHOLD {
+        if self.write_buffer.len() + self.pending_disk_deletes.len() > WRITE_BUFFER_FLUSH_THRESHOLD
+        {
             self.flush_write_buffer()?;
         }
 
@@ -1051,12 +1079,27 @@ mod tests {
         let mut table = RobinHoodTable::open(tmp.path()).unwrap();
 
         let cases: &[(&str, &[u8])] = &[
-            ("p2pkh", &[0x76, 0xa9, 0x14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
-                         11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 0x88, 0xac]),
-            ("p2sh", &[0xa9, 0x14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
-                        11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 0x87]),
-            ("p2wpkh", &[0x00, 0x14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
-                          11, 12, 13, 14, 15, 16, 17, 18, 19, 20]),
+            (
+                "p2pkh",
+                &[
+                    0x76, 0xa9, 0x14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+                    18, 19, 20, 0x88, 0xac,
+                ],
+            ),
+            (
+                "p2sh",
+                &[
+                    0xa9, 0x14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                    20, 0x87,
+                ],
+            ),
+            (
+                "p2wpkh",
+                &[
+                    0x00, 0x14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                    20,
+                ],
+            ),
             ("p2wsh", &{
                 let mut v = vec![0x00, 0x20];
                 v.extend_from_slice(&[0xAB; 32]);
@@ -1070,7 +1113,7 @@ mod tests {
         ];
 
         for (i, (name, spk)) in cases.iter().enumerate() {
-            let op = make_op(i as u8);
+            let op = make_op(u8::try_from(i).expect("test index fits u8"));
             let coin = make_coin(u64::try_from(i).unwrap(), spk);
             table.insert(&op, &coin).unwrap();
             let got = table.get(&op).unwrap().unwrap();
@@ -1098,7 +1141,9 @@ mod tests {
 
         let ops: Vec<OutPoint> = (0..count).map(make_op).collect();
         let mut results = Vec::new();
-        table.get_batch_uring(&ops, &mut results, &mut ring, &mut arena).unwrap();
+        table
+            .get_batch_uring(&ops, &mut results, &mut ring, &mut arena)
+            .unwrap();
 
         assert_eq!(results.len(), count as usize);
         for (i, result) in results.iter().enumerate() {
@@ -1109,7 +1154,9 @@ mod tests {
         // Also test miss: outpoints not in the table.
         let miss_ops: Vec<OutPoint> = (200..210u8).map(make_op).collect();
         let mut miss_results = Vec::new();
-        table.get_batch_uring(&miss_ops, &mut miss_results, &mut ring, &mut arena).unwrap();
+        table
+            .get_batch_uring(&miss_ops, &mut miss_results, &mut ring, &mut arena)
+            .unwrap();
         assert!(miss_results.iter().all(Option::is_none));
     }
 
@@ -1119,7 +1166,10 @@ mod tests {
         std::fs::create_dir_all(dir.path()).unwrap();
         let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
 
-        let op = OutPoint { txid: Hash256([10u8; 32]), vout: 0 };
+        let op = OutPoint {
+            txid: Hash256([10u8; 32]),
+            vout: 0,
+        };
 
         // Create a coin — goes into write buffer, not disk.
         let req1 = CommitBlockReq {
@@ -1153,7 +1203,10 @@ mod tests {
             height: BlockHeight(2),
             hash: Hash256([12u8; 32]),
             prev_hash: Hash256([11u8; 32]),
-            header: BlockHeader { prev_block: Hash256([11u8; 32]), ..make_header(0) },
+            header: BlockHeader {
+                prev_block: Hash256([11u8; 32]),
+                ..make_header(0)
+            },
             created: vec![],
             spent: vec![op],
             block_bytes: None,
@@ -1173,7 +1226,10 @@ mod tests {
         std::fs::create_dir_all(dir.path()).unwrap();
         let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
 
-        let op = OutPoint { txid: Hash256([20u8; 32]), vout: 0 };
+        let op = OutPoint {
+            txid: Hash256([20u8; 32]),
+            vout: 0,
+        };
         let req = CommitBlockReq {
             token: crate::types::ReqToken(1),
             height: BlockHeight(1),
@@ -1206,10 +1262,6 @@ mod tests {
 
     // ── Engine integration tests ─────────────────────────────────────────
 
-    fn tmp_dir(name: &str) -> TmpFile {
-        TmpFile::new(name)
-    }
-
     fn make_header(time: u32) -> BlockHeader {
         BlockHeader {
             version: 1,
@@ -1227,7 +1279,10 @@ mod tests {
         std::fs::create_dir_all(dir.path()).unwrap();
         let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
 
-        let op = OutPoint { txid: Hash256([1u8; 32]), vout: 0 };
+        let op = OutPoint {
+            txid: Hash256([1u8; 32]),
+            vout: 0,
+        };
         let req = CommitBlockReq {
             token: crate::types::ReqToken(1),
             height: BlockHeight(1),
@@ -1257,7 +1312,10 @@ mod tests {
         std::fs::create_dir_all(dir.path()).unwrap();
         let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
 
-        let op = OutPoint { txid: Hash256([3u8; 32]), vout: 0 };
+        let op = OutPoint {
+            txid: Hash256([3u8; 32]),
+            vout: 0,
+        };
         let req1 = CommitBlockReq {
             token: crate::types::ReqToken(1),
             height: BlockHeight(10),

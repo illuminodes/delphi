@@ -5,20 +5,28 @@ use quetzalcoatl::mpsc::RingBuffer as MpscRing;
 use quetzalcoatl::spsc::RingBuffer as SpscRing;
 
 use crate::engine::Engine;
-use crate::engine::flat::FlatEngine;
 use crate::types::{
     CommittedResp, HeaderKey, LookupCoinsResp, LookupResult, StorageError, StorageReq, StorageResp,
 };
 
 const RING_CAP: usize = 1024;
 
-pub(crate) struct StorageWorker<'a, RReq: Deref<Target = MpscRing<StorageReq<'a>>>, RResp: Deref<Target = SpscRing<StorageResp>>> {
+pub(crate) struct StorageWorker<
+    'a,
+    RReq: Deref<Target = MpscRing<StorageReq<'a>>>,
+    RResp: Deref<Target = SpscRing<StorageResp>>,
+> {
     req_rx: quetzalcoatl::mpsc::Consumer<StorageReq<'a>, RReq>,
     resp_tx: quetzalcoatl::spsc::Producer<StorageResp, RResp>,
     engine: Box<dyn Engine + Send>,
 }
 
-impl<'a, RReq: Deref<Target = MpscRing<StorageReq<'a>>>, RResp: Deref<Target = SpscRing<StorageResp>>> StorageWorker<'a, RReq, RResp> {
+impl<
+    'a,
+    RReq: Deref<Target = MpscRing<StorageReq<'a>>>,
+    RResp: Deref<Target = SpscRing<StorageResp>>,
+> StorageWorker<'a, RReq, RResp>
+{
     pub(crate) fn run(mut self) {
         while let Some(req) = self.req_rx.pop_block() {
             let shutdown = matches!(req, StorageReq::Shutdown);
@@ -83,7 +91,9 @@ pub(crate) struct StorageThreadHandle {
     pub(crate) resp_rx: quetzalcoatl::spsc::Consumer<StorageResp>,
 }
 
-pub(crate) fn spawn(engine: impl Engine + Send + 'static) -> Result<StorageThreadHandle, StorageError> {
+pub(crate) fn spawn(
+    engine: impl Engine + Send + 'static,
+) -> Result<StorageThreadHandle, StorageError> {
     let (req_tx, req_rx) = MpscRing::new(Capacity::exact(RING_CAP)).split();
     let (resp_tx, resp_rx) = SpscRing::new(Capacity::exact(RING_CAP)).split();
 
@@ -99,25 +109,4 @@ pub(crate) fn spawn(engine: impl Engine + Send + 'static) -> Result<StorageThrea
         .map_err(|e| StorageError::Io(e.kind()))?;
 
     Ok(StorageThreadHandle { req_tx, resp_rx })
-}
-
-// ── Borrowed spawn (scoped-thread path for zero-copy replay) ─────────────────
-
-pub(crate) fn make_worker_borrowed<'a>(
-    engine: FlatEngine,
-    req_ring: &'a MpscRing<StorageReq<'a>>,
-    resp_ring: &'a SpscRing<StorageResp>,
-) -> (
-    StorageWorker<'a, &'a MpscRing<StorageReq<'a>>, &'a SpscRing<StorageResp>>,
-    quetzalcoatl::mpsc::Producer<StorageReq<'a>, &'a MpscRing<StorageReq<'a>>>,
-    quetzalcoatl::spsc::Consumer<StorageResp, &'a SpscRing<StorageResp>>,
-) {
-    let (req_tx, req_rx) = req_ring.split_borrowed();
-    let (resp_tx, resp_rx) = resp_ring.split_borrowed();
-    let worker = StorageWorker {
-        req_rx,
-        resp_tx,
-        engine: Box::new(engine),
-    };
-    (worker, req_tx, resp_rx)
 }

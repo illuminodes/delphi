@@ -590,7 +590,7 @@ fn diag_sighash_determinism() {
 
 // ── multi-input taproot ───────────────────────────────────────────────────────
 
-/// Build a 2-input single-output taproot tx. Distinct previous_outputs so
+/// Build a 2-input single-output taproot tx. Distinct `previous_outputs` so
 /// the two inputs don't collide in `hashPrevouts`. The per-input spent spks
 /// (`spk0`, `spk1`) and amounts are passed separately to `Bip341Cache::new`
 /// at the call site — they aren't needed inside the tx body itself.
@@ -643,8 +643,8 @@ fn make_two_input_taproot_tx(
 /// `assert_eq!(spent_amounts.len(), tx.input_count())` ran.
 #[test]
 fn bip341_key_path_two_input_succeeds() {
-    use crate::script::verify_script_with_spent_outputs;
     use crate::script::SpentOutputs;
+    use crate::script::verify_script_with_spent_outputs;
 
     let secret0 = [0x33u8; 32];
     let secret1 = [0x44u8; 32];
@@ -667,8 +667,8 @@ fn bip341_key_path_two_input_succeeds() {
         &[[0u8; 64].to_vec()],
     );
     let amounts = [amt0, amt1];
-    let spks: [&[u8]; 2] = [spk0.as_slice(), spk1.as_slice()];
-    let cache = Bip341Cache::new(&placeholder, &amounts, &spks);
+    let all_spks: [&[u8]; 2] = [spk0.as_slice(), spk1.as_slice()];
+    let cache = Bip341Cache::new(&placeholder, &amounts, &all_spks);
 
     let msg0 = placeholder.bip341_sighash(
         0,
@@ -698,7 +698,7 @@ fn bip341_key_path_two_input_succeeds() {
         &[sig1.to_vec()],
     );
 
-    let so = SpentOutputs::new(&amounts, &spks).expect("matched lengths");
+    let so = SpentOutputs::new(&amounts, &all_spks).expect("matched lengths");
 
     verify_script_with_spent_outputs(&[], &spk0, &tx, 0, amt0, taproot_flags(), so)
         .expect("two-input taproot key-path: input 0 must verify");
@@ -712,19 +712,8 @@ fn bip341_key_path_two_input_succeeds() {
 #[test]
 fn bip341_key_path_two_input_single_anyonecanpay() {
     use crate::script::SpentOutputs;
-    use crate::script::verify_script_with_spent_outputs;
     use crate::script::sighash::TaprootSigHashType;
-
-    let secret0 = [0x77u8; 32];
-    let secret1 = [0x88u8; 32];
-    let out_key0 = key_path_output_key(&schnorr_pubkey(&secret0));
-    let out_key1 = key_path_output_key(&schnorr_pubkey(&secret1));
-    let spk0 = taproot_spk(&out_key0);
-    let spk1 = taproot_spk(&out_key1);
-    let amt0 = Satoshi::new(70_000);
-    let amt1 = Satoshi::new(50_000);
-
-    let tweaked0 = tweaked_signing_key(&secret0, &[]);
+    use crate::script::verify_script_with_spent_outputs;
 
     // Two-output tx so SIGHASH_SINGLE has both n_in=0 and n_in=1 outputs to commit to.
     fn make_two_in_two_out_taproot_tx(
@@ -762,25 +751,44 @@ fn bip341_key_path_two_input_single_anyonecanpay() {
                 },
             ],
             outputs: vec![
-                TxOut { value: out0_value, script_pubkey: out0_spk.into() },
-                TxOut { value: out1_value, script_pubkey: out1_spk.into() },
+                TxOut {
+                    value: out0_value,
+                    script_pubkey: out0_spk.into(),
+                },
+                TxOut {
+                    value: out1_value,
+                    script_pubkey: out1_spk.into(),
+                },
             ],
             locktime: 0,
         }
     }
 
+    let secret0 = [0x77u8; 32];
+    let secret1 = [0x88u8; 32];
+    let out_key0 = key_path_output_key(&schnorr_pubkey(&secret0));
+    let out_key1 = key_path_output_key(&schnorr_pubkey(&secret1));
+    let spk0 = taproot_spk(&out_key0);
+    let spk1 = taproot_spk(&out_key1);
+    let amt0 = Satoshi::new(70_000);
+    let amt1 = Satoshi::new(50_000);
+
+    let tweaked0 = tweaked_signing_key(&secret0, &[]);
+
     // Placeholder pass: 65-byte zero sig + sighash type byte to lock in tx shape.
     let mut placeholder_sig0 = vec![0u8; 64];
     placeholder_sig0.push(0x83);
     let placeholder = make_two_in_two_out_taproot_tx(
-        Satoshi::new(40_000), vec![0x51],
-        Satoshi::new(20_000), vec![0x51],
+        Satoshi::new(40_000),
+        vec![0x51],
+        Satoshi::new(20_000),
+        vec![0x51],
         &[placeholder_sig0],
         &[vec![0u8; 64]],
     );
     let amounts = [amt0, amt1];
-    let spks: [&[u8]; 2] = [spk0.as_slice(), spk1.as_slice()];
-    let cache = Bip341Cache::new(&placeholder, &amounts, &spks);
+    let all_spks: [&[u8]; 2] = [spk0.as_slice(), spk1.as_slice()];
+    let cache = Bip341Cache::new(&placeholder, &amounts, &all_spks);
 
     let msg0 = placeholder.bip341_sighash(
         0,
@@ -809,13 +817,15 @@ fn bip341_key_path_two_input_single_anyonecanpay() {
     let sig1_default = schnorr_sign(&tweaked1, &msg1_default);
 
     let tx = make_two_in_two_out_taproot_tx(
-        Satoshi::new(40_000), vec![0x51],
-        Satoshi::new(20_000), vec![0x51],
+        Satoshi::new(40_000),
+        vec![0x51],
+        Satoshi::new(20_000),
+        vec![0x51],
         &[sig65],
         &[sig1_default.to_vec()],
     );
 
-    let so = SpentOutputs::new(&amounts, &spks).expect("matched lengths");
+    let so = SpentOutputs::new(&amounts, &all_spks).expect("matched lengths");
 
     verify_script_with_spent_outputs(&[], &spk0, &tx, 0, amt0, taproot_flags(), so)
         .expect("two-input taproot SINGLE_ANYONECANPAY: input 0 must verify");
@@ -857,8 +867,7 @@ fn bip341_real_mainnet_block_767434_single_anyonecanpay() {
     // Spent outputs in input order. Captured from the ordinals fixture
     // corpus via crates/bench/src/find_tx.rs.
     let p2sh_p2wpkh_spk = unhex("a91466d3f0c3febcf2dc0e49bbd71ee8a026792dc5ac87");
-    let p2tr_spk =
-        unhex("5120c20deca5159cb269fab27e1237e2f2cc39f8c5bcaa668968597ef52c290b33e6");
+    let p2tr_spk = unhex("5120c20deca5159cb269fab27e1237e2f2cc39f8c5bcaa668968597ef52c290b33e6");
     let amounts = [
         Satoshi::new(600),
         Satoshi::new(600),
@@ -892,6 +901,8 @@ fn bip341_real_mainnet_block_767434_single_anyonecanpay() {
 /// `TaprootMissingSpentOutputs` instead of panicking.
 #[test]
 fn bip341_key_path_two_input_without_spent_outputs_errors() {
+    use crate::script::ScriptError;
+
     let secret0 = [0x55u8; 32];
     let secret1 = [0x66u8; 32];
     let out_key0 = key_path_output_key(&schnorr_pubkey(&secret0));
@@ -911,7 +922,6 @@ fn bip341_key_path_two_input_without_spent_outputs_errors() {
         &[[0u8; 64].to_vec()],
     );
 
-    use crate::script::ScriptError;
     let result = verify_script(&[], &spk0, &tx, 0, amt0, taproot_flags());
     assert!(
         matches!(result, Err(ScriptError::TaprootMissingSpentOutputs)),

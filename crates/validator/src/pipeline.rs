@@ -378,8 +378,13 @@ pub fn prefetch_and_connect<'blk>(
         let txid = bufs.txids[tx_index];
         for (vout, output) in tx.outputs().enumerate() {
             let Ok(out) = output else { continue };
-            let Ok(vout_u32) = u32::try_from(vout) else { continue };
-            let op = OutPoint { txid, vout: vout_u32 };
+            let Ok(vout_u32) = u32::try_from(vout) else {
+                continue;
+            };
+            let op = OutPoint {
+                txid,
+                vout: vout_u32,
+            };
             if bufs.spent_set.contains(&op) {
                 bufs.intra.insert(
                     op,
@@ -473,91 +478,4 @@ pub fn commit_connect_result(
         block_bytes: None,
         durability,
     })
-}
-
-fn build_ref_intra_block(
-    block_ref: &BlockRef<'_>,
-) -> (PrehashedMap<OutPoint, Option<Coin>>, Vec<Hash256>) {
-    let mut spent: PrehashedSet<OutPoint> = PrehashedSet::with_hasher(BuildPrehashedHasher);
-    for tx in block_ref.transactions().skip(1) {
-        for inp in tx.inputs() {
-            let Ok(i) = inp else { continue };
-            spent.insert(i.previous_output);
-        }
-    }
-
-    let mut scratch = Vec::new();
-    let txids: Vec<Hash256> = block_ref
-        .transactions()
-        .map(|tx| tx.txid_into(&mut scratch).expect("txid hash never fails"))
-        .collect();
-
-    let mut intra_block: PrehashedMap<OutPoint, Option<Coin>> =
-        PrehashedMap::with_capacity_and_hasher(spent.len(), BuildPrehashedHasher);
-    for (tx_index, tx) in block_ref.transactions().enumerate() {
-        let txid = txids[tx_index];
-        for (vout, output) in tx.outputs().enumerate() {
-            let Ok(out) = output else { continue };
-            let Ok(vout_u32) = u32::try_from(vout) else {
-                continue;
-            };
-            let op = OutPoint { txid, vout: vout_u32 };
-            if spent.contains(&op) {
-                intra_block.insert(
-                    op,
-                    Some(Coin {
-                        value: out.value,
-                        script_pubkey: out.script_pubkey.into(),
-                        height: BlockHeight::ZERO,
-                        coinbase: tx_index == 0,
-                    }),
-                );
-            }
-        }
-    }
-
-    (intra_block, txids)
-}
-
-fn collect_ref_outpoints(
-    block_ref: &BlockRef<'_>,
-    intra_block: &PrehashedMap<OutPoint, Option<Coin>>,
-    txids: &[Hash256],
-) -> (Vec<OutPoint>, Vec<OutPoint>) {
-    let mut spend_outpoints: Vec<OutPoint> = Vec::new();
-    for tx in block_ref.transactions().skip(1) {
-        for inp in tx.inputs() {
-            let Ok(i) = inp else { continue };
-            let op = i.previous_output;
-            if !intra_block.contains_key(&op) {
-                spend_outpoints.push(op);
-            }
-        }
-    }
-
-    let mut spend_set: PrehashedSet<OutPoint> =
-        PrehashedSet::with_capacity_and_hasher(spend_outpoints.len(), BuildPrehashedHasher);
-    spend_set.extend(spend_outpoints.iter().copied());
-    let mut bip30_outpoints: Vec<OutPoint> = Vec::with_capacity(block_ref.tx_count());
-    for &txid in txids {
-        let op = OutPoint { txid, vout: 0 };
-        if !intra_block.contains_key(&op) && !spend_set.contains(&op) {
-            bip30_outpoints.push(op);
-        }
-    }
-
-    (spend_outpoints, bip30_outpoints)
-}
-
-impl ValidationOrStorageError {
-    /// Combine a non-validation I/O error into a Storage variant by losing
-    /// context — used at decode boundaries where the upstream error type is
-    /// `std::io::Error`. Matches existing crate-internal usage of `From`.
-    fn or_io(self, _e: std::io::Error) -> Self {
-        // Map any decoder I/O into a structural validation failure rather than
-        // surfacing the raw io::Error type here. The validation error already
-        // identifies the failure mode as MalformedTransaction; the original
-        // io::Error message is dropped (the validator pipeline does not log it).
-        self
-    }
 }

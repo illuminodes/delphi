@@ -30,7 +30,7 @@
 //!
 //! Run:
 //!     MANTLE_BENCH_DATA_DIR=/tmp/mantle-smoke \
-//!         cargo bench -p mantle-bench --bench replay_parity
+//!         cargo bench -p mantle-bench --bench `replay_parity`
 
 use std::collections::HashMap;
 use std::fs;
@@ -39,7 +39,6 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use bitcoinconsensus;
 use mantle::codec::{Decode, Encode};
 use mantle::primitives::{Block, Hash256, OutPoint, Transaction, TxHash, TxOut};
 use mantle_consensus::script::{ScriptFlags, verify_script};
@@ -115,15 +114,13 @@ fn build_jobs() -> Vec<Job> {
                 tx.encode(&mut tx_wire).expect("encode tx");
 
                 for (i, inp) in tx.inputs.iter().enumerate() {
-                    let utxo = utxos
-                        .get(&inp.previous_output)
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "block {h}: prevout {}:{} not in UTXO map",
-                                inp.previous_output.txid.to_display_hex(),
-                                inp.previous_output.vout,
-                            )
-                        });
+                    let utxo = utxos.get(&inp.previous_output).unwrap_or_else(|| {
+                        panic!(
+                            "block {h}: prevout {}:{} not in UTXO map",
+                            inp.previous_output.txid.to_display_hex(),
+                            inp.previous_output.vout,
+                        )
+                    });
                     jobs.push(Job {
                         tx: tx.clone(),
                         tx_wire: tx_wire.clone(),

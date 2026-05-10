@@ -103,7 +103,7 @@ impl Ecdsa {
     /// signature here always returns `false` (no DER body to parse).
     ///
     /// Bitcoin's *consensus* curve-check accepts both low-S and high-S
-    /// signatures; the LOW_S rule (BIP146, activated 2016) is enforced
+    /// signatures; the `LOW_S` rule (BIP146, activated 2016) is enforced
     /// separately by [`Ecdsa::is_low_s`] in [`Ecdsa::check_sig_encoding`].
     /// k256's `verify_prehash` rejects high-S unconditionally for secp256k1
     /// (`NORMALIZE_S = true` on the curve), so we must `normalize_s` before

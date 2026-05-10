@@ -12,8 +12,11 @@ use crate::types::{
     ReadHeaderResp, ReqToken, StorageError, StorageReq, StorageResp,
 };
 
-pub struct StorageHandle<'a, RReq = std::sync::Arc<quetzalcoatl::mpsc::RingBuffer<StorageReq<'a>>>, RResp = std::sync::Arc<quetzalcoatl::spsc::RingBuffer<StorageResp>>>
-where
+pub struct StorageHandle<
+    'a,
+    RReq = std::sync::Arc<quetzalcoatl::mpsc::RingBuffer<StorageReq<'a>>>,
+    RResp = std::sync::Arc<quetzalcoatl::spsc::RingBuffer<StorageResp>>,
+> where
     RReq: Deref<Target = quetzalcoatl::mpsc::RingBuffer<StorageReq<'a>>>,
     RResp: Deref<Target = quetzalcoatl::spsc::RingBuffer<StorageResp>>,
 {
@@ -40,7 +43,7 @@ impl StorageHandle<'static> {
         })
     }
 
-    /// Open with the Robin Hood engine (on-disk hash table + io_uring + write buffer).
+    /// Open with the Robin Hood engine (on-disk hash table + `io_uring` + write buffer).
     ///
     /// # Errors
     /// Returns `StorageError` if the engine cannot be opened or the thread cannot be spawned.
@@ -76,9 +79,8 @@ impl StorageHandle<'static> {
         // `self.commit_block` blocks until that response arrives, so
         // the borrowed data is guaranteed to be live for the entire
         // duration the ring slot is occupied.
-        let req_static: CommitBlockReq<'static> = unsafe {
-            std::mem::transmute::<CommitBlockReq<'_>, CommitBlockReq<'static>>(req)
-        };
+        let req_static: CommitBlockReq<'static> =
+            unsafe { std::mem::transmute::<CommitBlockReq<'_>, CommitBlockReq<'static>>(req) };
         self.commit_block(req_static)
     }
 }

@@ -18,7 +18,7 @@
 //!     cargo run --release --bin fetch-fixtures -- --preset ordinals
 //!
 //! Run:
-//!     cargo bench -p mantle-bench --bench replay_parity_ordinals
+//!     `cargo bench -p mantle-bench --bench replay_parity_ordinals`
 
 use std::collections::HashMap;
 use std::fs;
@@ -30,9 +30,7 @@ use std::sync::LazyLock;
 use bitcoinconsensus::Utxo;
 use mantle::codec::{Decode, Encode};
 use mantle::primitives::{Block, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxOut};
-use mantle_consensus::script::{
-    ScriptFlags, SpentOutputs, verify_script_with_spent_outputs,
-};
+use mantle_consensus::script::{ScriptFlags, SpentOutputs, verify_script_with_spent_outputs};
 
 const START_HEIGHT: u32 = 767_430;
 const END_HEIGHT: u32 = 768_430;
@@ -234,17 +232,13 @@ fn mantle(bencher: divan::Bencher) {
                 amounts.clear();
                 spks.clear();
                 amounts.extend(rec.spent_outputs.iter().map(|o| o.value));
-                spks.extend(
-                    rec.spent_outputs
-                        .iter()
-                        .map(|o| o.script_pubkey.as_slice()),
-                );
+                spks.extend(rec.spent_outputs.iter().map(|o| o.script_pubkey.as_slice()));
                 last_tx_idx = job.tx_idx;
             }
             let n_in = job.n_in as usize;
             let prev = &rec.spent_outputs[n_in];
             let so = SpentOutputs::new(&amounts, &spks).expect("matched lengths");
-            let res = verify_script_with_spent_outputs(
+            verify_script_with_spent_outputs(
                 black_box(rec.tx.inputs[n_in].script_sig.as_slice()),
                 black_box(prev.script_pubkey.as_slice()),
                 black_box(&rec.tx),
@@ -252,8 +246,8 @@ fn mantle(bencher: divan::Bencher) {
                 black_box(prev.value),
                 black_box(ScriptFlags::from_bits(rec.flags)),
                 so,
-            );
-            res.expect("mantle: verification must pass on real mainnet input");
+            )
+            .expect("mantle: verification must pass on real mainnet input");
         }
     });
 }
@@ -271,24 +265,27 @@ fn bitcoinconsensus_oracle(bencher: divan::Bencher) {
             let rec = &corpus.records[job.tx_idx as usize];
             if job.tx_idx != last_tx_idx {
                 utxos.clear();
-                utxos.extend(rec.spent_outputs.iter().map(|o| Utxo {
-                    script_pubkey: o.script_pubkey.as_slice().as_ptr(),
-                    script_pubkey_len: o.script_pubkey.as_slice().len() as u32,
-                    value: i64::try_from(u64::from(o.value)).expect("value fits i64"),
+                utxos.extend(rec.spent_outputs.iter().map(|o| {
+                    Utxo {
+                        script_pubkey: o.script_pubkey.as_slice().as_ptr(),
+                        script_pubkey_len: u32::try_from(o.script_pubkey.as_slice().len())
+                            .expect("script_pubkey len fits u32"),
+                        value: i64::try_from(u64::from(o.value)).expect("value fits i64"),
+                    }
                 }));
                 last_tx_idx = job.tx_idx;
             }
             let n_in = job.n_in as usize;
             let prev = &rec.spent_outputs[n_in];
-            let res = bitcoinconsensus::verify_with_flags(
+            bitcoinconsensus::verify_with_flags(
                 black_box(prev.script_pubkey.as_slice()),
                 black_box(u64::from(prev.value)),
                 black_box(&rec.tx_wire),
                 Some(utxos.as_slice()),
                 black_box(n_in),
                 black_box(rec.flags),
-            );
-            res.expect("bitcoinconsensus: verification must pass on real mainnet input");
+            )
+            .expect("bitcoinconsensus: verification must pass on real mainnet input");
         }
     });
 }

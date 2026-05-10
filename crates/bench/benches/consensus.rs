@@ -376,7 +376,7 @@ fn chain_view_get_coins_batch(bencher: divan::Bencher, n: usize) {
         );
     }
     let mut out = Vec::new();
-    bencher.bench(|| {
+    bencher.bench_local(|| {
         view.get_coins_into(black_box(&ops), &mut out)
             .expect("storage error");
     });
