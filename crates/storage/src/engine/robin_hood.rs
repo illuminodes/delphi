@@ -57,7 +57,12 @@ impl Bucket {
     }
 
     fn to_coin(&self) -> Coin {
-        let spk = &self.script_pubkey[..self.spk_len as usize];
+        let spk = if self.spk_len == OVERFLOW_MARKER {
+            // TODO: read from overflow sidecar file
+            &[]
+        } else {
+            &self.script_pubkey[..self.spk_len as usize]
+        };
         Coin {
             value: Satoshi::new(self.value),
             script_pubkey: ScriptPubKey::from_slice(spk),
@@ -425,6 +430,7 @@ impl RobinHoodTable {
         ops: &[OutPoint],
         results: &mut Vec<Option<Coin>>,
         ring: &mut ququmatz::IoUring,
+        arena: &mut Vec<u8>,
     ) -> io::Result<()> {
         let n = ops.len();
         if n == 0 {
@@ -440,8 +446,10 @@ impl RobinHoodTable {
         let mut slots: Vec<u64> = ops.iter().map(|op| self.ideal_slot(op)).collect();
         let mut dists: Vec<u8> = vec![1; n];
         let mut resolved: Vec<bool> = vec![false; n];
-        // Arena for bucket reads — one bucket per outpoint.
-        let mut arena: Vec<u8> = vec![0u8; n * BUCKET_SIZE];
+        // Arena for bucket reads — reused across calls, capacity grows to max block size.
+        let needed = n * BUCKET_SIZE;
+        arena.clear();
+        arena.resize(needed, 0);
 
         loop {
             // Submit reads for all unresolved outpoints.
@@ -523,7 +531,7 @@ impl RobinHoodTable {
 
 const HEADER_RECORD_SIZE: usize = 116;
 
-const STORAGE_RING_ENTRIES: u32 = 4096;
+const STORAGE_RING_ENTRIES: u32 = 32768;
 
 const WRITE_BUFFER_FLUSH_THRESHOLD: usize = 500_000;
 
@@ -534,12 +542,18 @@ enum BufferEntry {
     Spent,
 }
 
+// SAFETY: RobinHoodEngine is only accessed from the single storage thread
+// after being moved there via spawn(). The IoUring raw pointers inside are
+// thread-local to that thread — no concurrent access.
+unsafe impl Send for RobinHoodEngine {}
+
 pub struct RobinHoodEngine {
     data_dir: PathBuf,
     table: RobinHoodTable,
     ring: ququmatz::IoUring,
     write_buffer: PrehashedMap<OutPoint, BufferEntry>,
     pending_disk_deletes: Vec<OutPoint>,
+    read_arena: Vec<u8>,
     header_file: File,
     header_write_len: u64,
     header_index: PrehashedMap<Hash256, u32>,
@@ -582,6 +596,7 @@ impl RobinHoodEngine {
             ring,
             write_buffer: PrehashedMap::with_hasher(BuildPrehashedHasher),
             pending_disk_deletes: Vec::new(),
+            read_arena: Vec::new(),
             header_file,
             header_write_len: 0,
             header_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
@@ -644,8 +659,10 @@ impl Engine for RobinHoodEngine {
         if !disk_ops.is_empty() {
             let disk_outpoints: Vec<OutPoint> = disk_ops.iter().map(|(_, op)| *op).collect();
             let mut disk_coins: Vec<Option<Coin>> = Vec::new();
+            let ring = &mut self.ring;
+            let arena = &mut self.read_arena;
             self.table
-                .get_batch_uring(&disk_outpoints, &mut disk_coins, &mut self.ring)
+                .get_batch_uring(&disk_outpoints, &mut disk_coins, ring, arena)
                 .map_err(io_err)?;
             for (j, &(i, _)) in disk_ops.iter().enumerate() {
                 if let Some(coin) = disk_coins.get(j).and_then(|c| c.as_ref()) {
@@ -1070,6 +1087,7 @@ mod tests {
         let tmp = TmpFile::new("uring-batch");
         let mut table = RobinHoodTable::open_with_capacity(tmp.path(), 64).unwrap();
         let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
 
         let count = 50u8;
         for i in 0..count {
@@ -1080,7 +1098,7 @@ mod tests {
 
         let ops: Vec<OutPoint> = (0..count).map(make_op).collect();
         let mut results = Vec::new();
-        table.get_batch_uring(&ops, &mut results, &mut ring).unwrap();
+        table.get_batch_uring(&ops, &mut results, &mut ring, &mut arena).unwrap();
 
         assert_eq!(results.len(), count as usize);
         for (i, result) in results.iter().enumerate() {
@@ -1091,7 +1109,7 @@ mod tests {
         // Also test miss: outpoints not in the table.
         let miss_ops: Vec<OutPoint> = (200..210u8).map(make_op).collect();
         let mut miss_results = Vec::new();
-        table.get_batch_uring(&miss_ops, &mut miss_results, &mut ring).unwrap();
+        table.get_batch_uring(&miss_ops, &mut miss_results, &mut ring, &mut arena).unwrap();
         assert!(miss_results.iter().all(Option::is_none));
     }
 

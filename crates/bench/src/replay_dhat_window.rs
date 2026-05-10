@@ -23,33 +23,36 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 mod fixtures_common;
 use fixtures_common::{
     BenchReplayBufs, fixtures_dir, load_block_bytes, replay_block_ref, replay_block_ref_reusing,
-    tmp_storage,
+    tmp_storage, tmp_storage_robin_hood,
 };
 
 struct Args {
     preset: String,
     blocks: u32,
     reuse: bool,
+    robin_hood: bool,
 }
 
 fn parse_args() -> Args {
     let mut preset = "early".to_string();
     let mut blocks: u32 = 1000;
     let mut reuse = false;
+    let mut robin_hood = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--preset" => preset = it.next().expect("--preset needs value"),
             "--blocks" => blocks = it.next().expect("--blocks needs value").parse().expect("u32"),
             "--reuse" => reuse = true,
+            "--robin-hood" => robin_hood = true,
             "--help" | "-h" => {
-                eprintln!("usage: replay-dhat-window --preset {{early|ordinals}} [--blocks N] [--reuse]");
+                eprintln!("usage: replay-dhat-window --preset {{early|ordinals}} [--blocks N] [--reuse] [--robin-hood]");
                 std::process::exit(0);
             }
             other => panic!("unknown arg: {other}"),
         }
     }
-    Args { preset, blocks, reuse }
+    Args { preset, blocks, reuse, robin_hood }
 }
 
 fn headers_from_blocks(dir: &Path, start: u32, end: u32) -> Vec<BlockHeader> {
@@ -125,12 +128,17 @@ fn main() {
     let snap = make_snapshot(&headers, start);
 
     eprintln!(
-        "[dhat-{}] loading {} blocks (heights {}..={}) reuse={}",
-        args.preset, args.blocks, start, end, args.reuse
+        "[dhat-{}] loading {} blocks (heights {}..={}) reuse={} robin_hood={}",
+        args.preset, args.blocks, start, end, args.reuse, args.robin_hood
     );
     let wires: Vec<Vec<u8>> = (start..=end).map(|h| load_block_bytes(&dir, h)).collect();
 
-    let (mut storage, _tmp) = tmp_storage(&format!("replay-dhat-window-{}", args.preset));
+    let tag = format!("replay-dhat-window-{}", args.preset);
+    let (mut storage, _tmp) = if args.robin_hood {
+        tmp_storage_robin_hood(&tag)
+    } else {
+        tmp_storage(&tag)
+    };
     let mut cache = ScriptExecutionCache::new(64 * 1024);
     let mut arena: Vec<u8> = Vec::new();
 

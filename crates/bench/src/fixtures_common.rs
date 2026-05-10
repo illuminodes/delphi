@@ -551,12 +551,24 @@ impl Drop for TmpDir {
 }
 
 pub fn tmp_storage(tag: &str) -> (StorageHandle<'static>, TmpDir) {
+    tmp_storage_engine(tag, false)
+}
+
+pub fn tmp_storage_robin_hood(tag: &str) -> (StorageHandle<'static>, TmpDir) {
+    tmp_storage_engine(tag, true)
+}
+
+fn tmp_storage_engine(tag: &str, robin_hood: bool) -> (StorageHandle<'static>, TmpDir) {
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .subsec_nanos();
     let path = std::env::temp_dir().join(format!("mantle-{tag}-{}-{ns}", std::process::id()));
     std::fs::create_dir_all(&path).expect("create tmp dir");
-    let handle = StorageHandle::open(&path).expect("StorageHandle::open");
+    let handle = if robin_hood {
+        StorageHandle::open_robin_hood(&path).expect("StorageHandle::open_robin_hood")
+    } else {
+        StorageHandle::open(&path).expect("StorageHandle::open")
+    };
     (handle, TmpDir(path))
 }

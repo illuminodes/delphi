@@ -6,6 +6,7 @@ use mantle_consensus::chain_view::TipInfo;
 
 use crate::engine::Engine;
 use crate::engine::flat::FlatEngine;
+use crate::engine::robin_hood::RobinHoodEngine;
 use crate::types::{
     CommitBlockReq, CommittedResp, HeaderKey, LookupCoinsResp, LookupResult, ReadHeaderReq,
     ReadHeaderResp, ReqToken, StorageError, StorageReq, StorageResp,
@@ -29,6 +30,22 @@ impl StorageHandle<'static> {
     /// Returns `StorageError` if the engine cannot be opened or the thread cannot be spawned.
     pub fn open(data_dir: &Path) -> Result<Self, StorageError> {
         let engine = FlatEngine::open(data_dir).map_err(StorageError::from)?;
+        let initial_tip = engine.tip();
+        let handle = crate::thread::spawn(engine)?;
+        Ok(Self {
+            req_tx: handle.req_tx,
+            resp_rx: handle.resp_rx,
+            tip: initial_tip,
+            next_token: 1,
+        })
+    }
+
+    /// Open with the Robin Hood engine (on-disk hash table + io_uring + write buffer).
+    ///
+    /// # Errors
+    /// Returns `StorageError` if the engine cannot be opened or the thread cannot be spawned.
+    pub fn open_robin_hood(data_dir: &Path) -> Result<Self, StorageError> {
+        let engine = RobinHoodEngine::open(data_dir).map_err(StorageError::from)?;
         let initial_tip = engine.tip();
         let handle = crate::thread::spawn(engine)?;
         Ok(Self {

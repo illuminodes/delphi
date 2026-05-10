@@ -15,7 +15,7 @@ const RING_CAP: usize = 1024;
 pub(crate) struct StorageWorker<'a, RReq: Deref<Target = MpscRing<StorageReq<'a>>>, RResp: Deref<Target = SpscRing<StorageResp>>> {
     req_rx: quetzalcoatl::mpsc::Consumer<StorageReq<'a>, RReq>,
     resp_tx: quetzalcoatl::spsc::Producer<StorageResp, RResp>,
-    engine: FlatEngine,
+    engine: Box<dyn Engine + Send>,
 }
 
 impl<'a, RReq: Deref<Target = MpscRing<StorageReq<'a>>>, RResp: Deref<Target = SpscRing<StorageResp>>> StorageWorker<'a, RReq, RResp> {
@@ -41,7 +41,10 @@ impl<'a, RReq: Deref<Target = MpscRing<StorageReq<'a>>>, RResp: Deref<Target = S
                     .engine
                     .read_coins(&r.outpoints, &mut results)
                     .map(|()| LookupCoinsResp { token, results })
-                    .map_err(StorageError::from);
+                    .map_err(|e| {
+                        eprintln!("[w] read_coins error: {e}");
+                        StorageError::from(e)
+                    });
                 StorageResp::LookupCoins(resp)
             }
             StorageReq::CommitBlock(r) => {
@@ -80,14 +83,14 @@ pub(crate) struct StorageThreadHandle {
     pub(crate) resp_rx: quetzalcoatl::spsc::Consumer<StorageResp>,
 }
 
-pub(crate) fn spawn(engine: FlatEngine) -> Result<StorageThreadHandle, StorageError> {
+pub(crate) fn spawn(engine: impl Engine + Send + 'static) -> Result<StorageThreadHandle, StorageError> {
     let (req_tx, req_rx) = MpscRing::new(Capacity::exact(RING_CAP)).split();
     let (resp_tx, resp_rx) = SpscRing::new(Capacity::exact(RING_CAP)).split();
 
     let worker = StorageWorker {
         req_rx,
         resp_tx,
-        engine,
+        engine: Box::new(engine),
     };
 
     std::thread::Builder::new()
@@ -114,7 +117,7 @@ pub(crate) fn make_worker_borrowed<'a>(
     let worker = StorageWorker {
         req_rx,
         resp_tx,
-        engine,
+        engine: Box::new(engine),
     };
     (worker, req_tx, resp_rx)
 }
