@@ -587,3 +587,335 @@ fn diag_sighash_determinism() {
     let ok = crate::script::consensus_crypto::Schnorr::verify(&sig, &output_key, &rt_msg);
     eprintln!("verify_schnorr(tweaked_sig, output_key, rt_msg): {ok}");
 }
+
+// ── multi-input taproot ───────────────────────────────────────────────────────
+
+/// Build a 2-input single-output taproot tx. Distinct previous_outputs so
+/// the two inputs don't collide in `hashPrevouts`. The per-input spent spks
+/// (`spk0`, `spk1`) and amounts are passed separately to `Bip341Cache::new`
+/// at the call site — they aren't needed inside the tx body itself.
+fn make_two_input_taproot_tx(
+    out_value: Satoshi,
+    out_spk: Vec<u8>,
+    witness0: &[Vec<u8>],
+    witness1: &[Vec<u8>],
+) -> Transaction {
+    Transaction {
+        version: 2,
+        inputs: vec![
+            TxIn {
+                previous_output: OutPoint {
+                    txid: Hash256([0x11; 32]),
+                    vout: 0,
+                },
+                script_sig: Vec::<u8>::new().into(),
+                sequence: 0xffff_fffd,
+                witness: Witness::from_slice(
+                    &witness0.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+                ),
+            },
+            TxIn {
+                previous_output: OutPoint {
+                    txid: Hash256([0x22; 32]),
+                    vout: 1,
+                },
+                script_sig: Vec::<u8>::new().into(),
+                sequence: 0xffff_fffd,
+                witness: Witness::from_slice(
+                    &witness1.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+                ),
+            },
+        ],
+        outputs: vec![TxOut {
+            value: out_value,
+            script_pubkey: out_spk.into(),
+        }],
+        locktime: 0,
+    }
+}
+
+/// Two-input taproot key-path spend. Both inputs sign over the full
+/// `spent_outputs` table; verification must succeed for both inputs.
+///
+/// Regression test: prior to threading `SpentOutputs` through the verify
+/// pipeline, `run_taproot` built `Bip341Cache` with single-element slices
+/// regardless of `tx.input_count()`, panicking the moment the cache's
+/// `assert_eq!(spent_amounts.len(), tx.input_count())` ran.
+#[test]
+fn bip341_key_path_two_input_succeeds() {
+    use crate::script::verify_script_with_spent_outputs;
+    use crate::script::SpentOutputs;
+
+    let secret0 = [0x33u8; 32];
+    let secret1 = [0x44u8; 32];
+    let out_key0 = key_path_output_key(&schnorr_pubkey(&secret0));
+    let out_key1 = key_path_output_key(&schnorr_pubkey(&secret1));
+    let spk0 = taproot_spk(&out_key0);
+    let spk1 = taproot_spk(&out_key1);
+    let amt0 = Satoshi::new(60_000);
+    let amt1 = Satoshi::new(40_000);
+
+    let tweaked0 = tweaked_signing_key(&secret0, &[]);
+    let tweaked1 = tweaked_signing_key(&secret1, &[]);
+
+    // Placeholder pass: zeroed sigs to lock in the tx shape (sighash doesn't
+    // commit to witness data so the digest equals the final-tx digest).
+    let placeholder = make_two_input_taproot_tx(
+        Satoshi::new(95_000),
+        vec![0x51], // OP_TRUE output
+        &[[0u8; 64].to_vec()],
+        &[[0u8; 64].to_vec()],
+    );
+    let amounts = [amt0, amt1];
+    let spks: [&[u8]; 2] = [spk0.as_slice(), spk1.as_slice()];
+    let cache = Bip341Cache::new(&placeholder, &amounts, &spks);
+
+    let msg0 = placeholder.bip341_sighash(
+        0,
+        amt0,
+        &spk0,
+        TaprootSigHashType::DEFAULT,
+        &cache,
+        None,
+        None,
+    );
+    let msg1 = placeholder.bip341_sighash(
+        1,
+        amt1,
+        &spk1,
+        TaprootSigHashType::DEFAULT,
+        &cache,
+        None,
+        None,
+    );
+    let sig0 = schnorr_sign(&tweaked0, &msg0);
+    let sig1 = schnorr_sign(&tweaked1, &msg1);
+
+    let tx = make_two_input_taproot_tx(
+        Satoshi::new(95_000),
+        vec![0x51],
+        &[sig0.to_vec()],
+        &[sig1.to_vec()],
+    );
+
+    let so = SpentOutputs::new(&amounts, &spks).expect("matched lengths");
+
+    verify_script_with_spent_outputs(&[], &spk0, &tx, 0, amt0, taproot_flags(), so)
+        .expect("two-input taproot key-path: input 0 must verify");
+    verify_script_with_spent_outputs(&[], &spk1, &tx, 1, amt1, taproot_flags(), so)
+        .expect("two-input taproot key-path: input 1 must verify");
+}
+
+/// Two-input taproot key-path spend, signed with
+/// `SIGHASH_SINGLE | ANYONECANPAY` (0x83) — the variant the ordinals
+/// parity bench discovered failing in mantle.
+#[test]
+fn bip341_key_path_two_input_single_anyonecanpay() {
+    use crate::script::SpentOutputs;
+    use crate::script::verify_script_with_spent_outputs;
+    use crate::script::sighash::TaprootSigHashType;
+
+    let secret0 = [0x77u8; 32];
+    let secret1 = [0x88u8; 32];
+    let out_key0 = key_path_output_key(&schnorr_pubkey(&secret0));
+    let out_key1 = key_path_output_key(&schnorr_pubkey(&secret1));
+    let spk0 = taproot_spk(&out_key0);
+    let spk1 = taproot_spk(&out_key1);
+    let amt0 = Satoshi::new(70_000);
+    let amt1 = Satoshi::new(50_000);
+
+    let tweaked0 = tweaked_signing_key(&secret0, &[]);
+
+    // Two-output tx so SIGHASH_SINGLE has both n_in=0 and n_in=1 outputs to commit to.
+    fn make_two_in_two_out_taproot_tx(
+        out0_value: Satoshi,
+        out0_spk: Vec<u8>,
+        out1_value: Satoshi,
+        out1_spk: Vec<u8>,
+        witness0: &[Vec<u8>],
+        witness1: &[Vec<u8>],
+    ) -> Transaction {
+        Transaction {
+            version: 2,
+            inputs: vec![
+                TxIn {
+                    previous_output: OutPoint {
+                        txid: Hash256([0xaa; 32]),
+                        vout: 0,
+                    },
+                    script_sig: Vec::<u8>::new().into(),
+                    sequence: 0xffff_fffd,
+                    witness: Witness::from_slice(
+                        &witness0.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+                    ),
+                },
+                TxIn {
+                    previous_output: OutPoint {
+                        txid: Hash256([0xbb; 32]),
+                        vout: 1,
+                    },
+                    script_sig: Vec::<u8>::new().into(),
+                    sequence: 0xffff_fffd,
+                    witness: Witness::from_slice(
+                        &witness1.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+                    ),
+                },
+            ],
+            outputs: vec![
+                TxOut { value: out0_value, script_pubkey: out0_spk.into() },
+                TxOut { value: out1_value, script_pubkey: out1_spk.into() },
+            ],
+            locktime: 0,
+        }
+    }
+
+    // Placeholder pass: 65-byte zero sig + sighash type byte to lock in tx shape.
+    let mut placeholder_sig0 = vec![0u8; 64];
+    placeholder_sig0.push(0x83);
+    let placeholder = make_two_in_two_out_taproot_tx(
+        Satoshi::new(40_000), vec![0x51],
+        Satoshi::new(20_000), vec![0x51],
+        &[placeholder_sig0],
+        &[vec![0u8; 64]],
+    );
+    let amounts = [amt0, amt1];
+    let spks: [&[u8]; 2] = [spk0.as_slice(), spk1.as_slice()];
+    let cache = Bip341Cache::new(&placeholder, &amounts, &spks);
+
+    let msg0 = placeholder.bip341_sighash(
+        0,
+        amt0,
+        &spk0,
+        TaprootSigHashType::SINGLE_ANYONECANPAY,
+        &cache,
+        None,
+        None,
+    );
+    let sig64 = schnorr_sign(&tweaked0, &msg0);
+    let mut sig65 = sig64.to_vec();
+    sig65.push(0x83);
+
+    // Final tx: input 0 has the real 65-byte sig; input 1 is signed default.
+    let tweaked1 = tweaked_signing_key(&secret1, &[]);
+    let msg1_default = placeholder.bip341_sighash(
+        1,
+        amt1,
+        &spk1,
+        TaprootSigHashType::DEFAULT,
+        &cache,
+        None,
+        None,
+    );
+    let sig1_default = schnorr_sign(&tweaked1, &msg1_default);
+
+    let tx = make_two_in_two_out_taproot_tx(
+        Satoshi::new(40_000), vec![0x51],
+        Satoshi::new(20_000), vec![0x51],
+        &[sig65],
+        &[sig1_default.to_vec()],
+    );
+
+    let so = SpentOutputs::new(&amounts, &spks).expect("matched lengths");
+
+    verify_script_with_spent_outputs(&[], &spk0, &tx, 0, amt0, taproot_flags(), so)
+        .expect("two-input taproot SINGLE_ANYONECANPAY: input 0 must verify");
+}
+
+/// Real-mainnet regression: tx `d7748e08…8bdfab` from block 767,434 is a
+/// 4-input/7-output transaction whose input 2 is a taproot key-path spend
+/// signed with `SIGHASH_SINGLE | ANYONECANPAY` (0x83). Mantle previously
+/// returned `TaprootVerify` because `compute_bip341_sighash` emitted
+/// `sha_single_output` *before* the spend-type byte instead of *after* the
+/// annex hash, putting it in the wrong position in the BIP341 message.
+///
+/// Wire bytes captured from the ordinals fixture corpus via
+/// `crates/bench/src/find_tx.rs`. Embedded here as a hex string so the test
+/// is self-contained and runs without the fixture present.
+#[test]
+fn bip341_real_mainnet_block_767434_single_anyonecanpay() {
+    use mantle::codec::Decode;
+    use std::io::Cursor;
+
+    use crate::script::SpentOutputs;
+    use crate::script::verify_script_with_spent_outputs;
+
+    // Tx d7748e08b2ce8c492c3593df39fba058ed1c2c9ab2bac1de6a5f853ef826b5f8.
+    const TX_WIRE_HEX: &str = "02000000000104362cfe19efc4ddc48d3e1aae1fbd5fe16a993ab0ca1c1f2fd99c1548b4bccde200000000171600144c6b82aa8e759d8e8d41792210bd777baaa22145ffffffff362cfe19efc4ddc48d3e1aae1fbd5fe16a993ab0ca1c1f2fd99c1548b4bccde201000000171600144c6b82aa8e759d8e8d41792210bd777baaa22145ffffffff5f2360c1ea9b62f61746dd65a270f6432818931afb56d2ca0a240cd7ba9b4c610000000000ffffffff362cfe19efc4ddc48d3e1aae1fbd5fe16a993ab0ca1c1f2fd99c1548b4bccde20a000000171600144c6b82aa8e759d8e8d41792210bd777baaa22145ffffffff07b00400000000000017a91466d3f0c3febcf2dc0e49bbd71ee8a026792dc5ac871027000000000000225120d553550d056e80ffe07c0630698546ff756c38dc9f8075f7d10c2a8bedc41d07d972000000000000225120c20deca5159cb269fab27e1237e2f2cc39f8c5bcaa668968597ef52c290b33e6d502000000000000160014c015c65276d5f38d599d445c4cb03aa7aa0dc365580200000000000017a91466d3f0c3febcf2dc0e49bbd71ee8a026792dc5ac87580200000000000017a91466d3f0c3febcf2dc0e49bbd71ee8a026792dc5ac876aa901000000000017a91466d3f0c3febcf2dc0e49bbd71ee8a026792dc5ac8702473044022024c9ae64da2d9ad245e620eab60e2c9ccae26268a0c6f67cbf4e44fdd5d8db8902202c91f9db5bb06427203f5a210a43380a1bbc8149c4d0db57dad1f7328aad3126012102d33fb5661ea2afb54bf9fa147c6a2ae2492e81877c3370d07256054b0e5fe3cc02473044022009b9798b20fa54a8d6636a5c352837f22cd476b24d8b7e69da9533894c8486ee02203e996fce541781f425b8b6b80fb10e54a08d08a5d70c1771db8a75a1175886d8012102d33fb5661ea2afb54bf9fa147c6a2ae2492e81877c3370d07256054b0e5fe3cc014113f35fbb2d2e217ad013d10941547125eb118977f21262cb51709fa3fbe73a8df2c03d8057f437e71ef29741c6ac7430153e47fa8fc2184a1a469ff55f4c85a28302483045022100c9ed6d4950e60869f443c637f38467bff14b5426ccbd57a7bfbd0f4a1c85fad202206068d32c4e5dede68292134fbbfd0496a7b9b53b213e115f1217008b0bed8fdc012102d33fb5661ea2afb54bf9fa147c6a2ae2492e81877c3370d07256054b0e5fe3cc00000000";
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex byte"))
+            .collect()
+    }
+
+    let tx_wire = unhex(TX_WIRE_HEX);
+    let tx = Transaction::decode(&mut Cursor::new(&tx_wire)).expect("decode tx");
+    assert_eq!(tx.inputs.len(), 4, "regression: tx must have 4 inputs");
+    assert_eq!(tx.outputs.len(), 7, "regression: tx must have 7 outputs");
+
+    // Spent outputs in input order. Captured from the ordinals fixture
+    // corpus via crates/bench/src/find_tx.rs.
+    let p2sh_p2wpkh_spk = unhex("a91466d3f0c3febcf2dc0e49bbd71ee8a026792dc5ac87");
+    let p2tr_spk =
+        unhex("5120c20deca5159cb269fab27e1237e2f2cc39f8c5bcaa668968597ef52c290b33e6");
+    let amounts = [
+        Satoshi::new(600),
+        Satoshi::new(600),
+        Satoshi::new(546),
+        Satoshi::new(154_969),
+    ];
+    let spks: [&[u8]; 4] = [
+        &p2sh_p2wpkh_spk,
+        &p2sh_p2wpkh_spk,
+        &p2tr_spk,
+        &p2sh_p2wpkh_spk,
+    ];
+    let spent_outputs = SpentOutputs::new(&amounts, &spks).expect("matched");
+
+    // Verify input 2 (the taproot key-path spend that previously failed).
+    // Mainnet flags at this height include P2SH | WITNESS | TAPROOT.
+    let flags = ScriptFlags::P2SH | ScriptFlags::WITNESS | ScriptFlags::TAPROOT;
+    verify_script_with_spent_outputs(
+        &[],
+        &p2tr_spk,
+        &tx,
+        2,
+        Satoshi::new(546),
+        flags,
+        spent_outputs,
+    )
+    .expect("real-mainnet taproot SIGHASH_SINGLE|ANYONECANPAY (0x83) input must verify");
+}
+
+/// Without `SpentOutputs`, a multi-input taproot input returns
+/// `TaprootMissingSpentOutputs` instead of panicking.
+#[test]
+fn bip341_key_path_two_input_without_spent_outputs_errors() {
+    let secret0 = [0x55u8; 32];
+    let secret1 = [0x66u8; 32];
+    let out_key0 = key_path_output_key(&schnorr_pubkey(&secret0));
+    let out_key1 = key_path_output_key(&schnorr_pubkey(&secret1));
+    let spk0 = taproot_spk(&out_key0);
+    let spk1 = taproot_spk(&out_key1);
+    let amt0 = Satoshi::new(11_000);
+    let amt1 = Satoshi::new(22_000);
+
+    // Witnesses don't matter — the missing-spent-outputs error fires before
+    // the signature is consulted. Use zeroed placeholders so the witness
+    // shape (1 item) is recognised as a key-path spend.
+    let tx = make_two_input_taproot_tx(
+        Satoshi::new(30_000),
+        vec![0x51],
+        &[[0u8; 64].to_vec()],
+        &[[0u8; 64].to_vec()],
+    );
+
+    use crate::script::ScriptError;
+    let result = verify_script(&[], &spk0, &tx, 0, amt0, taproot_flags());
+    assert!(
+        matches!(result, Err(ScriptError::TaprootMissingSpentOutputs)),
+        "expected TaprootMissingSpentOutputs, got {result:?}"
+    );
+    let _ = (spk1, amt1); // suppress unused warnings if the assertion macro reorders
+}

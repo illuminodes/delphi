@@ -9,3 +9,4 @@ crates/consensus/proptest-regressions/
 perf*.data
 perf*.data.old
 crates/bench/fixtures/
+mantle-data-*/

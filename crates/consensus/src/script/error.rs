@@ -112,6 +112,14 @@ pub enum ScriptError {
     DiscourageUpgradableTaprootVersion,
     /// `OP_CHECKSIGADD` was given a non-empty signature that failed, under `NULLFAIL`.
     TaprootChecksigAdd,
+    /// A taproot input was reached without `SpentOutputs` for a multi-input
+    /// transaction. BIP341 sighash commits to every input's prevout, so the
+    /// caller must supply the full table — pass `Some(SpentOutputs)` to
+    /// [`verify_script_with_spent_outputs`] (or the corresponding
+    /// `ScriptVerifier::with_spent_outputs`). Single-input taproot txs are
+    /// allowed to omit the table because the table can be reconstructed from
+    /// the per-input arguments already passed.
+    TaprootMissingSpentOutputs,
 
     // ── Limits ──────────────────────────────────────────────────────────────
     /// Script length exceeds the 10,000-byte limit.

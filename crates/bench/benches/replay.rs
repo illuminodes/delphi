@@ -529,6 +529,7 @@ fn do_replay_ordinals_block(
             height,
             hash,
             prev_hash: block.header.prev_block,
+            header: block.header,
             created: result.created,
             spent: result.spent,
             block_bytes: None,

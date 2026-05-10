@@ -26,12 +26,73 @@ use super::sig_version::SigVersion;
 use super::sighash::{Bip143Cache, Bip341Cache, TapHasher, TxSighash};
 use crate::tx_view::{InputView, TxView, WitnessView};
 
+/// Per-input prevouts of the spending transaction, threaded through the
+/// verification path so BIP341 (taproot) sighash can commit to every input.
+///
+/// `amounts[i]` and `script_pubkeys[i]` describe the output spent by the
+/// transaction's `i`-th input. Both slices must have length equal to the
+/// transaction's input count; this is checked at construction.
+///
+/// Pass `None` to [`verify_script_with_spent_outputs`] (and friends) when the
+/// caller doesn't have the full table — verification will succeed for legacy
+/// and segwit-v0 inputs, and for single-input taproot txs (where the
+/// per-input arguments already passed are sufficient). Multi-input taproot
+/// txs without a `SpentOutputs` table return [`ScriptError::TaprootMissingSpentOutputs`]
+/// rather than panicking.
+#[derive(Debug, Clone, Copy)]
+pub struct SpentOutputs<'a> {
+    amounts: &'a [Satoshi],
+    script_pubkeys: &'a [&'a [u8]],
+}
+
+impl<'a> SpentOutputs<'a> {
+    /// Construct from parallel slices. Returns `None` if the slice lengths
+    /// disagree, since both must be one entry per transaction input.
+    #[must_use]
+    pub fn new(amounts: &'a [Satoshi], script_pubkeys: &'a [&'a [u8]]) -> Option<Self> {
+        if amounts.len() != script_pubkeys.len() {
+            return None;
+        }
+        Some(Self {
+            amounts,
+            script_pubkeys,
+        })
+    }
+
+    /// Borrowed view of the spent amounts, one per input in order.
+    #[must_use]
+    pub fn amounts(&self) -> &[Satoshi] {
+        self.amounts
+    }
+
+    /// Borrowed view of the spent scriptPubKeys, one per input in order.
+    #[must_use]
+    pub fn script_pubkeys(&self) -> &[&[u8]] {
+        self.script_pubkeys
+    }
+
+    /// Number of entries — equals the transaction's input count.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.amounts.len()
+    }
+
+    /// `true` when the table has zero entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.amounts.is_empty()
+    }
+}
+
 /// Verifier for a single transaction input's script pair.
 ///
-/// Build once per input (or share the `Bip143Cache` across inputs of the same
-/// transaction with [`ScriptVerifier::with_cache`]), then call [`verify`] or
-/// [`verify_with_bufs`].
+/// Build once per input (or share a pre-built `Bip143Cache` across inputs of
+/// the same transaction with [`ScriptVerifier::with_cache`]), then call
+/// [`verify`] or [`verify_with_bufs`]. When constructed via [`new`], the
+/// segwit-v0 sighash cache is built lazily on first witness-v0 use — pre-segwit
+/// inputs never pay for it.
 ///
+/// [`new`]: ScriptVerifier::new
 /// [`verify`]: ScriptVerifier::verify
 /// [`verify_with_bufs`]: ScriptVerifier::verify_with_bufs
 pub struct ScriptVerifier<'a, T: TxView> {
@@ -39,12 +100,25 @@ pub struct ScriptVerifier<'a, T: TxView> {
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
-    cache: Bip143Cache,
+    /// `None` defers `Bip143Cache::new` until the lazy `TxSigChecker` actually
+    /// hits a witness-v0 input. `Some` carries a pre-built cache shared across
+    /// every input of the same transaction (see [`with_cache`]).
+    ///
+    /// [`with_cache`]: ScriptVerifier::with_cache
+    cache: Option<Bip143Cache>,
+    /// Per-input prevouts of the spending tx, needed for BIP341 sighash on
+    /// multi-input taproot txs. `None` is correct for non-taproot inputs and
+    /// for single-input taproot (where the per-input arguments already
+    /// describe the only prevout); multi-input taproot returns
+    /// [`ScriptError::TaprootMissingSpentOutputs`] when this is `None`.
+    spent_outputs: Option<SpentOutputs<'a>>,
 }
 
 impl<'a, T: TxView> ScriptVerifier<'a, T> {
-    /// Build a verifier for input `n_in` of `tx`. Computes the `Bip143Cache`
-    /// immediately; use [`with_cache`] when verifying multiple inputs of the
+    /// Build a verifier for input `n_in` of `tx`. The BIP143 cache is allocated
+    /// lazily on first witness-v0 signature check — legacy-only inputs (the
+    /// bulk of pre-segwit mainnet) never trigger it. Use [`with_cache`] when
+    /// the caller already has a pre-built cache to share across inputs of the
     /// same transaction.
     ///
     /// [`with_cache`]: ScriptVerifier::with_cache
@@ -55,7 +129,8 @@ impl<'a, T: TxView> ScriptVerifier<'a, T> {
             n_in,
             amount,
             flags,
-            cache: Bip143Cache::new(tx),
+            cache: None,
+            spent_outputs: None,
         }
     }
 
@@ -78,8 +153,22 @@ impl<'a, T: TxView> ScriptVerifier<'a, T> {
             n_in,
             amount,
             flags,
-            cache,
+            cache: Some(cache),
+            spent_outputs: None,
         }
+    }
+
+    /// Attach the per-input spent-outputs table required for BIP341 sighash
+    /// on multi-input taproot transactions. Call after [`new`] or
+    /// [`with_cache`]; safe to call on a verifier that won't reach taproot
+    /// (the table is consulted only when `run_taproot` is dispatched).
+    ///
+    /// [`new`]: ScriptVerifier::new
+    /// [`with_cache`]: ScriptVerifier::with_cache
+    #[must_use]
+    pub fn with_spent_outputs(mut self, spent_outputs: SpentOutputs<'a>) -> Self {
+        self.spent_outputs = Some(spent_outputs);
+        self
     }
 
     /// Verify the script pair. Returns `Ok(())` iff the input authorises
@@ -96,7 +185,8 @@ impl<'a, T: TxView> ScriptVerifier<'a, T> {
             self.n_in,
             self.amount,
             self.flags,
-            &self.cache,
+            self.cache.as_ref(),
+            self.spent_outputs.as_ref(),
             bufs,
         );
         result
@@ -129,7 +219,8 @@ impl<'a, T: TxView> ScriptVerifier<'a, T> {
             self.n_in,
             self.amount,
             self.flags,
-            &self.cache,
+            self.cache.as_ref(),
+            self.spent_outputs.as_ref(),
             bufs,
         )
     }
@@ -159,6 +250,28 @@ pub fn verify_script<T: TxView>(
     flags: ScriptFlags,
 ) -> Result<(), ScriptError> {
     ScriptVerifier::new(tx, n_in, amount, flags).verify(script_sig, script_pubkey)
+}
+
+/// Like [`verify_script`] but threads a [`SpentOutputs`] table for BIP341
+/// (taproot) sighash. Required for any multi-input taproot transaction;
+/// optional otherwise.
+///
+/// # Errors
+/// Same variants as [`verify_script`], plus
+/// [`ScriptError::TaprootMissingSpentOutputs`] when the table is needed but
+/// missing or wrongly sized.
+pub fn verify_script_with_spent_outputs<T: TxView>(
+    script_sig: &[u8],
+    script_pubkey: &[u8],
+    tx: &T,
+    n_in: usize,
+    amount: Satoshi,
+    flags: ScriptFlags,
+    spent_outputs: SpentOutputs<'_>,
+) -> Result<(), ScriptError> {
+    ScriptVerifier::new(tx, n_in, amount, flags)
+        .with_spent_outputs(spent_outputs)
+        .verify(script_sig, script_pubkey)
 }
 
 /// Cached variant of [`verify_script`].
@@ -212,7 +325,8 @@ fn verify_script_impl<T: TxView>(
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
-    cache: &Bip143Cache,
+    cache: Option<&Bip143Cache>,
+    spent_outputs: Option<&SpentOutputs>,
     mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>),
 ) -> (
     Result<(), ScriptError>,
@@ -226,9 +340,27 @@ fn verify_script_impl<T: TxView>(
         amount,
         flags,
         cache,
+        spent_outputs,
         &mut bufs,
     );
     (result, bufs)
+}
+
+/// Build a `TxSigChecker` for `tx[n_in]`. Seeds it with the pre-built BIP143
+/// cache when one is available; otherwise the checker builds its cache lazily
+/// on first witness-v0 use. Centralised so every leaf call site picks the
+/// right path uniformly.
+fn build_checker<'a, T: TxView>(
+    tx: &'a T,
+    n_in: usize,
+    amount: Satoshi,
+    flags: ScriptFlags,
+    cache: Option<&Bip143Cache>,
+) -> TxSigChecker<'a, T> {
+    match cache {
+        Some(c) => TxSigChecker::with_cache(tx, n_in, amount, flags, c.clone()),
+        None => TxSigChecker::new(tx, n_in, amount, flags),
+    }
 }
 
 /// Fast path for the P2PKH pattern (`OP_DUP OP_HASH160 <20> <pkh> OP_EQUALVERIFY OP_CHECKSIG`).
@@ -254,7 +386,7 @@ fn try_verify_p2pkh<T: TxView>(
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
-    cache: &Bip143Cache,
+    cache: Option<&Bip143Cache>,
 ) -> Option<Result<(), ScriptError>> {
     use super::interpreter::reader::ScriptReader;
     use ripemd::Ripemd160;
@@ -315,7 +447,7 @@ fn try_verify_p2pkh<T: TxView>(
     }
 
     // scriptCode = the full scriptPubKey (no OP_CODESEPARATOR in P2PKH).
-    let checker = TxSigChecker::with_cache(tx, n_in, amount, flags, cache.clone());
+    let checker = build_checker(tx, n_in, amount, flags, cache);
     let ok = checker.check_ecdsa_sig(sig, pubkey, script_pubkey, SigVersion::Base);
     if !ok {
         if flags.contains(ScriptFlags::NULLFAIL) {
@@ -335,7 +467,8 @@ fn verify_script_inner<T: TxView>(
     n_in: usize,
     amount: Satoshi,
     flags: ScriptFlags,
-    cache: &Bip143Cache,
+    cache: Option<&Bip143Cache>,
+    spent_outputs: Option<&SpentOutputs>,
     bufs: &mut (Vec<InterpStackElement>, Vec<InterpStackElement>),
 ) -> Result<(), ScriptError> {
     // ── P2PKH fast path ─────────────────────────────────────────────────────
@@ -355,7 +488,7 @@ fn verify_script_inner<T: TxView>(
         return Err(ScriptError::SigPushOnly);
     }
 
-    let checker = TxSigChecker::with_cache(tx, n_in, amount, flags, cache.clone());
+    let checker = build_checker(tx, n_in, amount, flags, cache);
     let stack_buf = std::mem::take(&mut bufs.0);
     let altstack_buf = std::mem::take(&mut bufs.1);
     let mut interp =
@@ -499,6 +632,7 @@ fn verify_script_inner<T: TxView>(
                     amount,
                     script_pubkey,
                     flags,
+                    spent_outputs,
                     bufs,
                 )?;
             } else {
@@ -535,8 +669,12 @@ fn verify_script_inner<T: TxView>(
 ///
 /// `program32` is the 32-byte witness program (the x-only output key).
 /// `witness_items` is the full witness stack. `spent_spk` is the scriptPubKey
-/// of the UTXO being spent (needed for BIP341 sighash).
-#[allow(clippy::too_many_arguments)]
+/// of the UTXO being spent (needed for BIP341 sighash). `spent_outputs` is
+/// the per-input prevouts of the spending tx; it must be `Some` for any
+/// multi-input transaction since BIP341 sighash commits to every input. For
+/// a single-input tx, `None` is accepted — the per-input arguments above
+/// fully describe the only prevout.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_taproot<T: TxView>(
     program32: &[u8; 32],
     witness_items: &[Vec<u8>],
@@ -545,6 +683,7 @@ fn run_taproot<T: TxView>(
     amount: Satoshi,
     spent_spk: &[u8],
     flags: ScriptFlags,
+    spent_outputs: Option<&SpentOutputs>,
     bufs: &mut (Vec<InterpStackElement>, Vec<InterpStackElement>),
 ) -> Result<(), ScriptError> {
     // Annex: the last witness item starting with 0x50 is the annex.
@@ -563,8 +702,21 @@ fn run_taproot<T: TxView>(
         (None, witness_items)
     };
 
-    // Build the BIP341 cache (needed for both key-path and script-path sighash).
-    let bip341_cache = Bip341Cache::new(tx, &[amount], &[spent_spk]);
+    // Build the BIP341 cache. BIP341 sighash commits to every input's prevout,
+    // so the cache needs `tx.input_count()` parallel entries. For a single-
+    // input tx the per-input arguments (`amount`, `spent_spk`) describe the
+    // only prevout — wrap them in single-element slices. For multi-input txs
+    // we require an explicit `spent_outputs` table; refuse rather than panic.
+    let n_inputs = tx.input_count();
+    let bip341_cache = if n_inputs == 1 {
+        Bip341Cache::new(tx, &[amount], &[spent_spk])
+    } else {
+        let so = spent_outputs.ok_or(ScriptError::TaprootMissingSpentOutputs)?;
+        if so.len() != n_inputs {
+            return Err(ScriptError::TaprootMissingSpentOutputs);
+        }
+        Bip341Cache::new(tx, so.amounts(), so.script_pubkeys())
+    };
 
     match effective_witness.len() {
         // ── Key-path spend ──────────────────────────────────────────────────

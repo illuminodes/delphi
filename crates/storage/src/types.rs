@@ -49,6 +49,11 @@ pub struct CommitBlockReq {
     pub height: BlockHeight,
     pub hash: Hash256,
     pub prev_hash: Hash256,
+    /// Full block header. Persisted by the engine so that `read_header` /
+    /// `read_header_at` round-trip (BIP113 MTP and retarget lookups need
+    /// `merkle_root`, `time`, `bits`, `nonce`, and `version`, none of
+    /// which can be derived from `hash` + `prev_hash` alone).
+    pub header: BlockHeader,
     pub created: Vec<NewCoin>,
     pub spent: Vec<OutPoint>,
     pub block_bytes: Option<Vec<u8>>,

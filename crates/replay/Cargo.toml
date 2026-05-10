@@ -10,6 +10,14 @@ workspace = true
 name = "mantle-replay"
 path = "src/main.rs"
 
+[[bin]]
+name = "discover-peers"
+path = "src/discover_peers.rs"
+
+[[bin]]
+name = "rank-peers"
+path = "src/rank_peers.rs"
+
 [dependencies]
 mantle = { path = "../core" }
 mantle-consensus = { path = "../consensus" }

@@ -9,17 +9,15 @@ use std::time::{Duration, Instant};
 
 use mantle::primitives::BlockHeight;
 
-/// Minimum gap between progress lines. Any tighter and the log dominates the
-/// terminal during fast-replaying ranges (skip-script can do hundreds of
-/// blocks per second on early-era blocks).
-const INTERVAL: Duration = Duration::from_secs(5);
+const INTERVAL: Duration = Duration::from_secs(2);
 
 pub struct Reporter {
     start: Instant,
     last_print: Instant,
-    last_height: BlockHeight,
+    start_height: BlockHeight,
     target_height: BlockHeight,
-    blocks_since_last: u64,
+    total_committed: u64,
+    committed_since_last: u64,
 }
 
 impl Reporter {
@@ -28,50 +26,49 @@ impl Reporter {
         Self {
             start: now,
             last_print: now,
-            last_height: start_height,
+            start_height,
             target_height,
-            blocks_since_last: 0,
+            total_committed: 0,
+            committed_since_last: 0,
         }
     }
 
-    /// Call after every committed block. Throttles internally; only emits a
-    /// line when `INTERVAL` has elapsed since the last print.
     pub fn tick(&mut self, height: BlockHeight) {
-        self.blocks_since_last += 1;
+        self.total_committed += 1;
+        self.committed_since_last += 1;
         let now = Instant::now();
         let since_print = now.duration_since(self.last_print);
         if since_print < INTERVAL {
             return;
         }
 
-        let blocks_in_window = self.blocks_since_last.max(1);
-        let bps_window = f64::from(u32::try_from(blocks_in_window).unwrap_or(u32::MAX))
-            / since_print.as_secs_f64().max(1e-9);
+        #[allow(clippy::cast_precision_loss)]
+        let bps_window = self.committed_since_last as f64 / since_print.as_secs_f64().max(1e-9);
         let elapsed = now.duration_since(self.start).as_secs_f64().max(1e-9);
-        let total_done = u64::from(height.0).saturating_sub(u64::from(self.last_height.0))
-            + self
-                .blocks_since_last
-                .saturating_sub(u64::from(height.0).saturating_sub(u64::from(self.last_height.0)));
-        let bps_overall =
-            f64::from(u32::try_from(total_done).unwrap_or(u32::MAX)) / elapsed;
+        #[allow(clippy::cast_precision_loss)]
+        let bps_overall = self.total_committed as f64 / elapsed;
         let remaining = u64::from(self.target_height.0).saturating_sub(u64::from(height.0));
-        // ETA: remaining * (window_duration / blocks_in_window), integer only.
-        let eta = remaining
-            .checked_mul(since_print.as_secs())
-            .map(|t| t / blocks_in_window);
+        let eta_secs = if bps_window > 0.0 {
+            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Some((remaining as f64 / bps_window) as u64)
+        } else {
+            None
+        };
+        let pct = 100.0
+            * f64::from(height.0 - self.start_height.0)
+            / f64::from((self.target_height.0 - self.start_height.0).max(1));
 
         eprintln!(
-            "  [{:>7}/{:>7}]  {:>5.1}%  {:>6.1} bps (window) / {:>6.1} bps (avg)  ETA {}",
+            "  [{:>7}/{:>7}]  {:>5.1}%  {:>7.1} bps (now) / {:>7.1} bps (avg)  ETA {}",
             height.0,
             self.target_height.0,
-            100.0 * f64::from(height.0) / f64::from(self.target_height.0).max(1.0),
+            pct,
             bps_window,
             bps_overall,
-            format_eta(eta),
+            format_eta(eta_secs),
         );
         self.last_print = now;
-        self.last_height = height;
-        self.blocks_since_last = 0;
+        self.committed_since_last = 0;
     }
 
     /// Called once after the final commit. Prints a summary line.

@@ -21,9 +21,10 @@
 //!                    [--start-height N] [--stop-height N] [--help]`.
 
 mod fetcher;
+mod iouring_fetcher;
 mod report;
 
-use std::net::SocketAddrV4;
+use std::net::{SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -38,8 +39,42 @@ use mantle_storage::types::{Durability, ReqToken};
 use mantle_validator::pipeline::validate_and_commit;
 use mantle_validator::prefetched_view::{HeaderSnapshot, PrefetchedView};
 
-use crate::fetcher::{FetchError, Fetcher};
+use crate::fetcher::Fetcher;
+use crate::iouring_fetcher::Fetcher as IoUringFetcher;
 use crate::report::Reporter;
+
+enum AnyFetcher {
+    Legacy(Fetcher),
+    IoUring(IoUringFetcher),
+}
+
+impl AnyFetcher {
+    fn sync_headers(
+        &mut self,
+        start: BlockHeight,
+        end: BlockHeight,
+        locator: Hash256,
+    ) -> Result<Vec<(BlockHeight, mantle::primitives::BlockHeader)>, String> {
+        match self {
+            Self::Legacy(f) => f.sync_headers(start, end, locator).map_err(|e| format!("fetch: {e}")),
+            Self::IoUring(f) => f.sync_headers(start, end, locator).map_err(|e| format!("fetch: {e}")),
+        }
+    }
+
+    fn fetch_blocks(&mut self, headers: &[(BlockHeight, mantle::primitives::BlockHeader)]) -> Result<(), String> {
+        match self {
+            Self::Legacy(f) => f.fetch_blocks(headers).map_err(|e| format!("fetch: {e}")),
+            Self::IoUring(f) => f.fetch_blocks(headers).map_err(|e| format!("fetch: {e}")),
+        }
+    }
+
+    fn read_block_bytes(&self, height: BlockHeight) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Legacy(f) => f.read_block_bytes(height).map_err(|e| format!("read block {} from disk: {e}", height.0)),
+            Self::IoUring(f) => f.read_block_bytes(height).map_err(|e| format!("read block {} from disk: {e}", height.0)),
+        }
+    }
+}
 
 type HeaderPairs = Vec<(BlockHeight, BlockHeader)>;
 type ResolvedRange = (BlockHeight, BlockHeight, HeaderPairs);
@@ -65,6 +100,7 @@ struct Args {
     data_dir: PathBuf,
     network: Network,
     extra_peers: Vec<SocketAddrV4>,
+    use_iouring: bool,
     skip_script: bool,
     /// Stop validating once `block.hash() == this` is committed (then exit OK).
     /// Phase 1 deliberately does *not* implement Bitcoin Core's "skip script
@@ -90,8 +126,14 @@ Options:
     --network NAME        mainnet | testnet3 | testnet4 | signet | regtest
                           (default: mainnet). Aliases: main, test, testnet.
     --peer HOST:PORT      Extra P2P peer; may be repeated. Required when the
-                          network has no built-in seed list (testnet*, signet,
-                          regtest).
+                          network has no built-in seed list (testnet3, signet,
+                          regtest); optional otherwise (mainnet/testnet4).
+    --peer-file PATH      Append one IP:PORT per line to the peer list.
+                          Blank lines and `#`-prefixed comments are skipped.
+                          Useful with the curated lists `discover-peers`
+                          writes, or external sources like
+                          https://testnet4.achownodes.xyz/seeds.txt.gz.
+    --use-iouring         Use the io_uring fetcher instead of the legacy fetcher.
     --skip-script         Skip script verification (Stage 2; faster bring-up).
     --assume-valid HEX    Assume the chain leading to this block hash is
                           valid; runs script for descendants only.
@@ -102,10 +144,12 @@ Options:
     --help                Print this message and exit.
 ";
 
+#[allow(clippy::too_many_lines)]
 fn parse_args() -> Result<Args, String> {
     let mut data_dir = PathBuf::from("./mantle-data");
     let mut network = Network::Mainnet;
     let mut extra_peers: Vec<SocketAddrV4> = Vec::new();
+    let mut use_iouring = false;
     let mut skip_script = false;
     let mut assume_valid: Option<Hash256> = None;
     let mut start_height: Option<BlockHeight> = None;
@@ -135,6 +179,35 @@ fn parse_args() -> Result<Args, String> {
                 let addr: SocketAddrV4 =
                     v.parse().map_err(|e| format!("invalid --peer {v}: {e}"))?;
                 extra_peers.push(addr);
+            }
+            "--peer-file" => {
+                i += 1;
+                let v = raw.get(i).ok_or("--peer-file requires a path")?;
+                let body = std::fs::read_to_string(v)
+                    .map_err(|e| format!("read --peer-file {v}: {e}"))?;
+                let mut added = 0usize;
+                for (lineno, line) in body.lines().enumerate() {
+                    let trimmed = line.split('#').next().unwrap_or("").trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    match trimmed.parse::<SocketAddrV4>() {
+                        Ok(addr) => {
+                            extra_peers.push(addr);
+                            added += 1;
+                        }
+                        Err(e) => {
+                            return Err(format!(
+                                "{v}:{}: invalid peer {trimmed:?}: {e}",
+                                lineno + 1
+                            ));
+                        }
+                    }
+                }
+                eprintln!("  loaded {added} peers from {v}");
+            }
+            "--use-iouring" => {
+                use_iouring = true;
             }
             "--skip-script" => {
                 skip_script = true;
@@ -172,6 +245,7 @@ fn parse_args() -> Result<Args, String> {
         data_dir,
         network,
         extra_peers,
+        use_iouring,
         skip_script,
         assume_valid,
         start_height,
@@ -222,28 +296,36 @@ fn try_load_headers(
 
 // ── header snapshot construction ─────────────────────────────────────────────
 
-/// Build a `HeaderSnapshot` covering `[start..=end]` from a list of headers
-/// where `headers[0]` is at `start`. Inserts a synthetic pre-genesis slot at
-/// height 0 when `start == 1`, so that `validate_block_context` can find the
-/// "parent" of block 1.
+/// Lookback applied to the snapshot when starting mid-chain. Big enough
+/// to cover BIP113 MTP (11 ancestors) and one retarget interval (2 016
+/// blocks back at retarget heights). Storage holds every committed
+/// header, so this is just a contiguous range read.
+const SNAPSHOT_LOOKBACK: u32 = 2_016;
+
+/// Build a `HeaderSnapshot` for validating `[start..=stop]`. The snapshot
+/// must carry enough *prior* headers that
+/// `validate_block_context` can resolve the parent of `start`, compute
+/// MTP (needs 11 ancestors), and look up the previous retarget boundary
+/// (needs 2 016 ancestors at retarget heights). Sources:
+///
+/// - `headers`: the just-resolved headers for `[start..=stop]`.
+/// - `storage` (when `start > 1`): the most recent
+///   `SNAPSHOT_LOOKBACK` committed headers preceding `start`. Storage
+///   exposes `read_header_at` keyed by height, so this is a tight loop.
+/// - `network.genesis_header()` (when `start == 1`): a synthetic height-0
+///   pre-genesis slot so block 1 has a parent for MTP. Earlier code
+///   pushed `headers[0]` (block 1) into this slot, which made MTP at
+///   height 1 == block 1's own time — failing BIP113's strict-`>` rule.
 fn build_snapshot(
     start: BlockHeight,
     headers: &[BlockHeader],
     network: Network,
+    storage: &mut StorageHandle,
 ) -> Result<HeaderSnapshot, String> {
     if headers.is_empty() {
         return Err("no headers to build a snapshot from".to_string());
     }
-    let mut entries: Vec<(Hash256, BlockHeader)> =
-        Vec::with_capacity(headers.len() + usize::from(start.0 == 1));
-    let base = if start.0 == 1 {
-        // Pre-genesis slot at height 0 must carry the *real* genesis header
-        // so that block 1's BIP113 MTP check sees the correct timestamp
-        // (1231006505 for mainnet, the actual time genesis was mined).
-        // Earlier code pushed `headers[0]` (block 1's content) here, which
-        // made MTP at height 1 = block 1's own time, failing the strict-`>`
-        // rule. `Network::genesis_header()` is None for non-mainnet networks
-        // until their bytes are added.
+    if start.0 == 1 {
         let genesis = network.genesis_header().ok_or_else(|| {
             format!(
                 "{} genesis header not yet baked in; supply --start-height \
@@ -252,11 +334,48 @@ fn build_snapshot(
                 network.name()
             )
         })?;
+        let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(headers.len() + 1);
+        entries.push((genesis.hash(), genesis));
+        for hdr in headers {
+            entries.push((hdr.hash(), *hdr));
+        }
+        return HeaderSnapshot::new(BlockHeight(0), entries)
+            .map_err(|e| format!("snapshot too large: {e:?}"));
+    }
+    // start > 1 — pull lookback from storage. Stored heights span
+    // `[1..=tip]`, so we ask for `[max(1, start - SNAPSHOT_LOOKBACK)..=start - 1]`,
+    // and prepend a synthetic height-0 slot carrying the network's genesis
+    // header so that `expected_nbits` at the next retarget boundary
+    // (which looks up `this_height - 2016`) finds a valid record at
+    // height 0.
+    let storage_lo = start.0.saturating_sub(SNAPSHOT_LOOKBACK).max(1);
+    let need_genesis = start.0.saturating_sub(SNAPSHOT_LOOKBACK) == 0;
+    let lookback_count = start.0 - storage_lo;
+    let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(
+        usize::from(need_genesis)
+            + usize::try_from(lookback_count).unwrap_or(0)
+            + headers.len(),
+    );
+    let base = if need_genesis {
+        let genesis = network.genesis_header().ok_or_else(|| {
+            format!(
+                "{} genesis header not yet baked in; cannot build a \
+                 snapshot whose lookback reaches height 0",
+                network.name()
+            )
+        })?;
         entries.push((genesis.hash(), genesis));
         BlockHeight(0)
     } else {
-        start
+        BlockHeight(storage_lo)
     };
+    for h in storage_lo..start.0 {
+        let hdr = storage
+            .read_header_at(BlockHeight(h))
+            .map_err(|e| format!("read stored header at {h}: {e}"))?
+            .ok_or_else(|| format!("storage missing committed header at height {h}"))?;
+        entries.push((hdr.hash(), hdr));
+    }
     for hdr in headers {
         entries.push((hdr.hash(), *hdr));
     }
@@ -300,7 +419,7 @@ fn run(args: &Args) -> Result<(), String> {
     );
 
     // ── Storage ──────────────────────────────────────────────────────────────
-    let storage =
+    let mut storage =
         StorageHandle::open(&args.data_dir).map_err(|e| format!("open storage: {e}"))?;
     let tip = storage.tip();
     let next_to_validate = BlockHeight(tip.height.0.saturating_add(1));
@@ -317,29 +436,59 @@ fn run(args: &Args) -> Result<(), String> {
     );
 
     // ── Peers ────────────────────────────────────────────────────────────────
+    // Seeds may be either literal `IP:PORT` (mainnet's hand-picked list) or
+    // DNS `HOST:PORT` (e.g. testnet4 / signet). Try literal parse first; on
+    // failure, fall back to a system DNS lookup and take any v4 results.
     let mut peer_addrs: Vec<SocketAddrV4> = args.extra_peers.clone();
     for seed in args.network.default_seeds() {
-        match seed.parse::<SocketAddrV4>() {
-            Ok(addr) => peer_addrs.push(addr),
-            Err(e) => eprintln!("  ignoring bad seed {seed}: {e}"),
+        if let Ok(addr) = seed.parse::<SocketAddrV4>() {
+            peer_addrs.push(addr);
+            continue;
+        }
+        match seed.to_socket_addrs() {
+            Ok(iter) => {
+                let before = peer_addrs.len();
+                for addr in iter {
+                    if let SocketAddr::V4(v4) = addr {
+                        peer_addrs.push(v4);
+                    }
+                }
+                let resolved = peer_addrs.len() - before;
+                if resolved == 0 {
+                    eprintln!("  seed {seed} resolved to 0 IPv4 addresses (skipped)");
+                } else {
+                    eprintln!("  seed {seed} resolved to {resolved} address(es)");
+                }
+            }
+            Err(e) => eprintln!("  failed to resolve seed {seed}: {e}"),
         }
     }
     if peer_addrs.is_empty() {
         return Err(format!(
-            "no peers: {} has no built-in seeds; supply --peer HOST:PORT",
+            "no peers: {} has no reachable seeds; supply --peer HOST:PORT",
             args.network.name()
         ));
     }
-    let fetcher = Fetcher::new(args.network, peer_addrs, args.data_dir.clone())
-        .map_err(|e| format!("fetcher init: {e}"))?;
+    let mut fetcher: AnyFetcher = if args.use_iouring {
+        eprintln!("  using io_uring fetcher");
+        AnyFetcher::IoUring(
+            IoUringFetcher::new(args.network, peer_addrs, args.data_dir.clone())
+                .map_err(|e| format!("fetcher init: {e}"))?,
+        )
+    } else {
+        AnyFetcher::Legacy(
+            Fetcher::new(args.network, peer_addrs, args.data_dir.clone())
+                .map_err(|e| format!("fetcher init: {e}"))?,
+        )
+    };
 
     // ── Headers + blocks ─────────────────────────────────────────────────────
     let (start_height, stop_height, header_pairs) =
-        resolve_headers_and_blocks(args, start_height, &fetcher)?;
+        resolve_headers_and_blocks(args, start_height, tip.hash, &mut fetcher)?;
 
     // ── Header snapshot for context validation ──────────────────────────────
     let headers: Vec<BlockHeader> = header_pairs.iter().map(|(_, h)| *h).collect();
-    let snapshot = build_snapshot(start_height, &headers, args.network)?;
+    let snapshot = build_snapshot(start_height, &headers, args.network, &mut storage)?;
 
     // ── Validation loop ──────────────────────────────────────────────────────
     eprintln!(
@@ -371,7 +520,8 @@ fn run(args: &Args) -> Result<(), String> {
 fn resolve_headers_and_blocks(
     args: &Args,
     start_height: BlockHeight,
-    fetcher: &Fetcher,
+    tip_hash: Hash256,
+    fetcher: &mut AnyFetcher,
 ) -> Result<ResolvedRange, String> {
     let (cache_start, cached_headers) = match try_load_headers(&args.data_dir) {
         Ok(Some((s, h))) => (Some(s), h),
@@ -414,19 +564,17 @@ fn resolve_headers_and_blocks(
             let hi = (stop_height.0 - cstart) as usize + 1;
             cached_headers[lo..hi].to_vec()
         } else {
-            if start_height.0 != 1 {
-                return Err(format!(
-                    "Phase 1 only supports replay from height 1 in fresh data dirs; \
-                 got start = {} with no covering header cache. \
-                 Pre-populate `<data-dir>/headers.bin` (e.g. via fetch-fixtures), \
-                 or start fresh with --start-height 1.",
-                    start_height.0
-                ));
-            }
-            eprintln!("  syncing headers from {}.genesis…", args.network.name());
-            let pairs = fetcher
-                .sync_headers(start_height, stop_height, args.network.genesis_hash())
-                .map_err(|e| format_fetch_err(&e))?;
+            let locator = if start_height.0 == 1 {
+                args.network.genesis_hash()
+            } else {
+                tip_hash
+            };
+            eprintln!(
+                "  syncing headers from height {} (locator {})…",
+                start_height.0,
+                locator.to_display_hex(),
+            );
+            let pairs = fetcher.sync_headers(start_height, stop_height, locator)?;
             if pairs.is_empty() {
                 return Err("peer returned 0 headers".to_string());
             }
@@ -444,9 +592,7 @@ fn resolve_headers_and_blocks(
         })
         .collect();
     eprintln!("  downloading any missing blocks…");
-    fetcher
-        .fetch_blocks(&header_pairs)
-        .map_err(|e| format_fetch_err(&e))?;
+    fetcher.fetch_blocks(&header_pairs)?;
 
     Ok((start_height, stop_height, header_pairs))
 }
@@ -454,13 +600,11 @@ fn resolve_headers_and_blocks(
 fn replay_one_block(
     height: BlockHeight,
     header: BlockHeader,
-    fetcher: &Fetcher,
+    fetcher: &AnyFetcher,
     snapshot: &HeaderSnapshot,
     ctx: &mut ReplayCtx,
 ) -> Result<(), String> {
-    let bytes = fetcher
-        .read_block_bytes(height)
-        .map_err(|e| format!("read block {} from disk: {e}", height.0))?;
+    let bytes = fetcher.read_block_bytes(height)?;
 
     let block = Block::decode(&mut std::io::Cursor::new(&bytes))
         .map_err(|e| format!("decode block {}: {e}", height.0))?;
@@ -507,6 +651,3 @@ fn replay_one_block(
     Ok(())
 }
 
-fn format_fetch_err(e: &FetchError) -> String {
-    format!("fetch: {e}")
-}

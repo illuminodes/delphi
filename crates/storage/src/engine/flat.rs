@@ -10,9 +10,15 @@ use mantle_consensus::chain_view::{Coin, NewCoin, TipInfo};
 use super::{Engine, EngineError};
 use crate::types::{CommitBlockReq, Durability, LookupResult};
 
-/// Fixed size of a header record: hash(32) + `prev_block`(32) + `merkle_root`(32) +
-/// time(4) + bits(4) + nonce(4) + height(4) = 112 bytes.
-const HEADER_RECORD_SIZE: usize = 112;
+/// Fixed size of a header record:
+/// hash(32) + version(4) + `prev_block`(32) + `merkle_root`(32) +
+/// time(4) + bits(4) + nonce(4) + height(4) = 116 bytes.
+///
+/// The `version` field comes after `hash` (not interleaved with the
+/// other header fields) so the offsets of `prev_block`, `merkle_root`,
+/// time/bits/nonce stay aligned with the BIP144 header byte order, just
+/// shifted by 4 bytes; the height tail at offset 112 stays put.
+const HEADER_RECORD_SIZE: usize = 116;
 
 /// User-space buffer in front of the append-only logs. Sized to absorb several
 /// blocks' worth of UTXO and header writes so the kernel only sees a handful
@@ -173,18 +179,16 @@ impl Engine for FlatEngine {
             self.utxo_index.remove(op);
         }
 
-        // Store a minimal header record so height lookups work.
+        // Persist the full header so `read_header*` round-trips. MTP and
+        // retarget lookups during incremental replay need every field.
+        debug_assert_eq!(
+            req.header.prev_block, req.prev_hash,
+            "CommitBlockReq.header.prev_block must match req.prev_hash"
+        );
         self.header_write_len = write_header_record(
             &mut self.header_file,
             req.height,
-            &BlockHeader {
-                version: 0,
-                prev_block: req.prev_hash,
-                merkle_root: Hash256::ZERO,
-                time: 0,
-                bits: mantle::primitives::CompactBits(0),
-                nonce: 0,
-            },
+            &req.header,
             req.hash,
             self.header_write_len,
         )?;
@@ -274,7 +278,8 @@ impl Engine for FlatEngine {
                 break;
             }
             let hash = Hash256(buf.read_hash(0));
-            let height = buf.read_u32_le(108);
+            // Height tail sits at offset 112 — see HEADER_RECORD_SIZE doc.
+            let height = buf.read_u32_le(112);
             if height <= checkpoint_height || checkpoint_height == 0 {
                 self.header_index.insert(hash, height);
                 if i + 1 == record_count {
@@ -472,7 +477,11 @@ fn write_header_record(
     } else {
         file_len
     };
+    // Layout: hash(32) ‖ version(4) ‖ prev(32) ‖ merkle(32) ‖
+    //         time(4) ‖ bits(4) ‖ nonce(4) ‖ height(4) = 116 bytes.
     f.write_all(&hash.0).map_err(|e| io_err(&e))?;
+    f.write_all(&header.version.to_le_bytes())
+        .map_err(|e| io_err(&e))?;
     f.write_all(&header.prev_block.0).map_err(|e| io_err(&e))?;
     f.write_all(&header.merkle_root.0).map_err(|e| io_err(&e))?;
     f.write_all(&header.time.to_le_bytes())
@@ -491,14 +500,17 @@ fn read_header_record(f: &mut File) -> Result<BlockHeader, EngineError> {
     Ok(parse_header_record(&buf))
 }
 
+#[allow(clippy::cast_possible_wrap)]
 fn parse_header_record(buf: &[u8; HEADER_RECORD_SIZE]) -> BlockHeader {
+    // Mirror of `write_header_record`. Offsets must stay in lockstep
+    // because existing data dirs are read by this exact scheme.
     BlockHeader {
-        version: 1,
-        prev_block: Hash256(buf.read_hash(32)),
-        merkle_root: Hash256(buf.read_hash(64)),
-        time: buf.read_u32_le(96),
-        bits: mantle::primitives::CompactBits(buf.read_u32_le(100)),
-        nonce: buf.read_u32_le(104),
+        version: buf.read_u32_le(32) as i32,
+        prev_block: Hash256(buf.read_hash(36)),
+        merkle_root: Hash256(buf.read_hash(68)),
+        time: buf.read_u32_le(100),
+        bits: mantle::primitives::CompactBits(buf.read_u32_le(104)),
+        nonce: buf.read_u32_le(108),
     }
 }
 
@@ -566,13 +578,25 @@ mod tests {
     }
 
     #[test]
-    fn write_and_read_header() {
+    fn write_and_read_header_roundtrips_every_field() {
         let dir = tmp();
         let mut eng = FlatEngine::open(dir.path()).unwrap();
-        let h = make_header(12345);
+        let h = BlockHeader {
+            version: 0x2000_0007,
+            prev_block: Hash256([0x11; 32]),
+            merkle_root: Hash256([0x22; 32]),
+            time: 12_345,
+            bits: CompactBits(0x1d00_ffff),
+            nonce: 0xdead_beef,
+        };
         eng.write_header(BlockHeight(0), &h).unwrap();
         let got = eng.read_header_at(BlockHeight(0)).unwrap().unwrap();
-        assert_eq!(got.time, 12345);
+        assert_eq!(got.version, h.version);
+        assert_eq!(got.prev_block, h.prev_block);
+        assert_eq!(got.merkle_root, h.merkle_root);
+        assert_eq!(got.time, h.time);
+        assert_eq!(got.bits.0, h.bits.0);
+        assert_eq!(got.nonce, h.nonce);
     }
 
     #[test]
@@ -595,6 +619,7 @@ mod tests {
             height: BlockHeight(1),
             hash: Hash256([2u8; 32]),
             prev_hash: Hash256::ZERO,
+            header: make_header(0),
             created: vec![nc],
             spent: vec![],
             block_bytes: None,
@@ -626,6 +651,7 @@ mod tests {
             height: BlockHeight(10),
             hash: Hash256([4u8; 32]),
             prev_hash: Hash256::ZERO,
+            header: make_header(0),
             created: vec![nc],
             spent: vec![],
             block_bytes: None,
@@ -639,6 +665,10 @@ mod tests {
             height: BlockHeight(11),
             hash: Hash256([5u8; 32]),
             prev_hash: Hash256([4u8; 32]),
+            header: BlockHeader {
+                prev_block: Hash256([4u8; 32]),
+                ..make_header(0)
+            },
             created: vec![],
             spent: vec![op],
             block_bytes: None,
@@ -669,6 +699,7 @@ mod tests {
                 height: BlockHeight(5),
                 hash: Hash256([8u8; 32]),
                 prev_hash: Hash256::ZERO,
+                header: make_header(0),
                 created: vec![nc],
                 spent: vec![],
                 block_bytes: None,

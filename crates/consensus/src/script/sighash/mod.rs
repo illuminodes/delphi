@@ -53,12 +53,25 @@
 //! spends — a `(leaf_hash, code_sep_pos)` extension. See
 //! [`TxSighash::bip341_sighash`] for the argument shape.
 
+use std::cell::RefCell;
+
 use mantle::codec::{Encode, VarInt};
 use mantle::hash::ByteSliceExt;
-use mantle::primitives::{Hash256, Satoshi, Transaction, TxIn, TxOut, Witness};
+use mantle::primitives::{Hash256, Satoshi};
+
+#[cfg(test)]
+use mantle::primitives::{Transaction, TxIn, TxOut, Witness};
 
 use super::consensus_crypto::Schnorr;
 use crate::tx_view::{InputView, OutputView, TxView};
+
+thread_local! {
+    /// Reusable scratch buffer for the legacy preimage. Cleared and refilled per
+    /// call instead of allocating a fresh `Vec<u8>` (and a fresh modified
+    /// `Transaction`) every sighash. ~1 GB of allocations per 100k mainnet blocks
+    /// collapses to a single per-thread buffer that grows once.
+    static LEGACY_PREIMAGE_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
 
 /// `hash_type` mode (low 5 bits, masking off `ANYONECANPAY`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,22 +181,15 @@ impl<T: TxView> TxSighash for T {
             return Hash256(h);
         }
 
-        // Materialise the tx (legacy sighash builds a structurally-modified
-        // copy regardless, so the cost is amortised). Refs round-trip via
-        // their wire bytes; owned txs hit a cheap clone.
-        let owned = self
-            .to_owned_tx()
-            .expect("to_owned_tx cannot fail on a validated tx");
-        let modified = build_modified_tx(&owned, n_in, script_code, hash_type);
-
-        // Serialise + append the 4-byte little-endian hash_type.
-        let mut buf = Vec::with_capacity(modified.encoded_len() + 4);
-        modified
-            .encode(&mut buf)
-            .expect("encoding into Vec cannot fail");
-        buf.extend_from_slice(&hash_type.0.to_le_bytes());
-
-        buf.sha256d()
+        // Write the preimage directly into a thread-local scratch buffer,
+        // skipping the intermediate modified `Transaction` (which would heap-
+        // allocate one `ScriptSig` per input plus a `Vec<TxIn>` per call).
+        LEGACY_PREIMAGE_SCRATCH.with(|cell| {
+            let mut buf = cell.borrow_mut();
+            buf.clear();
+            encode_legacy_preimage(self, n_in, script_code, hash_type, &mut buf);
+            buf.sha256d()
+        })
     }
 
     /// BIP143 (segwit v0) signature hash — see module docs §"BIP143" for
@@ -335,9 +341,103 @@ impl Bip143Cache {
     }
 }
 
-/// Build the modified `Transaction` that the legacy preimage hashes.
+/// Encode the legacy sighash preimage directly into `buf` (which the caller
+/// has cleared). The preimage is the wire-form serialisation of the modified
+/// transaction described in the module docs §"Legacy", with the 4-byte little-
+/// endian `hash_type` appended. SHA-256d of the resulting bytes is the digest.
 ///
-/// Allocates — this is the legacy path; BIP143 (M2) caches and reuses.
+/// Walks `tx` once via the [`TxView`] trait; never materialises the modified
+/// transaction. Avoids per-input `script_sig` allocations and the per-call
+/// `Vec<TxIn>`/`Vec<TxOut>` allocations the previous `build_modified_tx`
+/// construction incurred.
+fn encode_legacy_preimage<T: TxView>(
+    tx: &T,
+    n_in: usize,
+    script_code: &[u8],
+    hash_type: SigHashType,
+    buf: &mut Vec<u8>,
+) {
+    let mode = hash_type.mode();
+    let anyonecanpay = hash_type.is_anyonecanpay();
+
+    // version (4 LE)
+    buf.extend_from_slice(&tx.version().to_le_bytes());
+
+    // ── Inputs ──────────────────────────────────────────────────────────────
+    if anyonecanpay {
+        // Keep only the input being signed.
+        let _ = VarInt(1).encode(buf);
+        let input = tx.input(n_in);
+        let _ = input.previous_output().encode(buf);
+        let _ = VarInt(script_code.len() as u64).encode(buf);
+        buf.extend_from_slice(script_code);
+        buf.extend_from_slice(&input.sequence().to_le_bytes());
+    } else {
+        let n_inputs = tx.input_count();
+        let _ = VarInt(n_inputs as u64).encode(buf);
+        for (i, input) in tx.inputs().enumerate() {
+            let _ = input.previous_output().encode(buf);
+            if i == n_in {
+                let _ = VarInt(script_code.len() as u64).encode(buf);
+                buf.extend_from_slice(script_code);
+            } else {
+                // Empty scriptSig.
+                buf.push(0x00);
+            }
+            // Under SIGHASH_NONE / SIGHASH_SINGLE, every *other* input's
+            // sequence is zeroed so those inputs cannot block re-signing.
+            let sequence = match mode {
+                SigHashMode::None | SigHashMode::Single if i != n_in => 0,
+                _ => input.sequence(),
+            };
+            buf.extend_from_slice(&sequence.to_le_bytes());
+        }
+    }
+
+    // ── Outputs ─────────────────────────────────────────────────────────────
+    match mode {
+        SigHashMode::All => {
+            let n_out = tx.output_count();
+            let _ = VarInt(n_out as u64).encode(buf);
+            for output in tx.outputs() {
+                buf.extend_from_slice(&u64::from(output.value()).to_le_bytes());
+                let spk = output.script_pubkey();
+                let _ = VarInt(spk.len() as u64).encode(buf);
+                buf.extend_from_slice(spk);
+            }
+        }
+        SigHashMode::None => {
+            // Zero outputs.
+            buf.push(0x00);
+        }
+        SigHashMode::Single => {
+            // Keep outputs up to and including `n_in`; everything before
+            // `n_in` is replaced with the "null" output (-1 value, empty
+            // scriptPubKey). `n_in >= n_outputs` is short-circuited above.
+            let _ = VarInt((n_in + 1) as u64).encode(buf);
+            let null_value: u64 = u64::MAX; // -1 as i64 / u64
+            for _ in 0..n_in {
+                buf.extend_from_slice(&null_value.to_le_bytes());
+                buf.push(0x00); // empty scriptPubKey
+            }
+            let output = tx.output(n_in);
+            buf.extend_from_slice(&u64::from(output.value()).to_le_bytes());
+            let spk = output.script_pubkey();
+            let _ = VarInt(spk.len() as u64).encode(buf);
+            buf.extend_from_slice(spk);
+        }
+    }
+
+    // locktime (4 LE) || hash_type (4 LE)
+    buf.extend_from_slice(&tx.locktime().to_le_bytes());
+    buf.extend_from_slice(&hash_type.0.to_le_bytes());
+}
+
+/// Test-only helper: materialise the modified `Transaction` the legacy
+/// preimage represents. Production code uses [`encode_legacy_preimage`]
+/// directly into a buffer; this exists only so the existing tests can keep
+/// asserting on struct fields rather than serialised bytes.
+#[cfg(test)]
 fn build_modified_tx(
     tx: &Transaction,
     n_in: usize,
@@ -347,9 +447,7 @@ fn build_modified_tx(
     let mode = hash_type.mode();
     let anyonecanpay = hash_type.is_anyonecanpay();
 
-    // ── Inputs ──────────────────────────────────────────────────────────────
     let inputs: Vec<TxIn> = if anyonecanpay {
-        // Keep only the input being signed.
         vec![TxIn {
             previous_output: tx.inputs[n_in].previous_output,
             script_sig: script_code.to_vec().into(),
@@ -366,8 +464,6 @@ fn build_modified_tx(
                 } else {
                     Vec::<u8>::new().into()
                 };
-                // Under SIGHASH_NONE / SIGHASH_SINGLE, every *other* input's
-                // sequence is zeroed so those inputs cannot block re-signing.
                 let sequence = match mode {
                     SigHashMode::None | SigHashMode::Single if i != n_in => 0,
                     _ => txin.sequence,
@@ -382,19 +478,14 @@ fn build_modified_tx(
             .collect()
     };
 
-    // ── Outputs ─────────────────────────────────────────────────────────────
     let outputs: Vec<TxOut> = match mode {
         SigHashMode::All => tx.outputs.clone(),
         SigHashMode::None => Vec::new(),
         SigHashMode::Single => {
-            // Keep outputs up to and including `n_in`; everything before
-            // `n_in` is replaced with the "null" output (-1 value, empty
-            // scriptPubKey). The `n_in >= n_outputs` case has been
-            // short-circuited by the "1" bug above.
             let mut out = Vec::with_capacity(n_in + 1);
             for _ in 0..n_in {
                 out.push(TxOut {
-                    value: u64::MAX.into(), // -1 as i64 / u64
+                    value: u64::MAX.into(),
                     script_pubkey: Vec::<u8>::new().into(),
                 });
             }
@@ -740,23 +831,11 @@ fn compute_bip341_sighash<T: TxView>(
         preimage.extend_from_slice(&cache.sequences);
     }
 
-    // Output hash — mode-dependent.
-    match out_mode {
-        SigHashMode::All => preimage.extend_from_slice(&cache.outputs),
-        SigHashMode::None => {}
-        SigHashMode::Single => {
-            if n_in < tx.output_count() {
-                let out = tx.output(n_in);
-                let mut buf = Vec::new();
-                buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
-                let spk = out.script_pubkey();
-                let _ = VarInt(spk.len() as u64).encode(&mut buf);
-                buf.extend_from_slice(spk);
-                let h: [u8; 32] = Sha256::digest(&buf).into();
-                preimage.extend_from_slice(&h);
-            }
-            // If n_in >= n_outputs, nothing is appended (BIP341 spec).
-        }
+    // Shared outputs hash — only emitted for ALL/DEFAULT. SINGLE has its own
+    // sha_single_output appended *after* the per-input data and annex (below);
+    // NONE has no output commitment at all.
+    if out_mode == SigHashMode::All {
+        preimage.extend_from_slice(&cache.outputs);
     }
 
     // Spend type byte: bit 0 = has annex, bit 1 = script-path.
@@ -788,6 +867,21 @@ fn compute_bip341_sighash<T: TxView>(
         let _ = VarInt((annex_bytes.len() as u64) + 1).encode(&mut buf); // +1 for the 0x50 prefix byte
         buf.push(0x50);
         buf.extend_from_slice(annex_bytes);
+        let h: [u8; 32] = Sha256::digest(&buf).into();
+        preimage.extend_from_slice(&h);
+    }
+
+    // sha_single_output: emitted *after* annex hash for SIGHASH_SINGLE only.
+    // BIP341 §"Common signature message extension". When `n_in >= n_outputs`,
+    // nothing is appended (this is not the legacy "SIGHASH_SINGLE 1 bug" —
+    // BIP341 simply omits the field).
+    if out_mode == SigHashMode::Single && n_in < tx.output_count() {
+        let out = tx.output(n_in);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
+        let spk = out.script_pubkey();
+        let _ = VarInt(spk.len() as u64).encode(&mut buf);
+        buf.extend_from_slice(spk);
         let h: [u8; 32] = Sha256::digest(&buf).into();
         preimage.extend_from_slice(&h);
     }

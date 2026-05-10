@@ -32,7 +32,7 @@ use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
 /// Maximum blocks in-flight per peer at once. Mirrors the bench fetcher.
 const PEER_WINDOW: usize = 8;
 /// Seconds without progress before a peer's in-flight blocks are reclaimed.
-const STALL_SECS: u64 = 30;
+const STALL_SECS: u64 = 10;
 /// Hard ceiling on how long a single *headers* sync phase may run. Block
 /// downloads use a per-progress watchdog instead (see
 /// `BLOCK_NO_PROGRESS_TIMEOUT_SECS`) since a contiguous chain of 10⁵+
@@ -384,9 +384,9 @@ fn run_block_download_session(
 
     let mut saved = 0usize;
     let total = needed.len();
-    // Per-progress watchdog: as long as *some* block keeps arriving across
-    // all peers, the session is healthy and may run indefinitely. Reset on
-    // every successful arrival (in `handle_block`'s caller) below.
+    let mut last_log = Instant::now();
+    let log_interval = Duration::from_secs(2);
+    let mut saved_at_last_log = 0usize;
     let mut last_progress = Instant::now();
     let no_progress_limit = Duration::from_secs(BLOCK_NO_PROGRESS_TIMEOUT_SECS);
 
@@ -399,6 +399,18 @@ fn run_block_download_session(
             InboundMsg::Tick => {
                 if last_progress.elapsed() > no_progress_limit {
                     return Err(FetchError::Timeout);
+                }
+                let now = Instant::now();
+                if now.duration_since(last_log) >= log_interval {
+                    let window_secs = now.duration_since(last_log).as_secs_f64().max(1e-9);
+                    #[allow(clippy::cast_precision_loss)]
+                    let bps = (saved - saved_at_last_log) as f64 / window_secs;
+                    let ready = peers.iter().filter(|p| p.phase == PeerPhase::Ready).count();
+                    eprintln!(
+                        "  download: {saved}/{total} blocks  {bps:.1} blk/s  {ready} active peer(s)",
+                    );
+                    last_log = now;
+                    saved_at_last_log = saved;
                 }
                 on_block_tick(
                     &node,
@@ -443,18 +455,25 @@ fn on_block_tick(
 ) -> Result<(), FetchError> {
     let stall = Duration::from_secs(STALL_SECS);
     for peer in peers.iter_mut() {
-        if peer.phase != PeerPhase::Ready {
-            continue;
-        }
-        let stalled: Vec<Hash256> = peer
-            .in_flight
-            .iter()
-            .filter(|(_, t)| t.elapsed() > stall)
-            .map(|(h, _)| *h)
-            .collect();
-        if !stalled.is_empty() {
-            peer.in_flight.retain(|(h, _)| !stalled.contains(h));
-            retry.extend(stalled);
+        match peer.phase {
+            // Dead peer: drain all its in-flight work unconditionally.
+            PeerPhase::Dead => {
+                retry.extend(peer.in_flight.drain(..).map(|(h, _)| h));
+            }
+            // Live peer: reclaim only entries that have exceeded the stall window.
+            PeerPhase::Ready => {
+                let stalled: Vec<Hash256> = peer
+                    .in_flight
+                    .iter()
+                    .filter(|(_, t)| t.elapsed() > stall)
+                    .map(|(h, _)| *h)
+                    .collect();
+                if !stalled.is_empty() {
+                    peer.in_flight.retain(|(h, _)| !stalled.contains(h));
+                    retry.extend(stalled);
+                }
+            }
+            _ => {}
         }
     }
     for i in 0..peers.len() {
@@ -497,12 +516,22 @@ fn on_block_network_msg(
     }
 
     if cmd == Some(Command::Block)
-        && let Some(height) = handle_block(payload, pending, data_dir)?
+        && let Some(_height) = handle_block(payload, pending, data_dir)?
     {
-        if let Some(pos) = peers[idx]
-            .in_flight
-            .iter()
-            .position(|(h, _)| pending.get(h) == Some(&height))
+        // Extract the hash from the payload header to match against in_flight.
+        // `pending` has already had this entry removed by `handle_block`, so
+        // we can't look up by height — match by hash directly.
+        let block_hash: Option<Hash256> = if payload.len() >= 80 {
+            payload[..80]
+                .try_into()
+                .ok()
+                .and_then(|b: &[u8; 80]| BlockHeader::from_bytes(b).ok())
+                .map(|h| h.hash())
+        } else {
+            None
+        };
+        if let Some(hash) = block_hash
+            && let Some(pos) = peers[idx].in_flight.iter().position(|(h, _)| *h == hash)
         {
             peers[idx].in_flight.swap_remove(pos);
         }

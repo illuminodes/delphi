@@ -8,6 +8,8 @@
 //! Production wires a `TxSigChecker { tx, n_in, amount }` (M1.2). Tests wire
 //! `NopSigChecker` to exercise non-crypto opcodes without a transaction.
 
+use std::sync::OnceLock;
+
 use mantle::primitives::Satoshi;
 
 use super::consensus_crypto::{Ecdsa, Schnorr};
@@ -72,29 +74,29 @@ pub trait SignatureChecker {
 }
 
 /// Production `SignatureChecker`. Borrows the transaction being validated, the
-/// input index whose script is currently executing, the amount of the spent
-/// output, and a pre-computed [`Bip143Cache`] for the segwit v0 sighash path.
+/// input index whose script is currently executing, and the amount of the
+/// spent output. The BIP143 cache is built lazily on first segwit-v0 use —
+/// legacy-only inputs never pay for it.
 ///
 /// `script_flags` is the full `ScriptFlags` for this verification call —
 /// `consensus_crypto::verify_ecdsa` reads `DERSIG` / `STRICTENC` / `LOW_S`
 /// from it.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TxSigChecker<'a, T: TxView> {
     pub tx: &'a T,
     pub n_in: usize,
     pub amount: Satoshi,
     pub script_flags: ScriptFlags,
-    /// Pre-computed BIP143 shared hash fields. Built once per transaction in
-    /// `new`; reused for every input during segwit v0 verification.
-    bip143_cache: Bip143Cache,
+    /// Lazy BIP143 shared hash fields. Empty until the first witness-v0
+    /// signature check on this checker; populated in place on first use.
+    /// Pre-segwit txs (the bulk of early mainnet) never allocate this.
+    bip143_cache: OnceLock<Bip143Cache>,
 }
 
 impl<'a, T: TxView> TxSigChecker<'a, T> {
     /// Construct a checker for input `n_in` of `tx` with the given output
-    /// amount and verification flags. Pre-computes the BIP143 cache.
-    ///
-    /// Use [`Self::with_cache`] when verifying multiple inputs of the same
-    /// transaction to avoid recomputing the BIP143 shared fields per input.
+    /// amount and verification flags. The BIP143 cache is allocated lazily
+    /// on first segwit-v0 signature check.
     #[must_use]
     pub fn new(tx: &'a T, n_in: usize, amount: Satoshi, script_flags: ScriptFlags) -> Self {
         Self {
@@ -102,16 +104,16 @@ impl<'a, T: TxView> TxSigChecker<'a, T> {
             n_in,
             amount,
             script_flags,
-            bip143_cache: Bip143Cache::new(tx),
+            bip143_cache: OnceLock::new(),
         }
     }
 
-    /// Construct a checker reusing a pre-built [`Bip143Cache`].
+    /// Construct a checker, seeding the BIP143 cache from a pre-built one.
     ///
-    /// Build the cache once with [`Bip143Cache::new`] before verifying any
-    /// input, then pass it to this constructor for each input. This avoids
-    /// recomputing `hashPrevouts`, `hashSequence`, and `hashOutputs` for
-    /// every input of the same transaction.
+    /// Used by callers (e.g. `connect_block`) that have already paid the
+    /// per-tx cost of computing `Bip143Cache::new(tx)` and want every input's
+    /// checker to share that work. Equivalent to [`Self::new`] for transactions
+    /// that never reach a witness-v0 input.
     #[must_use]
     pub fn with_cache(
         tx: &'a T,
@@ -120,12 +122,15 @@ impl<'a, T: TxView> TxSigChecker<'a, T> {
         script_flags: ScriptFlags,
         bip143_cache: Bip143Cache,
     ) -> Self {
+        let cell = OnceLock::new();
+        // Cell is freshly created; set cannot fail.
+        let _ = cell.set(bip143_cache);
         Self {
             tx,
             n_in,
             amount,
             script_flags,
-            bip143_cache,
+            bip143_cache: cell,
         }
     }
 }
@@ -160,13 +165,18 @@ impl<T: TxView> SignatureChecker for TxSigChecker<'_, T> {
             SigVersion::WitnessV0 => {
                 // BIP143: no FindAndDelete; script_code is already the
                 // scriptCode for this input (P2WPKH synthetic or P2WSH witness
-                // script), passed through unchanged.
+                // script), passed through unchanged. The shared cache is built
+                // lazily on first witness-v0 signature check — pre-segwit txs
+                // (the bulk of early mainnet) never pay for it.
+                let cache = self
+                    .bip143_cache
+                    .get_or_init(|| Bip143Cache::new(self.tx));
                 self.tx.bip143_sighash(
                     self.n_in,
                     script_code,
                     self.amount,
                     hash_type,
-                    &self.bip143_cache,
+                    cache,
                 )
             }
             SigVersion::Tapscript => unreachable!(),
