@@ -165,7 +165,7 @@ impl Engine for FlatEngine {
         for nc in &req.created {
             let record_start = self.utxo_write_pos;
             write_coin_record(&mut self.utxo_file, nc)?;
-            let spk_len = u64::try_from(nc.script_pubkey.as_slice().len())
+            let spk_len = u64::try_from(nc.script_pubkey.len())
                 .map_err(|_| EngineError::ScriptPubKeyTooLarge)?;
             // 36 (outpoint) + 1 (tag) + 8 (value) + 4 (height) + 1 (coinbase) + 4 (spk_len) + spk
             self.utxo_write_pos += 36 + 1 + 8 + 4 + 1 + 4 + spk_len;
@@ -347,7 +347,7 @@ fn write_coin_record<W: Write>(f: &mut W, nc: &NewCoin) -> Result<(), EngineErro
         .map_err(|e| io_err(&e))?;
     f.write_all(&[u8::from(nc.coinbase)])
         .map_err(|e| io_err(&e))?;
-    let spk = nc.script_pubkey.as_slice();
+    let spk = nc.script_pubkey;
     let spk_len = u32::try_from(spk.len()).map_err(|_| EngineError::ScriptPubKeyTooLarge)?;
     f.write_all(&spk_len.to_le_bytes())
         .map_err(|e| io_err(&e))?;
@@ -610,7 +610,7 @@ mod tests {
         let nc = NewCoin {
             outpoint: op,
             value: Satoshi::new(5_000_000_000),
-            script_pubkey: vec![0xac].into(),
+            script_pubkey: &[0xac],
             coinbase: true,
             height: BlockHeight(1),
         };
@@ -642,7 +642,7 @@ mod tests {
         let nc = NewCoin {
             outpoint: op,
             value: Satoshi::new(1000),
-            script_pubkey: vec![].into(),
+            script_pubkey: &[],
             coinbase: false,
             height: BlockHeight(10),
         };
@@ -690,7 +690,7 @@ mod tests {
             let nc = NewCoin {
                 outpoint: op,
                 value: Satoshi::new(999),
-                script_pubkey: vec![0x51].into(),
+                script_pubkey: &[0x51],
                 coinbase: false,
                 height: BlockHeight(5),
             };

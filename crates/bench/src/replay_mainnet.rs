@@ -76,7 +76,7 @@ impl Drop for TmpDir {
     }
 }
 
-fn tmp_storage() -> (StorageHandle, TmpDir) {
+fn tmp_storage() -> (StorageHandle<'static>, TmpDir) {
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -188,7 +188,7 @@ impl ChainView for BenchView<'_> {
 fn replay_block(
     block: &Block,
     height: BlockHeight,
-    storage: &mut StorageHandle,
+    storage: &mut StorageHandle<'static>,
     snap: &HeaderSnapshot,
     cache: &mut ScriptExecutionCache,
     token: u64,
@@ -279,7 +279,7 @@ fn replay_block(
         .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage
-        .commit_block(CommitBlockReq {
+        .commit_block_borrowed(CommitBlockReq {
             token: ReqToken(token),
             height,
             hash,

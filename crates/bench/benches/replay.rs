@@ -141,7 +141,7 @@ impl Drop for TmpDir {
     }
 }
 
-fn tmp_storage() -> (StorageHandle, TmpDir) {
+fn tmp_storage() -> (StorageHandle<'static>, TmpDir) {
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -154,7 +154,7 @@ fn tmp_storage() -> (StorageHandle, TmpDir) {
 }
 
 fn commit(
-    storage: &mut StorageHandle,
+    storage: &mut StorageHandle<'static>,
     block: &Block,
     height: BlockHeight,
     snap: &HeaderSnapshot,
@@ -446,7 +446,7 @@ impl ChainView for DummyView<'_> {
 fn do_replay_ordinals_block(
     block: &Block,
     height: BlockHeight,
-    storage: &mut StorageHandle,
+    storage: &mut StorageHandle<'static>,
     snap: &HeaderSnapshot,
     cache: &mut ScriptExecutionCache,
     token: u64,
@@ -530,7 +530,7 @@ fn do_replay_ordinals_block(
     let result = connect_block(block, height, &view, &mut scratch2, true, Some(cache), None)
         .unwrap_or_else(|e| panic!("connect_block {}: {e}", height.0));
     storage
-        .commit_block(CommitBlockReq {
+        .commit_block_borrowed(CommitBlockReq {
             token: mantle_storage::types::ReqToken(token),
             height,
             hash,

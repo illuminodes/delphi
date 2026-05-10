@@ -1,4 +1,4 @@
-use mantle::primitives::{BlockHeight, Hash256, OutPoint, Satoshi, ScriptPubKey};
+use mantle::primitives::{BlockHeight, Hash256, OutPoint, Satoshi};
 
 use crate::chain_view::{ChainView, ConnectResult, NewCoin};
 use crate::error::ValidationError;
@@ -55,15 +55,15 @@ const BIP30_EXCEPTION_HEIGHTS: [u32; 2] = [91_842, 91_880];
 /// Panics if `precomputed_txids` is `Some(slice)` and `slice.len() != block.tx_count()`.
 #[allow(clippy::too_many_lines)] // single-pass per-input loop reads better as one function
 #[allow(clippy::too_many_arguments)] // precomputed_txids is opt-in; refactoring to a struct adds churn
-pub fn connect_block<B, V>(
-    block: &B,
+pub fn connect_block<'blk, B, V>(
+    block: &'blk B,
     height: BlockHeight,
     view: &V,
     scratch: &mut Vec<u8>,
     skip_script: bool,
     mut exec_cache: Option<&mut ScriptExecutionCache>,
     precomputed_txids: Option<&[Hash256]>,
-) -> Result<ConnectResult, ValidationError>
+) -> Result<ConnectResult<'blk>, ValidationError>
 where
     B: BlockView,
     V: ChainView,
@@ -137,7 +137,7 @@ where
                         vout: vout as u32,
                     },
                     value: output.value(),
-                    script_pubkey: ScriptPubKey::from_slice(output.script_pubkey()),
+                    script_pubkey: output.script_pubkey(),
                     coinbase: true,
                     height,
                 });
@@ -240,7 +240,7 @@ where
                     vout: vout as u32,
                 },
                 value: output.value(),
-                script_pubkey: ScriptPubKey::from_slice(output.script_pubkey()),
+                script_pubkey: output.script_pubkey(),
                 coinbase: false,
                 height,
             });

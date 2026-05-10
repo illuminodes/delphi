@@ -150,7 +150,7 @@ impl PhaseTimings {
 fn replay_block_timed(
     wire: &[u8],
     height: BlockHeight,
-    storage: &mut StorageHandle,
+    storage: &mut StorageHandle<'static>,
     snap: &HeaderSnapshot,
     cache: &mut ScriptExecutionCache,
     token: u64,
@@ -266,7 +266,7 @@ fn replay_block_timed(
     // ── commit ───────────────────────────────────────────────────────────
     let t0 = Instant::now();
     storage
-        .commit_block(CommitBlockReq {
+        .commit_block_borrowed(CommitBlockReq {
             token: ReqToken(token),
             height,
             hash,
@@ -330,9 +330,10 @@ fn main() {
         total_bytes as f64 / f64::from(args.blocks) / 1024.0,
     );
 
-    let (mut storage, _tmp) = tmp_storage(&format!("replay-perf-window-{}", args.preset));
+    let tag = format!("replay-perf-window-{}", args.preset);
+    let (mut storage, _tmp) = tmp_storage(&tag);
     let mut cache = ScriptExecutionCache::new(64 * 1024);
-    let mut arena: Vec<u8> = Vec::new();
+    let mut arena = Vec::new();
     let mut totals = PhaseTimings::zero();
 
     eprintln!("[{}] replay running (skip_script={})...", args.preset, args.skip_script);

@@ -20,10 +20,10 @@ pub struct Coin {
 
 /// A new unspent output created by a connected block.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewCoin {
+pub struct NewCoin<'a> {
     pub outpoint: OutPoint,
     pub value: Satoshi,
-    pub script_pubkey: ScriptPubKey,
+    pub script_pubkey: &'a [u8],
     pub coinbase: bool,
     pub height: BlockHeight,
 }
@@ -31,9 +31,9 @@ pub struct NewCoin {
 /// Output of [`connect_block`](crate::validation::connect_block): the UTXO
 /// delta and fee total needed by the storage layer to apply the block.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConnectResult {
+pub struct ConnectResult<'a> {
     /// Outputs created by this block (to insert into the UTXO set).
-    pub created: Vec<NewCoin>,
+    pub created: Vec<NewCoin<'a>>,
     /// Inputs consumed by this block (to remove from the UTXO set).
     pub spent: Vec<OutPoint>,
     /// Total fees collected (sum of inputs minus sum of outputs, excluding coinbase).

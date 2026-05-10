@@ -102,7 +102,7 @@ pub trait TxView {
     where
         Self: 'a;
     /// Per-output view returned by [`Self::output`] / [`Self::outputs`].
-    type Output<'a>: OutputView
+    type Output<'a>: OutputView<'a>
     where
         Self: 'a;
 
@@ -157,9 +157,14 @@ pub trait InputView {
 }
 
 /// Per-output view: value + scriptPubKey.
-pub trait OutputView {
+///
+/// The lifetime `'data` is the lifetime of the backing data (wire buffer or
+/// owned transaction), not the lifetime of the view itself. This lets
+/// `script_pubkey()` return a borrow that outlives the transient output-view
+/// iterator item — critical for zero-copy `NewCoin` construction.
+pub trait OutputView<'data> {
     fn value(&self) -> Satoshi;
-    fn script_pubkey(&self) -> &[u8];
+    fn script_pubkey(&self) -> &'data [u8];
 }
 
 /// Witness-stack view. Borrowed and owned witnesses alike expose the same
@@ -203,11 +208,11 @@ pub struct OwnedOutputView<'a> {
     inner: &'a mantle::primitives::TxOut,
 }
 
-impl OutputView for OwnedOutputView<'_> {
+impl<'a> OutputView<'a> for OwnedOutputView<'a> {
     fn value(&self) -> Satoshi {
         self.inner.value
     }
-    fn script_pubkey(&self) -> &[u8] {
+    fn script_pubkey(&self) -> &'a [u8] {
         self.inner.script_pubkey.as_slice()
     }
 }
@@ -327,11 +332,11 @@ pub struct RefOutputView<'a> {
     inner: mantle::primitives::TxOutRef<'a>,
 }
 
-impl OutputView for RefOutputView<'_> {
+impl<'a, 'tx: 'a> OutputView<'a> for RefOutputView<'tx> {
     fn value(&self) -> Satoshi {
         self.inner.value
     }
-    fn script_pubkey(&self) -> &[u8] {
+    fn script_pubkey(&self) -> &'a [u8] {
         self.inner.script_pubkey
     }
 }

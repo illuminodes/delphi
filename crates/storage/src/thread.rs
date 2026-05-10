@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::RingBuffer as MpscRing;
 use quetzalcoatl::spsc::RingBuffer as SpscRing;
@@ -10,49 +12,27 @@ use crate::types::{
 
 const RING_CAP: usize = 1024;
 
-struct StorageWorker {
-    req_rx: quetzalcoatl::mpsc::Consumer<StorageReq>,
-    resp_tx: quetzalcoatl::spsc::Producer<StorageResp>,
+pub(crate) struct StorageWorker<'a, RReq: Deref<Target = MpscRing<StorageReq<'a>>>, RResp: Deref<Target = SpscRing<StorageResp>>> {
+    req_rx: quetzalcoatl::mpsc::Consumer<StorageReq<'a>, RReq>,
+    resp_tx: quetzalcoatl::spsc::Producer<StorageResp, RResp>,
     engine: FlatEngine,
 }
 
-impl StorageWorker {
-    fn run(mut self) {
-        let mut n: u64 = 0;
+impl<'a, RReq: Deref<Target = MpscRing<StorageReq<'a>>>, RResp: Deref<Target = SpscRing<StorageResp>>> StorageWorker<'a, RReq, RResp> {
+    pub(crate) fn run(mut self) {
         while let Some(req) = self.req_rx.pop_block() {
-            n += 1;
             let shutdown = matches!(req, StorageReq::Shutdown);
-            #[cfg(feature = "storage-dbg")]
-            eprintln!(
-                "[w] req#{n} {}",
-                match &req {
-                    StorageReq::LookupCoins(r) =>
-                        format!("Lookup({} ops, tok={})", r.outpoints.len(), r.token.0),
-                    StorageReq::CommitBlock(r) =>
-                        format!("Commit(h={}, tok={})", r.height.0, r.token.0),
-                    StorageReq::ReadHeader(r) => format!("ReadHdr(tok={})", r.token.0),
-                    StorageReq::Shutdown => "Shutdown".to_string(),
-                }
-            );
             let resp = self.dispatch(req);
-            #[cfg(feature = "storage-dbg")]
-            eprintln!("[w] resp#{n} pushing");
             if self.resp_tx.push(resp).is_err() {
-                eprintln!("[w] BUG: resp ring full at req#{n}!");
+                eprintln!("[w] BUG: resp ring full!");
             }
-            #[cfg(feature = "storage-dbg")]
-            eprintln!("[w] resp#{n} pushed");
             if shutdown {
-                #[cfg(feature = "storage-dbg")]
-                eprintln!("[w] shutdown received, exit");
                 return;
             }
         }
-        #[cfg(feature = "storage-dbg")]
-        eprintln!("[w] req_rx returned None (producer dropped), exit n={n}");
     }
 
-    fn dispatch(&mut self, req: StorageReq) -> StorageResp {
+    fn dispatch(&mut self, req: StorageReq<'a>) -> StorageResp {
         match req {
             StorageReq::LookupCoins(r) => {
                 let token = r.token;
@@ -93,8 +73,10 @@ impl StorageWorker {
     }
 }
 
+// ── Arc-based spawn (existing 'static path) ──────────────────────────────────
+
 pub(crate) struct StorageThreadHandle {
-    pub(crate) req_tx: quetzalcoatl::mpsc::Producer<StorageReq>,
+    pub(crate) req_tx: quetzalcoatl::mpsc::Producer<StorageReq<'static>>,
     pub(crate) resp_rx: quetzalcoatl::spsc::Consumer<StorageResp>,
 }
 
@@ -114,4 +96,25 @@ pub(crate) fn spawn(engine: FlatEngine) -> Result<StorageThreadHandle, StorageEr
         .map_err(|e| StorageError::Io(e.kind()))?;
 
     Ok(StorageThreadHandle { req_tx, resp_rx })
+}
+
+// ── Borrowed spawn (scoped-thread path for zero-copy replay) ─────────────────
+
+pub(crate) fn make_worker_borrowed<'a>(
+    engine: FlatEngine,
+    req_ring: &'a MpscRing<StorageReq<'a>>,
+    resp_ring: &'a SpscRing<StorageResp>,
+) -> (
+    StorageWorker<'a, &'a MpscRing<StorageReq<'a>>, &'a SpscRing<StorageResp>>,
+    quetzalcoatl::mpsc::Producer<StorageReq<'a>, &'a MpscRing<StorageReq<'a>>>,
+    quetzalcoatl::spsc::Consumer<StorageResp, &'a SpscRing<StorageResp>>,
+) {
+    let (req_tx, req_rx) = req_ring.split_borrowed();
+    let (resp_tx, resp_rx) = resp_ring.split_borrowed();
+    let worker = StorageWorker {
+        req_rx,
+        resp_tx,
+        engine,
+    };
+    (worker, req_tx, resp_rx)
 }

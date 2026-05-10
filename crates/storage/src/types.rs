@@ -44,7 +44,7 @@ pub struct LookupCoinsReq {
 }
 
 #[derive(Debug)]
-pub struct CommitBlockReq {
+pub struct CommitBlockReq<'a> {
     pub token: ReqToken,
     pub height: BlockHeight,
     pub hash: Hash256,
@@ -54,7 +54,7 @@ pub struct CommitBlockReq {
     /// `merkle_root`, `time`, `bits`, `nonce`, and `version`, none of
     /// which can be derived from `hash` + `prev_hash` alone).
     pub header: BlockHeader,
-    pub created: Vec<NewCoin>,
+    pub created: Vec<NewCoin<'a>>,
     pub spent: Vec<OutPoint>,
     pub block_bytes: Option<Vec<u8>>,
     pub durability: Durability,
@@ -75,9 +75,9 @@ pub enum HeaderKey {
 // ── StorageReq / StorageResp ──────────────────────────────────────────────────
 
 #[derive(Debug)]
-pub enum StorageReq {
+pub enum StorageReq<'a> {
     LookupCoins(LookupCoinsReq),
-    CommitBlock(CommitBlockReq),
+    CommitBlock(CommitBlockReq<'a>),
     ReadHeader(ReadHeaderReq),
     Shutdown,
 }

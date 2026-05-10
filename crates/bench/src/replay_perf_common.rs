@@ -17,7 +17,7 @@ use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_storage::StorageHandle;
 use mantle_storage::types::{Durability, ReqToken};
-use mantle_validator::pipeline::validate_and_commit;
+use mantle_validator::pipeline::validate_and_commit_static;
 use mantle_validator::prefetched_view::HeaderSnapshot;
 
 pub const EASY_BITS: CompactBits = CompactBits(0x207f_ffff);
@@ -123,7 +123,7 @@ impl Drop for TmpDir {
     }
 }
 
-pub fn tmp_storage() -> (StorageHandle, TmpDir) {
+pub fn tmp_storage() -> (StorageHandle<'static>, TmpDir) {
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -136,14 +136,14 @@ pub fn tmp_storage() -> (StorageHandle, TmpDir) {
 }
 
 pub fn commit(
-    storage: &mut StorageHandle,
+    storage: &mut StorageHandle<'static>,
     block: &Block,
     height: BlockHeight,
     snap: &HeaderSnapshot,
     cache: &mut ScriptExecutionCache,
     token: u64,
 ) {
-    validate_and_commit(
+    validate_and_commit_static(
         block,
         height,
         storage,

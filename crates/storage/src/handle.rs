@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::path::Path;
 
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint};
@@ -5,20 +6,23 @@ use mantle_consensus::chain_view::TipInfo;
 
 use crate::engine::Engine;
 use crate::engine::flat::FlatEngine;
-use crate::thread;
 use crate::types::{
     CommitBlockReq, CommittedResp, HeaderKey, LookupCoinsResp, LookupResult, ReadHeaderReq,
     ReadHeaderResp, ReqToken, StorageError, StorageReq, StorageResp,
 };
 
-pub struct StorageHandle {
-    req_tx: quetzalcoatl::mpsc::Producer<StorageReq>,
-    resp_rx: quetzalcoatl::spsc::Consumer<StorageResp>,
+pub struct StorageHandle<'a, RReq = std::sync::Arc<quetzalcoatl::mpsc::RingBuffer<StorageReq<'a>>>, RResp = std::sync::Arc<quetzalcoatl::spsc::RingBuffer<StorageResp>>>
+where
+    RReq: Deref<Target = quetzalcoatl::mpsc::RingBuffer<StorageReq<'a>>>,
+    RResp: Deref<Target = quetzalcoatl::spsc::RingBuffer<StorageResp>>,
+{
+    req_tx: quetzalcoatl::mpsc::Producer<StorageReq<'a>, RReq>,
+    resp_rx: quetzalcoatl::spsc::Consumer<StorageResp, RResp>,
     tip: TipInfo,
     next_token: u64,
 }
 
-impl StorageHandle {
+impl StorageHandle<'static> {
     /// Open the storage at `data_dir`, spawning the storage thread.
     ///
     /// # Errors
@@ -26,13 +30,58 @@ impl StorageHandle {
     pub fn open(data_dir: &Path) -> Result<Self, StorageError> {
         let engine = FlatEngine::open(data_dir).map_err(StorageError::from)?;
         let initial_tip = engine.tip();
-        let handle = thread::spawn(engine)?;
+        let handle = crate::thread::spawn(engine)?;
         Ok(Self {
             req_tx: handle.req_tx,
             resp_rx: handle.resp_rx,
             tip: initial_tip,
             next_token: 1,
         })
+    }
+
+    /// Commit a block whose `NewCoin` entries borrow from a non-`'static`
+    /// source (e.g. a local `Block` or wire buffer).
+    ///
+    /// This is safe because `commit_block` is synchronous: the request is
+    /// pushed onto the ring, the storage thread calls `write_block` (which
+    /// copies all coin data including `script_pubkey` bytes to disk), and
+    /// the response is received before this method returns. The borrowed
+    /// data is fully consumed before the ring slot is reused.
+    ///
+    /// # Errors
+    /// Returns `StorageError` on ring or I/O failure.
+    pub fn commit_block_borrowed(
+        &mut self,
+        req: CommitBlockReq<'_>,
+    ) -> Result<CommittedResp, StorageError> {
+        // SAFETY: The storage thread fully consumes the request
+        // (writing all fields to disk) before sending the response.
+        // `self.commit_block` blocks until that response arrives, so
+        // the borrowed data is guaranteed to be live for the entire
+        // duration the ring slot is occupied.
+        let req_static: CommitBlockReq<'static> = unsafe {
+            std::mem::transmute::<CommitBlockReq<'_>, CommitBlockReq<'static>>(req)
+        };
+        self.commit_block(req_static)
+    }
+}
+
+impl<'a, RReq, RResp> StorageHandle<'a, RReq, RResp>
+where
+    RReq: Deref<Target = quetzalcoatl::mpsc::RingBuffer<StorageReq<'a>>>,
+    RResp: Deref<Target = quetzalcoatl::spsc::RingBuffer<StorageResp>>,
+{
+    pub fn from_parts(
+        req_tx: quetzalcoatl::mpsc::Producer<StorageReq<'a>, RReq>,
+        resp_rx: quetzalcoatl::spsc::Consumer<StorageResp, RResp>,
+        tip: TipInfo,
+    ) -> Self {
+        Self {
+            req_tx,
+            resp_rx,
+            tip,
+            next_token: 1,
+        }
     }
 
     /// Batch UTXO lookup (send + recv in one call).
@@ -88,7 +137,7 @@ impl StorageHandle {
     ///
     /// # Errors
     /// Returns `StorageError` on ring or I/O failure.
-    pub fn commit_block(&mut self, req: CommitBlockReq) -> Result<CommittedResp, StorageError> {
+    pub fn commit_block(&mut self, req: CommitBlockReq<'a>) -> Result<CommittedResp, StorageError> {
         self.send(StorageReq::CommitBlock(req))?;
         match self.recv()? {
             StorageResp::CommitBlock(r) => {
@@ -117,40 +166,18 @@ impl StorageHandle {
         }
     }
 
-    // ── Internal helpers ──────────────────────────────────────────────────────
-
     fn next_token(&mut self) -> ReqToken {
         let t = ReqToken(self.next_token);
         self.next_token += 1;
         t
     }
 
-    fn send(&self, req: StorageReq) -> Result<(), StorageError> {
-        #[cfg(feature = "storage-dbg")]
-        eprintln!(
-            "[h] send {}",
-            match &req {
-                StorageReq::LookupCoins(r) =>
-                    format!("Lookup({} ops, tok={})", r.outpoints.len(), r.token.0),
-                StorageReq::CommitBlock(r) =>
-                    format!("Commit(h={}, tok={})", r.height.0, r.token.0),
-                StorageReq::ReadHeader(r) => format!("ReadHdr(tok={})", r.token.0),
-                StorageReq::Shutdown => "Shutdown".to_string(),
-            }
-        );
-        let r = self.req_tx.push(req).map_err(|_| StorageError::RingFull);
-        #[cfg(feature = "storage-dbg")]
-        eprintln!("[h] send done: {:?}", r.is_ok());
-        r
+    fn send(&self, req: StorageReq<'a>) -> Result<(), StorageError> {
+        self.req_tx.push(req).map_err(|_| StorageError::RingFull)
     }
 
     fn recv(&mut self) -> Result<StorageResp, StorageError> {
-        #[cfg(feature = "storage-dbg")]
-        eprintln!("[h] recv waiting");
-        let r = self.resp_rx.pop_block().ok_or(StorageError::ThreadGone);
-        #[cfg(feature = "storage-dbg")]
-        eprintln!("[h] recv got: {:?}", r.is_ok());
-        r
+        self.resp_rx.pop_block().ok_or(StorageError::ThreadGone)
     }
 
     fn read_header_inner(&mut self, key: HeaderKey) -> Result<Option<BlockHeader>, StorageError> {

@@ -168,7 +168,7 @@ impl ChainView for BenchView<'_> {
 pub fn replay_block(
     block: &Block,
     height: BlockHeight,
-    storage: &mut StorageHandle,
+    storage: &mut StorageHandle<'static>,
     snap: &HeaderSnapshot,
     cache: &mut ScriptExecutionCache,
     token: u64,
@@ -256,7 +256,7 @@ pub fn replay_block(
         .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage
-        .commit_block(CommitBlockReq {
+        .commit_block_borrowed(CommitBlockReq {
             token: ReqToken(token),
             height,
             hash,
@@ -282,7 +282,7 @@ pub fn replay_block(
 pub fn replay_block_ref(
     wire: &[u8],
     height: BlockHeight,
-    storage: &mut StorageHandle,
+    storage: &mut StorageHandle<'static>,
     snap: &HeaderSnapshot,
     cache: &mut ScriptExecutionCache,
     token: u64,
@@ -313,7 +313,7 @@ pub fn replay_block_ref(
         .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage
-        .commit_block(CommitBlockReq {
+        .commit_block_borrowed(CommitBlockReq {
             token: ReqToken(token),
             height,
             hash,
@@ -439,7 +439,7 @@ impl BenchReplayBufs {
 pub fn replay_block_ref_reusing(
     wire: &[u8],
     height: BlockHeight,
-    storage: &mut StorageHandle,
+    storage: &mut StorageHandle<'static>,
     snap: &HeaderSnapshot,
     cache: &mut ScriptExecutionCache,
     token: u64,
@@ -527,7 +527,7 @@ pub fn replay_block_ref_reusing(
         .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage
-        .commit_block(CommitBlockReq {
+        .commit_block_borrowed(CommitBlockReq {
             token: ReqToken(token),
             height,
             hash,
@@ -550,7 +550,7 @@ impl Drop for TmpDir {
     }
 }
 
-pub fn tmp_storage(tag: &str) -> (StorageHandle, TmpDir) {
+pub fn tmp_storage(tag: &str) -> (StorageHandle<'static>, TmpDir) {
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

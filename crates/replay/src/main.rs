@@ -45,7 +45,7 @@ type HeaderPairs = Vec<(BlockHeight, BlockHeader)>;
 type ResolvedRange = (BlockHeight, BlockHeight, HeaderPairs);
 
 struct ReplayCtx {
-    storage: StorageHandle,
+    storage: StorageHandle<'static>,
     skip_script: bool,
     cache: ScriptExecutionCache,
     token: u64,

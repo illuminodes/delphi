@@ -1,9 +1,3 @@
-// Phase 1.5 work-in-progress — single-ring io_uring fetcher draft.
-// Compiles but not yet wired into mantle-replay. Planned to replace the
-// peer-rx/peer-tx-driven Fetcher once the headers/block download paths
-// are validated end-to-end against testnet4.
-#![allow(dead_code)]
-
 //! Single-ring `io_uring` fetcher for `mantle-replay`.
 //!
 //! Replaces the two-ring `peer-rx`/`peer-tx`-driven `Fetcher` with a single

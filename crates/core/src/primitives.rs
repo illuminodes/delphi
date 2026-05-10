@@ -530,7 +530,7 @@ impl<'a> DecodeRef<'a> for OutPoint {
 /// type including P2WSH at 34 bytes).
 #[derive(Clone)]
 pub enum ScriptBuf<const N: usize> {
-    Inline { len: u8, data: Box<[u8; N]> },
+    Inline { len: u8, data: [u8; N] },
     Heap(Vec<u8>),
 }
 
@@ -543,7 +543,7 @@ impl<const N: usize> ScriptBuf<N> {
     #[must_use]
     pub fn from_slice(s: &[u8]) -> Self {
         if s.len() <= N {
-            let mut data = Box::new([0u8; N]);
+            let mut data = [0u8; N];
             data[..s.len()].copy_from_slice(s);
             #[allow(clippy::cast_possible_truncation)] // N <= 255, so len <= N fits u8
             Self::Inline {
