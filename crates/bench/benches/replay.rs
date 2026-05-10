@@ -414,18 +414,14 @@ struct DummyView<'a> {
     coins: PrehashedMap<OutPoint, Option<Coin>>,
     snap: &'a HeaderSnapshot,
     tip: TipInfo,
+    dummy: Coin,
 }
 
 impl ChainView for DummyView<'_> {
-    fn get_coin(&self, op: &OutPoint) -> Result<Option<Coin>, ChainViewError> {
+    fn get_coin(&self, op: &OutPoint) -> Result<Option<&Coin>, ChainViewError> {
         Ok(match self.coins.get(op) {
-            Some(Some(c)) => Some(c.clone()),
-            Some(None) | None => Some(Coin {
-                value: Satoshi::new(2_100_000_000_000_000),
-                script_pubkey: vec![0x51].into(),
-                height: BlockHeight(0),
-                coinbase: false,
-            }),
+            Some(Some(c)) => Some(c),
+            Some(None) | None => Some(&self.dummy),
         })
     }
     fn get_header(&self, hash: &Hash256) -> Result<Option<BlockHeader>, ChainViewError> {
@@ -519,7 +515,17 @@ fn do_replay_ordinals_block(
     }
     coins.extend(intra);
 
-    let view = DummyView { coins, snap, tip };
+    let view = DummyView {
+        coins,
+        snap,
+        tip,
+        dummy: Coin {
+            value: Satoshi::new(2_100_000_000_000_000),
+            script_pubkey: vec![0x51].into(),
+            height: BlockHeight(0),
+            coinbase: false,
+        },
+    };
     let mut scratch2 = Vec::new();
     let result = connect_block(block, height, &view, &mut scratch2, true, Some(cache), None)
         .unwrap_or_else(|e| panic!("connect_block {}: {e}", height.0));

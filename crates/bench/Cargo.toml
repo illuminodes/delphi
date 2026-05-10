@@ -91,6 +91,14 @@ path = "src/replay_dhat_ordinals.rs"
 name = "parity-dhat"
 path = "src/parity_dhat.rs"
 
+[[bin]]
+name = "replay-perf-window"
+path = "src/replay_perf_window.rs"
+
+[[bin]]
+name = "replay-dhat-window"
+path = "src/replay_dhat_window.rs"
+
 [dependencies]
 mantle = { path = "../core" }
 mantle-consensus = { path = "../consensus" }

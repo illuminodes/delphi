@@ -101,15 +101,16 @@ pub fn make_snapshot_mid_chain(headers: &[BlockHeader], start: u32) -> HeaderSna
 /// `ChainView` that falls back to a dummy mature coin for unknown outpoints.
 /// Used when replaying mid-chain blocks without the full historical UTXO set.
 pub struct BenchView<'a> {
-    coins: PrehashedMap<OutPoint, Option<Coin>>,
+    coins: &'a PrehashedMap<OutPoint, Option<Coin>>,
     headers: &'a HeaderSnapshot,
     tip: TipInfo,
     dummy_on_miss: bool,
+    dummy: Coin,
 }
 
 impl<'a> BenchView<'a> {
     pub fn new(
-        coins: PrehashedMap<OutPoint, Option<Coin>>,
+        coins: &'a PrehashedMap<OutPoint, Option<Coin>>,
         headers: &'a HeaderSnapshot,
         tip: TipInfo,
         dummy_on_miss: bool,
@@ -119,22 +120,23 @@ impl<'a> BenchView<'a> {
             headers,
             tip,
             dummy_on_miss,
+            dummy: Coin {
+                value: Satoshi::new(2_100_000_000_000_000),
+                script_pubkey: vec![0x51].into(),
+                height: BlockHeight(0),
+                coinbase: false,
+            },
         }
     }
 }
 
 impl ChainView for BenchView<'_> {
-    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<Coin>, ChainViewError> {
-        let dummy = || Coin {
-            value: Satoshi::new(2_100_000_000_000_000),
-            script_pubkey: vec![0x51].into(),
-            height: BlockHeight(0),
-            coinbase: false,
-        };
+    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<&Coin>, ChainViewError> {
         match self.coins.get(outpoint) {
-            Some(Some(c)) => Ok(Some(c.clone())),
-            Some(None) | None if self.dummy_on_miss => Ok(Some(dummy())),
-            Some(None) | None => Err(ChainViewError::NotFound),
+            Some(Some(c)) => Ok(Some(c)),
+            Some(None) | None if self.dummy_on_miss => Ok(Some(&self.dummy)),
+            Some(None) => Ok(None),
+            None => Err(ChainViewError::NotFound),
         }
     }
 
@@ -247,7 +249,7 @@ pub fn replay_block(
     }
     coins.extend(intra);
 
-    let view = BenchView::new(coins, snap, tip, dummy_on_miss);
+    let view = BenchView::new(&coins, snap, tip, dummy_on_miss);
 
     let mut scratch2 = Vec::new();
     let result = connect_block(block, height, &view, &mut scratch2, true, Some(cache), None)
@@ -305,7 +307,7 @@ pub fn replay_block_ref(
     }
     coins.extend(intra);
 
-    let view = BenchView::new(coins, snap, tip, dummy_on_miss);
+    let view = BenchView::new(&coins, snap, tip, dummy_on_miss);
     let mut scratch = Vec::new();
     let result = connect_block(&block_ref, height, &view, &mut scratch, true, Some(cache), Some(&txids))
         .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
@@ -390,6 +392,153 @@ fn build_ref_outpoints(
     let mut all_ops = spend_ops;
     all_ops.extend_from_slice(&bip30_ops);
     (txids, intra, all_ops)
+}
+
+// ── reusable buffers for the bench replay loop ──────────────────────────────
+
+pub struct BenchReplayBufs {
+    pub spent_set: PrehashedSet<OutPoint>,
+    pub txids: Vec<Hash256>,
+    pub hash_scratch: Vec<u8>,
+    pub intra: PrehashedMap<OutPoint, Option<Coin>>,
+    pub spend_ops: Vec<OutPoint>,
+    pub spend_op_set: PrehashedSet<OutPoint>,
+    pub bip30_ops: Vec<OutPoint>,
+    pub coins: PrehashedMap<OutPoint, Option<Coin>>,
+    pub connect_scratch: Vec<u8>,
+}
+
+impl BenchReplayBufs {
+    pub fn new() -> Self {
+        Self {
+            spent_set: PrehashedSet::with_hasher(BuildPrehashedHasher),
+            txids: Vec::new(),
+            hash_scratch: Vec::new(),
+            intra: PrehashedMap::with_hasher(BuildPrehashedHasher),
+            spend_ops: Vec::new(),
+            spend_op_set: PrehashedSet::with_hasher(BuildPrehashedHasher),
+            bip30_ops: Vec::new(),
+            coins: PrehashedMap::with_hasher(BuildPrehashedHasher),
+            connect_scratch: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.spent_set.clear();
+        self.txids.clear();
+        self.intra.clear();
+        self.spend_ops.clear();
+        self.spend_op_set.clear();
+        self.bip30_ops.clear();
+        self.coins.clear();
+        self.connect_scratch.clear();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn replay_block_ref_reusing(
+    wire: &[u8],
+    height: BlockHeight,
+    storage: &mut StorageHandle,
+    snap: &HeaderSnapshot,
+    cache: &mut ScriptExecutionCache,
+    token: u64,
+    dummy_on_miss: bool,
+    arena: &mut Vec<u8>,
+    bufs: &mut BenchReplayBufs,
+) {
+    bufs.clear();
+
+    let block_ref = BlockRef::decode_with_arena(wire, arena)
+        .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.0));
+
+    let tx_count = block_ref.tx_count();
+    let total_inputs: usize = block_ref
+        .transactions()
+        .skip(1)
+        .map(mantle::primitives::TransactionRef::input_count)
+        .sum();
+
+    for tx in block_ref.transactions() {
+        bufs.txids.push(tx.txid_into(&mut bufs.hash_scratch).expect("txid hash never fails"));
+    }
+
+    bufs.spent_set.reserve(total_inputs);
+    for tx in block_ref.transactions().skip(1) {
+        for i in tx.inputs().flatten() { bufs.spent_set.insert(i.previous_output); }
+    }
+
+    for (tx_index, tx) in block_ref.transactions().enumerate() {
+        let txid = bufs.txids[tx_index];
+        for (vout, output) in tx.outputs().enumerate() {
+            let Ok(out) = output else { continue };
+            let Ok(vout_u32) = u32::try_from(vout) else { continue };
+            let op = OutPoint { txid, vout: vout_u32 };
+            if bufs.spent_set.contains(&op) {
+                bufs.intra.insert(op, Some(Coin {
+                    value: out.value,
+                    script_pubkey: out.script_pubkey.into(),
+                    height: BlockHeight::ZERO,
+                    coinbase: tx_index == 0,
+                }));
+            }
+        }
+    }
+
+    bufs.spend_ops.reserve(total_inputs);
+    for tx in block_ref.transactions().skip(1) {
+        for inp in tx.inputs() {
+            let Ok(i) = inp else { continue };
+            if !bufs.intra.contains_key(&i.previous_output) {
+                bufs.spend_ops.push(i.previous_output);
+            }
+        }
+    }
+
+    bufs.spend_op_set.reserve(bufs.spend_ops.len());
+    bufs.spend_op_set.extend(bufs.spend_ops.iter().copied());
+    bufs.bip30_ops.reserve(tx_count);
+    for &txid in &bufs.txids {
+        let op = OutPoint { txid, vout: 0 };
+        if !bufs.intra.contains_key(&op) && !bufs.spend_op_set.contains(&op) {
+            bufs.bip30_ops.push(op);
+        }
+    }
+
+    bufs.spend_ops.extend_from_slice(&bufs.bip30_ops);
+
+    storage.send_lookup(&bufs.spend_ops).expect("send_lookup");
+    let hash = block_ref.header.hash();
+    let prev_hash = block_ref.header.prev_block;
+    let tip = storage.tip();
+    let lookup: Vec<LookupResult> = storage.recv_lookup().expect("recv_lookup");
+
+    bufs.coins.reserve(bufs.spend_ops.len() + bufs.intra.len());
+    for r in lookup {
+        bufs.coins.insert(r.outpoint, r.coin);
+    }
+    for (k, v) in bufs.intra.drain() {
+        bufs.coins.insert(k, v);
+    }
+
+    let view = BenchView::new(&bufs.coins, snap, tip, dummy_on_miss);
+    bufs.connect_scratch.clear();
+    let result = connect_block(&block_ref, height, &view, &mut bufs.connect_scratch, true, Some(cache), Some(&bufs.txids))
+        .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+
+    storage
+        .commit_block(CommitBlockReq {
+            token: ReqToken(token),
+            height,
+            hash,
+            prev_hash,
+            header: block_ref.header,
+            created: result.created,
+            spent: result.spent,
+            block_bytes: None,
+            durability: Durability::Memory,
+        })
+        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.0));
 }
 
 // ── tmp storage ───────────────────────────────────────────────────────────────

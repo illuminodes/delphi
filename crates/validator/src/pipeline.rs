@@ -9,6 +9,56 @@ use mantle_storage::types::{CommitBlockReq, CommittedResp, Durability, ReqToken,
 
 use crate::prefetched_view::{HeaderSnapshot, PrefetchedView};
 
+/// Reusable per-block working buffers for the replay loop.
+///
+/// Created once before the loop, passed as `&mut` to
+/// [`validate_and_commit_ref_reusing`]. All inner collections are `clear()`'d
+/// at the start of each call but retain their backing capacity, eliminating
+/// the ~5 MB/block allocation churn that dominates the mid-chain profile.
+pub struct ReplayBufs {
+    spent_set: PrehashedSet<OutPoint>,
+    txids: Vec<Hash256>,
+    hash_scratch: Vec<u8>,
+    intra: PrehashedMap<OutPoint, Option<Coin>>,
+    spend_ops: Vec<OutPoint>,
+    bip30_ops: Vec<OutPoint>,
+    coins: PrehashedMap<OutPoint, Option<Coin>>,
+    connect_scratch: Vec<u8>,
+}
+
+impl ReplayBufs {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            spent_set: PrehashedSet::with_hasher(BuildPrehashedHasher),
+            txids: Vec::new(),
+            hash_scratch: Vec::new(),
+            intra: PrehashedMap::with_hasher(BuildPrehashedHasher),
+            spend_ops: Vec::new(),
+            bip30_ops: Vec::new(),
+            coins: PrehashedMap::with_hasher(BuildPrehashedHasher),
+            connect_scratch: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.spent_set.clear();
+        self.txids.clear();
+        // hash_scratch capacity retained, no clear needed (txid_into clears internally)
+        self.intra.clear();
+        self.spend_ops.clear();
+        self.bip30_ops.clear();
+        self.coins.clear();
+        self.connect_scratch.clear();
+    }
+}
+
+impl Default for ReplayBufs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Combined error from validation or storage.
 #[derive(Debug)]
 pub enum ValidationOrStorageError {
@@ -164,7 +214,7 @@ pub fn validate_and_commit(
     }
     coins.extend(intra_block);
 
-    let view = PrefetchedView::new(coins, headers, tip);
+    let view = PrefetchedView::new(&coins, headers, tip);
 
     scratch.clear();
     let result = connect_block(
@@ -249,7 +299,7 @@ pub fn validate_and_commit_ref(
     }
     coins.extend(intra_block);
 
-    let view = PrefetchedView::new(coins, headers, tip);
+    let view = PrefetchedView::new(&coins, headers, tip);
     let mut scratch = Vec::new();
     let result = connect_block(
         &block_ref,
@@ -259,6 +309,154 @@ pub fn validate_and_commit_ref(
         skip_script,
         exec_cache,
         Some(&txids),
+    )?;
+
+    let resp = storage.commit_block(CommitBlockReq {
+        token,
+        height,
+        hash,
+        prev_hash,
+        header: block_ref.header,
+        created: result.created,
+        spent: result.spent,
+        block_bytes: None,
+        durability,
+    })?;
+
+    Ok(resp)
+}
+
+/// Zero-copy replay with caller-owned reusable buffers.
+///
+/// Identical to [`validate_and_commit_ref`] but reuses the hashmaps, sets, and
+/// vecs in `bufs` across calls instead of allocating fresh ones per block.
+/// On ordinals-era blocks this eliminates ~5 MB/block of allocation churn.
+///
+/// # Errors
+///
+/// Returns `ValidationOrStorageError` on any validation or I/O failure.
+///
+/// # Panics
+///
+/// Panics if a transaction's txid cannot be hashed, which cannot happen in
+/// practice because the hash algorithm is infallible.
+#[allow(clippy::too_many_arguments)]
+pub fn validate_and_commit_ref_reusing(
+    wire: &[u8],
+    arena: &mut Vec<u8>,
+    height: BlockHeight,
+    storage: &mut StorageHandle,
+    headers: &HeaderSnapshot,
+    skip_script: bool,
+    exec_cache: Option<&mut ScriptExecutionCache>,
+    durability: Durability,
+    token: ReqToken,
+    bufs: &mut ReplayBufs,
+) -> Result<CommittedResp, ValidationOrStorageError> {
+    bufs.clear();
+
+    let block_ref = BlockRef::decode_with_arena(wire, arena).map_err(|e| {
+        ValidationOrStorageError::Validation(ValidationError::MalformedTransaction {
+            tx_index: usize::MAX,
+        })
+        .or_io(e)
+    })?;
+
+    // ── intra-block outputs (reuses bufs.spent_set, bufs.txids, bufs.intra) ──
+    for tx in block_ref.transactions().skip(1) {
+        for inp in tx.inputs() {
+            let Ok(i) = inp else { continue };
+            bufs.spent_set.insert(i.previous_output);
+        }
+    }
+
+    for tx in block_ref.transactions() {
+        bufs.txids.push(
+            tx.txid_into(&mut bufs.hash_scratch)
+                .expect("txid hash never fails"),
+        );
+    }
+
+    for (tx_index, tx) in block_ref.transactions().enumerate() {
+        let txid = bufs.txids[tx_index];
+        for (vout, output) in tx.outputs().enumerate() {
+            let Ok(out) = output else { continue };
+            let Ok(vout_u32) = u32::try_from(vout) else {
+                continue;
+            };
+            let op = OutPoint { txid, vout: vout_u32 };
+            if bufs.spent_set.contains(&op) {
+                bufs.intra.insert(
+                    op,
+                    Some(Coin {
+                        value: out.value,
+                        script_pubkey: out.script_pubkey.into(),
+                        height: BlockHeight::ZERO,
+                        coinbase: tx_index == 0,
+                    }),
+                );
+            }
+        }
+    }
+
+    // ── outpoint collection (reuses bufs.spend_ops, bufs.bip30_ops) ──────────
+    for tx in block_ref.transactions().skip(1) {
+        for inp in tx.inputs() {
+            let Ok(i) = inp else { continue };
+            if !bufs.intra.contains_key(&i.previous_output) {
+                bufs.spend_ops.push(i.previous_output);
+            }
+        }
+    }
+
+    // spend_set was already built above for intra detection; repurpose it for
+    // the BIP30 dedup. Clear and refill with spend_ops.
+    bufs.spent_set.clear();
+    bufs.spent_set
+        .extend(bufs.spend_ops.iter().copied());
+    for &txid in &bufs.txids {
+        let op = OutPoint { txid, vout: 0 };
+        if !bufs.intra.contains_key(&op) && !bufs.spent_set.contains(&op) {
+            bufs.bip30_ops.push(op);
+        }
+    }
+
+    let all_ops_len = bufs.spend_ops.len() + bufs.bip30_ops.len();
+
+    // send_lookup copies the slice into the request, so we can build a
+    // contiguous view without a separate allocation by chaining iterators.
+    // However, `send_lookup` takes `&[OutPoint]`. Build the combined slice
+    // in spend_ops itself (we're done reading it separately).
+    bufs.spend_ops.extend_from_slice(&bufs.bip30_ops);
+
+    storage.send_lookup(&bufs.spend_ops)?;
+
+    let hash = block_ref.header.hash();
+    let prev_hash = block_ref.header.prev_block;
+    let tip = storage.tip();
+    let lookup = storage.recv_lookup()?;
+
+    // ── build coin map (reuses bufs.coins) ───────────────────────────────────
+    bufs.coins.reserve(all_ops_len + bufs.intra.len());
+    for r in lookup {
+        bufs.coins.insert(r.outpoint, r.coin);
+    }
+    // Move intra entries into coins. We drain intra so its backing memory
+    // stays allocated for the next call (drain drops values but not the table).
+    for (k, v) in bufs.intra.drain() {
+        bufs.coins.insert(k, v);
+    }
+
+    let view = PrefetchedView::new(&bufs.coins, headers, tip);
+    bufs.connect_scratch.clear();
+    let result = connect_block(
+        &block_ref,
+        height,
+        &view,
+        &mut bufs.connect_scratch,
+        skip_script,
+        exec_cache,
+        Some(&bufs.txids),
     )?;
 
     let resp = storage.commit_block(CommitBlockReq {

@@ -130,7 +130,7 @@ fn memory_chain_view_utxo_insert_lookup_spend() {
     view.insert_coin(op, coin.clone());
     assert_eq!(
         view.get_coin(&op).expect("storage error"),
-        Some(coin),
+        Some(&coin),
         "UTXO must be retrievable after insert"
     );
 

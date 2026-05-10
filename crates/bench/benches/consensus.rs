@@ -375,7 +375,11 @@ fn chain_view_get_coins_batch(bencher: divan::Bencher, n: usize) {
             },
         );
     }
-    bencher.bench(|| view.get_coins(black_box(&ops)).expect("storage error"));
+    let mut out = Vec::new();
+    bencher.bench(|| {
+        view.get_coins_into(black_box(&ops), &mut out)
+            .expect("storage error");
+    });
 }
 
 // ── Bitcoin Core parity ───────────────────────────────────────────────────────

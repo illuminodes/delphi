@@ -1,4 +1,4 @@
-use mantle::primitives::{BlockHeight, Hash256, OutPoint, Satoshi};
+use mantle::primitives::{BlockHeight, Hash256, OutPoint, Satoshi, ScriptPubKey};
 
 use crate::chain_view::{ChainView, ConnectResult, NewCoin};
 use crate::error::ValidationError;
@@ -90,7 +90,7 @@ where
     // fresh Vec per non-coinbase tx (~1.8 MB across 5 ordinals blocks).
     let max_tx_inputs = block.txs().map(TxView::input_count).max().unwrap_or(0);
     let mut outpoints_scratch: Vec<OutPoint> = Vec::with_capacity(max_tx_inputs);
-    let mut coins_scratch: Vec<Option<crate::chain_view::Coin>> = Vec::with_capacity(max_tx_inputs);
+    let mut coins_scratch: Vec<Option<&crate::chain_view::Coin>> = Vec::with_capacity(max_tx_inputs);
 
     let mut total_fees = Satoshi::ZERO;
     let mut total_sigops: u32 = 0;
@@ -137,7 +137,7 @@ where
                         vout: vout as u32,
                     },
                     value: output.value(),
-                    script_pubkey: output.script_pubkey().to_vec().into(),
+                    script_pubkey: ScriptPubKey::from_slice(output.script_pubkey()),
                     coinbase: true,
                     height,
                 });
@@ -240,7 +240,7 @@ where
                     vout: vout as u32,
                 },
                 value: output.value(),
-                script_pubkey: output.script_pubkey().to_vec().into(),
+                script_pubkey: ScriptPubKey::from_slice(output.script_pubkey()),
                 coinbase: false,
                 height,
             });

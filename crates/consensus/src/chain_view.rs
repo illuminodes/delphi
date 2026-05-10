@@ -60,30 +60,24 @@ pub struct TipInfo {
 pub trait ChainView {
     /// Look up a single UTXO by outpoint.
     ///
+    /// Returns a borrow into the view's backing store. No `Coin` is cloned.
+    ///
     /// # Errors
     /// Returns `Err` on storage failure. Returns `Ok(None)` if the coin does
     /// not exist (spent or never created).
-    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<Coin>, ChainViewError>;
+    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<&Coin>, ChainViewError>;
 
-    /// Batched UTXO lookup. Result order matches `outpoints` order.
+    /// Batched UTXO lookup — writes borrowed coins into a caller-owned vec.
+    ///
+    /// `out` is cleared on entry; capacity is preserved so a hot loop can
+    /// reuse one buffer across thousands of calls.
     ///
     /// # Errors
-    /// Returns `Err` on any storage failure. On success, each element is
-    /// `Some(coin)` if present or `None` if absent.
-    fn get_coins(&self, outpoints: &[OutPoint]) -> Result<Vec<Option<Coin>>, ChainViewError> {
-        outpoints.iter().map(|op| self.get_coin(op)).collect()
-    }
-
-    /// Allocation-free variant of [`Self::get_coins`]: writes results into
-    /// the caller-provided `out` vec, which is cleared on entry. Capacity is
-    /// preserved so a hot loop can reuse one buffer across thousands of calls.
-    ///
-    /// # Errors
-    /// Same as [`Self::get_coins`].
-    fn get_coins_into(
-        &self,
+    /// Returns `Err` on any storage failure.
+    fn get_coins_into<'a>(
+        &'a self,
         outpoints: &[OutPoint],
-        out: &mut Vec<Option<Coin>>,
+        out: &mut Vec<Option<&'a Coin>>,
     ) -> Result<(), ChainViewError> {
         out.clear();
         out.reserve(outpoints.len());
@@ -194,8 +188,8 @@ impl MemoryChainView {
 }
 
 impl ChainView for MemoryChainView {
-    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<Coin>, ChainViewError> {
-        Ok(self.utxos.get(outpoint).cloned())
+    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<&Coin>, ChainViewError> {
+        Ok(self.utxos.get(outpoint))
     }
 
     fn get_header(&self, hash: &Hash256) -> Result<Option<BlockHeader>, ChainViewError> {
@@ -353,7 +347,7 @@ mod tests {
         assert!(view.get_coin(&op).expect("no error").is_none());
         view.insert_coin(op, coin.clone());
         assert_eq!(
-            view.get_coin(&op).expect("no error").expect("coin exists"),
+            *view.get_coin(&op).expect("no error").expect("coin exists"),
             coin
         );
         view.spend_coin(&op);
@@ -418,8 +412,10 @@ mod tests {
         };
         view.insert_coin(op1, coin.clone());
 
-        let results = view.get_coins(&[op1, op2]).expect("get_coins must succeed");
-        assert_eq!(results[0], Some(coin));
+        let mut results = Vec::new();
+        view.get_coins_into(&[op1, op2], &mut results)
+            .expect("get_coins_into must succeed");
+        assert_eq!(results[0], Some(&coin));
         assert_eq!(results[1], None);
     }
 }

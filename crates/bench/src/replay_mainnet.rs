@@ -124,8 +124,8 @@ struct BenchView<'a> {
     coins: PrehashedMap<OutPoint, Option<Coin>>,
     headers: &'a HeaderSnapshot,
     tip: TipInfo,
-    /// When true, return a dummy mature coin for outpoints not in `coins`.
     dummy_on_miss: bool,
+    dummy: Coin,
 }
 
 impl<'a> BenchView<'a> {
@@ -140,28 +140,21 @@ impl<'a> BenchView<'a> {
             headers,
             tip,
             dummy_on_miss,
+            dummy: Coin {
+                value: mantle::primitives::Satoshi::new(2_100_000_000_000_000),
+                script_pubkey: vec![0x51].into(),
+                height: BlockHeight(0),
+                coinbase: false,
+            },
         }
     }
 }
 
 impl ChainView for BenchView<'_> {
-    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<Coin>, ChainViewError> {
-        // In dummy mode (mid-chain replay), unknown OR known-absent outpoints
-        // both fall back to a dummy coin so the bench can keep going past
-        // inputs whose creating block isn't in the fixture range.
-        let dummy = || {
-            // Generous value so real-world ordinals txs never trip NegativeFee
-            // when an input's creating block is outside the fixture range.
-            Some(Coin {
-                value: mantle::primitives::Satoshi::new(2_100_000_000_000_000),
-                script_pubkey: vec![0x51].into(), // OP_1 — always valid
-                height: BlockHeight(0),           // mature (depth is huge)
-                coinbase: false,
-            })
-        };
+    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<&Coin>, ChainViewError> {
         match self.coins.get(outpoint) {
-            Some(Some(c)) => Ok(Some(c.clone())),
-            Some(None) | None if self.dummy_on_miss => Ok(dummy()),
+            Some(Some(c)) => Ok(Some(c)),
+            Some(None) | None if self.dummy_on_miss => Ok(Some(&self.dummy)),
             Some(None) => Ok(None),
             None => Err(ChainViewError::NotFound),
         }

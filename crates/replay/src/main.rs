@@ -20,7 +20,6 @@
 //!                    [--skip-script] [--assume-valid HEX]
 //!                    [--start-height N] [--stop-height N] [--help]`.
 
-mod fetcher;
 mod iouring_fetcher;
 mod report;
 
@@ -39,42 +38,8 @@ use mantle_storage::types::{Durability, ReqToken};
 use mantle_validator::pipeline::validate_and_commit;
 use mantle_validator::prefetched_view::{HeaderSnapshot, PrefetchedView};
 
-use crate::fetcher::Fetcher;
-use crate::iouring_fetcher::Fetcher as IoUringFetcher;
+use crate::iouring_fetcher::Fetcher;
 use crate::report::Reporter;
-
-enum AnyFetcher {
-    Legacy(Fetcher),
-    IoUring(IoUringFetcher),
-}
-
-impl AnyFetcher {
-    fn sync_headers(
-        &mut self,
-        start: BlockHeight,
-        end: BlockHeight,
-        locator: Hash256,
-    ) -> Result<Vec<(BlockHeight, mantle::primitives::BlockHeader)>, String> {
-        match self {
-            Self::Legacy(f) => f.sync_headers(start, end, locator).map_err(|e| format!("fetch: {e}")),
-            Self::IoUring(f) => f.sync_headers(start, end, locator).map_err(|e| format!("fetch: {e}")),
-        }
-    }
-
-    fn fetch_blocks(&mut self, headers: &[(BlockHeight, mantle::primitives::BlockHeader)]) -> Result<(), String> {
-        match self {
-            Self::Legacy(f) => f.fetch_blocks(headers).map_err(|e| format!("fetch: {e}")),
-            Self::IoUring(f) => f.fetch_blocks(headers).map_err(|e| format!("fetch: {e}")),
-        }
-    }
-
-    fn read_block_bytes(&self, height: BlockHeight) -> Result<Vec<u8>, String> {
-        match self {
-            Self::Legacy(f) => f.read_block_bytes(height).map_err(|e| format!("read block {} from disk: {e}", height.0)),
-            Self::IoUring(f) => f.read_block_bytes(height).map_err(|e| format!("read block {} from disk: {e}", height.0)),
-        }
-    }
-}
 
 type HeaderPairs = Vec<(BlockHeight, BlockHeader)>;
 type ResolvedRange = (BlockHeight, BlockHeight, HeaderPairs);
@@ -100,7 +65,6 @@ struct Args {
     data_dir: PathBuf,
     network: Network,
     extra_peers: Vec<SocketAddrV4>,
-    use_iouring: bool,
     skip_script: bool,
     /// Stop validating once `block.hash() == this` is committed (then exit OK).
     /// Phase 1 deliberately does *not* implement Bitcoin Core's "skip script
@@ -133,7 +97,6 @@ Options:
                           Useful with the curated lists `discover-peers`
                           writes, or external sources like
                           https://testnet4.achownodes.xyz/seeds.txt.gz.
-    --use-iouring         Use the io_uring fetcher instead of the legacy fetcher.
     --skip-script         Skip script verification (Stage 2; faster bring-up).
     --assume-valid HEX    Assume the chain leading to this block hash is
                           valid; runs script for descendants only.
@@ -149,7 +112,6 @@ fn parse_args() -> Result<Args, String> {
     let mut data_dir = PathBuf::from("./mantle-data");
     let mut network = Network::Mainnet;
     let mut extra_peers: Vec<SocketAddrV4> = Vec::new();
-    let mut use_iouring = false;
     let mut skip_script = false;
     let mut assume_valid: Option<Hash256> = None;
     let mut start_height: Option<BlockHeight> = None;
@@ -206,9 +168,6 @@ fn parse_args() -> Result<Args, String> {
                 }
                 eprintln!("  loaded {added} peers from {v}");
             }
-            "--use-iouring" => {
-                use_iouring = true;
-            }
             "--skip-script" => {
                 skip_script = true;
             }
@@ -245,7 +204,6 @@ fn parse_args() -> Result<Args, String> {
         data_dir,
         network,
         extra_peers,
-        use_iouring,
         skip_script,
         assume_valid,
         start_height,
@@ -447,18 +405,8 @@ fn run(args: &Args) -> Result<(), String> {
             args.network.name()
         ));
     }
-    let mut fetcher: AnyFetcher = if args.use_iouring {
-        eprintln!("  using io_uring fetcher");
-        AnyFetcher::IoUring(
-            IoUringFetcher::new(args.network, peer_addrs, args.data_dir.clone())
-                .map_err(|e| format!("fetcher init: {e}"))?,
-        )
-    } else {
-        AnyFetcher::Legacy(
-            Fetcher::new(args.network, peer_addrs, args.data_dir.clone())
-                .map_err(|e| format!("fetcher init: {e}"))?,
-        )
-    };
+    let mut fetcher = Fetcher::new(args.network, peer_addrs, args.data_dir.clone())
+        .map_err(|e| format!("fetcher init: {e}"))?;
 
     // ── Headers + blocks ─────────────────────────────────────────────────────
     let (start_height, stop_height, header_pairs) =
@@ -499,7 +447,7 @@ fn resolve_headers_and_blocks(
     args: &Args,
     start_height: BlockHeight,
     tip_hash: Hash256,
-    fetcher: &mut AnyFetcher,
+    fetcher: &mut Fetcher,
 ) -> Result<ResolvedRange, String> {
     let (cache_start, cached_headers) = match try_load_headers(&args.data_dir) {
         Ok(Some((s, h))) => (Some(s), h),
@@ -552,7 +500,9 @@ fn resolve_headers_and_blocks(
                 start_height.0,
                 locator.to_display_hex(),
             );
-            let pairs = fetcher.sync_headers(start_height, stop_height, locator)?;
+            let pairs = fetcher
+                .sync_headers(start_height, stop_height, locator)
+                .map_err(|e| format!("sync headers: {e:?}"))?;
             if pairs.is_empty() {
                 return Err("peer returned 0 headers".to_string());
             }
@@ -570,7 +520,9 @@ fn resolve_headers_and_blocks(
         })
         .collect();
     eprintln!("  downloading any missing blocks…");
-    fetcher.fetch_blocks(&header_pairs)?;
+    fetcher
+        .fetch_blocks(&header_pairs)
+        .map_err(|e| format!("fetch blocks: {e:?}"))?;
 
     Ok((start_height, stop_height, header_pairs))
 }
@@ -578,11 +530,13 @@ fn resolve_headers_and_blocks(
 fn replay_one_block(
     height: BlockHeight,
     header: BlockHeader,
-    fetcher: &AnyFetcher,
+    fetcher: &Fetcher,
     snapshot: &HeaderSnapshot,
     ctx: &mut ReplayCtx,
 ) -> Result<(), String> {
-    let bytes = fetcher.read_block_bytes(height)?;
+    let bytes = fetcher
+        .read_block_bytes(height)
+        .map_err(|e| format!("read block {} bytes: {e}", height.0))?;
 
     let block = Block::decode(&mut std::io::Cursor::new(&bytes))
         .map_err(|e| format!("decode block {}: {e}", height.0))?;
@@ -599,8 +553,9 @@ fn replay_one_block(
     validate_block_structure(&block)
         .map_err(|e| format!("structure check at {}: {e:?}", height.0))?;
 
+    let empty_coins = PrehashedMap::with_hasher(BuildPrehashedHasher);
     let context_view = PrefetchedView::new(
-        PrehashedMap::with_hasher(BuildPrehashedHasher),
+        &empty_coins,
         snapshot,
         ctx.storage.tip(),
     );

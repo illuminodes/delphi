@@ -118,7 +118,7 @@ impl HeaderSnapshot {
 /// outpoints the block spends, gets back the coins, and wraps them here.
 /// `connect_block` then calls `get_coin` which hits only the in-memory map.
 pub struct PrefetchedView<'a> {
-    coins: PrehashedMap<OutPoint, Option<Coin>>,
+    coins: &'a PrehashedMap<OutPoint, Option<Coin>>,
     headers: &'a HeaderSnapshot,
     tip: TipInfo,
 }
@@ -132,7 +132,7 @@ impl<'a> PrefetchedView<'a> {
     /// `tip` should be the storage tip *after* the previous block was committed.
     #[must_use]
     pub fn new(
-        coins: PrehashedMap<OutPoint, Option<Coin>>,
+        coins: &'a PrehashedMap<OutPoint, Option<Coin>>,
         headers: &'a HeaderSnapshot,
         tip: TipInfo,
     ) -> Self {
@@ -145,11 +145,9 @@ impl<'a> PrefetchedView<'a> {
 }
 
 impl ChainView for PrefetchedView<'_> {
-    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<Coin>, ChainViewError> {
+    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<&Coin>, ChainViewError> {
         match self.coins.get(outpoint) {
-            Some(c) => Ok(c.clone()),
-            // A miss here is a programmer error: the prefetcher must cover every
-            // input the block spends. Fail loud.
+            Some(opt) => Ok(opt.as_ref()),
             None => Err(ChainViewError::NotFound),
         }
     }
