@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap, PrehashedSet};
 use mantle::primitives::{BlockHeader, BlockHeight, BlockRef, Hash256, OutPoint};
-use mantle_consensus::chain_view::Coin;
+use mantle_consensus::chain_view::{Coin, ConnectScratch};
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_consensus::validation::connect_block;
 use mantle_storage::StorageHandle;
@@ -281,6 +281,7 @@ fn replay_block_timed(
         height,
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         skip_script,
         cache_arg,
         Some(&txids),

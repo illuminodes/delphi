@@ -40,6 +40,24 @@ pub struct ConnectResult<'a> {
     pub fees: Satoshi,
 }
 
+/// Scratch buffers reused across [`connect_block`](crate::validation::connect_block)
+/// calls to eliminate per-block allocations for the spent-outpoints and
+/// per-tx outpoint-lookup vecs.
+#[derive(Default)]
+pub struct ConnectScratch {
+    /// Reused as the `spent` vec; swapped into [`ConnectResult`] each call.
+    pub(crate) spent: Vec<OutPoint>,
+    /// Reused across the per-tx input-lookup loop within each block.
+    pub(crate) outpoints: Vec<OutPoint>,
+}
+
+impl ConnectScratch {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 // ── TipInfo ───────────────────────────────────────────────────────────────────
 
 /// Snapshot of the chain tip as seen by a `ChainView`.

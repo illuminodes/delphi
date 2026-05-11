@@ -1,6 +1,6 @@
 use mantle::primitives::{BlockHeight, Hash256, OutPoint, Satoshi};
 
-use crate::chain_view::{ChainView, ConnectResult, NewCoin};
+use crate::chain_view::{ChainView, ConnectResult, ConnectScratch, NewCoin};
 use crate::error::ValidationError;
 use crate::script::sighash::Bip143Cache;
 use crate::script::{ScriptExecutionCache, ScriptFlags, ScriptVerifier, verify_script_cached};
@@ -60,6 +60,7 @@ pub fn connect_block<'blk, B, V>(
     height: BlockHeight,
     view: &V,
     scratch: &mut Vec<u8>,
+    connect_scratch: &mut ConnectScratch,
     skip_script: bool,
     mut exec_cache: Option<&mut ScriptExecutionCache>,
     precomputed_txids: Option<&[Hash256]>,
@@ -79,18 +80,15 @@ where
     let subsidy = block_subsidy(height);
     let script_flags = ScriptFlags::for_height(height);
 
-    // Pre-size the output vecs. Most blocks have O(thousands) of inputs/outputs.
-    let total_inputs: usize = block.txs().map(TxView::input_count).sum();
+    // Pre-size created. Most blocks have O(thousands) of outputs.
     let total_outputs: usize = block.txs().map(TxView::output_count).sum();
     let mut created: Vec<NewCoin> = Vec::with_capacity(total_outputs);
-    let mut spent: Vec<OutPoint> = Vec::with_capacity(total_inputs);
 
-    // Per-tx scratch reused across the non-coinbase loop; capacity grows to the
-    // largest tx's input count and stays there. Without this we allocated a
-    // fresh Vec per non-coinbase tx (~1.8 MB across 5 ordinals blocks).
-    let max_tx_inputs = block.txs().map(TxView::input_count).max().unwrap_or(0);
-    let mut outpoints_scratch: Vec<OutPoint> = Vec::with_capacity(max_tx_inputs);
-    let mut coins_scratch: Vec<Option<&crate::chain_view::Coin>> = Vec::with_capacity(max_tx_inputs);
+    // Reuse caller-owned scratch vecs; capacity accumulates across blocks.
+    connect_scratch.spent.clear();
+    let outpoints_scratch = &mut connect_scratch.outpoints;
+
+    let mut coins_scratch: Vec<Option<&crate::chain_view::Coin>> = Vec::new();
 
     let mut total_fees = Satoshi::ZERO;
     let mut total_sigops: u32 = 0;
@@ -150,7 +148,7 @@ where
         // scratch vecs instead of allocating per tx.
         outpoints_scratch.clear();
         outpoints_scratch.extend(tx.inputs().map(|i| i.previous_output()));
-        view.get_coins_into(&outpoints_scratch, &mut coins_scratch)?;
+        view.get_coins_into(outpoints_scratch, &mut coins_scratch)?;
         let coins = &coins_scratch;
 
         // Built once per-tx only when scripts run without an exec_cache.
@@ -215,7 +213,7 @@ where
                 .checked_add(coin.value)
                 .ok_or(ValidationError::InputValueOverflow { tx_index })?;
 
-            spent.push(input.previous_output());
+            connect_scratch.spent.push(input.previous_output());
         }
 
         let output_total = tx
@@ -262,6 +260,7 @@ where
         return Err(ValidationError::CoinbaseRewardExceedsSubsidy);
     }
 
+    let spent = connect_scratch.spent.drain(..).collect();
     Ok(ConnectResult {
         created,
         spent,

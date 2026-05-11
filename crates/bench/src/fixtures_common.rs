@@ -11,7 +11,7 @@ use mantle::collections::{BuildPrehashedHasher, PrehashedMap, PrehashedSet};
 use mantle::primitives::{
     Block, BlockHeader, BlockHeight, BlockRef, Hash256, OutPoint, Satoshi, TxHash,
 };
-use mantle_consensus::chain_view::{ChainView, Coin, TipInfo};
+use mantle_consensus::chain_view::{ChainView, Coin, ConnectScratch, TipInfo};
 use mantle_consensus::error::ChainViewError;
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_consensus::validation::connect_block;
@@ -252,7 +252,7 @@ pub fn replay_block(
     let view = BenchView::new(&coins, snap, tip, dummy_on_miss);
 
     let mut scratch2 = Vec::new();
-    let result = connect_block(block, height, &view, &mut scratch2, true, Some(cache), None)
+    let result = connect_block(block, height, &view, &mut scratch2, &mut ConnectScratch::new(), true, Some(cache), None)
         .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage
@@ -314,6 +314,7 @@ pub fn replay_block_ref(
         height,
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         true,
         Some(cache),
         Some(&txids),
@@ -430,7 +431,8 @@ pub struct BenchReplayBufs {
     pub spend_op_set: PrehashedSet<OutPoint>,
     pub bip30_ops: Vec<OutPoint>,
     pub coins: PrehashedMap<OutPoint, Option<Coin>>,
-    pub connect_scratch: Vec<u8>,
+    pub txid_scratch: Vec<u8>,
+    pub connect_scratch: ConnectScratch,
 }
 
 impl BenchReplayBufs {
@@ -444,7 +446,8 @@ impl BenchReplayBufs {
             spend_op_set: PrehashedSet::with_hasher(BuildPrehashedHasher),
             bip30_ops: Vec::new(),
             coins: PrehashedMap::with_hasher(BuildPrehashedHasher),
-            connect_scratch: Vec::new(),
+            txid_scratch: Vec::new(),
+            connect_scratch: ConnectScratch::new(),
         }
     }
 
@@ -456,7 +459,6 @@ impl BenchReplayBufs {
         self.spend_op_set.clear();
         self.bip30_ops.clear();
         self.coins.clear();
-        self.connect_scratch.clear();
     }
 }
 
@@ -560,11 +562,11 @@ pub fn replay_block_ref_reusing(
     }
 
     let view = BenchView::new(&bufs.coins, snap, tip, dummy_on_miss);
-    bufs.connect_scratch.clear();
     let result = connect_block(
         &block_ref,
         height,
         &view,
+        &mut bufs.hash_scratch,
         &mut bufs.connect_scratch,
         true,
         Some(cache),

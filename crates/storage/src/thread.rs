@@ -6,7 +6,7 @@ use quetzalcoatl::spsc::RingBuffer as SpscRing;
 
 use crate::engine::Engine;
 use crate::types::{
-    CommittedResp, HeaderKey, LookupCoinsResp, LookupResult, StorageError, StorageReq, StorageResp,
+    CommittedResp, HeaderKey, LookupCoinsResp, StorageError, StorageReq, StorageResp,
 };
 
 const RING_CAP: usize = 1024;
@@ -44,7 +44,7 @@ impl<
         match req {
             StorageReq::LookupCoins(r) => {
                 let token = r.token;
-                let mut results: Vec<LookupResult> = Vec::with_capacity(r.outpoints.len());
+                let mut results = Vec::new();
                 let resp = self
                     .engine
                     .read_coins(&r.outpoints, &mut results)

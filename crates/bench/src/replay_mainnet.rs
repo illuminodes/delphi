@@ -21,7 +21,7 @@ use std::time::Instant;
 use mantle::codec::Decode;
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
 use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256, OutPoint};
-use mantle_consensus::chain_view::{ChainView, Coin, TipInfo};
+use mantle_consensus::chain_view::{ChainView, Coin, ConnectScratch, TipInfo};
 use mantle_consensus::error::ChainViewError;
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_consensus::validation::connect_block;
@@ -275,7 +275,7 @@ fn replay_block(
     let view = BenchView::new(coins, snap, tip, dummy_on_miss);
 
     let mut scratch2 = Vec::new();
-    let result = connect_block(block, height, &view, &mut scratch2, true, Some(cache), None)
+    let result = connect_block(block, height, &view, &mut scratch2, &mut ConnectScratch::new(), true, Some(cache), None)
         .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage

@@ -1,6 +1,6 @@
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap, PrehashedSet};
 use mantle::primitives::{Block, BlockHeader, BlockHeight, BlockRef, Hash256, OutPoint, TxHash};
-use mantle_consensus::chain_view::{Coin, ConnectResult};
+use mantle_consensus::chain_view::{Coin, ConnectResult, ConnectScratch};
 use mantle_consensus::error::ValidationError;
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_consensus::validation::connect_block;
@@ -23,7 +23,8 @@ pub struct ReplayBufs {
     spend_ops: Vec<OutPoint>,
     bip30_ops: Vec<OutPoint>,
     coins: PrehashedMap<OutPoint, Option<Coin>>,
-    connect_scratch: Vec<u8>,
+    txid_scratch: Vec<u8>,
+    connect_scratch: ConnectScratch,
 }
 
 impl ReplayBufs {
@@ -37,19 +38,19 @@ impl ReplayBufs {
             spend_ops: Vec::new(),
             bip30_ops: Vec::new(),
             coins: PrehashedMap::with_hasher(BuildPrehashedHasher),
-            connect_scratch: Vec::new(),
+            txid_scratch: Vec::new(),
+            connect_scratch: ConnectScratch::new(),
         }
     }
 
     fn clear(&mut self) {
         self.spent_set.clear();
         self.txids.clear();
-        // hash_scratch capacity retained, no clear needed (txid_into clears internally)
+        // hash_scratch / txid_scratch capacity retained; cleared internally on use
         self.intra.clear();
         self.spend_ops.clear();
         self.bip30_ops.clear();
         self.coins.clear();
-        self.connect_scratch.clear();
     }
 }
 
@@ -222,6 +223,7 @@ pub fn validate_and_commit(
         height,
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         skip_script,
         exec_cache,
         None,
@@ -312,6 +314,7 @@ pub fn validate_and_commit_static(
         height,
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         skip_script,
         exec_cache,
         None,
@@ -433,11 +436,11 @@ pub fn prefetch_and_connect<'blk>(
     }
 
     let view = PrefetchedView::new(&bufs.coins, headers, tip);
-    bufs.connect_scratch.clear();
     let result = connect_block(
         block_ref,
         height,
         &view,
+        &mut bufs.txid_scratch,
         &mut bufs.connect_scratch,
         skip_script,
         exec_cache,

@@ -21,7 +21,7 @@ use crate::types::{CommitBlockReq, Durability, LookupResult};
 
 const BUCKET_SIZE: usize = 88;
 const MAGIC: [u8; 8] = *b"MANTLEU\0";
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 const INITIAL_SLOT_COUNT: u64 = 1024;
 const MAX_INLINE_SPK: usize = 34;
 const OVERFLOW_MARKER: u16 = 0xFFFF;
@@ -32,7 +32,7 @@ const LOAD_FACTOR_DEN: u64 = 100;
 
 #[derive(Clone)]
 struct Bucket {
-    probe_distance: u8,
+    probe_distance: u16,
     coinbase: bool,
     spk_len: u16,
     height: u32,
@@ -73,7 +73,7 @@ impl Bucket {
         }
     }
 
-    fn from_outpoint_and_coin(op: &OutPoint, coin: &Coin, probe_distance: u8) -> Self {
+    fn from_outpoint_and_coin(op: &OutPoint, coin: &Coin, probe_distance: u16) -> Self {
         let spk = coin.script_pubkey.as_slice();
         let spk_len = spk.len();
         let mut script_pubkey = [0u8; MAX_INLINE_SPK];
@@ -97,7 +97,19 @@ impl Bucket {
     }
 
     fn encode(&self, buf: &mut [u8; BUCKET_SIZE]) {
-        buf[0] = self.probe_distance;
+        // Layout (88 bytes total):
+        //  [0]      probe_distance low byte
+        //  [1]      coinbase
+        //  [2..4]   spk_len (u16 le)
+        //  [4..8]   height (u32 le)
+        //  [8..16]  value (u64 le)
+        //  [16..48] txid
+        //  [48..52] vout (u32 le)
+        //  [52..86] script_pubkey (34 bytes inline)
+        //  [86]     probe_distance high byte
+        //  [87]     padding
+        let pd = self.probe_distance.to_le_bytes();
+        buf[0] = pd[0];
         buf[1] = u8::from(self.coinbase);
         buf[2..4].copy_from_slice(&self.spk_len.to_le_bytes());
         buf[4..8].copy_from_slice(&self.height.to_le_bytes());
@@ -105,7 +117,8 @@ impl Bucket {
         buf[16..48].copy_from_slice(&self.txid);
         buf[48..52].copy_from_slice(&self.vout.to_le_bytes());
         buf[52..86].copy_from_slice(&self.script_pubkey);
-        buf[86..88].copy_from_slice(&[0, 0]);
+        buf[86] = pd[1];
+        buf[87] = 0;
     }
 
     fn decode(buf: &[u8; BUCKET_SIZE]) -> Self {
@@ -114,7 +127,7 @@ impl Bucket {
         let mut script_pubkey = [0u8; MAX_INLINE_SPK];
         script_pubkey.copy_from_slice(&buf[52..86]);
         Self {
-            probe_distance: buf[0],
+            probe_distance: u16::from_le_bytes([buf[0], buf[86]]),
             coinbase: buf[1] != 0,
             spk_len: u16::from_le_bytes([buf[2], buf[3]]),
             height: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
@@ -124,6 +137,15 @@ impl Bucket {
             script_pubkey,
         }
     }
+}
+
+// ── Insert state (used by insert_batch_uring) ────────────────────────────────
+
+pub struct InsertState {
+    bucket: Bucket,
+    slot: u64,
+    ideal: u64,
+    resolved: bool,
 }
 
 // ── Hash function ────────────────────────────────────────────────────────────
@@ -297,7 +319,7 @@ impl RobinHoodTable {
     /// Returns an error on I/O failure.
     pub fn get(&self, op: &OutPoint) -> io::Result<Option<Coin>> {
         let ideal = self.ideal_slot(op);
-        let mut dist: u8 = 1;
+        let mut dist: u16 = 1;
         let mut slot = ideal;
         loop {
             let bucket = self.read_bucket(slot)?;
@@ -320,6 +342,10 @@ impl RobinHoodTable {
 
     /// # Errors
     /// Returns an error on I/O failure.
+    ///
+    /// # Panics
+    /// Panics if the table is full despite the load-factor resize check, which
+    /// indicates a bug in the resize logic.
     pub fn insert(&mut self, op: &OutPoint, coin: &Coin) -> io::Result<()> {
         if self.needs_resize() {
             self.resize()?;
@@ -351,6 +377,7 @@ impl RobinHoodTable {
 
             current.probe_distance += 1;
             slot = (slot + 1) & self.mask;
+            assert!(slot != ideal, "RobinHoodTable::insert: table full despite load-factor check");
         }
     }
 
@@ -358,7 +385,7 @@ impl RobinHoodTable {
     /// Returns an error on I/O failure.
     pub fn remove(&mut self, op: &OutPoint) -> io::Result<bool> {
         let ideal = self.ideal_slot(op);
-        let mut dist: u8 = 1;
+        let mut dist: u16 = 1;
         let mut slot = ideal;
 
         loop {
@@ -439,6 +466,439 @@ impl RobinHoodTable {
         self.file.sync_all()
     }
 
+    /// Batched insert using `io_uring`.
+    ///
+    /// Inserts all `(OutPoint, Coin)` pairs via wave-based Robin Hood probing.
+    /// Each wave submits one `pread` per pending entry (its current probe slot),
+    /// waits for all completions, then either writes the entry into an empty slot,
+    /// displaces a weaker incumbent (Robin Hood steal), or advances to the next
+    /// probe slot.  Typically completes in 2–4 waves for realistic load factors.
+    ///
+    /// Scratch vecs (`arena`, `states`) are passed in by the caller so they can
+    /// be reused across calls without re-allocating.
+    ///
+    /// # Errors
+    /// Returns an error on I/O failure.
+    ///
+    /// # Panics
+    /// Panics if the table fills despite the load-factor check (bug in resize
+    /// logic) or if the `live_count` would overflow.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    pub fn insert_batch_uring(
+        &mut self,
+        pairs: &[(OutPoint, Coin)],
+        ring: &mut ququmatz::IoUring,
+        arena: &mut Vec<u8>,
+        write_arena: &mut Vec<u8>,
+        states: &mut Vec<InsertState>,
+    ) -> io::Result<()> {
+        if pairs.is_empty() {
+            return Ok(());
+        }
+
+        // Resize check and table resize before we start — same as scalar insert.
+        // We over-count here to avoid a mid-batch resize, which would invalidate
+        // all in-flight slot offsets.
+        if (self.live_count + u64::try_from(pairs.len()).expect("batch fits u64"))
+            * LOAD_FACTOR_DEN
+            > self.slot_count * LOAD_FACTOR_NUM
+        {
+            self.resize()?;
+        }
+
+        let fd = self.fd();
+
+        // Initialise one InsertState per pair.
+        states.clear();
+        for (op, coin) in pairs {
+            let ideal = self.ideal_slot(op);
+            states.push(InsertState {
+                bucket: Bucket::from_outpoint_and_coin(op, coin, 1),
+                slot: ideal,
+                ideal,
+                resolved: false,
+            });
+        }
+
+        // Read arena and write arena: one BUCKET_SIZE slot per active entry.
+        // write_arena is kept separate so in-flight write buffers aren't
+        // clobbered by the next read wave.
+        let n = states.len();
+        let needed = n * BUCKET_SIZE;
+        arena.clear();
+        arena.resize(needed, 0u8);
+        write_arena.clear();
+        write_arena.resize(needed, 0u8);
+
+        loop {
+            // Submit reads for all unresolved entries.
+            let mut submitted = 0u32;
+            for (i, state) in states.iter().enumerate() {
+                if state.resolved {
+                    continue;
+                }
+                let offset = Self::slot_offset(state.slot);
+                let buf_start = i * BUCKET_SIZE;
+                let sqe = unsafe {
+                    ququmatz::Sqe::read_ptr(
+                        fd,
+                        arena[buf_start..].as_mut_ptr(),
+                        u32::try_from(BUCKET_SIZE).expect("BUCKET_SIZE fits u32"),
+                        offset,
+                    )
+                }
+                .user_data(i as u64);
+                ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
+                submitted += 1;
+            }
+
+            if submitted == 0 {
+                break;
+            }
+
+            ring.submit_and_wait(submitted)
+                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+
+            // Collect write SQEs to submit after all reads are processed.
+            // We store (slot, bucket_index) so we can encode from states[].
+            let mut writes: Vec<(u64, usize)> = Vec::new();
+
+            while let Some(cqe) = ring.complete() {
+                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
+                if i >= n {
+                    continue;
+                }
+                let res = cqe.result;
+                if res < 0 {
+                    return Err(io::Error::from_raw_os_error(-res));
+                }
+
+                let buf_start = i * BUCKET_SIZE;
+                let buf: &[u8; BUCKET_SIZE] = arena[buf_start..buf_start + BUCKET_SIZE]
+                    .try_into()
+                    .unwrap();
+                let existing = Bucket::decode(buf);
+
+                let state = &mut states[i];
+
+                if existing.is_empty() {
+                    // Empty slot — place here.
+                    self.live_count += 1;
+                    writes.push((state.slot, i));
+                    state.resolved = true;
+                } else if existing.matches(&state.bucket.outpoint()) {
+                    // Update: preserve probe_distance from disk.
+                    state.bucket.probe_distance = existing.probe_distance;
+                    writes.push((state.slot, i));
+                    state.resolved = true;
+                } else if existing.probe_distance < state.bucket.probe_distance {
+                    // Robin Hood steal: place current entry here, continue
+                    // inserting the displaced incumbent.
+                    writes.push((state.slot, i));
+                    // Swap the displaced incumbent into states[i] to keep inserting it.
+                    let displaced = existing;
+                    state.bucket = displaced;
+                    state.bucket.probe_distance += 1;
+                    state.slot = (state.slot + 1) & self.mask;
+                    state.ideal = state.slot; // reset guard (we no longer wrap-around-check for displaced)
+                    // Not resolved — continue in next wave.
+                } else {
+                    // Probe further.
+                    state.bucket.probe_distance += 1;
+                    state.slot = (state.slot + 1) & self.mask;
+                    assert!(
+                        state.slot != state.ideal,
+                        "insert_batch_uring: table full despite load-factor check"
+                    );
+                }
+            }
+
+            // Encode pending writes into write_arena (separate from the read
+            // arena so the next read wave doesn't clobber in-flight write bufs).
+            // write_arena is indexed by state index i, same as arena.
+            let mut write_count = 0u32;
+            for (slot, i) in writes {
+                let buf_start = i * BUCKET_SIZE;
+                states[i].bucket.encode(
+                    (&mut write_arena[buf_start..buf_start + BUCKET_SIZE])
+                        .try_into()
+                        .unwrap(),
+                );
+                let offset = Self::slot_offset(slot);
+                let sqe = unsafe {
+                    ququmatz::Sqe::write_ptr(
+                        fd,
+                        write_arena[buf_start..].as_ptr(),
+                        u32::try_from(BUCKET_SIZE).expect("BUCKET_SIZE fits u32"),
+                        offset,
+                    )
+                }
+                .user_data(u64::MAX);
+                ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
+                write_count += 1;
+            }
+
+            // Reads already completed above. Now wait for writes before the
+            // next read wave so the table is in a consistent state.
+            if write_count > 0 {
+                ring.submit_and_wait(write_count)
+                    .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                while ring.complete().is_some() {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Batched delete using `io_uring`.
+    ///
+    /// Phase 1: batch-read to locate each target slot across all ops (same
+    /// round-loop as `get_batch_uring`).  Phase 2: for each found target, run
+    /// the Robin Hood backshift.  Backshift chains across all ops are
+    /// interleaved in the ring — one read per active chain per round — so all
+    /// N chains make progress in parallel.
+    ///
+    /// Scratch vecs are passed in by the caller for reuse.
+    ///
+    /// # Errors
+    /// Returns an error on I/O failure.
+    ///
+    /// # Panics
+    /// Panics only on internal invariant violations that cannot occur in
+    /// correct usage (infallible `u32`/`usize` casts on compile-time constants).
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    pub fn remove_batch_uring(
+        &mut self,
+        ops: &[OutPoint],
+        ring: &mut ququmatz::IoUring,
+        arena: &mut Vec<u8>,
+        slots: &mut Vec<u64>,
+        dists: &mut Vec<u16>,
+        resolved: &mut Vec<bool>,
+    ) -> io::Result<()> {
+        if ops.is_empty() {
+            return Ok(());
+        }
+
+        let n = ops.len();
+        let fd = self.fd();
+
+        // ── Phase 1: find each target slot (mirrors get_batch_uring) ─────────
+
+        slots.clear();
+        slots.extend(ops.iter().map(|op| self.ideal_slot(op)));
+        dists.clear();
+        dists.resize(n, 1);
+        resolved.clear();
+        resolved.resize(n, false);
+
+        // found_slots[i] = Some(slot) once we've located the entry for ops[i].
+        let mut found_slots: Vec<Option<u64>> = vec![None; n];
+
+        let needed = n * BUCKET_SIZE;
+        arena.clear();
+        arena.resize(needed, 0u8);
+
+        loop {
+            let mut submitted = 0u32;
+            for i in 0..n {
+                if resolved[i] {
+                    continue;
+                }
+                let offset = Self::slot_offset(slots[i]);
+                let buf_start = i * BUCKET_SIZE;
+                let sqe = unsafe {
+                    ququmatz::Sqe::read_ptr(
+                        fd,
+                        arena[buf_start..].as_mut_ptr(),
+                        u32::try_from(BUCKET_SIZE).expect("BUCKET_SIZE fits u32"),
+                        offset,
+                    )
+                }
+                .user_data(i as u64);
+                ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
+                submitted += 1;
+            }
+
+            if submitted == 0 {
+                break;
+            }
+
+            ring.submit_and_wait(submitted)
+                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+
+            let mut need_reprobe = false;
+            while let Some(cqe) = ring.complete() {
+                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
+                if i >= n {
+                    continue;
+                }
+                let res = cqe.result;
+                if res < 0 {
+                    return Err(io::Error::from_raw_os_error(-res));
+                }
+
+                let buf_start = i * BUCKET_SIZE;
+                let buf: &[u8; BUCKET_SIZE] = arena[buf_start..buf_start + BUCKET_SIZE]
+                    .try_into()
+                    .unwrap();
+                let bucket = Bucket::decode(buf);
+
+                if bucket.is_empty() || bucket.probe_distance < dists[i] {
+                    resolved[i] = true; // not found
+                    continue;
+                }
+                if bucket.matches(&ops[i]) {
+                    found_slots[i] = Some(slots[i]);
+                    resolved[i] = true;
+                    continue;
+                }
+                dists[i] += 1;
+                slots[i] = (slots[i] + 1) & self.mask;
+                need_reprobe = true;
+            }
+
+            if !need_reprobe {
+                break;
+            }
+        }
+
+        // ── Phase 2: backshift chains, interleaved across all found entries ───
+        //
+        // For each found entry we maintain a (prev, next) pair of slots where
+        // `prev` is the slot to blank/overwrite and `next` is the slot to read
+        // next.  Each round we submit one read per active chain; after
+        // completions we either write (blank prev or copy shifted bucket) and
+        // advance, or terminate the chain.
+
+        // Active backshift state: (prev_slot, next_slot).
+        // Index j corresponds to the j-th *found* entry (not the original op index).
+        let mut shifts: Vec<(u64, u64)> = Vec::new();
+        // We also need a per-shift arena slot; reuse the arena with a separate section.
+        // Re-size arena to hold one bucket per active shift chain.
+        let found_count = found_slots.iter().filter(|s| s.is_some()).count();
+        if found_count == 0 {
+            return Ok(());
+        }
+        // Read arena: one slot per chain for the next-slot reads.
+        // Write arena: one slot per chain, stable across submit_and_wait, so
+        // the kernel never sees a buffer that has been reused for a read.
+        arena.clear();
+        arena.resize(found_count * BUCKET_SIZE, 0u8);
+        let mut write_arena: Vec<u8> = vec![0u8; found_count * BUCKET_SIZE];
+
+        for slot in found_slots.iter().flatten() {
+            let next = (*slot + 1) & self.mask;
+            shifts.push((*slot, next));
+        }
+        self.live_count -= u64::try_from(found_count).expect("found_count fits u64");
+
+        // shift_done[j] = true once chain j has terminated.
+        let mut shift_done: Vec<bool> = vec![false; shifts.len()];
+
+        loop {
+            let mut submitted = 0u32;
+            for (j, &(_, next)) in shifts.iter().enumerate() {
+                if shift_done[j] {
+                    continue;
+                }
+                let offset = Self::slot_offset(next);
+                let buf_start = j * BUCKET_SIZE;
+                let sqe = unsafe {
+                    ququmatz::Sqe::read_ptr(
+                        fd,
+                        arena[buf_start..].as_mut_ptr(),
+                        u32::try_from(BUCKET_SIZE).expect("BUCKET_SIZE fits u32"),
+                        offset,
+                    )
+                }
+                .user_data(j as u64);
+                ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
+                submitted += 1;
+            }
+
+            if submitted == 0 {
+                break;
+            }
+
+            ring.submit_and_wait(submitted)
+                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+
+            // Collect write decisions; (slot_to_write, chain_index, is_blank).
+            let mut write_ops: Vec<(u64, usize, bool)> = Vec::new();
+
+            while let Some(cqe) = ring.complete() {
+                let j = usize::try_from(cqe.user_data).expect("user_data index fits usize");
+                if j >= shifts.len() {
+                    continue;
+                }
+                let res = cqe.result;
+                if res < 0 {
+                    return Err(io::Error::from_raw_os_error(-res));
+                }
+
+                let buf_start = j * BUCKET_SIZE;
+                let buf: &[u8; BUCKET_SIZE] = arena[buf_start..buf_start + BUCKET_SIZE]
+                    .try_into()
+                    .unwrap();
+                let next_bucket = Bucket::decode(buf);
+                let (prev, next) = shifts[j];
+
+                if next_bucket.is_empty() || next_bucket.probe_distance == 1 {
+                    // Terminate: blank prev slot.
+                    write_ops.push((prev, j, true));
+                    shift_done[j] = true;
+                } else {
+                    // Shift: write next_bucket (pd-1) into prev, advance chain.
+                    let mut shifted = next_bucket;
+                    shifted.probe_distance -= 1;
+                    let wbuf_start = j * BUCKET_SIZE;
+                    shifted.encode(
+                        (&mut write_arena[wbuf_start..wbuf_start + BUCKET_SIZE])
+                            .try_into()
+                            .unwrap(),
+                    );
+                    write_ops.push((prev, j, false));
+                    shifts[j] = (next, (next + 1) & self.mask);
+                }
+            }
+
+            // Submit writes (buffers live in write_arena, stable until wait).
+            let write_count = u32::try_from(write_ops.len()).expect("write count fits u32");
+            for (slot, j, blank) in write_ops {
+                let wbuf_start = j * BUCKET_SIZE;
+                if blank {
+                    write_arena[wbuf_start..wbuf_start + BUCKET_SIZE].fill(0);
+                }
+                let offset = Self::slot_offset(slot);
+                let sqe = unsafe {
+                    ququmatz::Sqe::write_ptr(
+                        fd,
+                        write_arena[wbuf_start..].as_ptr(),
+                        u32::try_from(BUCKET_SIZE).expect("BUCKET_SIZE fits u32"),
+                        offset,
+                    )
+                }
+                .user_data(u64::MAX);
+                ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
+            }
+
+            if write_count > 0 {
+                ring.submit_and_wait(write_count)
+                    .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                while ring.complete().is_some() {}
+            }
+
+            if shift_done.iter().all(|d| *d) {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Batched UTXO lookup using `io_uring`.
     ///
     /// Submits one `pread` per outpoint for the ideal bucket, waits for all
@@ -462,7 +922,7 @@ impl RobinHoodTable {
         ring: &mut ququmatz::IoUring,
         arena: &mut Vec<u8>,
         slots: &mut Vec<u64>,
-        dists: &mut Vec<u8>,
+        dists: &mut Vec<u16>,
         resolved: &mut Vec<bool>,
     ) -> io::Result<()> {
         let n = ops.len();
@@ -596,8 +1056,15 @@ pub struct RobinHoodEngine {
     rc_disk_outpoints: Vec<OutPoint>,
     rc_disk_coins: Vec<Option<Coin>>,
     uring_slots: Vec<u64>,
-    uring_dists: Vec<u8>,
+    uring_dists: Vec<u16>,
     uring_resolved: Vec<bool>,
+    // Scratch buffers reused across flush_write_buffer calls.
+    wb_pairs: Vec<(OutPoint, Coin)>,
+    wb_write_arena: Vec<u8>,
+    wb_insert_states: Vec<InsertState>,
+    wb_del_slots: Vec<u64>,
+    wb_del_dists: Vec<u16>,
+    wb_del_resolved: Vec<bool>,
     header_file: File,
     header_write_len: u64,
     header_index: PrehashedMap<Hash256, u32>,
@@ -638,8 +1105,11 @@ impl RobinHoodEngine {
             data_dir: data_dir.to_owned(),
             table,
             ring,
-            write_buffer: PrehashedMap::with_hasher(BuildPrehashedHasher),
-            pending_disk_deletes: Vec::with_capacity(16_384),
+            write_buffer: PrehashedMap::with_capacity_and_hasher(
+                WRITE_BUFFER_FLUSH_THRESHOLD,
+                BuildPrehashedHasher,
+            ),
+            pending_disk_deletes: Vec::with_capacity(WRITE_BUFFER_FLUSH_THRESHOLD),
             read_arena: Vec::new(),
             rc_results: Vec::new(),
             rc_disk_indices: Vec::new(),
@@ -648,6 +1118,12 @@ impl RobinHoodEngine {
             uring_slots: Vec::new(),
             uring_dists: Vec::new(),
             uring_resolved: Vec::new(),
+            wb_pairs: Vec::new(),
+            wb_write_arena: Vec::new(),
+            wb_insert_states: Vec::new(),
+            wb_del_slots: Vec::new(),
+            wb_del_dists: Vec::new(),
+            wb_del_resolved: Vec::new(),
             header_file,
             header_write_len: 0,
             header_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
@@ -666,13 +1142,39 @@ impl RobinHoodEngine {
     }
 
     fn flush_write_buffer(&mut self) -> Result<(), EngineError> {
+        // Collect inserts into a reusable scratch vec.
+        self.wb_pairs.clear();
         for (op, entry) in self.write_buffer.drain() {
             let BufferEntry::Live(coin) = entry;
-            self.table.insert(&op, &coin).map_err(io_err)?;
+            self.wb_pairs.push((op, coin));
         }
-        for op in self.pending_disk_deletes.drain(..) {
-            self.table.remove(&op).map_err(io_err)?;
-        }
+
+        // Split borrows so we can call the table method while holding scratch vecs.
+        let pairs = std::mem::take(&mut self.wb_pairs);
+        self.table
+            .insert_batch_uring(
+                &pairs,
+                &mut self.ring,
+                &mut self.read_arena,
+                &mut self.wb_write_arena,
+                &mut self.wb_insert_states,
+            )
+            .map_err(io_err)?;
+        self.wb_pairs = pairs;
+
+        let deletes = std::mem::take(&mut self.pending_disk_deletes);
+        self.table
+            .remove_batch_uring(
+                &deletes,
+                &mut self.ring,
+                &mut self.read_arena,
+                &mut self.wb_del_slots,
+                &mut self.wb_del_dists,
+                &mut self.wb_del_resolved,
+            )
+            .map_err(io_err)?;
+        self.pending_disk_deletes = deletes;
+
         Ok(())
     }
 }
@@ -700,6 +1202,7 @@ impl Engine for RobinHoodEngine {
         disk_indices.clear();
         disk_outpoints.clear();
 
+        out.reserve(ops.len());
         results.resize(ops.len(), None);
 
         for (i, &op) in ops.iter().enumerate() {
@@ -763,7 +1266,13 @@ impl Engine for RobinHoodEngine {
             }
         }
 
-        if self.write_buffer.len() + self.pending_disk_deletes.len() > WRITE_BUFFER_FLUSH_THRESHOLD
+        // Only flush when durability requires persistence. With Memory
+        // durability (bench / test paths) the buffer is never written to disk,
+        // so flushing here would be O(N) synchronous pread/pwrite for no
+        // benefit — just let the buffer grow.
+        if req.durability != Durability::Memory
+            && self.write_buffer.len() + self.pending_disk_deletes.len()
+                > WRITE_BUFFER_FLUSH_THRESHOLD
         {
             self.flush_write_buffer()?;
         }

@@ -356,7 +356,7 @@ use std::sync::OnceLock;
 use mantle::codec::Decode;
 use mantle::collections::PrehashedSet;
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
-use mantle_consensus::chain_view::{ChainView, Coin, TipInfo};
+use mantle_consensus::chain_view::{ChainView, Coin, ConnectScratch, TipInfo};
 use mantle_consensus::error::ChainViewError;
 use mantle_consensus::validation::connect_block;
 use mantle_storage::types::{CommitBlockReq, LookupResult};
@@ -527,7 +527,7 @@ fn do_replay_ordinals_block(
         },
     };
     let mut scratch2 = Vec::new();
-    let result = connect_block(block, height, &view, &mut scratch2, true, Some(cache), None)
+    let result = connect_block(block, height, &view, &mut scratch2, &mut ConnectScratch::new(), true, Some(cache), None)
         .unwrap_or_else(|e| panic!("connect_block {}: {e}", height.0));
     storage
         .commit_block_borrowed(CommitBlockReq {

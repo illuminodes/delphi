@@ -3,7 +3,7 @@ use super::pow::*;
 use super::structure::*;
 use super::*;
 
-use crate::chain_view::{Coin, MemoryChainView};
+use crate::chain_view::{Coin, ConnectScratch, MemoryChainView};
 use crate::merkle::compute_merkle_root;
 use mantle::hash::sha256d;
 use mantle::primitives::{
@@ -651,6 +651,7 @@ fn connect_coinbase_only_block() {
         BlockHeight(1),
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         false,
         None,
         None,
@@ -695,6 +696,7 @@ fn connect_block_with_spend() {
         BlockHeight(200),
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         false,
         None,
         None,
@@ -720,6 +722,7 @@ fn connect_missing_input_rejected() {
             BlockHeight(200),
             &view,
             &mut scratch,
+            &mut ConnectScratch::new(),
             false,
             None,
             None
@@ -758,6 +761,7 @@ fn connect_coinbase_maturity_rejected() {
             BlockHeight(50),
             &view,
             &mut scratch,
+            &mut ConnectScratch::new(),
             false,
             None,
             None
@@ -800,6 +804,7 @@ fn connect_script_verify_failure_propagates() {
         BlockHeight(200),
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         false,
         None,
         None,
@@ -845,6 +850,7 @@ fn connect_skip_script_bypasses_verification() {
         BlockHeight(200),
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         true,
         None,
         None,
@@ -880,6 +886,7 @@ fn connect_exec_cache_hits_on_second_call() {
         BlockHeight(200),
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         false,
         Some(&mut cache),
         None,
@@ -893,6 +900,7 @@ fn connect_exec_cache_hits_on_second_call() {
         BlockHeight(200),
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         false,
         Some(&mut cache),
         None,
@@ -931,6 +939,7 @@ fn connect_negative_fee_rejected() {
             BlockHeight(200),
             &view,
             &mut scratch,
+            &mut ConnectScratch::new(),
             false,
             None,
             None
@@ -965,6 +974,7 @@ fn connect_coinbase_reward_exceeds_subsidy_rejected() {
             BlockHeight(1),
             &view,
             &mut scratch,
+            &mut ConnectScratch::new(),
             false,
             None,
             None
@@ -1027,6 +1037,7 @@ fn connect_sigops_limit_exceeded() {
         BlockHeight(1),
         &view,
         &mut scratch,
+        &mut ConnectScratch::new(),
         false,
         None,
         None,
@@ -1065,6 +1076,7 @@ fn connect_bip30_violation_rejected() {
             BlockHeight(200),
             &view,
             &mut scratch,
+            &mut ConnectScratch::new(),
             false,
             None,
             None
