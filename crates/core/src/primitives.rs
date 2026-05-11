@@ -1886,7 +1886,7 @@ pub struct BlockRef<'a> {
     pub raw: &'a [u8],
     /// Pre-decoded transaction views. For legacy txs `non_witness_raw`
     /// aliases `raw`; for segwit txs it aliases the arena.
-    pub txs: Vec<TransactionRef<'a>>,
+    pub txs: &'a [TransactionRef<'a>],
 }
 
 impl<'a> BlockRef<'a> {
@@ -1899,8 +1899,13 @@ impl<'a> BlockRef<'a> {
     ///
     /// # Errors
     /// Propagates I/O errors from the decoder.
-    pub fn decode_with_arena(wire: &'a [u8], arena: &'a mut Vec<u8>) -> Result<Self, Error> {
+    pub fn decode_with_arena(
+        wire: &'a [u8],
+        arena: &'a mut Vec<u8>,
+        txs_buf: &'a mut Vec<TransactionRef<'a>>,
+    ) -> Result<Self, Error> {
         arena.clear();
+        txs_buf.clear();
 
         // Header is fixed-size (80 bytes) and never aliases the arena.
         let (header, rest) = BlockHeader::decode_ref(wire)?;
@@ -1914,7 +1919,8 @@ impl<'a> BlockRef<'a> {
         // path.
         arena.reserve(rest.len());
 
-        let mut txs: Vec<TransactionRef<'a>> = Vec::with_capacity(tx_count);
+        let txs = txs_buf;
+        txs.reserve(tx_count.saturating_sub(txs.capacity()));
 
         // SAFETY: each segwit tx appends to `arena` and stores a slice into
         // it. We must not realloc the arena between writes (would invalidate
@@ -1977,7 +1983,7 @@ impl<'a> BlockRef<'a> {
         let raw_consumed = wire.len() - rest.len();
         let raw = &wire[..raw_consumed];
 
-        Ok(Self { header, raw, txs })
+        Ok(Self { header, raw, txs: txs.as_slice() })
     }
 
     /// Number of transactions in this block.
@@ -2675,8 +2681,9 @@ mod tests {
         let expected_legacy = legacy.txid().expect("legacy txid");
         let expected_segwit = segwit.txid().expect("segwit txid");
 
+        let mut txs_buf = Vec::new();
         let block_ref =
-            BlockRef::decode_with_arena(&bytes, &mut arena).expect("BlockRef decode must succeed");
+            BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf).expect("BlockRef decode must succeed");
         assert_eq!(block_ref.tx_count(), 2);
 
         let tx0 = &block_ref.txs[0];
@@ -2712,20 +2719,14 @@ mod tests {
         let mut arena = Vec::with_capacity(1024);
         // First decode populates the arena; second decode must clear it
         // (otherwise the arena would grow unboundedly across IBD blocks).
-        let len_after_first = {
-            let _br = BlockRef::decode_with_arena(&bytes, &mut arena).expect("decode 1");
-            // Read happens before the borrow ends — use a scope.
-            // We just need the count, which is always > 0 for a segwit-only block.
-            // Reborrow length via the binding.
-            // (The borrow is released at end of this scope.)
-            42usize
-        };
-        assert!(len_after_first > 0);
-        let cap_before = arena.capacity();
-        // Second decode: arena.clear() runs on entry; we should still
-        // produce a correct txid and not leak length from the prior call.
         {
-            let br2 = BlockRef::decode_with_arena(&bytes, &mut arena).expect("decode 2");
+            let mut txs_buf = Vec::new();
+            let _br = BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf).expect("decode 1");
+        }
+        let cap_before = arena.capacity();
+        {
+            let mut txs_buf = Vec::new();
+            let br2 = BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf).expect("decode 2");
             assert_eq!(
                 br2.txs[0].txid_into(&mut Vec::new()).expect("hash"),
                 segwit.txid().expect("owned txid")

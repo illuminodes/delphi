@@ -32,7 +32,7 @@ use mantle_consensus::chain_view::{Coin, ConnectScratch};
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_consensus::validation::connect_block;
 use mantle_storage::StorageHandle;
-use mantle_storage::types::{CommitBlockReq, Durability, LookupResult, ReqToken};
+use mantle_storage::types::{CommitBlockReq, Durability, ReqToken};
 use mantle_validator::prefetched_view::HeaderSnapshot;
 
 #[path = "fixtures_common.rs"]
@@ -179,7 +179,8 @@ fn replay_block_timed(
 
     // ── decode ───────────────────────────────────────────────────────────
     let t0 = Instant::now();
-    let block_ref = BlockRef::decode_with_arena(wire, arena)
+    let mut txs_buf = Vec::new();
+    let block_ref = BlockRef::decode_with_arena(wire, arena, &mut txs_buf)
         .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.0));
 
     let tx_count = block_ref.tx_count();
@@ -258,18 +259,19 @@ fn replay_block_timed(
 
     // ── lookup ───────────────────────────────────────────────────────────
     let t0 = Instant::now();
-    storage.send_lookup(&all_ops).expect("send_lookup");
+    let mut lookup_results = Vec::new();
+    storage.send_lookup_borrowed(&all_ops, &mut lookup_results).expect("send_lookup");
     let hash = block_ref.header.hash();
     let prev_hash = block_ref.header.prev_block;
     let tip = storage.tip();
-    let lookup_results: Vec<LookupResult> = storage.recv_lookup().expect("recv_lookup");
+    storage.recv_lookup().expect("recv_lookup");
     let lookup = t0.elapsed();
 
     // ── connect ──────────────────────────────────────────────────────────
     let t0 = Instant::now();
     let mut coins: PrehashedMap<OutPoint, Option<Coin>> =
         PrehashedMap::with_capacity_and_hasher(all_ops.len() + intra.len(), BuildPrehashedHasher);
-    for r in lookup_results {
+    for r in lookup_results.drain(..) {
         coins.insert(r.outpoint, r.coin);
     }
     coins.extend(intra);
@@ -298,8 +300,8 @@ fn replay_block_timed(
             hash,
             prev_hash,
             header: block_ref.header,
-            created: result.created,
-            spent: result.spent,
+            created: &result.created,
+            spent: &result.spent,
             block_bytes: None,
             durability: Durability::Memory,
         })

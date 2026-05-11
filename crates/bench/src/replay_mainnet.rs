@@ -26,7 +26,7 @@ use mantle_consensus::error::ChainViewError;
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_consensus::validation::connect_block;
 use mantle_storage::StorageHandle;
-use mantle_storage::types::{CommitBlockReq, Durability, LookupResult, ReqToken};
+use mantle_storage::types::{CommitBlockReq, Durability, ReqToken};
 use mantle_validator::prefetched_view::HeaderSnapshot;
 
 fn fixtures_dir() -> PathBuf {
@@ -260,14 +260,15 @@ fn replay_block(
     let mut all_ops = spend_ops;
     all_ops.extend_from_slice(&bip30_ops);
 
-    storage.send_lookup(&all_ops).expect("send_lookup");
+    let mut lookup = Vec::new();
+    storage.send_lookup_borrowed(&all_ops, &mut lookup).expect("send_lookup");
     let hash = block.header.hash();
     let tip = storage.tip();
-    let lookup: Vec<LookupResult> = storage.recv_lookup().expect("recv_lookup");
+    storage.recv_lookup().expect("recv_lookup");
 
     let mut coins: PrehashedMap<OutPoint, Option<Coin>> =
         PrehashedMap::with_capacity_and_hasher(all_ops.len() + intra.len(), BuildPrehashedHasher);
-    for r in lookup {
+    for r in lookup.drain(..) {
         coins.insert(r.outpoint, r.coin);
     }
     coins.extend(intra);
@@ -285,8 +286,8 @@ fn replay_block(
             hash,
             prev_hash: block.header.prev_block,
             header: block.header,
-            created: result.created,
-            spent: result.spent,
+            created: &result.created,
+            spent: &result.spent,
             block_bytes: None,
             durability: Durability::Memory,
         })

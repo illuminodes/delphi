@@ -4,7 +4,7 @@ use mantle_consensus::chain_view::{Coin, ConnectResult, ConnectScratch};
 use mantle_consensus::error::ValidationError;
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_consensus::validation::connect_block;
-use mantle_storage::StorageHandle;
+use mantle_storage::ops::StorageOps;
 use mantle_storage::types::{CommitBlockReq, CommittedResp, Durability, ReqToken, StorageError};
 
 use crate::prefetched_view::{HeaderSnapshot, PrefetchedView};
@@ -22,6 +22,7 @@ pub struct ReplayBufs {
     intra: PrehashedMap<OutPoint, Option<Coin>>,
     spend_ops: Vec<OutPoint>,
     bip30_ops: Vec<OutPoint>,
+    lookup: Vec<mantle_storage::types::LookupResult>,
     coins: PrehashedMap<OutPoint, Option<Coin>>,
     txid_scratch: Vec<u8>,
     connect_scratch: ConnectScratch,
@@ -37,6 +38,7 @@ impl ReplayBufs {
             intra: PrehashedMap::with_hasher(BuildPrehashedHasher),
             spend_ops: Vec::new(),
             bip30_ops: Vec::new(),
+            lookup: Vec::new(),
             coins: PrehashedMap::with_hasher(BuildPrehashedHasher),
             txid_scratch: Vec::new(),
             connect_scratch: ConnectScratch::new(),
@@ -151,118 +153,28 @@ impl BlockExt for Block {
 /// # Errors
 ///
 /// Returns `ValidationOrStorageError` on any validation or I/O failure.
-#[allow(clippy::too_many_arguments)]
-pub fn validate_and_commit(
-    block: &Block,
-    height: BlockHeight,
-    storage: &mut StorageHandle<'static>,
-    headers: &HeaderSnapshot,
-    skip_script: bool,
-    exec_cache: Option<&mut ScriptExecutionCache>,
-    durability: Durability,
-    token: ReqToken,
-) -> Result<CommittedResp, ValidationOrStorageError> {
-    let intra_block = block.intra_block_outputs();
-
-    // Outpoints the block spends from prior blocks.
-    let spend_outpoints: Vec<OutPoint> = block
-        .transactions
-        .iter()
-        .skip(1)
-        .flat_map(|tx| tx.inputs.iter())
-        .map(|inp| inp.previous_output)
-        .filter(|op| !intra_block.contains_key(op))
-        .collect();
-
-    // BIP30 probe outpoints: `(txid, 0)` for every tx in the block.
-    // connect_block probes these to check for duplicate unspent coinbases.
-    // They must be in the prefetched map even if absent (Ok(None) = no collision).
-    let mut spend_set: PrehashedSet<OutPoint> =
-        PrehashedSet::with_capacity_and_hasher(spend_outpoints.len(), BuildPrehashedHasher);
-    spend_set.extend(spend_outpoints.iter().copied());
-    let mut scratch = Vec::new();
-    let bip30_outpoints: Vec<OutPoint> = block
-        .transactions
-        .iter()
-        .filter_map(|tx| {
-            tx.txid_into(&mut scratch)
-                .ok()
-                .map(|txid| OutPoint { txid, vout: 0 })
-        })
-        .filter(|op| !intra_block.contains_key(op) && !spend_set.contains(op))
-        .collect();
-
-    let mut all_outpoints = spend_outpoints;
-    all_outpoints.extend_from_slice(&bip30_outpoints);
-
-    // Fire the lookup request, then do CPU work while the storage thread
-    // is busy fetching — overlap I/O latency with validation prep.
-    storage.send_lookup(&all_outpoints)?;
-
-    // CPU work that doesn't need the lookup result yet.
-    let hash = block.header.hash();
-    let tip = storage.tip();
-
-    // Now collect the lookup response.
-    let lookup = storage.recv_lookup()?;
-
-    let mut coins: PrehashedMap<OutPoint, Option<Coin>> = PrehashedMap::with_capacity_and_hasher(
-        all_outpoints.len() + intra_block.len(),
-        BuildPrehashedHasher,
-    );
-    for r in lookup {
-        coins.insert(r.outpoint, r.coin);
-    }
-    coins.extend(intra_block);
-
-    let view = PrefetchedView::new(&coins, headers, tip);
-
-    scratch.clear();
-    let result = connect_block(
-        block,
-        height,
-        &view,
-        &mut scratch,
-        &mut ConnectScratch::new(),
-        skip_script,
-        exec_cache,
-        None,
-    )?;
-
-    let resp = storage.commit_block_borrowed(CommitBlockReq {
-        token,
-        height,
-        hash,
-        prev_hash: block.header.prev_block,
-        header: block.header,
-        created: result.created,
-        spent: result.spent,
-        block_bytes: None,
-        durability,
-    })?;
-
-    Ok(resp)
-}
-
-/// Like [`validate_and_commit`], but works with `StorageHandle<'static>`
-/// (the `Arc`-ring path returned by `StorageHandle::open`). Uses
-/// `commit_block_borrowed` internally so the block does not need to be
-/// `'static`.
+/// Validate a block and commit it to storage in one call.
+///
+/// Works with any `StorageHandle` variant (Arc-backed `'static` or
+/// scoped-borrowed `'req`) via the `StorageOps` trait.
 ///
 /// # Errors
 ///
 /// Returns `ValidationOrStorageError` on any validation or I/O failure.
 #[allow(clippy::too_many_arguments)]
-pub fn validate_and_commit_static(
-    block: &Block,
+pub fn validate_and_commit<'blk, S>(
+    block: &'blk Block,
     height: BlockHeight,
-    storage: &mut StorageHandle<'static>,
+    storage: &mut S,
     headers: &HeaderSnapshot,
     skip_script: bool,
     exec_cache: Option<&mut ScriptExecutionCache>,
     durability: Durability,
     token: ReqToken,
-) -> Result<CommittedResp, ValidationOrStorageError> {
+) -> Result<CommittedResp, ValidationOrStorageError>
+where
+    S: for<'x> StorageOps<'x>,
+{
     let intra_block = block.intra_block_outputs();
 
     let spend_outpoints: Vec<OutPoint> = block
@@ -292,16 +204,17 @@ pub fn validate_and_commit_static(
     let mut all_outpoints = spend_outpoints;
     all_outpoints.extend_from_slice(&bip30_outpoints);
 
-    storage.send_lookup(&all_outpoints)?;
+    let mut lookup = Vec::new();
+    storage.send_lookup(&all_outpoints, &mut lookup)?;
     let hash = block.header.hash();
     let tip = storage.tip();
-    let lookup = storage.recv_lookup()?;
+    storage.recv_lookup()?;
 
     let mut coins: PrehashedMap<OutPoint, Option<Coin>> = PrehashedMap::with_capacity_and_hasher(
         all_outpoints.len() + intra_block.len(),
         BuildPrehashedHasher,
     );
-    for r in lookup {
+    for r in lookup.drain(..) {
         coins.insert(r.outpoint, r.coin);
     }
     coins.extend(intra_block);
@@ -326,8 +239,8 @@ pub fn validate_and_commit_static(
         hash,
         prev_hash: block.header.prev_block,
         header: block.header,
-        created: result.created,
-        spent: result.spent,
+        created: &result.created,
+        spent: &result.spent,
         block_bytes: None,
         durability,
     })?;
@@ -352,15 +265,18 @@ pub fn validate_and_commit_static(
 ///
 /// Panics if a transaction's txid cannot be hashed (infallible in practice).
 #[allow(clippy::too_many_arguments)]
-pub fn prefetch_and_connect<'blk>(
+pub fn prefetch_and_connect<'blk, S>(
     block_ref: &'blk BlockRef<'blk>,
     height: BlockHeight,
-    storage: &mut StorageHandle<'_>,
+    storage: &mut S,
     headers: &HeaderSnapshot,
     skip_script: bool,
     exec_cache: Option<&mut ScriptExecutionCache>,
     bufs: &mut ReplayBufs,
-) -> Result<ConnectResult<'blk>, ValidationOrStorageError> {
+) -> Result<ConnectResult<'blk>, ValidationOrStorageError>
+where
+    S: for<'x> StorageOps<'x>,
+{
     bufs.clear();
 
     for tx in block_ref.transactions().skip(1) {
@@ -423,12 +339,12 @@ pub fn prefetch_and_connect<'blk>(
     let all_ops_len = bufs.spend_ops.len() + bufs.bip30_ops.len();
     bufs.spend_ops.extend_from_slice(&bufs.bip30_ops);
 
-    storage.send_lookup(&bufs.spend_ops)?;
+    storage.send_lookup(&bufs.spend_ops, &mut bufs.lookup)?;
     let tip = storage.tip();
-    let lookup = storage.recv_lookup()?;
+    storage.recv_lookup()?;
 
     bufs.coins.reserve(all_ops_len + bufs.intra.len());
-    for r in lookup {
+    for r in bufs.lookup.drain(..) {
         bufs.coins.insert(r.outpoint, r.coin);
     }
     for (k, v) in bufs.intra.drain() {
@@ -460,24 +376,27 @@ pub fn prefetch_and_connect<'blk>(
 ///
 /// Returns `StorageError` on ring or I/O failure.
 #[allow(clippy::too_many_arguments)]
-pub fn commit_connect_result(
-    result: ConnectResult<'_>,
+pub fn commit_connect_result<'blk, S>(
+    result: &'blk ConnectResult<'blk>,
     height: BlockHeight,
     hash: Hash256,
     prev_hash: Hash256,
     header: BlockHeader,
     durability: Durability,
     token: ReqToken,
-    storage: &mut StorageHandle<'static>,
-) -> Result<CommittedResp, StorageError> {
+    storage: &mut S,
+) -> Result<CommittedResp, StorageError>
+where
+    S: StorageOps<'blk>,
+{
     storage.commit_block_borrowed(CommitBlockReq {
         token,
         height,
         hash,
         prev_hash,
         header,
-        created: result.created,
-        spent: result.spent,
+        created: &result.created,
+        spent: &result.spent,
         block_bytes: None,
         durability,
     })

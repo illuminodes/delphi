@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use mantle::codec::Decode;
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap, PrehashedSet};
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, BlockRef, Hash256, OutPoint, Satoshi, TxHash,
+    Block, BlockHeader, BlockHeight, BlockRef, Hash256, OutPoint, Satoshi, TransactionRef, TxHash,
 };
 use mantle_consensus::chain_view::{ChainView, Coin, ConnectScratch, TipInfo};
 use mantle_consensus::error::ChainViewError;
@@ -237,14 +237,15 @@ pub fn replay_block(
     let mut all_ops = spend_ops;
     all_ops.extend_from_slice(&bip30_ops);
 
-    storage.send_lookup(&all_ops).expect("send_lookup");
+    let mut lookup = Vec::new();
+    storage.send_lookup_borrowed(&all_ops, &mut lookup).expect("send_lookup");
     let hash = block.header.hash();
     let tip = storage.tip();
-    let lookup: Vec<LookupResult> = storage.recv_lookup().expect("recv_lookup");
+    storage.recv_lookup().expect("recv_lookup");
 
     let mut coins: PrehashedMap<OutPoint, Option<Coin>> =
         PrehashedMap::with_capacity_and_hasher(all_ops.len() + intra.len(), BuildPrehashedHasher);
-    for r in lookup {
+    for r in lookup.drain(..) {
         coins.insert(r.outpoint, r.coin);
     }
     coins.extend(intra);
@@ -262,8 +263,8 @@ pub fn replay_block(
             hash,
             prev_hash: block.header.prev_block,
             header: block.header,
-            created: result.created,
-            spent: result.spent,
+            created: &result.created,
+            spent: &result.spent,
             block_bytes: None,
             durability: Durability::Memory,
         })
@@ -289,20 +290,22 @@ pub fn replay_block_ref(
     dummy_on_miss: bool,
     arena: &mut Vec<u8>,
 ) {
-    let block_ref = BlockRef::decode_with_arena(wire, arena)
+    let mut txs_buf = Vec::new();
+    let block_ref = BlockRef::decode_with_arena(wire, arena, &mut txs_buf)
         .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.0));
 
     let (txids, intra, all_ops) = build_ref_outpoints(&block_ref);
 
-    storage.send_lookup(&all_ops).expect("send_lookup");
+    let mut lookup = Vec::new();
+    storage.send_lookup_borrowed(&all_ops, &mut lookup).expect("send_lookup");
     let hash = block_ref.header.hash();
     let prev_hash = block_ref.header.prev_block;
     let tip = storage.tip();
-    let lookup: Vec<LookupResult> = storage.recv_lookup().expect("recv_lookup");
+    storage.recv_lookup().expect("recv_lookup");
 
     let mut coins: PrehashedMap<OutPoint, Option<Coin>> =
         PrehashedMap::with_capacity_and_hasher(all_ops.len() + intra.len(), BuildPrehashedHasher);
-    for r in lookup {
+    for r in lookup.drain(..) {
         coins.insert(r.outpoint, r.coin);
     }
     coins.extend(intra);
@@ -328,8 +331,8 @@ pub fn replay_block_ref(
             hash,
             prev_hash,
             header: block_ref.header,
-            created: result.created,
-            spent: result.spent,
+            created: &result.created,
+            spent: &result.spent,
             block_bytes: None,
             durability: Durability::Memory,
         })
@@ -430,6 +433,7 @@ pub struct BenchReplayBufs {
     pub spend_ops: Vec<OutPoint>,
     pub spend_op_set: PrehashedSet<OutPoint>,
     pub bip30_ops: Vec<OutPoint>,
+    pub lookup: Vec<LookupResult>,
     pub coins: PrehashedMap<OutPoint, Option<Coin>>,
     pub txid_scratch: Vec<u8>,
     pub connect_scratch: ConnectScratch,
@@ -445,6 +449,7 @@ impl BenchReplayBufs {
             spend_ops: Vec::new(),
             spend_op_set: PrehashedSet::with_hasher(BuildPrehashedHasher),
             bip30_ops: Vec::new(),
+            lookup: Vec::new(),
             coins: PrehashedMap::with_hasher(BuildPrehashedHasher),
             txid_scratch: Vec::new(),
             connect_scratch: ConnectScratch::new(),
@@ -473,10 +478,17 @@ pub fn replay_block_ref_reusing(
     dummy_on_miss: bool,
     arena: &mut Vec<u8>,
     bufs: &mut BenchReplayBufs,
+    txs_scratch: &mut Vec<TransactionRef<'static>>,
 ) {
     bufs.clear();
 
-    let block_ref = BlockRef::decode_with_arena(wire, arena)
+    // SAFETY: txs_scratch is cleared inside decode_with_arena on entry.
+    // Between calls the vec is empty — no dangling lifetime references.
+    // TransactionRef layout is identical for all lifetimes.
+    let txs_buf: &mut Vec<TransactionRef<'_>> = unsafe {
+        &mut *std::ptr::from_mut(txs_scratch).cast::<Vec<TransactionRef<'_>>>()
+    };
+    let block_ref = BlockRef::decode_with_arena(wire, arena, txs_buf)
         .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.0));
 
     let tx_count = block_ref.tx_count();
@@ -547,14 +559,14 @@ pub fn replay_block_ref_reusing(
 
     bufs.spend_ops.extend_from_slice(&bufs.bip30_ops);
 
-    storage.send_lookup(&bufs.spend_ops).expect("send_lookup");
+    storage.send_lookup_borrowed(&bufs.spend_ops, &mut bufs.lookup).expect("send_lookup");
     let hash = block_ref.header.hash();
     let prev_hash = block_ref.header.prev_block;
     let tip = storage.tip();
-    let lookup: Vec<LookupResult> = storage.recv_lookup().expect("recv_lookup");
+    storage.recv_lookup().expect("recv_lookup");
 
     bufs.coins.reserve(bufs.spend_ops.len() + bufs.intra.len());
-    for r in lookup {
+    for r in bufs.lookup.drain(..) {
         bufs.coins.insert(r.outpoint, r.coin);
     }
     for (k, v) in bufs.intra.drain() {
@@ -581,12 +593,13 @@ pub fn replay_block_ref_reusing(
             hash,
             prev_hash,
             header: block_ref.header,
-            created: result.created,
-            spent: result.spent,
+            created: &result.created,
+            spent: &result.spent,
             block_bytes: None,
             durability: Durability::Memory,
         })
         .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.0));
+    bufs.connect_scratch.reclaim(result);
 }
 
 // ── tmp storage ───────────────────────────────────────────────────────────────

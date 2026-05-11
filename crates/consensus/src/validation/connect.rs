@@ -80,15 +80,28 @@ where
     let subsidy = block_subsidy(height);
     let script_flags = ScriptFlags::for_height(height);
 
-    // Pre-size created. Most blocks have O(thousands) of outputs.
+    // Reclaim scratch vecs from ConnectScratch. The `created` and `coins`
+    // vecs are stored as `'static` between calls; transmute to the block
+    // lifetime here. This is safe: NewCoin's layout is lifetime-invariant
+    // (just a pointer+len for script_pubkey), and we clear before filling.
     let total_outputs: usize = block.txs().map(TxView::output_count).sum();
-    let mut created: Vec<NewCoin> = Vec::with_capacity(total_outputs);
+    let mut created: Vec<NewCoin<'blk>> = {
+        let mut v = std::mem::take(&mut connect_scratch.created);
+        v.clear();
+        v.reserve(total_outputs.saturating_sub(v.capacity()));
+        // SAFETY: NewCoin<'static> and NewCoin<'blk> have identical layout.
+        unsafe { std::mem::transmute::<Vec<NewCoin<'static>>, Vec<NewCoin<'blk>>>(v) }
+    };
 
-    // Reuse caller-owned scratch vecs; capacity accumulates across blocks.
     connect_scratch.spent.clear();
     let outpoints_scratch = &mut connect_scratch.outpoints;
 
-    let mut coins_scratch: Vec<Option<&crate::chain_view::Coin>> = Vec::new();
+    let mut coins_scratch: Vec<Option<&crate::chain_view::Coin>> = {
+        let v = std::mem::take(&mut connect_scratch.coins);
+        // SAFETY: Option<&'static Coin> and Option<&'view Coin> have identical layout.
+        // The vec is cleared inside get_coins_into before each use.
+        unsafe { std::mem::transmute::<Vec<Option<&'static crate::chain_view::Coin>>, Vec<Option<&crate::chain_view::Coin>>>(v) }
+    };
 
     let mut total_fees = Satoshi::ZERO;
     let mut total_sigops: u32 = 0;
@@ -260,7 +273,20 @@ where
         return Err(ValidationError::CoinbaseRewardExceedsSubsidy);
     }
 
-    let spent = connect_scratch.spent.drain(..).collect();
+    let spent = std::mem::take(&mut connect_scratch.spent);
+
+    // Return coins_scratch to ConnectScratch (capacity preserved for next call).
+    coins_scratch.clear();
+    connect_scratch.coins = unsafe {
+        std::mem::transmute::<
+            Vec<Option<&crate::chain_view::Coin>>,
+            Vec<Option<&'static crate::chain_view::Coin>>,
+        >(coins_scratch)
+    };
+    // `created` ownership moves into ConnectResult. Caller should call
+    // `ConnectScratch::reclaim()` after consuming the result to return
+    // both `created` and `spent` capacity for the next block.
+
     Ok(ConnectResult {
         created,
         spent,

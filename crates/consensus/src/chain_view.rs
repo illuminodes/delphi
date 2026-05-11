@@ -41,20 +41,39 @@ pub struct ConnectResult<'a> {
 }
 
 /// Scratch buffers reused across [`connect_block`](crate::validation::connect_block)
-/// calls to eliminate per-block allocations for the spent-outpoints and
-/// per-tx outpoint-lookup vecs.
+/// calls to eliminate per-block allocations for the spent-outpoints,
+/// created-coins, and per-tx outpoint-lookup vecs.
 #[derive(Default)]
 pub struct ConnectScratch {
     /// Reused as the `spent` vec; swapped into [`ConnectResult`] each call.
     pub(crate) spent: Vec<OutPoint>,
     /// Reused across the per-tx input-lookup loop within each block.
     pub(crate) outpoints: Vec<OutPoint>,
+    /// Backing buffer for `created` in [`ConnectResult`]. Stored as `'static`
+    /// between calls; transmuted to `'blk` inside `connect_block`. The layout
+    /// of `NewCoin` is identical for all lifetimes (it's just a `&[u8]`
+    /// pointer+len), so this is safe as long as we clear before returning.
+    pub(crate) created: Vec<NewCoin<'static>>,
+    /// Reused for per-tx coin lookups within each block.
+    pub(crate) coins: Vec<Option<&'static Coin>>,
 }
 
 impl ConnectScratch {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Return consumed `ConnectResult` vecs so their capacity is reused on
+    /// the next `connect_block` call. Call this after `commit_block` has
+    /// finished with the result's data.
+    pub fn reclaim(&mut self, mut result: ConnectResult<'_>) {
+        result.created.clear();
+        // SAFETY: the vec is empty — no elements carry the `'blk` lifetime.
+        self.created =
+            unsafe { std::mem::transmute::<Vec<NewCoin<'_>>, Vec<NewCoin<'static>>>(result.created) };
+        self.spent = result.spent;
+        self.spent.clear();
     }
 }
 

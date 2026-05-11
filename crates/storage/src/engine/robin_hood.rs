@@ -1244,7 +1244,7 @@ impl Engine for RobinHoodEngine {
     }
 
     fn write_block(&mut self, req: &CommitBlockReq) -> Result<(), EngineError> {
-        for nc in &req.created {
+        for nc in req.created {
             let coin = Coin {
                 value: nc.value,
                 script_pubkey: ScriptPubKey::from_slice(nc.script_pubkey),
@@ -1254,7 +1254,7 @@ impl Engine for RobinHoodEngine {
             self.write_buffer
                 .insert(nc.outpoint, BufferEntry::Live(coin));
         }
-        for op in &req.spent {
+        for op in req.spent {
             match self.write_buffer.remove(op) {
                 Some(BufferEntry::Live(_)) => {
                     // Created and spent within the buffer window — elided.
@@ -1722,14 +1722,14 @@ mod tests {
             hash: Hash256([11u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
-            created: vec![mantle_consensus::chain_view::NewCoin {
+            created: &[mantle_consensus::chain_view::NewCoin {
                 outpoint: op,
                 value: Satoshi::new(1000),
                 script_pubkey: &[0x51],
                 coinbase: false,
                 height: BlockHeight(1),
             }],
-            spent: vec![],
+            spent: &[],
             block_bytes: None,
             durability: Durability::Memory,
         };
@@ -1751,8 +1751,8 @@ mod tests {
                 prev_block: Hash256([11u8; 32]),
                 ..make_header(0)
             },
-            created: vec![],
-            spent: vec![op],
+            created: &[],
+            spent: &[op],
             block_bytes: None,
             durability: Durability::Memory,
         };
@@ -1780,14 +1780,14 @@ mod tests {
             hash: Hash256([21u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
-            created: vec![mantle_consensus::chain_view::NewCoin {
+            created: &[mantle_consensus::chain_view::NewCoin {
                 outpoint: op,
                 value: Satoshi::new(2000),
                 script_pubkey: &[0x51],
                 coinbase: false,
                 height: BlockHeight(1),
             }],
-            spent: vec![],
+            spent: &[],
             block_bytes: None,
             durability: Durability::Memory,
         };
@@ -1833,14 +1833,14 @@ mod tests {
             hash: Hash256([2u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
-            created: vec![mantle_consensus::chain_view::NewCoin {
+            created: &[mantle_consensus::chain_view::NewCoin {
                 outpoint: op,
                 value: Satoshi::new(5_000_000_000),
                 script_pubkey: &[0x51],
                 coinbase: true,
                 height: BlockHeight(1),
             }],
-            spent: vec![],
+            spent: &[],
             block_bytes: None,
             durability: Durability::Memory,
         };
@@ -1866,14 +1866,14 @@ mod tests {
             hash: Hash256([4u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
-            created: vec![mantle_consensus::chain_view::NewCoin {
+            created: &[mantle_consensus::chain_view::NewCoin {
                 outpoint: op,
                 value: Satoshi::new(1000),
                 script_pubkey: &[],
                 coinbase: false,
                 height: BlockHeight(10),
             }],
-            spent: vec![],
+            spent: &[],
             block_bytes: None,
             durability: Durability::Memory,
         };
@@ -1889,8 +1889,8 @@ mod tests {
                 prev_block: Hash256([4u8; 32]),
                 ..make_header(0)
             },
-            created: vec![],
-            spent: vec![op],
+            created: &[],
+            spent: &[op],
             block_bytes: None,
             durability: Durability::Memory,
         };

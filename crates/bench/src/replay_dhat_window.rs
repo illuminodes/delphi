@@ -116,6 +116,7 @@ fn make_snapshot(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let args = parse_args();
 
@@ -168,6 +169,7 @@ fn main() {
     eprintln!("[dhat-{}] warming up...", args.preset);
     if args.reuse {
         let mut bufs = BenchReplayBufs::new();
+        let mut txs_scratch = Vec::new();
         replay_block_ref_reusing(
             &wires[0],
             BlockHeight(start),
@@ -178,6 +180,7 @@ fn main() {
             dummy_on_miss,
             &mut arena,
             &mut bufs,
+            &mut txs_scratch,
         );
 
         eprintln!("[dhat-{}] replaying...", args.preset);
@@ -195,6 +198,7 @@ fn main() {
                 dummy_on_miss,
                 &mut arena,
                 &mut bufs,
+                &mut txs_scratch,
             );
         }
     } else {

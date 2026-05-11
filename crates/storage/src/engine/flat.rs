@@ -162,7 +162,7 @@ impl Engine for FlatEngine {
     }
 
     fn write_block(&mut self, req: &CommitBlockReq) -> Result<(), EngineError> {
-        for nc in &req.created {
+        for nc in req.created {
             let record_start = self.utxo_write_pos;
             write_coin_record(&mut self.utxo_file, nc)?;
             let spk_len = u64::try_from(nc.script_pubkey.len())
@@ -172,7 +172,7 @@ impl Engine for FlatEngine {
             // Index points past the 36-byte outpoint to where read_coin_record starts (tag byte).
             self.utxo_index.insert(nc.outpoint, record_start + 36);
         }
-        for op in &req.spent {
+        for op in req.spent {
             write_spend_record(&mut self.utxo_file, op)?;
             // 36 (outpoint) + 1 (tag)
             self.utxo_write_pos += 37;
@@ -620,8 +620,8 @@ mod tests {
             hash: Hash256([2u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
-            created: vec![nc],
-            spent: vec![],
+            created: &[nc],
+            spent: &[],
             block_bytes: None,
             durability: Durability::Memory,
         };
@@ -652,8 +652,8 @@ mod tests {
             hash: Hash256([4u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
-            created: vec![nc],
-            spent: vec![],
+            created: &[nc],
+            spent: &[],
             block_bytes: None,
             durability: Durability::Memory,
         };
@@ -669,8 +669,8 @@ mod tests {
                 prev_block: Hash256([4u8; 32]),
                 ..make_header(0)
             },
-            created: vec![],
-            spent: vec![op],
+            created: &[],
+            spent: &[op],
             block_bytes: None,
             durability: Durability::Memory,
         };
@@ -700,8 +700,8 @@ mod tests {
                 hash: Hash256([8u8; 32]),
                 prev_hash: Hash256::ZERO,
                 header: make_header(0),
-                created: vec![nc],
-                spent: vec![],
+                created: &[nc],
+                spent: &[],
                 block_bytes: None,
                 durability: Durability::Memory,
             };

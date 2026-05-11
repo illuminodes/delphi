@@ -38,9 +38,10 @@ pub struct LookupResult {
 // ── Request subtypes ──────────────────────────────────────────────────────────
 
 #[derive(Debug)]
-pub struct LookupCoinsReq {
+pub struct LookupCoinsReq<'a> {
     pub token: ReqToken,
-    pub outpoints: Vec<OutPoint>,
+    pub outpoints: &'a [OutPoint],
+    pub out: &'a mut Vec<LookupResult>,
 }
 
 #[derive(Debug)]
@@ -54,8 +55,8 @@ pub struct CommitBlockReq<'a> {
     /// `merkle_root`, `time`, `bits`, `nonce`, and `version`, none of
     /// which can be derived from `hash` + `prev_hash` alone).
     pub header: BlockHeader,
-    pub created: Vec<NewCoin<'a>>,
-    pub spent: Vec<OutPoint>,
+    pub created: &'a [NewCoin<'a>],
+    pub spent: &'a [OutPoint],
     pub block_bytes: Option<Vec<u8>>,
     pub durability: Durability,
 }
@@ -76,7 +77,7 @@ pub enum HeaderKey {
 
 #[derive(Debug)]
 pub enum StorageReq<'a> {
-    LookupCoins(LookupCoinsReq),
+    LookupCoins(LookupCoinsReq<'a>),
     CommitBlock(CommitBlockReq<'a>),
     ReadHeader(ReadHeaderReq),
     Shutdown,
@@ -87,7 +88,6 @@ pub enum StorageReq<'a> {
 #[derive(Debug, Clone)]
 pub struct LookupCoinsResp {
     pub token: ReqToken,
-    pub results: Vec<LookupResult>,
 }
 
 #[derive(Debug, Clone)]
