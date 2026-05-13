@@ -252,10 +252,7 @@ fn run(args: &Args) -> Result<(), String> {
         };
 
         if last_log.elapsed() >= Duration::from_secs(5) {
-            eprintln!(
-                "  …{} unique IPv4 peers harvested so far",
-                harvest.len()
-            );
+            eprintln!("  …{} unique IPv4 peers harvested so far", harvest.len());
             last_log = Instant::now();
         }
 
@@ -269,13 +266,7 @@ fn run(args: &Args) -> Result<(), String> {
                     for (peer, (fd, state)) in &mut peers {
                         if !state.asked {
                             state.asked = true;
-                            frame_and_send(
-                                &node,
-                                args.network,
-                                *peer,
-                                *fd,
-                                Command::SendAddrV2,
-                            );
+                            frame_and_send(&node, args.network, *peer, *fd, Command::SendAddrV2);
                             frame_and_send(&node, args.network, *peer, *fd, Command::GetAddr);
                         }
                     }
@@ -302,28 +293,28 @@ fn run(args: &Args) -> Result<(), String> {
                 }
 
                 match cmd {
-                    Some(Command::Addr) => match AddrMsg::decode_limited(&mut Cursor::new(&payload))
-                    {
-                        Ok(msg) => {
-                            for entry in msg.0 {
-                                // Only IPv4-mapped entries are useful — IPv6
-                                // works fine over the network but our existing
-                                // peer code is v4-only.
-                                if entry.ip[..12]
-                                    == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff]
-                                {
-                                    let v4 = std::net::Ipv4Addr::new(
-                                        entry.ip[12],
-                                        entry.ip[13],
-                                        entry.ip[14],
-                                        entry.ip[15],
-                                    );
-                                    harvest.insert(SocketAddrV4::new(v4, entry.port));
+                    Some(Command::Addr) => {
+                        match AddrMsg::decode_limited(&mut Cursor::new(&payload)) {
+                            Ok(msg) => {
+                                for entry in msg.0 {
+                                    // Only IPv4-mapped entries are useful — IPv6
+                                    // works fine over the network but our existing
+                                    // peer code is v4-only.
+                                    if entry.ip[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff]
+                                    {
+                                        let v4 = std::net::Ipv4Addr::new(
+                                            entry.ip[12],
+                                            entry.ip[13],
+                                            entry.ip[14],
+                                            entry.ip[15],
+                                        );
+                                        harvest.insert(SocketAddrV4::new(v4, entry.port));
+                                    }
                                 }
                             }
+                            Err(e) => eprintln!("  peer {peer:?} sent malformed addr: {e}"),
                         }
-                        Err(e) => eprintln!("  peer {peer:?} sent malformed addr: {e}"),
-                    },
+                    }
                     Some(Command::AddrV2) => {
                         match AddrV2Msg::decode_limited(&mut Cursor::new(&payload)) {
                             Ok(msg) => {

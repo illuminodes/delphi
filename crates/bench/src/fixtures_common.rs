@@ -476,6 +476,7 @@ pub fn replay_block_ref_reusing(
     cache: &mut ScriptExecutionCache,
     token: u64,
     dummy_on_miss: bool,
+    durability: Durability,
     arena: &mut Vec<u8>,
     bufs: &mut BenchReplayBufs,
     txs_scratch: &mut Vec<TransactionRef<'static>>,
@@ -596,7 +597,7 @@ pub fn replay_block_ref_reusing(
             created: &result.created,
             spent: &result.spent,
             block_bytes: None,
-            durability: Durability::Memory,
+            durability,
         })
         .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.0));
     bufs.connect_scratch.reclaim(result);

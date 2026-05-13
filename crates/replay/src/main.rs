@@ -145,8 +145,8 @@ fn parse_args() -> Result<Args, String> {
             "--peer-file" => {
                 i += 1;
                 let v = raw.get(i).ok_or("--peer-file requires a path")?;
-                let body = std::fs::read_to_string(v)
-                    .map_err(|e| format!("read --peer-file {v}: {e}"))?;
+                let body =
+                    std::fs::read_to_string(v).map_err(|e| format!("read --peer-file {v}: {e}"))?;
                 let mut added = 0usize;
                 for (lineno, line) in body.lines().enumerate() {
                     let trimmed = line.split('#').next().unwrap_or("").trim();
@@ -310,9 +310,7 @@ fn build_snapshot(
     let need_genesis = start.0.saturating_sub(SNAPSHOT_LOOKBACK) == 0;
     let lookback_count = start.0 - storage_lo;
     let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(
-        usize::from(need_genesis)
-            + usize::try_from(lookback_count).unwrap_or(0)
-            + headers.len(),
+        usize::from(need_genesis) + usize::try_from(lookback_count).unwrap_or(0) + headers.len(),
     );
     let base = if need_genesis {
         let genesis = network.genesis_header().ok_or_else(|| {
@@ -378,7 +376,7 @@ fn run(args: &Args) -> Result<(), String> {
 
     // ── Storage ──────────────────────────────────────────────────────────────
     let mut storage =
-        StorageHandle::open(&args.data_dir).map_err(|e| format!("open storage: {e}"))?;
+        StorageHandle::open_robin_hood(&args.data_dir).map_err(|e| format!("open storage: {e}"))?;
     let tip = storage.tip();
     let next_to_validate = BlockHeight(tip.height.0.saturating_add(1));
     let start_height = args.start_height.unwrap_or(next_to_validate);
@@ -554,11 +552,7 @@ fn replay_one_block(
         .map_err(|e| format!("structure check at {}: {e:?}", height.0))?;
 
     let empty_coins = PrehashedMap::with_hasher(BuildPrehashedHasher);
-    let context_view = PrefetchedView::new(
-        &empty_coins,
-        snapshot,
-        ctx.storage.tip(),
-    );
+    let context_view = PrefetchedView::new(&empty_coins, snapshot, ctx.storage.tip());
     validate_block_context(&block, &context_view)
         .map_err(|e| format!("context check at {}: {e:?}", height.0))?;
 
@@ -583,4 +577,3 @@ fn replay_one_block(
     ctx.token = ctx.token.saturating_add(1);
     Ok(())
 }
-

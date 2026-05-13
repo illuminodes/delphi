@@ -168,16 +168,9 @@ impl<T: TxView> SignatureChecker for TxSigChecker<'_, T> {
                 // script), passed through unchanged. The shared cache is built
                 // lazily on first witness-v0 signature check — pre-segwit txs
                 // (the bulk of early mainnet) never pay for it.
-                let cache = self
-                    .bip143_cache
-                    .get_or_init(|| Bip143Cache::new(self.tx));
-                self.tx.bip143_sighash(
-                    self.n_in,
-                    script_code,
-                    self.amount,
-                    hash_type,
-                    cache,
-                )
+                let cache = self.bip143_cache.get_or_init(|| Bip143Cache::new(self.tx));
+                self.tx
+                    .bip143_sighash(self.n_in, script_code, self.amount, hash_type, cache)
             }
             SigVersion::Tapscript => unreachable!(),
         };

@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
 use mantle_consensus::script::ScriptExecutionCache;
+use mantle_storage::types::Durability;
 use mantle_validator::prefetched_view::HeaderSnapshot;
 
 #[global_allocator]
@@ -31,6 +32,7 @@ struct Args {
     blocks: u32,
     reuse: bool,
     robin_hood: bool,
+    synced: bool,
 }
 
 fn parse_args() -> Args {
@@ -38,6 +40,7 @@ fn parse_args() -> Args {
     let mut blocks: u32 = 1000;
     let mut reuse = false;
     let mut robin_hood = false;
+    let mut synced = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -51,9 +54,10 @@ fn parse_args() -> Args {
             }
             "--reuse" => reuse = true,
             "--robin-hood" => robin_hood = true,
+            "--synced" => synced = true,
             "--help" | "-h" => {
                 eprintln!(
-                    "usage: replay-dhat-window --preset {{early|ordinals}} [--blocks N] [--reuse] [--robin-hood]"
+                    "usage: replay-dhat-window --preset {{early|ordinals}} [--blocks N] [--reuse] [--robin-hood] [--synced]"
                 );
                 std::process::exit(0);
             }
@@ -65,6 +69,7 @@ fn parse_args() -> Args {
         blocks,
         reuse,
         robin_hood,
+        synced,
     }
 }
 
@@ -166,7 +171,15 @@ fn main() {
     // Warm up all scratch buffers (BenchReplayBufs, arena, engine internals) with
     // the first block before starting the profiler, so harness growth doesn't
     // pollute the allocation profile.
-    eprintln!("[dhat-{}] warming up...", args.preset);
+    let block_durability = |h: u32| {
+        if args.synced && h.is_multiple_of(2016) {
+            Durability::Synced
+        } else {
+            Durability::Memory
+        }
+    };
+
+    eprintln!("[dhat-{}] warming up... synced={}", args.preset, args.synced);
     if args.reuse {
         let mut bufs = BenchReplayBufs::new();
         let mut txs_scratch = Vec::new();
@@ -178,6 +191,7 @@ fn main() {
             &mut cache,
             1,
             dummy_on_miss,
+            block_durability(start),
             &mut arena,
             &mut bufs,
             &mut txs_scratch,
@@ -186,7 +200,8 @@ fn main() {
         eprintln!("[dhat-{}] replaying...", args.preset);
         let _profiler = dhat::Profiler::new_heap();
         for (i, wire) in wires[1..].iter().enumerate() {
-            let height = BlockHeight(start + 1 + u32::try_from(i).expect("fits"));
+            let h = start + 1 + u32::try_from(i).expect("fits");
+            let height = BlockHeight(h);
             let token = u64::try_from(i + 2).expect("fits");
             replay_block_ref_reusing(
                 wire,
@@ -196,6 +211,7 @@ fn main() {
                 &mut cache,
                 token,
                 dummy_on_miss,
+                block_durability(h),
                 &mut arena,
                 &mut bufs,
                 &mut txs_scratch,

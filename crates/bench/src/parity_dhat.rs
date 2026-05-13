@@ -25,7 +25,9 @@ use std::io::Cursor;
 use std::path::PathBuf;
 
 use mantle::codec::Decode;
-use mantle::primitives::{Block, BlockHeight, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxOut};
+use mantle::primitives::{
+    Block, BlockHeight, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxOut,
+};
 use mantle_consensus::script::{ScriptFlags, verify_script};
 
 #[global_allocator]
@@ -143,14 +145,8 @@ fn main() {
         if res.is_ok() {
             total += 1;
         } else {
-            panic!(
-                "verify_script failed unexpectedly on a real-mainnet input: {res:?}"
-            );
+            panic!("verify_script failed unexpectedly on a real-mainnet input: {res:?}");
         }
     }
-    eprintln!(
-        "parity-dhat: verified {} / {} inputs",
-        total,
-        jobs.len()
-    );
+    eprintln!("parity-dhat: verified {} / {} inputs", total, jobs.len());
 }

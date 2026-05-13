@@ -16,8 +16,9 @@ use mantle::primitives::{
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_storage::StorageHandle;
+use mantle_storage::ops::StorageOps;
 use mantle_storage::types::{Durability, ReqToken};
-use mantle_validator::pipeline::validate_and_commit_static;
+use mantle_validator::pipeline::validate_and_commit;
 use mantle_validator::prefetched_view::HeaderSnapshot;
 
 pub const EASY_BITS: CompactBits = CompactBits(0x207f_ffff);
@@ -135,15 +136,17 @@ pub fn tmp_storage() -> (StorageHandle<'static>, TmpDir) {
     (handle, TmpDir(path))
 }
 
-pub fn commit(
-    storage: &mut StorageHandle<'static>,
+pub fn commit<S>(
+    storage: &mut S,
     block: &Block,
     height: BlockHeight,
     snap: &HeaderSnapshot,
     cache: &mut ScriptExecutionCache,
     token: u64,
-) {
-    validate_and_commit_static(
+) where
+    S: for<'x> StorageOps<'x>,
+{
+    validate_and_commit(
         block,
         height,
         storage,

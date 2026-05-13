@@ -58,29 +58,38 @@ impl Bucket {
         self.txid == op.txid.0 && self.vout == op.vout
     }
 
-    fn to_coin(&self) -> Coin {
-        let spk = if self.spk_len == OVERFLOW_MARKER {
-            // TODO: read from overflow sidecar file
-            &[]
+    fn to_coin(&self, overflow: &File) -> io::Result<Coin> {
+        let script_pubkey = if self.spk_len == OVERFLOW_MARKER {
+            let offset = u64::from_le_bytes(self.script_pubkey[..8].try_into().unwrap());
+            let spk = read_overflow(overflow, offset)?;
+            ScriptPubKey::from_slice(&spk)
         } else {
-            &self.script_pubkey[..self.spk_len as usize]
+            ScriptPubKey::from_slice(&self.script_pubkey[..self.spk_len as usize])
         };
-        Coin {
+        Ok(Coin {
             value: Satoshi::new(self.value),
-            script_pubkey: ScriptPubKey::from_slice(spk),
+            script_pubkey,
             height: BlockHeight(self.height),
             coinbase: self.coinbase,
-        }
+        })
     }
 
-    fn from_outpoint_and_coin(op: &OutPoint, coin: &Coin, probe_distance: u16) -> Self {
+    fn from_outpoint_and_coin(
+        op: &OutPoint,
+        coin: &Coin,
+        probe_distance: u16,
+        overflow: &mut File,
+    ) -> io::Result<Self> {
         let spk = coin.script_pubkey.as_slice();
         let spk_len = spk.len();
         let mut script_pubkey = [0u8; MAX_INLINE_SPK];
         if spk_len <= MAX_INLINE_SPK {
             script_pubkey[..spk_len].copy_from_slice(spk);
+        } else {
+            let offset = append_overflow(overflow, spk)?;
+            script_pubkey[..8].copy_from_slice(&offset.to_le_bytes());
         }
-        Self {
+        Ok(Self {
             probe_distance,
             coinbase: coin.coinbase,
             spk_len: if spk_len <= MAX_INLINE_SPK {
@@ -93,7 +102,7 @@ impl Bucket {
             txid: op.txid.0,
             vout: op.vout,
             script_pubkey,
-        }
+        })
     }
 
     fn encode(&self, buf: &mut [u8; BUCKET_SIZE]) {
@@ -197,6 +206,7 @@ impl TableHeader {
 pub struct RobinHoodTable {
     file: File,
     path: PathBuf,
+    overflow: File,
     slot_count: u64,
     mask: u64,
     live_count: u64,
@@ -244,9 +254,12 @@ impl RobinHoodTable {
         header.encode(&mut buf);
         pwrite_all(&file, &buf, 0)?;
 
+        let overflow = open_overflow_file(&overflow_path(path))?;
+
         Ok(Self {
             file,
             path: path.to_owned(),
+            overflow,
             slot_count,
             mask: slot_count - 1,
             live_count: 0,
@@ -258,9 +271,11 @@ impl RobinHoodTable {
         let mut buf = [0u8; BUCKET_SIZE];
         pread_exact(&file, &mut buf, 0)?;
         let header = TableHeader::decode(&buf)?;
+        let overflow = open_overflow_file(&overflow_path(path))?;
         Ok(Self {
             file,
             path: path.to_owned(),
+            overflow,
             slot_count: header.slot_count,
             mask: header.slot_count - 1,
             live_count: header.live_count,
@@ -330,7 +345,7 @@ impl RobinHoodTable {
                 return Ok(None);
             }
             if bucket.matches(op) {
-                return Ok(Some(bucket.to_coin()));
+                return Ok(Some(bucket.to_coin(&self.overflow)?));
             }
             dist += 1;
             slot = (slot + 1) & self.mask;
@@ -352,7 +367,7 @@ impl RobinHoodTable {
         }
 
         let ideal = self.ideal_slot(op);
-        let mut current = Bucket::from_outpoint_and_coin(op, coin, 1);
+        let mut current = Bucket::from_outpoint_and_coin(op, coin, 1, &mut self.overflow)?;
         let mut slot = ideal;
 
         loop {
@@ -435,15 +450,18 @@ impl RobinHoodTable {
                 let bucket = self.read_bucket(slot)?;
                 if !bucket.is_empty() {
                     let op = bucket.outpoint();
-                    let coin = bucket.to_coin();
+                    let coin = bucket.to_coin(&self.overflow)?;
                     new_table.insert(&op, &coin)?;
                 }
             }
             new_table.flush_header()?;
         }
         std::fs::rename(&new_path, &self.path)?;
-        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
-        self.file = file;
+        let new_overflow_path = overflow_path(&new_path);
+        let old_overflow_path = overflow_path(&self.path);
+        std::fs::rename(&new_overflow_path, &old_overflow_path)?;
+        self.file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        self.overflow = open_overflow_file(&old_overflow_path)?;
         self.slot_count = new_count;
         self.mask = new_count - 1;
         Ok(())
@@ -463,6 +481,7 @@ impl RobinHoodTable {
     /// Returns an error on I/O failure.
     pub fn sync(&self) -> io::Result<()> {
         self.flush_header()?;
+        self.overflow.sync_all()?;
         self.file.sync_all()
     }
 
@@ -497,9 +516,6 @@ impl RobinHoodTable {
             return Ok(());
         }
 
-        // Resize check and table resize before we start — same as scalar insert.
-        // We over-count here to avoid a mid-batch resize, which would invalidate
-        // all in-flight slot offsets.
         if (self.live_count + u64::try_from(pairs.len()).expect("batch fits u64"))
             * LOAD_FACTOR_DEN
             > self.slot_count * LOAD_FACTOR_NUM
@@ -509,21 +525,17 @@ impl RobinHoodTable {
 
         let fd = self.fd();
 
-        // Initialise one InsertState per pair.
         states.clear();
         for (op, coin) in pairs {
             let ideal = self.ideal_slot(op);
             states.push(InsertState {
-                bucket: Bucket::from_outpoint_and_coin(op, coin, 1),
+                bucket: Bucket::from_outpoint_and_coin(op, coin, 1, &mut self.overflow)?,
                 slot: ideal,
                 ideal,
                 resolved: false,
             });
         }
 
-        // Read arena and write arena: one BUCKET_SIZE slot per active entry.
-        // write_arena is kept separate so in-flight write buffers aren't
-        // clobbered by the next read wave.
         let n = states.len();
         let needed = n * BUCKET_SIZE;
         arena.clear();
@@ -532,7 +544,6 @@ impl RobinHoodTable {
         write_arena.resize(needed, 0u8);
 
         loop {
-            // Submit reads for all unresolved entries.
             let mut submitted = 0u32;
             for (i, state) in states.iter().enumerate() {
                 if state.resolved {
@@ -549,8 +560,7 @@ impl RobinHoodTable {
                     )
                 }
                 .user_data(i as u64);
-                ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
-                submitted += 1;
+                flush_if_full(ring, sqe, &mut submitted)?;
             }
 
             if submitted == 0 {
@@ -560,8 +570,6 @@ impl RobinHoodTable {
             ring.submit_and_wait(submitted)
                 .map_err(|e| io::Error::other(format!("{e:?}")))?;
 
-            // Collect write SQEs to submit after all reads are processed.
-            // We store (slot, bucket_index) so we can encode from states[].
             let mut writes: Vec<(u64, usize)> = Vec::new();
 
             while let Some(cqe) = ring.complete() {
@@ -583,28 +591,21 @@ impl RobinHoodTable {
                 let state = &mut states[i];
 
                 if existing.is_empty() {
-                    // Empty slot — place here.
                     self.live_count += 1;
                     writes.push((state.slot, i));
                     state.resolved = true;
                 } else if existing.matches(&state.bucket.outpoint()) {
-                    // Update: preserve probe_distance from disk.
                     state.bucket.probe_distance = existing.probe_distance;
                     writes.push((state.slot, i));
                     state.resolved = true;
                 } else if existing.probe_distance < state.bucket.probe_distance {
-                    // Robin Hood steal: place current entry here, continue
-                    // inserting the displaced incumbent.
                     writes.push((state.slot, i));
-                    // Swap the displaced incumbent into states[i] to keep inserting it.
                     let displaced = existing;
                     state.bucket = displaced;
                     state.bucket.probe_distance += 1;
                     state.slot = (state.slot + 1) & self.mask;
-                    state.ideal = state.slot; // reset guard (we no longer wrap-around-check for displaced)
-                    // Not resolved — continue in next wave.
+                    state.ideal = state.slot;
                 } else {
-                    // Probe further.
                     state.bucket.probe_distance += 1;
                     state.slot = (state.slot + 1) & self.mask;
                     assert!(
@@ -614,9 +615,6 @@ impl RobinHoodTable {
                 }
             }
 
-            // Encode pending writes into write_arena (separate from the read
-            // arena so the next read wave doesn't clobber in-flight write bufs).
-            // write_arena is indexed by state index i, same as arena.
             let mut write_count = 0u32;
             for (slot, i) in writes {
                 let buf_start = i * BUCKET_SIZE;
@@ -635,12 +633,9 @@ impl RobinHoodTable {
                     )
                 }
                 .user_data(u64::MAX);
-                ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
-                write_count += 1;
+                flush_if_full(ring, sqe, &mut write_count)?;
             }
 
-            // Reads already completed above. Now wait for writes before the
-            // next read wave so the table is in a consistent state.
             if write_count > 0 {
                 ring.submit_and_wait(write_count)
                     .map_err(|e| io::Error::other(format!("{e:?}")))?;
@@ -718,8 +713,7 @@ impl RobinHoodTable {
                     )
                 }
                 .user_data(i as u64);
-                ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
-                submitted += 1;
+                flush_if_full(ring, sqe, &mut submitted)?;
             }
 
             if submitted == 0 {
@@ -815,8 +809,7 @@ impl RobinHoodTable {
                     )
                 }
                 .user_data(j as u64);
-                ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
-                submitted += 1;
+                flush_if_full(ring, sqe, &mut submitted)?;
             }
 
             if submitted == 0 {
@@ -866,7 +859,7 @@ impl RobinHoodTable {
             }
 
             // Submit writes (buffers live in write_arena, stable until wait).
-            let write_count = u32::try_from(write_ops.len()).expect("write count fits u32");
+            let mut write_count = 0u32;
             for (slot, j, blank) in write_ops {
                 let wbuf_start = j * BUCKET_SIZE;
                 if blank {
@@ -882,7 +875,7 @@ impl RobinHoodTable {
                     )
                 }
                 .user_data(u64::MAX);
-                ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
+                flush_if_full(ring, sqe, &mut write_count)?;
             }
 
             if write_count > 0 {
@@ -965,9 +958,7 @@ impl RobinHoodTable {
                     )
                 }
                 .user_data(i as u64);
-                ring.push(sqe)
-                    .map_err(|e| io::Error::other(format!("{e:?}")))?;
-                submitted += 1;
+                flush_if_full(ring, sqe, &mut submitted)?;
             }
 
             if submitted == 0 {
@@ -1004,7 +995,7 @@ impl RobinHoodTable {
 
                 if bucket.matches(&ops[i]) {
                     // Found.
-                    results[i] = Some(bucket.to_coin());
+                    results[i] = Some(bucket.to_coin(&self.overflow)?);
                     resolved[i] = true;
                     continue;
                 }
@@ -1434,6 +1425,42 @@ fn read_header_record(f: &mut File) -> Result<BlockHeader, EngineError> {
     })
 }
 
+// ── Overflow sidecar helpers ────────────────────────────────────────────────
+//
+// Layout per record: u32_le(len) + script_bytes.  The offset stored in the
+// bucket's inline script_pubkey[0..8] points to the start of the record.
+
+fn overflow_path(table_path: &Path) -> PathBuf {
+    table_path.with_extension("overflow")
+}
+
+fn open_overflow_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+}
+
+fn append_overflow(file: &mut File, spk: &[u8]) -> io::Result<u64> {
+    let offset = file.seek(SeekFrom::End(0))?;
+    let len = u32::try_from(spk.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "script > 4 GiB"))?;
+    file.write_all(&len.to_le_bytes())?;
+    file.write_all(spk)?;
+    Ok(offset)
+}
+
+fn read_overflow(file: &File, offset: u64) -> io::Result<Vec<u8>> {
+    let mut len_buf = [0u8; 4];
+    pread_exact(file, &mut len_buf, offset)?;
+    let len = u32::from_le_bytes(len_buf) as usize;
+    let mut buf = vec![0u8; len];
+    pread_exact(file, &mut buf, offset + 4)?;
+    Ok(buf)
+}
+
 fn io_err(e: impl Into<io::Error>) -> EngineError {
     EngineError::Io(e.into())
 }
@@ -1450,6 +1477,33 @@ fn pread_exact(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
 fn pwrite_all(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
     file.write_all_at(buf, offset)
+}
+
+/// Push `sqe` onto the ring. If the SQ is full, submit and drain all in-flight
+/// entries first, then retry. `submitted` tracks how many SQEs are pending
+/// for the caller's final `submit_and_wait`.
+fn flush_if_full(
+    ring: &mut ququmatz::IoUring,
+    sqe: ququmatz::Sqe,
+    submitted: &mut u32,
+) -> io::Result<()> {
+    let copy = sqe;
+    match ring.push(sqe) {
+        Ok(()) => {
+            *submitted += 1;
+            Ok(())
+        }
+        Err(ququmatz::Error::Submit(ququmatz::SubmitError::QueueFull)) => {
+            ring.submit_and_wait(*submitted)
+                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+            while ring.complete().is_some() {}
+            *submitted = 0;
+            ring.push(copy).map_err(|e| io::Error::other(format!("{e:?}")))?;
+            *submitted += 1;
+            Ok(())
+        }
+        Err(e) => Err(io::Error::other(format!("{e:?}"))),
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1481,6 +1535,8 @@ mod tests {
             let _ = std::fs::remove_file(&self.0);
             let new_path = self.0.with_extension("new");
             let _ = std::fs::remove_file(&new_path);
+            let _ = std::fs::remove_file(overflow_path(&self.0));
+            let _ = std::fs::remove_file(overflow_path(&new_path));
         }
     }
 
@@ -1666,6 +1722,46 @@ mod tests {
                 "{name} script round-trip failed"
             );
         }
+    }
+
+    #[test]
+    fn overflow_script_roundtrip() {
+        let tmp = TmpFile::new("overflow");
+        let mut table = RobinHoodTable::open(tmp.path()).unwrap();
+
+        // 80-byte bare multisig — exceeds MAX_INLINE_SPK (34).
+        let big_spk: Vec<u8> = (0..80).collect();
+        let op = make_op(1);
+        let coin = make_coin(42_000, &big_spk);
+        table.insert(&op, &coin).unwrap();
+
+        let got = table.get(&op).unwrap().unwrap();
+        assert_eq!(got.script_pubkey.as_slice(), &big_spk[..]);
+        assert_eq!(got.value.to_u64(), 42_000);
+    }
+
+    #[test]
+    fn overflow_survives_resize() {
+        let tmp = TmpFile::new("overflow-resize");
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), 16).unwrap();
+
+        let big_spk: Vec<u8> = (0..64).collect();
+        let overflow_op = make_op(200);
+        table
+            .insert(&overflow_op, &make_coin(999, &big_spk))
+            .unwrap();
+
+        // Fill until resize triggers.
+        for i in 0..100u8 {
+            table
+                .insert(&make_op(i), &make_coin(u64::from(i), &[0x51]))
+                .unwrap();
+        }
+        assert!(table.slot_count > 16);
+
+        let got = table.get(&overflow_op).unwrap().unwrap();
+        assert_eq!(got.script_pubkey.as_slice(), &big_spk[..]);
+        assert_eq!(got.value.to_u64(), 999);
     }
 
     #[test]

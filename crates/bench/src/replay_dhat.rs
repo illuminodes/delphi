@@ -15,8 +15,9 @@ use mantle::primitives::{
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_storage::StorageHandle;
+use mantle_storage::ops::StorageOps;
 use mantle_storage::types::{Durability, ReqToken};
-use mantle_validator::pipeline::validate_and_commit_static;
+use mantle_validator::pipeline::validate_and_commit;
 use mantle_validator::prefetched_view::HeaderSnapshot;
 
 #[global_allocator]
@@ -136,15 +137,17 @@ fn tmp_storage() -> (StorageHandle<'static>, TmpDir) {
     (handle, TmpDir(path))
 }
 
-fn commit(
-    storage: &mut StorageHandle<'static>,
+fn commit<S>(
+    storage: &mut S,
     block: &Block,
     height: BlockHeight,
     snap: &HeaderSnapshot,
     cache: &mut ScriptExecutionCache,
     token: u64,
-) {
-    validate_and_commit_static(
+) where
+    S: for<'x> StorageOps<'x>,
+{
+    validate_and_commit(
         block,
         height,
         storage,
@@ -173,7 +176,14 @@ fn scenario_coinbase_only() {
         let hash = block.header.hash();
         chain.push((hash, block.header));
         let snap = make_snapshot(&chain);
-        commit(&mut storage, &block, BlockHeight(i), &snap, &mut cache, u64::from(i));
+        commit(
+            &mut storage,
+            &block,
+            BlockHeight(i),
+            &snap,
+            &mut cache,
+            u64::from(i),
+        );
         prev_hash = hash;
     }
     storage.shutdown().expect("shutdown");
@@ -189,13 +199,19 @@ fn scenario_spend_blocks() {
     let fund_cb = Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+            previous_output: OutPoint {
+                txid: Hash256::ZERO,
+                vout: u32::MAX,
+            },
             script_sig: vec![0x03, 0x01, 0x00, 0x00].into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
         }],
         outputs: (0..SPENDS)
-            .map(|_| TxOut { value: Satoshi::new(1000), script_pubkey: vec![0x51].into() })
+            .map(|_| TxOut {
+                value: Satoshi::new(1000),
+                script_pubkey: vec![0x51].into(),
+            })
             .collect(),
         locktime: 0,
     };
@@ -218,14 +234,23 @@ fn scenario_spend_blocks() {
     let spend_hash = spend_block.header.hash();
 
     let mut chain = vec![(fund_hash, fund_block.header)];
-    for b in &filler { chain.push((b.header.hash(), b.header)); }
+    for b in &filler {
+        chain.push((b.header.hash(), b.header));
+    }
     chain.push((spend_hash, spend_block.header));
     let snap = make_snapshot(&chain);
 
     for _ in 0..ROUNDS {
         let (mut storage, _dir) = tmp_storage();
         let mut cache = ScriptExecutionCache::new(1024);
-        commit(&mut storage, &fund_block, BlockHeight(FUND_H), &snap, &mut cache, 1);
+        commit(
+            &mut storage,
+            &fund_block,
+            BlockHeight(FUND_H),
+            &snap,
+            &mut cache,
+            1,
+        );
         for (i, b) in filler.iter().enumerate() {
             commit(
                 &mut storage,
@@ -236,7 +261,14 @@ fn scenario_spend_blocks() {
                 2 + u64::try_from(i).expect("fits"),
             );
         }
-        commit(&mut storage, &spend_block, BlockHeight(SPEND_H), &snap, &mut cache, u64::from(SPEND_H));
+        commit(
+            &mut storage,
+            &spend_block,
+            BlockHeight(SPEND_H),
+            &snap,
+            &mut cache,
+            u64::from(SPEND_H),
+        );
         storage.shutdown().expect("shutdown");
     }
 }

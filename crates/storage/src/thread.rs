@@ -13,19 +13,20 @@ const RING_CAP: usize = 1024;
 
 pub(crate) struct StorageWorker<
     'a,
+    'eng,
     RReq: Deref<Target = MpscRing<StorageReq<'a>>>,
     RResp: Deref<Target = SpscRing<StorageResp>>,
 > {
-    req_rx: quetzalcoatl::mpsc::Consumer<StorageReq<'a>, RReq>,
-    resp_tx: quetzalcoatl::spsc::Producer<StorageResp, RResp>,
-    engine: Box<dyn Engine + Send>,
+    pub(crate) req_rx: quetzalcoatl::mpsc::Consumer<StorageReq<'a>, RReq>,
+    pub(crate) resp_tx: quetzalcoatl::spsc::Producer<StorageResp, RResp>,
+    pub(crate) engine: Box<dyn Engine + Send + 'eng>,
 }
 
 impl<
     'a,
     RReq: Deref<Target = MpscRing<StorageReq<'a>>>,
     RResp: Deref<Target = SpscRing<StorageResp>>,
-> StorageWorker<'a, RReq, RResp>
+> StorageWorker<'a, '_, RReq, RResp>
 {
     pub(crate) fn run(mut self) {
         while let Some(req) = self.req_rx.pop_block() {
@@ -44,11 +45,11 @@ impl<
         match req {
             StorageReq::LookupCoins(r) => {
                 let token = r.token;
-                let mut results = Vec::new();
+                r.out.clear();
                 let resp = self
                     .engine
-                    .read_coins(&r.outpoints, &mut results)
-                    .map(|()| LookupCoinsResp { token, results })
+                    .read_coins(r.outpoints, r.out)
+                    .map(|()| LookupCoinsResp { token })
                     .map_err(|e| {
                         eprintln!("[w] read_coins error: {e}");
                         StorageError::from(e)
@@ -84,29 +85,47 @@ impl<
     }
 }
 
-// ── Arc-based spawn (existing 'static path) ──────────────────────────────────
+/// Run `f` with a `StorageHandle` backed by stack-local rings.
+///
+/// The handle's lifetime parameter is tied to the rings' stack frame, so
+/// `send_lookup` / `lookup_coins` accept locally-borrowed `ops` and `out`
+/// slices without any `unsafe` transmute.  The storage thread runs inside
+/// `std::thread::scope`, so its join is guaranteed before `with_storage`
+/// returns.
+///
+/// # Errors
+/// Returns `StorageError` if the engine's initial `tip()` cannot be read or
+/// the scoped thread cannot be spawned.
+pub fn with_storage<E, F, R>(engine: E, f: F) -> Result<R, StorageError>
+where
+    E: Engine + Send,
+    F: for<'req> FnOnce(
+        &mut crate::handle::StorageHandle<
+            'req,
+            &MpscRing<StorageReq<'req>>,
+            &SpscRing<StorageResp>,
+        >,
+    ) -> R,
+{
+    let req_ring: MpscRing<StorageReq<'_>> = MpscRing::new(Capacity::exact(RING_CAP));
+    let resp_ring: SpscRing<StorageResp> = SpscRing::new(Capacity::exact(RING_CAP));
+    let initial_tip = engine.tip();
 
-pub(crate) struct StorageThreadHandle {
-    pub(crate) req_tx: quetzalcoatl::mpsc::Producer<StorageReq<'static>>,
-    pub(crate) resp_rx: quetzalcoatl::spsc::Consumer<StorageResp>,
-}
+    let result = std::thread::scope(|s| {
+        let (req_tx, req_rx) = req_ring.split_borrowed();
+        let (resp_tx, resp_rx) = resp_ring.split_borrowed();
 
-pub(crate) fn spawn(
-    engine: impl Engine + Send + 'static,
-) -> Result<StorageThreadHandle, StorageError> {
-    let (req_tx, req_rx) = MpscRing::new(Capacity::exact(RING_CAP)).split();
-    let (resp_tx, resp_rx) = SpscRing::new(Capacity::exact(RING_CAP)).split();
+        let worker = StorageWorker {
+            req_rx,
+            resp_tx,
+            engine: Box::new(engine),
+        };
 
-    let worker = StorageWorker {
-        req_rx,
-        resp_tx,
-        engine: Box::new(engine),
-    };
+        s.spawn(|| worker.run());
 
-    std::thread::Builder::new()
-        .name("storage".into())
-        .spawn(move || worker.run())
-        .map_err(|e| StorageError::Io(e.kind()))?;
+        let mut handle = crate::handle::StorageHandle::from_parts(req_tx, resp_rx, initial_tip);
+        f(&mut handle)
+    });
 
-    Ok(StorageThreadHandle { req_tx, resp_rx })
+    Ok(result)
 }

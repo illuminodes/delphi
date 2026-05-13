@@ -667,7 +667,7 @@ fn nested_if_script_btccore(bencher: divan::Bencher) {
         script.push(0x63); // OP_IF
     }
     script.extend(std::iter::repeat_n(0x51u8, 1000)); // OP_1 × 1000
-    script.extend(std::iter::repeat_n(0x68u8, 100));  // OP_ENDIF × 100
+    script.extend(std::iter::repeat_n(0x68u8, 100)); // OP_ENDIF × 100
     bencher.bench(|| eval_legacy(black_box(&script)));
 }
 

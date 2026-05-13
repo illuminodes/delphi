@@ -49,13 +49,16 @@ impl Reporter {
         let bps_overall = self.total_committed as f64 / elapsed;
         let remaining = u64::from(self.target_height.0).saturating_sub(u64::from(height.0));
         let eta_secs = if bps_window > 0.0 {
-            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
             Some((remaining as f64 / bps_window) as u64)
         } else {
             None
         };
-        let pct = 100.0
-            * f64::from(height.0 - self.start_height.0)
+        let pct = 100.0 * f64::from(height.0 - self.start_height.0)
             / f64::from((self.target_height.0 - self.start_height.0).max(1));
 
         eprintln!(

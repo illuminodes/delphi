@@ -49,13 +49,19 @@ fn build_scenario() -> Scenario {
     let fund_cb = Transaction {
         version: 1,
         inputs: vec![TxIn {
-            previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+            previous_output: OutPoint {
+                txid: Hash256::ZERO,
+                vout: u32::MAX,
+            },
             script_sig: vec![0x03, 0x01, 0x00, 0x00].into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
         }],
         outputs: (0..N_SPENDS)
-            .map(|_| TxOut { value: Satoshi::new(1000), script_pubkey: vec![0x51].into() })
+            .map(|_| TxOut {
+                value: Satoshi::new(1000),
+                script_pubkey: vec![0x51].into(),
+            })
             .collect(),
         locktime: 0,
     };
@@ -78,14 +84,23 @@ fn build_scenario() -> Scenario {
     let spend_hash = spend_block.header.hash();
 
     let mut chain: Vec<(Hash256, BlockHeader)> = vec![(fund_hash, fund_block.header)];
-    for b in &filler { chain.push((b.header.hash(), b.header)); }
+    for b in &filler {
+        chain.push((b.header.hash(), b.header));
+    }
     chain.push((spend_hash, spend_block.header));
     let snap = make_snapshot(&chain);
 
     eprintln!("[B] building seed storage...");
     let (mut seed_storage, seed_dir) = tmp_storage();
     let mut cache = ScriptExecutionCache::new(1024);
-    commit(&mut seed_storage, &fund_block, BlockHeight(FUND_H), &snap, &mut cache, 1);
+    commit(
+        &mut seed_storage,
+        &fund_block,
+        BlockHeight(FUND_H),
+        &snap,
+        &mut cache,
+        1,
+    );
     for (i, b) in filler.iter().enumerate() {
         commit(
             &mut seed_storage,
@@ -99,11 +114,19 @@ fn build_scenario() -> Scenario {
     seed_storage.shutdown().expect("seed shutdown");
     eprintln!("[B] seed ready at {}", seed_dir.0.display());
 
-    Scenario { seed_dir, spend_block, snap }
+    Scenario {
+        seed_dir,
+        spend_block,
+        snap,
+    }
 }
 
 fn main() {
-    let Scenario { seed_dir, spend_block, snap } = build_scenario();
+    let Scenario {
+        seed_dir,
+        spend_block,
+        snap,
+    } = build_scenario();
 
     let mut iter_idx = 0u32;
     let workload_start = Instant::now();
@@ -123,7 +146,14 @@ fn main() {
 
         let mut storage = mantle_storage::StorageHandle::open(&iter_path).expect("open");
         let mut cache = ScriptExecutionCache::new(1024);
-        commit(&mut storage, black_box(&spend_block), BlockHeight(SPEND_H), &snap, &mut cache, u64::from(SPEND_H));
+        commit(
+            &mut storage,
+            black_box(&spend_block),
+            BlockHeight(SPEND_H),
+            &snap,
+            &mut cache,
+            u64::from(SPEND_H),
+        );
         storage.shutdown().expect("shutdown");
 
         let dt = it_start.elapsed();
@@ -136,6 +166,12 @@ fn main() {
         }
         iter_idx += 1;
     });
-    eprintln!("[B] done wall={:.2}s n={n}", workload_start.elapsed().as_secs_f64());
-    eprintln!("replay_50_spends:     {n} iters  ({:.0} spend-blocks/s)", n as f64 / SECS.as_secs_f64());
+    eprintln!(
+        "[B] done wall={:.2}s n={n}",
+        workload_start.elapsed().as_secs_f64()
+    );
+    eprintln!(
+        "replay_50_spends:     {n} iters  ({:.0} spend-blocks/s)",
+        n as f64 / SECS.as_secs_f64()
+    );
 }

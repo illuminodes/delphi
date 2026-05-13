@@ -35,10 +35,10 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use mantle::network::Network;
-use ququmatz::{IoUring, Sqe};
 use ququmatz::types::{
     AddressFamily, SockAddrIn, SocketFlags, SocketType, SqeFlags, TimeoutFlags, Timespec,
 };
+use ququmatz::{IoUring, Sqe};
 
 const HELP: &str = "\
 rank-peers — io_uring TCP+version-handshake latency probe.
@@ -247,8 +247,8 @@ fn run(args: &Args) -> Result<(), String> {
     // for backpressure headroom.
     #[allow(clippy::cast_possible_truncation)]
     let ring_depth = (args.inflight * 4).next_power_of_two().clamp(64, 32_768) as u32;
-    let mut ring = IoUring::new(ring_depth)
-        .map_err(|e| format!("IoUring::new({ring_depth}): {e:?}"))?;
+    let mut ring =
+        IoUring::new(ring_depth).map_err(|e| format!("IoUring::new({ring_depth}): {e:?}"))?;
 
     let total = peers.len();
     let mut next_idx = 0usize;
@@ -404,14 +404,13 @@ fn launch_probe(
         0,
         SocketFlags::NONBLOCK,
     )
-        .map_err(|e| format!("socket: {e:?}"))?;
+    .map_err(|e| format!("socket: {e:?}"))?;
     let fd = sock.into_fd();
 
     slot.addr = addr;
     slot.fd = fd;
     slot.sockaddr = SockAddrIn {
-        sin_family: u16::try_from(AddressFamily::Inet.as_raw())
-            .expect("AF_INET fits u16"),
+        sin_family: u16::try_from(AddressFamily::Inet.as_raw()).expect("AF_INET fits u16"),
         sin_port: addr.port().to_be(),
         sin_addr: u32::from_ne_bytes(addr.ip().octets()),
         sin_zero: [0; 8],
