@@ -1,5 +1,4 @@
 use mantle::codec::Encode;
-use mantle::hash::sha256d;
 use mantle::primitives::{
     Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash,
     TxIn, TxOut, Witness,
@@ -64,7 +63,7 @@ fn mine_block(mut block: Block) -> Block {
         .expect("EASY_BITS must produce a valid target");
     for nonce in 0..=u32::MAX {
         block.header.nonce = nonce;
-        let raw = sha256d(&block.header.to_bytes());
+        let raw = *Hash256::hash(&block.header.to_bytes()).as_bytes();
         let mut be = raw;
         be.reverse();
         if be <= target {
@@ -126,13 +125,13 @@ fn txid_coinbase() {
 
 #[divan::bench(args = [1usize, 4, 16])]
 fn txid_regular(bencher: divan::Bencher, n_inputs: usize) {
-    let tx = regular_tx(Hash256([0xabu8; 32]), 0, 1000);
+    let tx = regular_tx(Hash256::from_bytes([0xabu8; 32]), 0, 1000);
     // Build a tx with n_inputs inputs to vary serialisation size.
     let big_tx = Transaction {
         inputs: (0..n_inputs)
             .map(|i| TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]),
+                    txid: Hash256::from_bytes([u8::try_from(i).expect("bench index fits u8"); 32]),
                     vout: u32::try_from(i).expect("bench index fits u32"),
                 },
                 script_sig: vec![0x51; 20].into(),
@@ -150,7 +149,7 @@ fn txid_regular(bencher: divan::Bencher, n_inputs: usize) {
 #[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
 fn merkle_root(bencher: divan::Bencher, n: usize) {
     let txids: Vec<Hash256> = (0..n)
-        .map(|i| Hash256([u8::try_from(i & 0xff).unwrap(); 32]))
+        .map(|i| Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]))
         .collect();
     bencher.bench(|| compute_merkle_root(black_box(&txids)));
 }
@@ -158,7 +157,7 @@ fn merkle_root(bencher: divan::Bencher, n: usize) {
 #[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
 fn merkle_root_reusing(bencher: divan::Bencher, n: usize) {
     let txids: Vec<Hash256> = (0..n)
-        .map(|i| Hash256([u8::try_from(i & 0xff).unwrap(); 32]))
+        .map(|i| Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]))
         .collect();
     let mut buf: Vec<Hash256> = Vec::with_capacity(n);
     bencher.bench_local(|| compute_merkle_root_reusing(black_box(&txids), &mut buf));
@@ -180,7 +179,7 @@ fn validate_structure_n_txs(bencher: divan::Bencher, n: usize) {
     let mut txs = vec![coinbase_tx(5_000_000_000)];
     for i in 1..n {
         txs.push(regular_tx(
-            Hash256([u8::try_from(i & 0xff).unwrap(); 32]),
+            Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
             0,
             1000,
         ));
@@ -214,7 +213,7 @@ fn validate_wire_n_txs(bencher: divan::Bencher, n: usize) {
     let mut txs = vec![coinbase_tx(5_000_000_000)];
     for i in 1..n {
         txs.push(regular_tx(
-            Hash256([u8::try_from(i & 0xff).unwrap(); 32]),
+            Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
             0,
             1000,
         ));
@@ -330,7 +329,7 @@ fn chain_view_tip(bencher: divan::Bencher) {
 fn chain_view_get_coin_hit(bencher: divan::Bencher) {
     let mut view = MemoryChainView::new();
     let op = OutPoint {
-        txid: Hash256([1u8; 32]),
+        txid: Hash256::from_bytes([1u8; 32]),
         vout: 0,
     };
     view.insert_coin(
@@ -349,7 +348,7 @@ fn chain_view_get_coin_hit(bencher: divan::Bencher) {
 fn chain_view_get_coin_miss(bencher: divan::Bencher) {
     let view = MemoryChainView::new();
     let op = OutPoint {
-        txid: Hash256([0xffu8; 32]),
+        txid: Hash256::from_bytes([0xffu8; 32]),
         vout: 0,
     };
     bencher.bench(|| view.get_coin(black_box(&op)).expect("storage error"));
@@ -360,7 +359,7 @@ fn chain_view_get_coins_batch(bencher: divan::Bencher, n: usize) {
     let mut view = MemoryChainView::new();
     let ops: Vec<OutPoint> = (0..n)
         .map(|i| OutPoint {
-            txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]),
+            txid: Hash256::from_bytes([u8::try_from(i).expect("bench index fits u8"); 32]),
             vout: 0,
         })
         .collect();
@@ -399,7 +398,7 @@ fn merkle_root_9001(bencher: divan::Bencher) {
             let mut h = [0u8; 32];
             h[0] = u8::try_from(i & 0xff).unwrap();
             h[1] = u8::try_from((i >> 8) & 0xff).unwrap();
-            Hash256(h)
+            Hash256::from_bytes(h)
         })
         .collect();
     bencher.bench(|| compute_merkle_root(black_box(&txids)));
@@ -414,7 +413,7 @@ fn merkle_root_9001_reusing(bencher: divan::Bencher) {
             let mut h = [0u8; 32];
             h[0] = u8::try_from(i & 0xff).unwrap();
             h[1] = u8::try_from((i >> 8) & 0xff).unwrap();
-            Hash256(h)
+            Hash256::from_bytes(h)
         })
         .collect();
     let mut buf: Vec<Hash256> = Vec::with_capacity(9_001);

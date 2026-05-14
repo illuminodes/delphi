@@ -51,8 +51,8 @@ fn reduce_in_place(row: &mut Vec<Hash256>) -> Hash256 {
         }
         let parents = row.len() / 2;
         for i in 0..parents {
-            pair[..32].copy_from_slice(&row[i * 2].0);
-            pair[32..].copy_from_slice(&row[i * 2 + 1].0);
+            pair[..32].copy_from_slice(row[i * 2].as_bytes());
+            pair[32..].copy_from_slice(row[i * 2 + 1].as_bytes());
             row[i] = pair.sha256d();
         }
         row.truncate(parents);
@@ -65,7 +65,7 @@ mod tests {
     use super::*;
 
     fn h(byte: u8) -> Hash256 {
-        Hash256([byte; 32])
+        Hash256::from_bytes([byte; 32])
     }
 
     fn txid_from_hex(s: &str) -> Hash256 {
@@ -79,7 +79,7 @@ mod tests {
         // txids are stored internally in byte order (not display-reversed)
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes);
-        Hash256(arr)
+        Hash256::from_bytes(arr)
     }
 
     #[test]
@@ -98,8 +98,8 @@ mod tests {
         let a = h(0x01);
         let b = h(0x02);
         let mut buf = [0u8; 64];
-        buf[..32].copy_from_slice(&a.0);
-        buf[32..].copy_from_slice(&b.0);
+        buf[..32].copy_from_slice(a.as_bytes());
+        buf[32..].copy_from_slice(b.as_bytes());
         let expected = buf.sha256d();
         assert_eq!(compute_merkle_root(&[a, b]), Some(expected));
     }
@@ -112,16 +112,16 @@ mod tests {
         let c = h(0xcc);
 
         let mut buf = [0u8; 64];
-        buf[..32].copy_from_slice(&a.0);
-        buf[32..].copy_from_slice(&b.0);
+        buf[..32].copy_from_slice(a.as_bytes());
+        buf[32..].copy_from_slice(b.as_bytes());
         let ab = buf.sha256d();
 
-        buf[..32].copy_from_slice(&c.0);
-        buf[32..].copy_from_slice(&c.0);
+        buf[..32].copy_from_slice(c.as_bytes());
+        buf[32..].copy_from_slice(c.as_bytes());
         let cc = buf.sha256d();
 
-        buf[..32].copy_from_slice(&ab.0);
-        buf[32..].copy_from_slice(&cc.0);
+        buf[..32].copy_from_slice(ab.as_bytes());
+        buf[32..].copy_from_slice(cc.as_bytes());
         let expected = buf.sha256d();
 
         assert_eq!(compute_merkle_root(&[a, b, c]), Some(expected));

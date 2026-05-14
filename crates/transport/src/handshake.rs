@@ -2,7 +2,7 @@ use std::io;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mantle::codec::{Decode, Encode};
-use mantle::hash::checksum;
+use mantle::hash::Hash256;
 use mantle::network::{
     Command, CommandName, MessageHeader, Network, NetworkAddr, VersionMsg, services,
 };
@@ -58,7 +58,7 @@ pub fn consume_handshake_frames<T>(
             break;
         }
         let payload_slice = &peer.recv_buf[MessageHeader::ENCODED_LEN..total];
-        if checksum(payload_slice) != header.checksum {
+        if Hash256::checksum(payload_slice) != header.checksum {
             peer.state = PeerState::Dead;
             close_peer(ring, send_arena, peer);
             return Ok(());

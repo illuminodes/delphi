@@ -509,7 +509,7 @@ mod tests {
             version: 2,
             inputs: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0x42; 32]),
+                    txid: Hash256::from_bytes([0x42; 32]),
                     vout: 7,
                 },
                 script_sig: Vec::<u8>::new().into(),

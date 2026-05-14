@@ -179,8 +179,8 @@ mod tests {
     fn block_header_extreme_fields() {
         let h = BlockHeader {
             version: i32::MIN,
-            prev_block: Hash256([0xff; 32]),
-            merkle_root: Hash256([0xab; 32]),
+            prev_block: Hash256::from_bytes([0xff; 32]),
+            merkle_root: Hash256::from_bytes([0xab; 32]),
             time: u32::MAX,
             bits: CompactBits(u32::MAX),
             nonce: u32::MAX,

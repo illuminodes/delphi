@@ -24,7 +24,7 @@ mod tests {
     use super::*;
     use crate::test_helpers::{decode_hex, hash_to_hex};
     use mantle::codec::{Decode, DecodeRef};
-    use mantle::hash::sha256d;
+    use mantle::hash::Hash256;
     use mantle::primitives::{Block, BlockHeader};
     use std::io::Cursor;
 
@@ -44,8 +44,8 @@ mod tests {
     #[test]
     fn genesis_header_hash() {
         let bytes = decode_hex(GENESIS_BLOCK_HEX);
-        let hash = sha256d(&bytes[..BlockHeader::ENCODED_LEN]);
-        assert_eq!(hash_to_hex(hash), GENESIS_BLOCK_HASH);
+        let hash = Hash256::hash(&bytes[..BlockHeader::ENCODED_LEN]);
+        assert_eq!(hash_to_hex(*hash.as_bytes()), GENESIS_BLOCK_HASH);
     }
 
     #[test]
@@ -74,7 +74,7 @@ mod tests {
         block.transactions[0]
             .encode(&mut tx_bytes)
             .expect("Vec<u8> write cannot fail");
-        let txid = sha256d(&tx_bytes);
-        assert_eq!(hash_to_hex(txid), GENESIS_TXID);
+        let txid = Hash256::hash(&tx_bytes);
+        assert_eq!(hash_to_hex(*txid.as_bytes()), GENESIS_TXID);
     }
 }

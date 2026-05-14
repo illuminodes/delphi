@@ -373,7 +373,7 @@ mod tests {
     fn coin_insert_lookup_spend() {
         let mut view = MemoryChainView::new();
         let op = OutPoint {
-            txid: Hash256([1u8; 32]),
+            txid: Hash256::from_bytes([1u8; 32]),
             vout: 0,
         };
         let coin = Coin {
@@ -435,11 +435,11 @@ mod tests {
     fn batched_get_coins() {
         let mut view = MemoryChainView::new();
         let op1 = OutPoint {
-            txid: Hash256([1u8; 32]),
+            txid: Hash256::from_bytes([1u8; 32]),
             vout: 0,
         };
         let op2 = OutPoint {
-            txid: Hash256([2u8; 32]),
+            txid: Hash256::from_bytes([2u8; 32]),
             vout: 0,
         };
         let coin = Coin {

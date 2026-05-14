@@ -317,7 +317,7 @@ fn verify_p2wpkh(bencher: divan::Bencher) {
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
     let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
-    let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
+    let sig = ecdsa_sign(&sk, digest.as_bytes(), SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
 
@@ -356,7 +356,7 @@ fn verify_p2wsh(bencher: divan::Bencher) {
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
     let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
-    let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
+    let sig = ecdsa_sign(&sk, digest.as_bytes(), SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice(), witness_script.as_slice()]);
 
@@ -392,7 +392,7 @@ fn verify_p2wpkh_with_bufs(bencher: divan::Bencher) {
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
     let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
-    let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
+    let sig = ecdsa_sign(&sk, digest.as_bytes(), SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
 
@@ -462,7 +462,7 @@ fn verify_taproot_keypath(bencher: divan::Bencher) {
         version: 2,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x11; 32]),
+                txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
@@ -492,7 +492,7 @@ fn verify_taproot_keypath(bencher: divan::Bencher) {
         version: 2,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x11; 32]),
+                txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
@@ -551,7 +551,7 @@ fn verify_taproot_scriptpath_op1(bencher: divan::Bencher) {
         version: 2,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x22; 32]),
+                txid: Hash256::from_bytes([0x22; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
@@ -593,7 +593,7 @@ fn cltv_opcode_throughput(bencher: divan::Bencher) {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x33; 32]),
+                txid: Hash256::from_bytes([0x33; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
@@ -626,7 +626,7 @@ fn csv_opcode_throughput(bencher: divan::Bencher) {
         version: 2,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x44; 32]),
+                txid: Hash256::from_bytes([0x44; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
@@ -704,7 +704,7 @@ fn btccore_verify_p2wpkh(bencher: divan::Bencher) {
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
     let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
-    let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
+    let sig = ecdsa_sign(&sk, digest.as_bytes(), SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice()]);
     let tx_wire = encode_tx(&tx);
@@ -745,7 +745,7 @@ fn btccore_verify_p2tr_keypath(bencher: divan::Bencher) {
         version: 2,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x11; 32]),
+                txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
@@ -775,7 +775,7 @@ fn btccore_verify_p2tr_keypath(bencher: divan::Bencher) {
         version: 2,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x11; 32]),
+                txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
@@ -829,7 +829,7 @@ fn verify_p2wsh_with_bufs(bencher: divan::Bencher) {
     let tmp_tx = make_witness_tx(&[]);
     let cache = Bip143Cache::new(&tmp_tx);
     let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
-    let sig = ecdsa_sign(&sk, &digest.0, SigHashType::ALL);
+    let sig = ecdsa_sign(&sk, digest.as_bytes(), SigHashType::ALL);
 
     let tx = make_witness_tx(&[sig.as_slice(), pk.as_slice(), witness_script.as_slice()]);
 

@@ -27,7 +27,7 @@ fn stage1_first_tx_not_coinbase_rejected() {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0xab; 32]),
+                txid: Hash256::from_bytes([0xab; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
@@ -174,7 +174,7 @@ fn stage1_output_value_over_max_money_rejected() {
 #[test]
 fn stage1_duplicate_inputs_rejected() {
     let outpoint = OutPoint {
-        txid: Hash256([0xab; 32]),
+        txid: Hash256::from_bytes([0xab; 32]),
         vout: 1,
     };
     let tx = Transaction {
@@ -228,7 +228,7 @@ fn stage1_duplicate_inputs_rejected() {
 fn stage1_merkle_mismatch_rejected() {
     let mut block = minimal_block(vec![0x51, 0x52], vec![]);
     // Corrupt the merkle root.
-    block.header.merkle_root = Hash256([0xff; 32]);
+    block.header.merkle_root = Hash256::from_bytes([0xff; 32]);
     assert_eq!(
         validate_block_structure(&block),
         Err(ValidationError::MerkleRootMismatch)

@@ -86,7 +86,7 @@ fn sequence_field_roundtrip() {
             version: 1,
             inputs: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0xab; 32]),
+                    txid: Hash256::from_bytes([0xab; 32]),
                     vout: 0,
                 },
                 script_sig: vec![].into(),
@@ -113,7 +113,7 @@ fn sequence_field_roundtrip() {
 fn memory_chain_view_utxo_insert_lookup_spend() {
     let mut view = MemoryChainView::new();
     let op = OutPoint {
-        txid: Hash256([0x12; 32]),
+        txid: Hash256::from_bytes([0x12; 32]),
         vout: 3,
     };
     let coin = Coin {
@@ -145,7 +145,7 @@ fn memory_chain_view_utxo_insert_lookup_spend() {
 fn memory_chain_view_coinbase_flag_preserved() {
     let mut view = MemoryChainView::new();
     let op = OutPoint {
-        txid: Hash256([0x99; 32]),
+        txid: Hash256::from_bytes([0x99; 32]),
         vout: 0,
     };
     let coin = Coin {
@@ -227,7 +227,7 @@ fn wire_empty_block_rejected() {
 #[test]
 fn wire_merkle_mismatch_rejected() {
     let mut block = minimal_block(vec![0x03, 0x01, 0x00, 0x00], vec![]);
-    block.header.merkle_root = Hash256([0xff; 32]); // corrupt the root
+    block.header.merkle_root = Hash256::from_bytes([0xff; 32]); // corrupt the root
     let mut bytes = Vec::new();
     block.encode(&mut bytes).expect("Vec<u8> write cannot fail");
     let (mut t, mut mb, mut si, mut st) = wire_scratch();
@@ -264,7 +264,7 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
                 version: 1,
                 inputs: vec![TxIn {
                     previous_output: OutPoint {
-                        txid: Hash256([0xab; 32]),
+                        txid: Hash256::from_bytes([0xab; 32]),
                         vout: 0,
                     },
                     script_sig: vec![0x51].into(),

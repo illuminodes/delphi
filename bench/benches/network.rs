@@ -1,5 +1,4 @@
 use mantle::codec::{Decode, Encode, VarInt};
-use mantle::hash::checksum;
 use mantle::network::{
     Command, CommandName, GetHeadersMsg, HeadersMsg, InvEntry, InvMsg, InvType, Magic,
     MessageHeader, NetworkAddr, PingMsg, VersionMsg, encode_message,
@@ -50,7 +49,7 @@ fn message_header_decode(bencher: divan::Bencher) {
         magic: Magic::Mainnet,
         command: CommandName::new("ping"),
         length: u32::try_from(payload.len()).expect("payload fits u32"),
-        checksum: checksum(payload),
+        checksum: Hash256::checksum(payload),
     });
     bencher.bench(|| {
         MessageHeader::decode(&mut Cursor::new(bytes.as_slice()))
@@ -108,7 +107,7 @@ fn inv_msg_encode(bencher: divan::Bencher, n: usize) {
         (0..n)
             .map(|i| InvEntry {
                 kind: InvType::Block,
-                hash: Hash256([u8::try_from(i & 0xff).unwrap(); 32]),
+                hash: Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
             })
             .collect(),
     );
@@ -121,7 +120,7 @@ fn inv_msg_decode(bencher: divan::Bencher, n: usize) {
         (0..n)
             .map(|i| InvEntry {
                 kind: InvType::Block,
-                hash: Hash256([u8::try_from(i & 0xff).unwrap(); 32]),
+                hash: Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
             })
             .collect(),
     );
@@ -138,7 +137,7 @@ fn inv_msg_iter(bencher: divan::Bencher, n: usize) {
         (0..n)
             .map(|i| InvEntry {
                 kind: InvType::Block,
-                hash: Hash256([u8::try_from(i & 0xff).unwrap(); 32]),
+                hash: Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
             })
             .collect(),
     );
@@ -161,7 +160,7 @@ fn inv_msg_decode_into(bencher: divan::Bencher, n: usize) {
         (0..n)
             .map(|i| InvEntry {
                 kind: InvType::Block,
-                hash: Hash256([u8::try_from(i & 0xff).unwrap(); 32]),
+                hash: Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
             })
             .collect(),
     );
@@ -179,7 +178,7 @@ fn inv_msg_decode_into(bencher: divan::Bencher, n: usize) {
 fn make_header(i: usize) -> BlockHeader {
     BlockHeader {
         version: 1,
-        prev_block: Hash256([u8::try_from(i & 0xff).unwrap(); 32]),
+        prev_block: Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
         merkle_root: Hash256::ZERO,
         time: u32::try_from(i).expect("bench index fits u32"),
         bits: mantle::primitives::CompactBits(0x1d00_ffff),
@@ -237,7 +236,7 @@ fn headers_msg_decode_into(bencher: divan::Bencher, n: usize) {
 fn getheaders_encode(bencher: divan::Bencher) {
     let msg = GetHeadersMsg {
         version: 70015,
-        locator_hashes: (0..10u8).map(|i| Hash256([i; 32])).collect(),
+        locator_hashes: (0..10u8).map(|i| Hash256::from_bytes([i; 32])).collect(),
         stop_hash: Hash256::ZERO,
     };
     bencher.bench(|| encode_bytes(&msg));
@@ -247,7 +246,7 @@ fn getheaders_encode(bencher: divan::Bencher) {
 fn getheaders_decode(bencher: divan::Bencher) {
     let msg = GetHeadersMsg {
         version: 70015,
-        locator_hashes: (0..10u8).map(|i| Hash256([i; 32])).collect(),
+        locator_hashes: (0..10u8).map(|i| Hash256::from_bytes([i; 32])).collect(),
         stop_hash: Hash256::ZERO,
     };
     let bytes = encode_bytes(&msg);

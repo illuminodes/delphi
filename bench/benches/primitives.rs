@@ -19,7 +19,7 @@ fn encode_bytes<T: Encode>(val: &T) -> Vec<u8> {
 fn make_header(i: usize) -> BlockHeader {
     BlockHeader {
         version: 1,
-        prev_block: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]),
+        prev_block: Hash256::from_bytes([u8::try_from(i).expect("bench index fits u8"); 32]),
         merkle_root: Hash256::ZERO,
         time: u32::try_from(i).expect("bench index fits u32"),
         bits: mantle::primitives::CompactBits(0x1d00_ffff),
@@ -33,7 +33,7 @@ fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
         inputs: (0..n_inputs)
             .map(|i| TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([u8::try_from(i).expect("bench index fits u8"); 32]),
+                    txid: Hash256::from_bytes([u8::try_from(i).expect("bench index fits u8"); 32]),
                     vout: u32::try_from(i).expect("bench index fits u32"),
                 },
                 script_sig: vec![0x51; 20].into(),
@@ -55,7 +55,7 @@ fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
 
 #[divan::bench]
 fn hash256_encode() -> Vec<u8> {
-    encode_bytes(&Hash256([0xabu8; 32]))
+    encode_bytes(&Hash256::from_bytes([0xabu8; 32]))
 }
 
 #[divan::bench]
@@ -110,7 +110,7 @@ fn block_header_decode_ref(bencher: divan::Bencher) {
 #[divan::bench]
 fn outpoint_encode() -> Vec<u8> {
     encode_bytes(&OutPoint {
-        txid: Hash256([0xabu8; 32]),
+        txid: Hash256::from_bytes([0xabu8; 32]),
         vout: 0,
     })
 }
@@ -118,7 +118,7 @@ fn outpoint_encode() -> Vec<u8> {
 #[divan::bench]
 fn outpoint_decode(bencher: divan::Bencher) {
     let bytes = encode_bytes(&OutPoint {
-        txid: Hash256([0xabu8; 32]),
+        txid: Hash256::from_bytes([0xabu8; 32]),
         vout: 0,
     });
     bencher.bench(|| {
@@ -130,7 +130,7 @@ fn outpoint_decode(bencher: divan::Bencher) {
 #[divan::bench]
 fn outpoint_decode_ref(bencher: divan::Bencher) {
     let bytes = encode_bytes(&OutPoint {
-        txid: Hash256([0xabu8; 32]),
+        txid: Hash256::from_bytes([0xabu8; 32]),
         vout: 0,
     });
     bencher.bench(|| {
@@ -145,7 +145,7 @@ fn outpoint_decode_ref(bencher: divan::Bencher) {
 fn txin_encode() -> Vec<u8> {
     encode_bytes(&TxIn {
         previous_output: OutPoint {
-            txid: Hash256([0xabu8; 32]),
+            txid: Hash256::from_bytes([0xabu8; 32]),
             vout: 0,
         },
         script_sig: vec![0x76; 25].into(),
@@ -158,7 +158,7 @@ fn txin_encode() -> Vec<u8> {
 fn txin_decode(bencher: divan::Bencher) {
     let txin = TxIn {
         previous_output: OutPoint {
-            txid: Hash256([0xabu8; 32]),
+            txid: Hash256::from_bytes([0xabu8; 32]),
             vout: 0,
         },
         script_sig: vec![0x76; 25].into(),
@@ -176,7 +176,7 @@ fn txin_decode(bencher: divan::Bencher) {
 fn txin_decode_ref(bencher: divan::Bencher) {
     let txin = TxIn {
         previous_output: OutPoint {
-            txid: Hash256([0xabu8; 32]),
+            txid: Hash256::from_bytes([0xabu8; 32]),
             vout: 0,
         },
         script_sig: vec![0x76; 25].into(),
@@ -368,7 +368,7 @@ fn transaction_decode_p2pkh_btccore(bencher: divan::Bencher) {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0xabu8; 32]),
+                txid: Hash256::from_bytes([0xabu8; 32]),
                 vout: 0,
             },
             script_sig: vec![

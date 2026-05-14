@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 use mantle::codec::{Decode, Encode};
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap, PrehashedSet};
-use mantle::hash::checksum;
 use mantle::network::{
     Command, GetHeadersMsg, HeadersMsg, InvEntry, InvMsg, InvType, MessageHeader, Network,
 };
@@ -1026,7 +1025,7 @@ fn consume_block_frames(
             break;
         }
         let payload_slice = &peer.recv_buf[MessageHeader::ENCODED_LEN..total];
-        if checksum(payload_slice) != header.checksum {
+        if Hash256::checksum(payload_slice) != header.checksum {
             peer.state = PeerState::Dead;
             close_peer(ring, send_arena, peer);
             return Ok(());

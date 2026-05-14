@@ -178,7 +178,7 @@ impl<T: TxView> TxSighash for T {
         if mode == SigHashMode::Single && n_in >= self.output_count() {
             let mut h = [0u8; 32];
             h[0] = 0x01;
-            return Hash256(h);
+            return Hash256::from_bytes(h);
         }
 
         // Write the preimage directly into a thread-local scratch buffer,
@@ -246,14 +246,14 @@ impl<T: TxView> TxSighash for T {
 
         let mut buf: Vec<u8> = Vec::with_capacity(200);
         buf.extend_from_slice(&self.version().to_le_bytes());
-        buf.extend_from_slice(&hash_prevouts.0);
-        buf.extend_from_slice(&hash_sequence.0);
+        buf.extend_from_slice(hash_prevouts.as_bytes());
+        buf.extend_from_slice(hash_sequence.as_bytes());
         let _ = input.previous_output().encode(&mut buf);
         let _ = VarInt::from(script_code.len()).encode(&mut buf);
         buf.extend_from_slice(script_code);
         buf.extend_from_slice(&amount.to_le_bytes());
         buf.extend_from_slice(&input.sequence().to_le_bytes());
-        buf.extend_from_slice(&hash_outputs.0);
+        buf.extend_from_slice(hash_outputs.as_bytes());
         buf.extend_from_slice(&self.locktime().to_le_bytes());
         buf.extend_from_slice(&hash_type.0.to_le_bytes());
 

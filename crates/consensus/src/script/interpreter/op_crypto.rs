@@ -61,8 +61,8 @@ impl<C: SignatureChecker> Interpreter<'_, C> {
     /// `OP_HASH256` = `SHA256(SHA256(top))`. Reuses `mantle::hash::sha256d`.
     pub(super) fn op_hash256(&mut self) -> Result<(), ScriptError> {
         let top = self.stack.pop()?;
-        let digest = mantle::hash::sha256d(top.as_slice());
-        self.stack.push_checked(&digest, self.altstack.len())
+        let digest = mantle::hash::Hash256::hash(top.as_slice());
+        self.stack.push_checked(digest.as_ref(), self.altstack.len())
     }
 
     /// `OP_CODESEPARATOR`. Records the byte offset of the *next* opcode as

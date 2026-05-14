@@ -57,7 +57,7 @@ fn make_tx(tx_locktime: u32, sequence: u32) -> Transaction {
         version: 1,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x11; 32]),
+                txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),

@@ -597,7 +597,7 @@ mod tests {
             inputs: vec![
                 TxIn {
                     previous_output: OutPoint {
-                        txid: Hash256([0xab; 32]),
+                        txid: Hash256::from_bytes([0xab; 32]),
                         vout: 1,
                     },
                     script_sig: vec![0x01, 0x02, 0x03].into(),
@@ -606,7 +606,7 @@ mod tests {
                 },
                 TxIn {
                     previous_output: OutPoint {
-                        txid: Hash256([0xcd; 32]),
+                        txid: Hash256::from_bytes([0xcd; 32]),
                         vout: 0,
                     },
                     script_sig: vec![].into(),
@@ -634,7 +634,7 @@ mod tests {
             version: 2,
             inputs: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0x11u8; 32]),
+                    txid: Hash256::from_bytes([0x11u8; 32]),
                     vout: 0,
                 },
                 script_sig: Vec::<u8>::new().into(), // P2WPKH has empty scriptSig

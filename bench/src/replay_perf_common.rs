@@ -8,7 +8,6 @@
 
 use std::time::{Duration, Instant};
 
-use mantle::hash::sha256d;
 use mantle::primitives::{
     Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash,
     TxIn, TxOut, Witness,
@@ -74,7 +73,7 @@ pub fn mine(mut block: Block) -> Block {
         .expect("EASY_BITS always valid");
     for nonce in 0..=u32::MAX {
         block.header.nonce = nonce;
-        let mut hash = sha256d(&block.header.to_bytes());
+        let mut hash = *Hash256::hash(&block.header.to_bytes()).as_bytes();
         hash.reverse();
         if hash <= target {
             return block;

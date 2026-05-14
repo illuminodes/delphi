@@ -175,7 +175,7 @@ impl<T: TxView> SignatureChecker for TxSigChecker<'_, T> {
             SigVersion::Tapscript => unreachable!(),
         };
 
-        Ecdsa::verify(sig_der, pubkey, &digest.0)
+        Ecdsa::verify(sig_der, pubkey, digest.as_bytes())
     }
 
     fn check_schnorr_sig(
@@ -384,7 +384,7 @@ mod tests {
             version: 1,
             inputs: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0u8; 32]),
+                    txid: Hash256::from_bytes([0u8; 32]),
                     vout: 0,
                 },
                 script_sig: Vec::<u8>::new().into(),
@@ -430,7 +430,7 @@ mod tests {
 
         // Compute legacy sighash over the full scriptPubKey.
         let digest = tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
-        let sig = sign(&sk, &digest.0, SigHashType::ALL);
+        let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
 
         // Build scriptSig: <sig> <pubkey>.
         let mut script_sig = vec![u8::try_from(sig.len()).expect("DER ≤ 72")];
@@ -463,7 +463,7 @@ mod tests {
         let tx = make_tx_p2pkh(&pkh);
         let script_pubkey = p2pkh_script(&pkh);
         let digest = tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
-        let sig = sign(&sk, &digest.0, SigHashType::ALL);
+        let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
 
         // Wrong pubkey supplied — fails at OP_EQUALVERIFY (hash mismatch).
         let mut script_sig = vec![u8::try_from(sig.len()).expect("DER ≤ 72")];
@@ -513,7 +513,7 @@ mod tests {
 
         // Sign with the wrong key — yields a strict-DER signature that won't verify.
         let digest = tx.legacy_sighash(0, &script_pubkey, SigHashType::ALL);
-        let sig = sign(&other_sk, &digest.0, SigHashType::ALL);
+        let sig = sign(&other_sk, digest.as_bytes(), SigHashType::ALL);
 
         // Build scriptSig with the *correct* pubkey but wrong sig — CHECKSIG
         // returns false; without NULLFAIL the result is just a `false` push.

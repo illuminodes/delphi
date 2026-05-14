@@ -56,7 +56,7 @@ fn make_tx(version: i32, n_sequence: u32) -> Transaction {
         version,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x22; 32]),
+                txid: Hash256::from_bytes([0x22; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),
@@ -205,7 +205,7 @@ fn cltv_and_csv_combined_accepts() {
         version: 2,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x33; 32]),
+                txid: Hash256::from_bytes([0x33; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),

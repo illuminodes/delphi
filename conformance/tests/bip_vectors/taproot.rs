@@ -32,7 +32,7 @@ fn make_taproot_tx(spk: Vec<u8>, _amount: Satoshi, witness_items: &[Vec<u8>]) ->
         version: 2,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x11; 32]),
+                txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),
@@ -424,7 +424,7 @@ fn p2sh_wrapped_taproot_is_rejected() {
         version: 2,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([0x11; 32]),
+                txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: script_sig.clone().into(),
@@ -607,7 +607,7 @@ fn make_two_input_taproot_tx(
         inputs: vec![
             TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0x11; 32]),
+                    txid: Hash256::from_bytes([0x11; 32]),
                     vout: 0,
                 },
                 script_sig: Vec::<u8>::new().into(),
@@ -618,7 +618,7 @@ fn make_two_input_taproot_tx(
             },
             TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0x22; 32]),
+                    txid: Hash256::from_bytes([0x22; 32]),
                     vout: 1,
                 },
                 script_sig: Vec::<u8>::new().into(),
@@ -732,7 +732,7 @@ fn bip341_key_path_two_input_single_anyonecanpay() {
             inputs: vec![
                 TxIn {
                     previous_output: OutPoint {
-                        txid: Hash256([0xaa; 32]),
+                        txid: Hash256::from_bytes([0xaa; 32]),
                         vout: 0,
                     },
                     script_sig: Vec::<u8>::new().into(),
@@ -743,7 +743,7 @@ fn bip341_key_path_two_input_single_anyonecanpay() {
                 },
                 TxIn {
                     previous_output: OutPoint {
-                        txid: Hash256([0xbb; 32]),
+                        txid: Hash256::from_bytes([0xbb; 32]),
                         vout: 1,
                     },
                     script_sig: Vec::<u8>::new().into(),

@@ -7,7 +7,7 @@ fn make_tx() -> Transaction {
         inputs: vec![
             TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0x11; 32]),
+                    txid: Hash256::from_bytes([0x11; 32]),
                     vout: 0,
                 },
                 script_sig: vec![0xaa].into(),
@@ -16,7 +16,7 @@ fn make_tx() -> Transaction {
             },
             TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0x22; 32]),
+                    txid: Hash256::from_bytes([0x22; 32]),
                     vout: 1,
                 },
                 script_sig: vec![0xbb].into(),
@@ -65,7 +65,7 @@ fn sighash_single_one_bug() {
     let h = tx.legacy_sighash(5, &[0xab], SigHashType::SINGLE);
     let mut expected = [0u8; 32];
     expected[0] = 0x01;
-    assert_eq!(h.0, expected);
+    assert_eq!(*h.as_bytes(), expected);
 }
 
 #[test]
@@ -75,7 +75,7 @@ fn sighash_single_at_boundary_is_one_bug() {
     let h = tx.legacy_sighash(2, &[0xab], SigHashType::SINGLE);
     let mut expected = [0u8; 32];
     expected[0] = 0x01;
-    assert_eq!(h.0, expected);
+    assert_eq!(*h.as_bytes(), expected);
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn hash256_from_hex(s: &str) -> Hash256 {
     assert_eq!(b.len(), 32);
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&b);
-    Hash256(arr)
+    Hash256::from_bytes(arr)
 }
 
 /// Build the BIP143 "Native P2WPKH" example transaction.

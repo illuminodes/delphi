@@ -49,13 +49,13 @@ impl Bucket {
 
     fn outpoint(&self) -> OutPoint {
         OutPoint {
-            txid: Hash256(self.txid),
+            txid: Hash256::from_bytes(self.txid),
             vout: self.vout,
         }
     }
 
     fn matches(&self, op: &OutPoint) -> bool {
-        self.txid == op.txid.0 && self.vout == op.vout
+        self.txid == *op.txid.as_bytes() && self.vout == op.vout
     }
 
     fn to_coin(&self, overflow: &File) -> io::Result<Coin> {
@@ -99,7 +99,7 @@ impl Bucket {
             },
             height: coin.height.0,
             value: coin.value.to_u64(),
-            txid: op.txid.0,
+            txid: *op.txid.as_bytes(),
             vout: op.vout,
             script_pubkey,
         })
@@ -161,7 +161,7 @@ pub struct InsertState {
 
 fn hash_outpoint(op: &OutPoint) -> u64 {
     // OutPoint.txid is SHA-256d output — first 8 bytes are uniformly distributed.
-    u64::from_le_bytes(op.txid.0[..8].try_into().unwrap())
+    u64::from_le_bytes(op.txid.as_bytes()[..8].try_into().unwrap())
 }
 
 // ── File header ──────────────────────────────────────────────────────────────
@@ -1362,7 +1362,7 @@ impl Engine for RobinHoodEngine {
                 if hf.read_exact(&mut buf).is_err() {
                     break;
                 }
-                let hash = Hash256(buf.read_hash(0));
+                let hash = Hash256::from_bytes(buf.read_hash(0));
                 let height = buf.read_u32_le(112);
                 if height <= checkpoint_height || checkpoint_height == 0 {
                     self.header_index.insert(hash, height);
@@ -1406,10 +1406,10 @@ fn write_header_record(
     } else {
         file_len
     };
-    f.write_all(&hash.0).map_err(io_err)?;
+    f.write_all(hash.as_bytes()).map_err(io_err)?;
     f.write_all(&header.version.to_le_bytes()).map_err(io_err)?;
-    f.write_all(&header.prev_block.0).map_err(io_err)?;
-    f.write_all(&header.merkle_root.0).map_err(io_err)?;
+    f.write_all(header.prev_block.as_bytes()).map_err(io_err)?;
+    f.write_all(header.merkle_root.as_bytes()).map_err(io_err)?;
     f.write_all(&header.time.to_le_bytes()).map_err(io_err)?;
     f.write_all(&header.bits.0.to_le_bytes()).map_err(io_err)?;
     f.write_all(&header.nonce.to_le_bytes()).map_err(io_err)?;
@@ -1421,8 +1421,8 @@ fn write_header_record(
 fn decode_header_record(buf: &[u8; HEADER_RECORD_SIZE]) -> BlockHeader {
     BlockHeader {
         version: buf.read_u32_le(32) as i32,
-        prev_block: Hash256(buf.read_hash(36)),
-        merkle_root: Hash256(buf.read_hash(68)),
+        prev_block: Hash256::from_bytes(buf.read_hash(36)),
+        merkle_root: Hash256::from_bytes(buf.read_hash(68)),
         time: buf.read_u32_le(100),
         bits: CompactBits(buf.read_u32_le(104)),
         nonce: buf.read_u32_le(108),
@@ -1563,7 +1563,7 @@ mod tests {
 
     fn make_op(i: u8) -> OutPoint {
         OutPoint {
-            txid: Hash256([i; 32]),
+            txid: Hash256::from_bytes([i; 32]),
             vout: 0,
         }
     }
@@ -1835,7 +1835,7 @@ mod tests {
         let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
 
         let op = OutPoint {
-            txid: Hash256([10u8; 32]),
+            txid: Hash256::from_bytes([10u8; 32]),
             vout: 0,
         };
 
@@ -1843,7 +1843,7 @@ mod tests {
         let req1 = CommitBlockReq {
             token: crate::types::ReqToken(1),
             height: BlockHeight(1),
-            hash: Hash256([11u8; 32]),
+            hash: Hash256::from_bytes([11u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
             created: &[mantle_consensus::chain_view::NewCoin {
@@ -1869,10 +1869,10 @@ mod tests {
         let req2 = CommitBlockReq {
             token: crate::types::ReqToken(2),
             height: BlockHeight(2),
-            hash: Hash256([12u8; 32]),
-            prev_hash: Hash256([11u8; 32]),
+            hash: Hash256::from_bytes([12u8; 32]),
+            prev_hash: Hash256::from_bytes([11u8; 32]),
             header: BlockHeader {
-                prev_block: Hash256([11u8; 32]),
+                prev_block: Hash256::from_bytes([11u8; 32]),
                 ..make_header(0)
             },
             created: &[],
@@ -1895,13 +1895,13 @@ mod tests {
         let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
 
         let op = OutPoint {
-            txid: Hash256([20u8; 32]),
+            txid: Hash256::from_bytes([20u8; 32]),
             vout: 0,
         };
         let req = CommitBlockReq {
             token: crate::types::ReqToken(1),
             height: BlockHeight(1),
-            hash: Hash256([21u8; 32]),
+            hash: Hash256::from_bytes([21u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
             created: &[mantle_consensus::chain_view::NewCoin {
@@ -1948,13 +1948,13 @@ mod tests {
         let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
 
         let op = OutPoint {
-            txid: Hash256([1u8; 32]),
+            txid: Hash256::from_bytes([1u8; 32]),
             vout: 0,
         };
         let req = CommitBlockReq {
             token: crate::types::ReqToken(1),
             height: BlockHeight(1),
-            hash: Hash256([2u8; 32]),
+            hash: Hash256::from_bytes([2u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
             created: &[mantle_consensus::chain_view::NewCoin {
@@ -1981,13 +1981,13 @@ mod tests {
         let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
 
         let op = OutPoint {
-            txid: Hash256([3u8; 32]),
+            txid: Hash256::from_bytes([3u8; 32]),
             vout: 0,
         };
         let req1 = CommitBlockReq {
             token: crate::types::ReqToken(1),
             height: BlockHeight(10),
-            hash: Hash256([4u8; 32]),
+            hash: Hash256::from_bytes([4u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
             created: &[mantle_consensus::chain_view::NewCoin {
@@ -2007,10 +2007,10 @@ mod tests {
         let req2 = CommitBlockReq {
             token: crate::types::ReqToken(2),
             height: BlockHeight(11),
-            hash: Hash256([5u8; 32]),
-            prev_hash: Hash256([4u8; 32]),
+            hash: Hash256::from_bytes([5u8; 32]),
+            prev_hash: Hash256::from_bytes([4u8; 32]),
             header: BlockHeader {
-                prev_block: Hash256([4u8; 32]),
+                prev_block: Hash256::from_bytes([4u8; 32]),
                 ..make_header(0)
             },
             created: &[],
@@ -2030,8 +2030,8 @@ mod tests {
 
         let h = BlockHeader {
             version: 0x2000_0007,
-            prev_block: Hash256([0x11; 32]),
-            merkle_root: Hash256([0x22; 32]),
+            prev_block: Hash256::from_bytes([0x11; 32]),
+            merkle_root: Hash256::from_bytes([0x22; 32]),
             time: 12_345,
             bits: CompactBits(0x1d00_ffff),
             nonce: 0xdead_beef,
@@ -2058,12 +2058,12 @@ mod tests {
         for h in 1..=2000u32 {
             let mut txid_bytes = [0u8; 32];
             txid_bytes[..4].copy_from_slice(&h.to_le_bytes());
-            let txid = Hash256(txid_bytes);
+            let txid = Hash256::from_bytes(txid_bytes);
             let op = OutPoint { txid, vout: 0 };
 
             let mut hash_bytes = [0u8; 32];
             hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
-            let block_hash = Hash256(hash_bytes);
+            let block_hash = Hash256::from_bytes(hash_bytes);
 
             let req = CommitBlockReq {
                 token: crate::types::ReqToken(u64::from(h)),
@@ -2096,7 +2096,7 @@ mod tests {
         let mut target_txid = [0u8; 32];
         target_txid[..4].copy_from_slice(&target_height.to_le_bytes());
         let target_op = OutPoint {
-            txid: Hash256(target_txid),
+            txid: Hash256::from_bytes(target_txid),
             vout: 0,
         };
         let coin = eng.read_coin(&target_op).unwrap();
@@ -2131,13 +2131,13 @@ mod tests {
                 let mut txid_bytes = [0u8; 32];
                 txid_bytes[..4].copy_from_slice(&h.to_le_bytes());
                 let op = OutPoint {
-                    txid: Hash256(txid_bytes),
+                    txid: Hash256::from_bytes(txid_bytes),
                     vout: 0,
                 };
 
                 let mut hash_bytes = [0u8; 32];
                 hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
-                let block_hash = Hash256(hash_bytes);
+                let block_hash = Hash256::from_bytes(hash_bytes);
 
                 let spk = [
                     0x00, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
@@ -2172,7 +2172,7 @@ mod tests {
             let mut target_txid = [0u8; 32];
             target_txid[..4].copy_from_slice(&target_height.to_le_bytes());
             let target_op = OutPoint {
-                txid: Hash256(target_txid),
+                txid: Hash256::from_bytes(target_txid),
                 vout: 0,
             };
 
@@ -2205,13 +2205,13 @@ mod tests {
             let mut txid_bytes = [0u8; 32];
             txid_bytes[..4].copy_from_slice(&h.to_le_bytes());
             let op = OutPoint {
-                txid: Hash256(txid_bytes),
+                txid: Hash256::from_bytes(txid_bytes),
                 vout: 0,
             };
 
             let mut hash_bytes = [0u8; 32];
             hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
-            let block_hash = Hash256(hash_bytes);
+            let block_hash = Hash256::from_bytes(hash_bytes);
 
             let spk = [
                 0x00u8, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
@@ -2246,7 +2246,7 @@ mod tests {
         let mut target_txid = [0u8; 32];
         target_txid[..4].copy_from_slice(&target_height.to_le_bytes());
         let target_op = OutPoint {
-            txid: Hash256(target_txid),
+            txid: Hash256::from_bytes(target_txid),
             vout: 0,
         };
 
@@ -2280,7 +2280,7 @@ mod tests {
 
         let coinbase = &block.transactions[0];
         let txid = coinbase.txid().unwrap();
-        eprintln!("coinbase txid (internal): {:?}", &txid.0[..4]);
+        eprintln!("coinbase txid (internal): {:?}", &txid.as_bytes()[..4]);
 
         let mut created = Vec::new();
         for (vout, output) in coinbase.outputs.iter().enumerate() {
@@ -2320,7 +2320,7 @@ mod tests {
         let spend_op = spend_input.previous_output;
         eprintln!(
             "block 2067 tx[1] input[0] spends {:?}:{}",
-            &spend_op.txid.0[..4],
+            &spend_op.txid.as_bytes()[..4],
             spend_op.vout
         );
         eprintln!("txids match: {}", spend_op.txid == txid);
@@ -2345,13 +2345,13 @@ mod tests {
             let mut txid_bytes = [0u8; 32];
             txid_bytes[..4].copy_from_slice(&h.to_le_bytes());
             let op = OutPoint {
-                txid: Hash256(txid_bytes),
+                txid: Hash256::from_bytes(txid_bytes),
                 vout: 0,
             };
 
             let mut hash_bytes = [0u8; 32];
             hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
-            let block_hash = Hash256(hash_bytes);
+            let block_hash = Hash256::from_bytes(hash_bytes);
 
             let durability = if h == 2016 {
                 Durability::Synced
@@ -2399,7 +2399,7 @@ mod tests {
         let mut target_txid = [0u8; 32];
         target_txid[..4].copy_from_slice(&target_height.to_le_bytes());
         let target_op = OutPoint {
-            txid: Hash256(target_txid),
+            txid: Hash256::from_bytes(target_txid),
             vout: 0,
         };
 
@@ -2433,12 +2433,12 @@ mod tests {
                 let mut txid_bytes = [0u8; 32];
                 txid_bytes[..4].copy_from_slice(&h.to_le_bytes());
                 let op = OutPoint {
-                    txid: Hash256(txid_bytes),
+                    txid: Hash256::from_bytes(txid_bytes),
                     vout: 0,
                 };
                 let mut hash_bytes = [0u8; 32];
                 hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
-                let block_hash = Hash256(hash_bytes);
+                let block_hash = Hash256::from_bytes(hash_bytes);
                 let durability = if h == 2016 {
                     Durability::Synced
                 } else {
@@ -2477,7 +2477,7 @@ mod tests {
             let mut target_txid = [0u8; 32];
             target_txid[..4].copy_from_slice(&target_height.to_le_bytes());
             let target_op = OutPoint {
-                txid: Hash256(target_txid),
+                txid: Hash256::from_bytes(target_txid),
                 vout: 0,
             };
 

@@ -10,13 +10,32 @@ use crate::codec::{Decode, DecodeRef, Encode, Error};
 /// A 32-byte hash (txid, block hash, merkle root, etc.). Stored as raw bytes,
 /// displayed in reversed byte order per Bitcoin convention.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct Hash256(pub [u8; 32]);
+pub struct Hash256([u8; 32]);
 
 impl Hash256 {
     pub const ZERO: Self = Self([0u8; 32]);
 
-    /// Parse a 64-character hex string in display order (reversed from internal storage,
-    /// per Bitcoin convention).
+    /// Double-SHA256 of `data`, producing a [`Hash256`].
+    ///
+    /// This is the canonical Bitcoin hash used for txids, block hashes,
+    /// merkle nodes, and message checksums.
+    #[inline]
+    #[must_use]
+    pub fn hash(data: &[u8]) -> Self {
+        let first = Sha256::digest(data);
+        Self(Sha256::digest(first).into())
+    }
+
+    /// First 4 bytes of the double-SHA256 — used as the P2P message checksum.
+    #[inline]
+    #[must_use]
+    pub fn checksum(data: &[u8]) -> [u8; 4] {
+        let h = Self::hash(data);
+        [h.0[0], h.0[1], h.0[2], h.0[3]]
+    }
+
+    /// Parse a 64-character hex string in display order (reversed from internal
+    /// storage, per Bitcoin convention).
     ///
     /// # Errors
     /// Returns `Err` if the input is not exactly 64 hex characters.
@@ -34,12 +53,32 @@ impl Hash256 {
         Ok(Self(bytes))
     }
 
-    /// Format the hash as a 64-character hex string in display order
-    /// (reversed from internal storage, per Bitcoin convention).
+    /// Format as a 64-character hex string in display order (reversed from
+    /// internal storage, per Bitcoin convention).
     #[must_use]
     pub fn to_display_hex(self) -> String {
-        // Display already produces this format; reuse it.
         self.to_string()
+    }
+
+    /// Raw 32-byte array (internal byte order).
+    #[inline]
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Construct from a raw 32-byte array.
+    #[inline]
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl AsRef<[u8]> for Hash256 {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 
@@ -111,25 +150,11 @@ impl<'a> DecodeRef<'a> for Hash256 {
     }
 }
 
-/// `SHA256d`: double-SHA256, used for block/tx hashes and message checksums.
-#[inline]
-#[must_use]
-pub fn sha256d(data: &[u8]) -> [u8; 32] {
-    let first = Sha256::digest(data);
-    Sha256::digest(first).into()
-}
-
-/// First 4 bytes of `SHA256d` — used as the P2P message checksum.
-#[inline]
-#[must_use]
-pub fn checksum(data: &[u8]) -> [u8; 4] {
-    let [a, b, c, d, ..] = sha256d(data);
-    [a, b, c, d]
-}
+// ── ByteSliceExt ─────────────────────────────────────────────────────────────
 
 /// Extension methods on byte slices for hashing and fixed-width field parsing.
 pub trait ByteSliceExt {
-    /// Double-SHA256 of this slice, returned as a [`Hash256`] newtype.
+    /// Double-SHA256 of this slice, returned as a [`Hash256`].
     #[must_use]
     fn sha256d(&self) -> Hash256;
 
@@ -150,9 +175,6 @@ pub trait ByteSliceExt {
     /// Copy 32 bytes starting at `offset` into a caller-supplied buffer `out`,
     /// returning it by mutable reference for chaining.
     ///
-    /// Avoids the extra stack copy that `read_hash` performs when the caller
-    /// already owns a `[u8; 32]`.
-    ///
     /// # Panics
     /// Panics if `offset + 32 > self.len()`.
     fn read_hash_into<'a>(&self, offset: usize, out: &'a mut [u8; 32]) -> &'a mut [u8; 32];
@@ -161,7 +183,7 @@ pub trait ByteSliceExt {
 impl ByteSliceExt for [u8] {
     #[inline]
     fn sha256d(&self) -> Hash256 {
-        Hash256(sha256d(self))
+        Hash256::hash(self)
     }
 
     #[inline]
@@ -194,10 +216,9 @@ mod tests {
 
     #[test]
     fn sha256d_empty() {
-        // SHA256d("") is a known value
-        let hash = sha256d(b"");
+        let hash = Hash256::hash(b"");
         assert_eq!(
-            hash,
+            *hash.as_bytes(),
             [
                 0x5d, 0xf6, 0xe0, 0xe2, 0x76, 0x13, 0x59, 0xd3, 0x0a, 0x82, 0x75, 0x05, 0x8e, 0x29,
                 0x9f, 0xcc, 0x03, 0x81, 0x53, 0x45, 0x45, 0xf5, 0x5c, 0xf4, 0x3e, 0x41, 0x98, 0x3f,
@@ -209,8 +230,9 @@ mod tests {
     #[test]
     fn checksum_is_first_4_bytes() {
         let data = b"hello";
-        let full = sha256d(data);
-        assert_eq!(checksum(data), [full[0], full[1], full[2], full[3]]);
+        let full = Hash256::hash(data);
+        let bytes = full.as_bytes();
+        assert_eq!(Hash256::checksum(data), [bytes[0], bytes[1], bytes[2], bytes[3]]);
     }
 
     // ── Hash256 tests ─────────────────────────────────────────────────────────
@@ -235,7 +257,6 @@ mod tests {
 
     #[test]
     fn hash256_display() {
-        // display reverses bytes per Bitcoin convention
         let mut bytes = [0u8; 32];
         bytes[0] = 0xab;
         bytes[31] = 0xcd;

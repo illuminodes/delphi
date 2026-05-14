@@ -1,5 +1,4 @@
-use mantle::hash::sha256d;
-use mantle::primitives::{BlockHeader, BlockHeight, CompactBits};
+use mantle::primitives::{BlockHeader, BlockHeight, CompactBits, Hash256};
 
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
@@ -54,7 +53,8 @@ impl HeaderValidationExt for BlockHeader {
         let target = self.bits.to_target().ok_or(ValidationError::InvalidBits)?;
 
         // Header hash in big-endian (reversed from internal storage).
-        let mut hash_be = sha256d(&self.to_bytes());
+        let header_hash = Hash256::hash(&self.to_bytes());
+        let mut hash_be = *header_hash.as_bytes();
         hash_be.reverse();
 
         if hash_be > target {

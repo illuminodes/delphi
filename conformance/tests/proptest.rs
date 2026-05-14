@@ -15,7 +15,7 @@ use mantle_consensus::merkle::compute_merkle_root;
 // ── Codec roundtrip strategies ────────────────────────────────────────────────
 
 fn arb_hash256() -> impl Strategy<Value = Hash256> {
-    any::<[u8; 32]>().prop_map(Hash256)
+    any::<[u8; 32]>().prop_map(Hash256::from_bytes)
 }
 
 fn arb_varint() -> impl Strategy<Value = VarInt> {

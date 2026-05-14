@@ -3,7 +3,6 @@
 /// These are static, hand-encoded constants derived from known-good Bitcoin
 /// data. No runtime file I/O; everything compiles into the test binary.
 use mantle::codec::{Decode, Encode};
-use mantle::hash::sha256d;
 use mantle::primitives::{
     Block, BlockHeader, BlockHeight, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut, Witness,
 };
@@ -30,7 +29,7 @@ mod stage2;
 mod taproot;
 
 fn hash_to_hex_display(hash: Hash256) -> String {
-    hash_to_hex(hash.0)
+    hash_to_hex(*hash.as_bytes())
 }
 
 /// Build the minimal null-outpoint input (coinbase marker).

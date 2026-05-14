@@ -31,7 +31,7 @@
 use std::collections::VecDeque;
 
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
-use mantle::hash::sha256d;
+use mantle::hash::Hash256;
 
 // ── SignatureCache ─────────────────────────────────────────────────────────────
 
@@ -80,7 +80,7 @@ impl SignatureCache {
         preimage.extend_from_slice(sighash);
         preimage.extend_from_slice(sig);
         preimage.extend_from_slice(pubkey);
-        sha256d(&preimage)
+        *Hash256::hash(&preimage).as_bytes()
     }
 
     /// Look up a previous verdict. Returns `Some(verdict)` on hit, `None` on miss.
@@ -191,7 +191,7 @@ impl ScriptExecutionCache {
         }
         preimage.extend_from_slice(&amount_sats.to_le_bytes());
         preimage.extend_from_slice(&flags_bits.to_le_bytes());
-        sha256d(&preimage)
+        *Hash256::hash(&preimage).as_bytes()
     }
 
     /// Look up a previous verdict. Returns `Some(true/false)` on hit.

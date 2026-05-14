@@ -59,7 +59,7 @@ fn stage2_unknown_parent_rejected() {
     let view = build_chain(10, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
     let mut block = stage2_block_for_height(&view, BlockHeight(10), 4);
     // Point to an unknown parent.
-    block.header.prev_block = Hash256([0xde; 32]);
+    block.header.prev_block = Hash256::from_bytes([0xde; 32]);
     assert_eq!(
         validate_block_context(&block, &view, false),
         Err(ValidationError::UnknownParent),

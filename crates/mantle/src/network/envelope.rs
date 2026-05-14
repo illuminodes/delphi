@@ -1,7 +1,11 @@
 use std::io::{self, Read, Write};
 
 use crate::codec::{Decode, DecodeRef, Encode, Error as CodecError};
-use crate::hash::checksum;
+use crate::hash::Hash256;
+
+fn checksum(data: &[u8]) -> [u8; 4] {
+    Hash256::checksum(data)
+}
 
 use super::command::{Command, CommandName};
 use super::magic::Magic;

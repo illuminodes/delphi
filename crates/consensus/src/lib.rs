@@ -19,6 +19,6 @@ pub mod test_helpers {
     }
 
     pub fn hash_to_hex(hash: [u8; 32]) -> String {
-        mantle::primitives::Hash256(hash).to_display_hex()
+        mantle::primitives::Hash256::from_bytes(hash).to_display_hex()
     }
 }

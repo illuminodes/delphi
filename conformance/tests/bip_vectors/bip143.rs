@@ -35,7 +35,7 @@ fn h256(s: &str) -> Hash256 {
     assert_eq!(b.len(), 32, "expected 32-byte hash");
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&b);
-    Hash256(arr)
+    Hash256::from_bytes(arr)
 }
 
 /// Decode a transaction from its legacy (non-witness) hex. Used for building

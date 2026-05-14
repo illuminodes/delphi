@@ -46,7 +46,7 @@ fn build_tx(version: i32, input_seq: u32) -> Transaction {
         version,
         inputs: vec![TxIn {
             previous_output: OutPoint {
-                txid: Hash256([1u8; 32]),
+                txid: Hash256::from_bytes([1u8; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),

@@ -55,7 +55,7 @@ impl InvEntry {
     pub fn to_bytes(&self) -> [u8; Self::ENCODED_LEN] {
         let mut buf = [0u8; Self::ENCODED_LEN];
         buf[0..4].copy_from_slice(&self.kind.to_u32().to_le_bytes());
-        buf[4..36].copy_from_slice(&self.hash.0);
+        buf[4..36].copy_from_slice(self.hash.as_bytes());
         buf
     }
 
@@ -64,7 +64,7 @@ impl InvEntry {
         let [k0, k1, k2, k3, ref hash @ ..] = *b;
         Self {
             kind: InvType::from_u32(u32::from_le_bytes([k0, k1, k2, k3])),
-            hash: Hash256(*hash),
+            hash: Hash256::from_bytes(*hash),
         }
     }
 }

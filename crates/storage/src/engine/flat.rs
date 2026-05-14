@@ -277,7 +277,7 @@ impl Engine for FlatEngine {
             if hf.read_exact(&mut buf).is_err() {
                 break;
             }
-            let hash = Hash256(buf.read_hash(0));
+            let hash = Hash256::from_bytes(buf.read_hash(0));
             // Height tail sits at offset 112 — see HEADER_RECORD_SIZE doc.
             let height = buf.read_u32_le(112);
             if height <= checkpoint_height || checkpoint_height == 0 {
@@ -362,7 +362,7 @@ fn write_spend_record<W: Write>(f: &mut W, op: &OutPoint) -> Result<(), EngineEr
 }
 
 fn write_outpoint<W: Write>(f: &mut W, op: &OutPoint) -> Result<(), EngineError> {
-    f.write_all(&op.txid.0).map_err(|e| io_err(&e))?;
+    f.write_all(op.txid.as_bytes()).map_err(|e| io_err(&e))?;
     f.write_all(&op.vout.to_le_bytes())
         .map_err(|e| io_err(&e))?;
     Ok(())
@@ -407,7 +407,7 @@ fn read_utxo_log_entry(
     if f.read_exact(&mut op_buf).is_err() {
         return Ok(None);
     }
-    let txid = Hash256(op_buf.read_hash(0));
+    let txid = Hash256::from_bytes(op_buf.read_hash(0));
     let vout = op_buf.read_u32_le(32);
     let op = OutPoint { txid, vout };
 
@@ -479,11 +479,11 @@ fn write_header_record(
     };
     // Layout: hash(32) ‖ version(4) ‖ prev(32) ‖ merkle(32) ‖
     //         time(4) ‖ bits(4) ‖ nonce(4) ‖ height(4) = 116 bytes.
-    f.write_all(&hash.0).map_err(|e| io_err(&e))?;
+    f.write_all(hash.as_bytes()).map_err(|e| io_err(&e))?;
     f.write_all(&header.version.to_le_bytes())
         .map_err(|e| io_err(&e))?;
-    f.write_all(&header.prev_block.0).map_err(|e| io_err(&e))?;
-    f.write_all(&header.merkle_root.0).map_err(|e| io_err(&e))?;
+    f.write_all(header.prev_block.as_bytes()).map_err(|e| io_err(&e))?;
+    f.write_all(header.merkle_root.as_bytes()).map_err(|e| io_err(&e))?;
     f.write_all(&header.time.to_le_bytes())
         .map_err(|e| io_err(&e))?;
     f.write_all(&header.bits.0.to_le_bytes())
@@ -506,8 +506,8 @@ fn parse_header_record(buf: &[u8; HEADER_RECORD_SIZE]) -> BlockHeader {
     // because existing data dirs are read by this exact scheme.
     BlockHeader {
         version: buf.read_u32_le(32) as i32,
-        prev_block: Hash256(buf.read_hash(36)),
-        merkle_root: Hash256(buf.read_hash(68)),
+        prev_block: Hash256::from_bytes(buf.read_hash(36)),
+        merkle_root: Hash256::from_bytes(buf.read_hash(68)),
         time: buf.read_u32_le(100),
         bits: mantle::primitives::CompactBits(buf.read_u32_le(104)),
         nonce: buf.read_u32_le(108),
@@ -583,8 +583,8 @@ mod tests {
         let mut eng = FlatEngine::open(dir.path()).unwrap();
         let h = BlockHeader {
             version: 0x2000_0007,
-            prev_block: Hash256([0x11; 32]),
-            merkle_root: Hash256([0x22; 32]),
+            prev_block: Hash256::from_bytes([0x11; 32]),
+            merkle_root: Hash256::from_bytes([0x22; 32]),
             time: 12_345,
             bits: CompactBits(0x1d00_ffff),
             nonce: 0xdead_beef,
@@ -604,7 +604,7 @@ mod tests {
         let dir = tmp();
         let mut eng = FlatEngine::open(dir.path()).unwrap();
         let op = OutPoint {
-            txid: Hash256([1u8; 32]),
+            txid: Hash256::from_bytes([1u8; 32]),
             vout: 0,
         };
         let nc = NewCoin {
@@ -617,7 +617,7 @@ mod tests {
         let req = crate::types::CommitBlockReq {
             token: crate::types::ReqToken(1),
             height: BlockHeight(1),
-            hash: Hash256([2u8; 32]),
+            hash: Hash256::from_bytes([2u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
             created: &[nc],
@@ -636,7 +636,7 @@ mod tests {
         let dir = tmp();
         let mut eng = FlatEngine::open(dir.path()).unwrap();
         let op = OutPoint {
-            txid: Hash256([3u8; 32]),
+            txid: Hash256::from_bytes([3u8; 32]),
             vout: 0,
         };
         let nc = NewCoin {
@@ -649,7 +649,7 @@ mod tests {
         let req1 = crate::types::CommitBlockReq {
             token: crate::types::ReqToken(1),
             height: BlockHeight(10),
-            hash: Hash256([4u8; 32]),
+            hash: Hash256::from_bytes([4u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
             created: &[nc],
@@ -663,10 +663,10 @@ mod tests {
         let req2 = crate::types::CommitBlockReq {
             token: crate::types::ReqToken(2),
             height: BlockHeight(11),
-            hash: Hash256([5u8; 32]),
-            prev_hash: Hash256([4u8; 32]),
+            hash: Hash256::from_bytes([5u8; 32]),
+            prev_hash: Hash256::from_bytes([4u8; 32]),
             header: BlockHeader {
-                prev_block: Hash256([4u8; 32]),
+                prev_block: Hash256::from_bytes([4u8; 32]),
                 ..make_header(0)
             },
             created: &[],
@@ -682,7 +682,7 @@ mod tests {
     fn recover_rebuilds_index() {
         let dir = tmp();
         let op = OutPoint {
-            txid: Hash256([7u8; 32]),
+            txid: Hash256::from_bytes([7u8; 32]),
             vout: 1,
         };
         {
@@ -697,7 +697,7 @@ mod tests {
             let req = crate::types::CommitBlockReq {
                 token: crate::types::ReqToken(1),
                 height: BlockHeight(5),
-                hash: Hash256([8u8; 32]),
+                hash: Hash256::from_bytes([8u8; 32]),
                 prev_hash: Hash256::ZERO,
                 header: make_header(0),
                 created: &[nc],

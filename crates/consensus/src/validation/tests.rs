@@ -5,7 +5,6 @@ use super::*;
 
 use crate::chain_view::{Coin, ConnectScratch, MemoryChainView};
 use crate::merkle::compute_merkle_root;
-use mantle::hash::sha256d;
 use mantle::primitives::{
     Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash,
     TxIn, TxOut, Witness,
@@ -81,8 +80,8 @@ fn mine_block(mut block: Block) -> Block {
         .expect("mine_block called with invalid nBits");
     for nonce in 0..=u32::MAX {
         block.header.nonce = nonce;
-        let raw = sha256d(&block.header.to_bytes());
-        let mut be = raw;
+        let header_hash = Hash256::hash(&block.header.to_bytes());
+        let mut be = *header_hash.as_bytes();
         be.reverse();
         if be <= target {
             return block;
@@ -114,7 +113,7 @@ fn empty_block_rejected() {
 
 #[test]
 fn first_tx_not_coinbase_rejected() {
-    let tx = regular_tx(Hash256([1u8; 32]), 0, 1000);
+    let tx = regular_tx(Hash256::from_bytes([1u8; 32]), 0, 1000);
     let mut block = make_block(vec![tx], CompactBits(0x207f_ffff));
     // Fix merkle root so we reach the coinbase check.
     // (make_block already does this, but the block won't have PoW — that's fine,
@@ -166,7 +165,7 @@ fn output_value_out_of_range() {
 #[test]
 fn duplicate_inputs_rejected() {
     let cb = coinbase_tx(BlockHeight(1), 5_000_000_000);
-    let mut tx2 = regular_tx(Hash256([2u8; 32]), 0, 1000);
+    let mut tx2 = regular_tx(Hash256::from_bytes([2u8; 32]), 0, 1000);
     // Add a duplicate input.
     tx2.inputs.push(tx2.inputs[0].clone());
     let block = make_block(vec![cb, tx2], CompactBits(0x207f_ffff));
@@ -186,7 +185,7 @@ fn duplicate_inputs_rejected() {
 #[test]
 fn duplicate_transaction_rejected() {
     let cb = coinbase_tx(BlockHeight(1), 5_000_000_000);
-    let tx = regular_tx(Hash256([0x42; 32]), 0, 1000);
+    let tx = regular_tx(Hash256::from_bytes([0x42; 32]), 0, 1000);
     let dup = tx.clone();
     let block = make_block(vec![cb, tx, dup], CompactBits(0x207f_ffff));
     assert_eq!(
@@ -199,7 +198,7 @@ fn duplicate_transaction_rejected() {
 fn merkle_root_mismatch() {
     let tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
     let mut block = make_block(vec![tx], CompactBits(0x207f_ffff));
-    block.header.merkle_root = Hash256([0xde; 32]); // corrupt root
+    block.header.merkle_root = Hash256::from_bytes([0xde; 32]); // corrupt root
     assert_eq!(
         validate_block_structure(&block),
         Err(ValidationError::MerkleRootMismatch)
@@ -314,7 +313,7 @@ fn unknown_parent_rejected() {
     let block = Block {
         header: BlockHeader {
             version: 4,
-            prev_block: Hash256([0xff; 32]), // unknown
+            prev_block: Hash256::from_bytes([0xff; 32]), // unknown
             merkle_root: compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
             time: 1_296_688_602 + 600,
@@ -675,7 +674,7 @@ fn connect_block_with_spend() {
     let (mut view, _, _) = connect_setup(200);
     // Insert a mature non-coinbase coin to spend.
     let prev_op = OutPoint {
-        txid: Hash256([0xab; 32]),
+        txid: Hash256::from_bytes([0xab; 32]),
         vout: 0,
     };
     view.insert_coin(
@@ -713,7 +712,7 @@ fn connect_missing_input_rejected() {
     let (view, _, _) = connect_setup(200);
     let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
     // Spend a coin that doesn't exist in the view.
-    let ghost = regular_tx(Hash256([0xff; 32]), 0, 1_000);
+    let ghost = regular_tx(Hash256::from_bytes([0xff; 32]), 0, 1_000);
     let block = make_block(vec![cb, ghost], CompactBits(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
@@ -739,7 +738,7 @@ fn connect_coinbase_maturity_rejected() {
     let (mut view, _, _) = connect_setup(50);
     // Insert a coinbase coin that is only 49 blocks deep (height 1, connect at 50).
     let prev_op = OutPoint {
-        txid: Hash256([0xcc; 32]),
+        txid: Hash256::from_bytes([0xcc; 32]),
         vout: 0,
     };
     view.insert_coin(
@@ -782,7 +781,7 @@ fn connect_script_verify_failure_propagates() {
     // ScriptError variant only needs to be reachable, not specific.
     let (mut view, _, _) = connect_setup(200);
     let prev_op = OutPoint {
-        txid: Hash256([0xee; 32]),
+        txid: Hash256::from_bytes([0xee; 32]),
         vout: 0,
     };
     view.insert_coin(
@@ -828,7 +827,7 @@ fn connect_script_verify_failure_propagates() {
 fn connect_skip_script_bypasses_verification() {
     let (mut view, _, _) = connect_setup(200);
     let prev_op = OutPoint {
-        txid: Hash256([0xfe; 32]),
+        txid: Hash256::from_bytes([0xfe; 32]),
         vout: 0,
     };
     view.insert_coin(
@@ -863,7 +862,7 @@ fn connect_skip_script_bypasses_verification() {
 fn connect_exec_cache_hits_on_second_call() {
     let (mut view, _, _) = connect_setup(200);
     let prev_op = OutPoint {
-        txid: Hash256([0xfa; 32]),
+        txid: Hash256::from_bytes([0xfa; 32]),
         vout: 0,
     };
     view.insert_coin(
@@ -916,7 +915,7 @@ fn connect_exec_cache_hits_on_second_call() {
 fn connect_negative_fee_rejected() {
     let (mut view, _, _) = connect_setup(200);
     let prev_op = OutPoint {
-        txid: Hash256([0xdd; 32]),
+        txid: Hash256::from_bytes([0xdd; 32]),
         vout: 0,
     };
     view.insert_coin(

@@ -16,7 +16,7 @@ impl std::hash::Hash for OutPoint {
         // first 8 bytes in a single write call; two separate writes (derive)
         // would let the vout write overwrite the txid bytes entirely.
         let mut buf = [0u8; 36];
-        buf[..32].copy_from_slice(&self.txid.0);
+        buf[..32].copy_from_slice(self.txid.as_bytes());
         buf[32..].copy_from_slice(&self.vout.to_le_bytes());
         h.write(&buf);
     }

@@ -3,7 +3,6 @@
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 use mantle::codec::Encode;
-use mantle::hash::sha256d;
 use mantle::primitives::{
     Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut, Witness,
 };
@@ -74,7 +73,7 @@ fn mine(mut b: Block) -> Block {
         .expect("mine called with invalid nBits");
     for n in 0..=u32::MAX {
         b.header.nonce = n;
-        let mut h = sha256d(&b.header.to_bytes());
+        let mut h = *Hash256::hash(&b.header.to_bytes()).as_bytes();
         h.reverse();
         if h <= target {
             return b;
@@ -122,7 +121,7 @@ fn main() {
     {
         let mut txs = vec![coinbase(vec![0x03, 0x64, 0x00, 0x00], 5_000_000_000)];
         for i in 1..100u8 {
-            txs.push(regular(Hash256([i; 32]), 0, 1000));
+            txs.push(regular(Hash256::from_bytes([i; 32]), 0, 1000));
         }
         let block = valid_block(txs);
         let n = run_for(secs, || {
@@ -140,7 +139,7 @@ fn main() {
             inputs: (0..16u8)
                 .map(|i| TxIn {
                     previous_output: OutPoint {
-                        txid: Hash256([i; 32]),
+                        txid: Hash256::from_bytes([i; 32]),
                         vout: u32::from(i),
                     },
                     script_sig: vec![0x51; 20].into(),
@@ -163,7 +162,7 @@ fn main() {
     // ── workload C: compute_merkle_root over 1000 txids ──────────────────────
     {
         let ids: Vec<Hash256> = (0..1000u32)
-            .map(|i| Hash256(sha256d(&i.to_le_bytes())))
+            .map(|i| Hash256::hash(&i.to_le_bytes()))
             .collect();
         let n = run_for(secs, || {
             black_box(compute_merkle_root(black_box(&ids)));
@@ -177,7 +176,7 @@ fn main() {
         use std::io::Cursor;
         let mut txs = vec![coinbase(vec![0x03, 0x32, 0x00, 0x00], 5_000_000_000)];
         for i in 1..50u8 {
-            txs.push(regular(Hash256([i; 32]), 0, 1000));
+            txs.push(regular(Hash256::from_bytes([i; 32]), 0, 1000));
         }
         let block = valid_block(txs);
         let bytes = encode(&block);
@@ -195,7 +194,7 @@ fn main() {
         use std::collections::HashSet;
         let mut txs = vec![coinbase(vec![0x03, 0x64, 0x00, 0x00], 5_000_000_000)];
         for i in 1..100u8 {
-            txs.push(regular(Hash256([i; 32]), 0, 1000));
+            txs.push(regular(Hash256::from_bytes([i; 32]), 0, 1000));
         }
         let wire = encode(&valid_block(txs));
         let mut t: Vec<Hash256> = Vec::new();
@@ -255,7 +254,7 @@ fn main() {
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
-        let raw_sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
+        let raw_sig: EcdsaSig = sk.sign_prehash(digest.as_bytes()).expect("signing cannot fail");
         let raw_sig = raw_sig.normalize_s();
         let mut sig_bytes = raw_sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
@@ -337,7 +336,7 @@ fn main() {
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
-        let raw_sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
+        let raw_sig: EcdsaSig = sk.sign_prehash(digest.as_bytes()).expect("signing cannot fail");
         let raw_sig = raw_sig.normalize_s();
         let mut sig_bytes = raw_sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
@@ -424,7 +423,7 @@ fn main() {
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
-        let raw_sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
+        let raw_sig: EcdsaSig = sk.sign_prehash(digest.as_bytes()).expect("signing cannot fail");
         let raw_sig = raw_sig.normalize_s();
         let mut sig_bytes = raw_sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
@@ -510,7 +509,7 @@ fn main() {
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
-        let raw_sig: EcdsaSig = sk.sign_prehash(&digest.0).expect("signing cannot fail");
+        let raw_sig: EcdsaSig = sk.sign_prehash(digest.as_bytes()).expect("signing cannot fail");
         let raw_sig = raw_sig.normalize_s();
         let mut sig_bytes = raw_sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
@@ -592,7 +591,7 @@ fn main() {
             version: 2,
             inputs: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0x55; 32]),
+                    txid: Hash256::from_bytes([0x55; 32]),
                     vout: 0,
                 },
                 script_sig: vec![].into(),
@@ -625,7 +624,7 @@ fn main() {
             version: 2,
             inputs: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0x55; 32]),
+                    txid: Hash256::from_bytes([0x55; 32]),
                     vout: 0,
                 },
                 script_sig: vec![].into(),
@@ -667,7 +666,7 @@ fn main() {
             version: 1,
             inputs: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0x33; 32]),
+                    txid: Hash256::from_bytes([0x33; 32]),
                     vout: 0,
                 },
                 script_sig: vec![].into(),
@@ -696,7 +695,7 @@ fn main() {
             version: 2,
             inputs: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256([0x44; 32]),
+                    txid: Hash256::from_bytes([0x44; 32]),
                     vout: 0,
                 },
                 script_sig: vec![].into(),
