@@ -270,7 +270,7 @@ fn bitcoinconsensus_oracle(bencher: divan::Bencher) {
                         script_pubkey: o.script_pubkey.as_slice().as_ptr(),
                         script_pubkey_len: u32::try_from(o.script_pubkey.as_slice().len())
                             .expect("script_pubkey len fits u32"),
-                        value: i64::try_from(u64::from(o.value)).expect("value fits i64"),
+                        value: i64::try_from(o.value.to_u64()).expect("value fits i64"),
                     }
                 }));
                 last_tx_idx = job.tx_idx;
@@ -279,7 +279,7 @@ fn bitcoinconsensus_oracle(bencher: divan::Bencher) {
             let prev = &rec.spent_outputs[n_in];
             bitcoinconsensus::verify_with_flags(
                 black_box(prev.script_pubkey.as_slice()),
-                black_box(u64::from(prev.value)),
+                black_box(prev.value.to_u64()),
                 black_box(&rec.tx_wire),
                 Some(utxos.as_slice()),
                 black_box(n_in),

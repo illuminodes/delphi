@@ -30,10 +30,20 @@ impl Satoshi {
     }
 
     /// Extract the underlying `u64` count of satoshis.
+    ///
+    /// Prefer Satoshi's own arithmetic ops where possible. Use this only
+    /// at FFI boundaries (e.g. `bitcoinconsensus`) or for cache keys.
     #[inline]
     #[must_use]
     pub const fn to_u64(self) -> u64 {
         self.0
+    }
+
+    /// Little-endian byte representation for wire serialisation.
+    #[inline]
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 8] {
+        self.0.to_le_bytes()
     }
 
     /// `self + rhs`, returning `None` on overflow.
@@ -41,19 +51,33 @@ impl Satoshi {
     pub fn checked_add(self, rhs: Self) -> Option<Self> {
         self.0.checked_add(rhs.0).map(Self)
     }
-}
 
-impl From<u64> for Satoshi {
-    #[inline]
-    fn from(v: u64) -> Self {
-        Self(v)
+    /// `self - rhs`, returning `None` on underflow.
+    #[must_use]
+    pub fn checked_sub(self, rhs: Self) -> Option<Self> {
+        self.0.checked_sub(rhs.0).map(Self)
     }
 }
 
-impl From<Satoshi> for u64 {
+impl std::ops::Add for Satoshi {
+    type Output = Self;
     #[inline]
-    fn from(v: Satoshi) -> Self {
-        v.0
+    fn add(self, rhs: Self) -> Self {
+        Self(self.0.checked_add(rhs.0).expect("Satoshi overflow"))
+    }
+}
+
+impl std::ops::Sub for Satoshi {
+    type Output = Self;
+    #[inline]
+    fn sub(self, rhs: Self) -> Self {
+        Self(self.0.checked_sub(rhs.0).expect("Satoshi underflow"))
+    }
+}
+
+impl std::iter::Sum for Satoshi {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, std::ops::Add::add)
     }
 }
 

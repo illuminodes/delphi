@@ -142,7 +142,7 @@ fn modified_tx_under_sighash_single_truncates_outputs() {
     // Outputs has length n_in + 1 = 2. Output[0] is the null sentinel,
     // output[1] is the real output at index n_in.
     assert_eq!(m.outputs.len(), 2);
-    assert_eq!(u64::from(m.outputs[0].value), u64::MAX);
+    assert_eq!(m.outputs[0].value.to_u64(), u64::MAX);
     assert!(m.outputs[0].script_pubkey.is_empty());
     assert_eq!(m.outputs[1], tx.outputs[1]);
 }

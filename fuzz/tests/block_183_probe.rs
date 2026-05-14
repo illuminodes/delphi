@@ -107,13 +107,13 @@ fn block_183_input_divergence() {
                 "  input {i}: spends {}:{} value={} spk_len={} spk={:02x?}",
                 inp.previous_output.txid.to_display_hex(),
                 inp.previous_output.vout,
-                u64::from(utxo.value),
+                utxo.value.to_u64(),
                 utxo.script_pubkey.as_slice().len(),
                 utxo.script_pubkey.as_slice(),
             );
             spent_outputs.push(SpentOutput {
                 script_pubkey: utxo.script_pubkey.as_slice().to_vec(),
-                amount: u64::from(utxo.value),
+                amount: utxo.value.to_u64(),
             });
         }
 

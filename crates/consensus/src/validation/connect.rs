@@ -239,11 +239,11 @@ where
             .try_fold(Satoshi::ZERO, |acc, o| acc.checked_add(o.value()))
             .ok_or(ValidationError::InputValueOverflow { tx_index })?;
 
-        if output_total.to_u64() > input_total.to_u64() {
+        if output_total > input_total {
             return Err(ValidationError::NegativeFee { tx_index });
         }
 
-        let fee = Satoshi::new(input_total.to_u64() - output_total.to_u64());
+        let fee = input_total - output_total;
         total_fees = total_fees
             .checked_add(fee)
             .ok_or(ValidationError::InputValueOverflow { tx_index })?;
@@ -274,7 +274,7 @@ where
         .checked_add(total_fees)
         .ok_or(ValidationError::CoinbaseRewardExceedsSubsidy)?;
 
-    if coinbase_output_total.to_u64() > max_coinbase.to_u64() {
+    if coinbase_output_total > max_coinbase {
         return Err(ValidationError::CoinbaseRewardExceedsSubsidy);
     }
 

@@ -231,7 +231,7 @@ impl<T: TxView> TxSighash for T {
                 if n_in < self.output_count() {
                     let out = self.output(n_in);
                     let mut buf: Vec<u8> = Vec::new();
-                    buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
+                    buf.extend_from_slice(&out.value().to_le_bytes());
                     let spk = out.script_pubkey();
                     let _ = VarInt::from(spk.len()).encode(&mut buf);
                     buf.extend_from_slice(spk);
@@ -251,7 +251,7 @@ impl<T: TxView> TxSighash for T {
         let _ = input.previous_output().encode(&mut buf);
         let _ = VarInt::from(script_code.len()).encode(&mut buf);
         buf.extend_from_slice(script_code);
-        buf.extend_from_slice(&u64::from(amount).to_le_bytes());
+        buf.extend_from_slice(&amount.to_le_bytes());
         buf.extend_from_slice(&input.sequence().to_le_bytes());
         buf.extend_from_slice(&hash_outputs.0);
         buf.extend_from_slice(&self.locktime().to_le_bytes());
@@ -327,7 +327,7 @@ impl Bip143Cache {
         let mut outputs_buf: Vec<u8> = Vec::new();
         for output in tx.outputs() {
             // Output wire form: value(8 LE) || VarInt(spk_len) || spk.
-            outputs_buf.extend_from_slice(&u64::from(output.value()).to_le_bytes());
+            outputs_buf.extend_from_slice(&output.value().to_le_bytes());
             let spk = output.script_pubkey();
             let _ = VarInt::from(spk.len()).encode(&mut outputs_buf);
             outputs_buf.extend_from_slice(spk);
@@ -400,7 +400,7 @@ fn encode_legacy_preimage<T: TxView>(
             let n_out = tx.output_count();
             let _ = VarInt::from(n_out).encode(buf);
             for output in tx.outputs() {
-                buf.extend_from_slice(&u64::from(output.value()).to_le_bytes());
+                buf.extend_from_slice(&output.value().to_le_bytes());
                 let spk = output.script_pubkey();
                 let _ = VarInt::from(spk.len()).encode(buf);
                 buf.extend_from_slice(spk);
@@ -421,7 +421,7 @@ fn encode_legacy_preimage<T: TxView>(
                 buf.push(0x00); // empty scriptPubKey
             }
             let output = tx.output(n_in);
-            buf.extend_from_slice(&u64::from(output.value()).to_le_bytes());
+            buf.extend_from_slice(&output.value().to_le_bytes());
             let spk = output.script_pubkey();
             let _ = VarInt::from(spk.len()).encode(buf);
             buf.extend_from_slice(spk);
@@ -485,7 +485,7 @@ fn build_modified_tx(
             let mut out = Vec::with_capacity(n_in + 1);
             for _ in 0..n_in {
                 out.push(TxOut {
-                    value: u64::MAX.into(),
+                    value: Satoshi::new(u64::MAX),
                     script_pubkey: Vec::<u8>::new().into(),
                 });
             }
@@ -724,7 +724,7 @@ impl Bip341Cache {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
             for &amt in spent_amounts {
-                h.update(u64::from(amt).to_le_bytes());
+                h.update(amt.to_le_bytes());
             }
             h.finalize().into()
         };
@@ -755,7 +755,7 @@ impl Bip341Cache {
             let mut h = Sha256::new();
             for out in tx.outputs() {
                 let mut buf = Vec::new();
-                buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
+                buf.extend_from_slice(&out.value().to_le_bytes());
                 let spk = out.script_pubkey();
                 let _ = VarInt::from(spk.len()).encode(&mut buf);
                 buf.extend_from_slice(spk);
@@ -850,7 +850,7 @@ fn compute_bip341_sighash<T: TxView>(
         let mut ob = Vec::with_capacity(36);
         let _ = inp.previous_output().encode(&mut ob);
         preimage.extend_from_slice(&ob);
-        preimage.extend_from_slice(&u64::from(spent_amount).to_le_bytes());
+        preimage.extend_from_slice(&spent_amount.to_le_bytes());
         let mut spk_buf = Vec::new();
         let _ = VarInt::from(spent_spk.len()).encode(&mut spk_buf);
         preimage.extend_from_slice(&spk_buf);
@@ -878,7 +878,7 @@ fn compute_bip341_sighash<T: TxView>(
     if out_mode == SigHashMode::Single && n_in < tx.output_count() {
         let out = tx.output(n_in);
         let mut buf = Vec::new();
-        buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
+        buf.extend_from_slice(&out.value().to_le_bytes());
         let spk = out.script_pubkey();
         let _ = VarInt::from(spk.len()).encode(&mut buf);
         buf.extend_from_slice(spk);

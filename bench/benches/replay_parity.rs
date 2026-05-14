@@ -127,7 +127,7 @@ fn build_jobs() -> Vec<Job> {
                         n_in: i,
                         script_sig: inp.script_sig.as_slice().to_vec(),
                         spk: utxo.script_pubkey.as_slice().to_vec(),
-                        amount: u64::from(utxo.value),
+                        amount: utxo.value.to_u64(),
                         flags,
                     });
                 }

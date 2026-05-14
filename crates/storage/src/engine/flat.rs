@@ -341,7 +341,7 @@ impl Engine for FlatEngine {
 fn write_coin_record<W: Write>(f: &mut W, nc: &NewCoin) -> Result<(), EngineError> {
     write_outpoint(f, &nc.outpoint)?;
     f.write_all(&[1u8]).map_err(|e| io_err(&e))?;
-    f.write_all(&u64::from(nc.value).to_le_bytes())
+    f.write_all(&nc.value.to_le_bytes())
         .map_err(|e| io_err(&e))?;
     f.write_all(&nc.height.0.to_le_bytes())
         .map_err(|e| io_err(&e))?;
@@ -627,7 +627,7 @@ mod tests {
         };
         eng.write_block(&req).unwrap();
         let coin = eng.read_coin(&op).unwrap().unwrap();
-        assert_eq!(u64::from(coin.value), 5_000_000_000);
+        assert_eq!(coin.value.to_u64(), 5_000_000_000);
         assert!(coin.coinbase);
     }
 
@@ -709,6 +709,6 @@ mod tests {
         }
         let mut eng2 = FlatEngine::open(dir.path()).unwrap();
         let coin = eng2.read_coin(&op).unwrap().unwrap();
-        assert_eq!(u64::from(coin.value), 999);
+        assert_eq!(coin.value.to_u64(), 999);
     }
 }

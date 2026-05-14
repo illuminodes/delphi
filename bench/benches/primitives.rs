@@ -267,7 +267,7 @@ fn transaction_ref_iter(bencher: divan::Bencher, n: usize) {
             sum += u64::from(r.expect("input decode cannot fail on valid bytes").sequence);
         }
         for r in tx_ref.outputs() {
-            sum += u64::from(r.expect("output decode cannot fail on valid bytes").value);
+            sum += r.expect("output decode cannot fail on valid bytes").value.to_u64();
         }
         black_box(sum)
     });
