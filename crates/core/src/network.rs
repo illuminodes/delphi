@@ -189,8 +189,8 @@ impl Network {
         match self {
             Self::Mainnet => Some(mainnet_genesis_header()),
             Self::Testnet4 => Some(testnet4_genesis_header()),
-            // Stubs — fill these in when needed.
-            Self::Testnet3 | Self::Signet | Self::Regtest => None,
+            Self::Signet => Some(signet_genesis_header()),
+            Self::Testnet3 | Self::Regtest => None,
         }
     }
 
@@ -204,7 +204,8 @@ impl Network {
         match self {
             Self::Mainnet => MAINNET_SEEDS,
             Self::Testnet4 => TESTNET4_SEEDS,
-            Self::Testnet3 | Self::Signet | Self::Regtest => &[],
+            Self::Signet => SIGNET_SEEDS,
+            Self::Testnet3 | Self::Regtest => &[],
         }
     }
 }
@@ -225,6 +226,13 @@ const MAINNET_SEEDS: &[&str] = &[
 const TESTNET4_SEEDS: &[&str] = &[
     "seed.testnet4.bitcoin.sprovoost.nl:48333",
     "seed.testnet4.wiz.biz:48333",
+];
+
+/// Seed peers for the default signet. DNS hostnames from Bitcoin Core
+/// `chainparams.cpp::SigNetParams`.
+const SIGNET_SEEDS: &[&str] = &[
+    "seed.signet.bitcoin.sprovoost.nl:38333",
+    "seed.signet.achownodes.xyz:38333",
 ];
 
 /// The actual mainnet genesis block header. Field values from Bitcoin Core
@@ -266,6 +274,26 @@ fn testnet4_genesis_header() -> BlockHeader {
         time: 1_714_777_860,
         bits: crate::primitives::CompactBits(0x1d00_ffff),
         nonce: 393_743_547,
+    }
+}
+
+/// The default signet (BIP325) genesis block header. Field values from
+/// Bitcoin Core `chainparams.cpp::SigNetParams`:
+///   - time   = `1598918400` (2020-09-01 00:00:00 UTC)
+///   - bits   = `0x1e0377ae`
+///   - nonce  = `52_613_770`
+///   - merkle = same as mainnet (`4a5e1e…da33b`)
+fn signet_genesis_header() -> BlockHeader {
+    BlockHeader {
+        version: 1,
+        prev_block: Hash256::ZERO,
+        merkle_root: Hash256::from_display_hex(
+            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
+        )
+        .expect("hardcoded signet genesis merkle_root must parse"),
+        time: 1_598_918_400,
+        bits: crate::primitives::CompactBits(0x1e03_77ae),
+        nonce: 52_613_770,
     }
 }
 
@@ -1429,6 +1457,12 @@ mod tests {
             .genesis_header()
             .expect("testnet4 has one");
         assert_eq!(hdr.hash(), Network::Testnet4.genesis_hash());
+    }
+
+    #[test]
+    fn signet_genesis_header_hashes_correctly() {
+        let hdr = Network::Signet.genesis_header().expect("signet has one");
+        assert_eq!(hdr.hash(), Network::Signet.genesis_hash());
     }
 
     #[test]

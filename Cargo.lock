@@ -513,6 +513,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mantle-block-io"
+version = "0.1.0"
+dependencies = [
+ "mantle",
+ "quetzalcoatl",
+ "ququmatz",
+]
+
+[[package]]
 name = "mantle-conformance"
 version = "0.1.0"
 dependencies = [
@@ -548,6 +557,7 @@ dependencies = [
  "mantle",
  "mantle-consensus",
  "mantle-storage",
+ "mantle-transport",
  "mantle-validator",
  "quetzalcoatl",
  "ququmatz",
@@ -560,6 +570,14 @@ dependencies = [
  "mantle",
  "mantle-consensus",
  "quetzalcoatl",
+ "ququmatz",
+]
+
+[[package]]
+name = "mantle-transport"
+version = "0.1.0"
+dependencies = [
+ "mantle",
  "ququmatz",
 ]
 

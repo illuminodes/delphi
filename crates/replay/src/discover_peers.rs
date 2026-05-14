@@ -1,36 +1,36 @@
 //! `discover-peers` — standalone P2P peer-list harvester.
 //!
-//! Dials a network's DNS seeds (or `--peer` overrides), runs the version
-//! handshake, signals BIP155 support via `sendaddrv2`, asks every connected
-//! peer for its peer table via `getaddr`, and accumulates the IPv4
-//! [`AddrEntry`] / [`AddrV2Entry`] responses. Writes a deduped `IP:PORT`
-//! list to disk; intended as a one-shot bootstrap helper so later replay
-//! runs have a usable static peer list without depending on DNS-seeder
-//! daemons (which often don't speak the full P2P protocol).
+//! Dials a network's DNS seeds (or `--peer` overrides), completes the version
+//! handshake via `mantle-transport`, signals BIP155 support via `sendaddrv2`,
+//! asks every connected peer for its peer table via `getaddr`, and accumulates
+//! the IPv4 `addr` / `addrv2` responses. Writes a deduped `IP:PORT` list to
+//! disk.
 //!
 //! Usage:
 //!     cargo run --release --bin discover-peers -- \
 //!         --network testnet4 \
-//!         --out crates/bench/fixtures/testnet4/peers.txt \
+//!         --out peers.txt \
 //!         [--peer HOST:PORT]…  [--seconds 60]
-//!
-//! The binary deliberately doesn't share state with `mantle-replay`: it
-//! lives in the same crate only because it reuses the [`mantle::peer::Node`]
-//! handle and the [`mantle::network`] codecs.
 
 use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::net::{SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use mantle::network::{
-    AddrMsg, AddrV2Addr, AddrV2Msg, Command, CommandName, Network, NetworkAddr, VersionMsg,
-    services,
+    AddrMsg, AddrV2Addr, AddrV2Msg, Command, CommandName, Network,
 };
-use mantle::peer::{InboundMsg, Node, OutboundMsg, PeerId};
-use ququmatz::types::RawFd;
+use mantle_transport::{
+    OP_CLOSE, OP_CONNECT, OP_LINK_TIMEOUT, OP_RECV, OP_SEND, OP_TICK, Peer, PeerPool, PeerState,
+    SendArena, close_peer, consume_handshake_frames, decode_send_seq, decode_user_data,
+    encode_version, ingest_recv_cqe, make_ring, push_connect, push_recv_multishot, push_send,
+    push_tick,
+};
+use ququmatz::types::{
+    AddressFamily, SockAddrIn, SocketFlags, SocketType, Timespec,
+};
 
 const HELP: &str = "\
 discover-peers — collect a static peer list by talking to DNS seeds.
@@ -49,6 +49,14 @@ Options:
                           (default: 60).
     --help                Print this message and exit.
 ";
+
+const MAX_PEERS: usize = 64;
+const PROVIDED_BUF_SIZE: u32 = 256 * 1024;
+const PROVIDED_BUF_COUNT: u32 = 512;
+const PROVIDED_BUF_GROUP_ID: u16 = 1;
+const CONNECT_TIMEOUT_SECS: u64 = 5;
+const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+const RECV_BUF_CAPACITY: usize = 64 * 1024;
 
 struct Args {
     network: Network,
@@ -108,35 +116,6 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-fn our_version() -> VersionMsg {
-    let now = i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_secs(),
-    )
-    .unwrap_or(i64::MAX);
-    let empty = NetworkAddr {
-        services: 0,
-        ip: [0u8; 16],
-        port: 0,
-    };
-    VersionMsg {
-        version: 70016, // ≥70016 advertises BIP155 readiness
-        services: services::NODE_NETWORK,
-        timestamp: now,
-        receiver: empty,
-        sender: empty,
-        nonce: 0xfeed_face_dead_beef,
-        user_agent: "/mantle-discover-peers:0.1.0/".to_string(),
-        start_height: 0,
-        relay: false,
-    }
-}
-
-/// Resolve DNS-seed `host:port` strings + `--peer` extras to a flat list of
-/// dialable IPv4 addresses. Same shape as `mantle-replay`, kept inline here
-/// so the discovery binary is self-contained.
 fn resolve_peers(network: Network, extras: &[SocketAddrV4]) -> Vec<SocketAddrV4> {
     let mut out: Vec<SocketAddrV4> = extras.to_vec();
     for seed in network.default_seeds() {
@@ -165,30 +144,9 @@ fn resolve_peers(network: Network, extras: &[SocketAddrV4]) -> Vec<SocketAddrV4>
     out
 }
 
-fn frame_and_send(node: &Node, network: Network, peer: PeerId, fd: RawFd, cmd: Command) {
-    let mut framed = Vec::new();
-    network
-        .magic()
-        .frame(cmd, &[], &mut framed)
-        .expect("frame cannot fail");
-    let _ = node.outbound_tx.push(OutboundMsg {
-        peer,
-        fd,
-        bytes: framed.into_boxed_slice(),
-    });
-}
-
-struct PeerState {
-    /// Have we sent `sendaddrv2` + `getaddr` to this peer yet?
-    asked: bool,
-    /// The address we dialed for this peer. Recorded so a peer that completes
-    /// the version handshake but never gossips an `addr`/`addrv2` (Bitcoin
-    /// Core ≥0.21 only honours `getaddr` from peers *it* dialed, not from
-    /// peers that dialed it) still ends up in the harvest by virtue of
-    /// having proven itself reachable.
-    dialed: SocketAddrV4,
-    /// Have we observed any post-handshake message from this peer?
-    handshook: bool,
+struct DiscoverState {
+    harvest: BTreeSet<SocketAddrV4>,
+    asked: Vec<bool>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -209,151 +167,235 @@ fn run(args: &Args) -> Result<(), String> {
     }
     eprintln!("  dialing {} candidate peer(s)", peer_addrs.len());
 
-    let mut node =
-        Node::new(args.network.magic(), our_version()).map_err(|e| format!("Node::new: {e}"))?;
+    let mut ring = make_ring().map_err(|e| format!("make_ring: {e}"))?;
+    let mut pbr = ring
+        .register_provided_buffers(PROVIDED_BUF_GROUP_ID, PROVIDED_BUF_COUNT, PROVIDED_BUF_SIZE)
+        .map_err(|e| format!("register_provided_buffers: {e:?}"))?;
+    let mut send_arena = SendArena::new();
+    let mut peers: PeerPool<(), MAX_PEERS> = PeerPool::new();
 
-    // Map PeerId → fd + state. We don't care about per-peer sequencing;
-    // each peer independently sends us its addr table.
-    let mut peers: std::collections::HashMap<PeerId, (RawFd, PeerState)> =
-        std::collections::HashMap::new();
-    for addr in &peer_addrs {
-        match node.connect(*addr) {
-            Ok((id, fd)) => {
-                peers.insert(
-                    id,
-                    (
-                        fd,
-                        PeerState {
-                            asked: false,
-                            dialed: *addr,
-                            handshook: false,
-                        },
-                    ),
-                );
-            }
-            Err(e) => eprintln!("  connect {addr}: {e}"),
+    let connect_timeout = Timespec::from_millis(CONNECT_TIMEOUT_SECS * 1_000);
+    let version_payload = encode_version("/mantle-discover:0.1.0/");
+    let mut next_addr_idx = 0usize;
+    let mut state = DiscoverState {
+        harvest: BTreeSet::new(),
+        asked: vec![false; MAX_PEERS],
+    };
+
+    let target = MAX_PEERS.min(peer_addrs.len());
+    for _ in 0..target {
+        let Some(slot) = peers.free_slot() else { break };
+        if let Some(peer) = dial_next(
+            &mut ring,
+            &peer_addrs,
+            &mut next_addr_idx,
+            slot,
+            &connect_timeout,
+        )? {
+            peers.insert(slot, peer);
         }
     }
-    if peers.is_empty() {
-        return Err("no peers accepted the connect call".into());
-    }
 
-    // Harvest. Dedup by SocketAddrV4 to make output stable.
-    let mut harvest: BTreeSet<SocketAddrV4> = BTreeSet::new();
-    let inbound = node.inbound_rx.clone();
     let started = Instant::now();
     let deadline = started + Duration::from_secs(args.seconds);
     let mut last_log = started;
 
-    while Instant::now() < deadline {
-        let Some(msg) = inbound.pop_block() else {
-            // Channel closed — RX thread gone.
-            eprintln!("  inbound channel closed; stopping early");
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
             break;
-        };
-
-        if last_log.elapsed() >= Duration::from_secs(5) {
-            eprintln!("  …{} unique IPv4 peers harvested so far", harvest.len());
-            last_log = Instant::now();
         }
 
-        match msg {
-            InboundMsg::Tick => {
-                // Belt-and-suspenders: 8 seconds after dialing, force-send
-                // sendaddrv2+getaddr to any peer we haven't asked yet —
-                // some peers don't volunteer post-handshake messages, so
-                // waiting for "first non-handshake message" deadlocks.
-                if started.elapsed() >= Duration::from_secs(8) {
-                    for (peer, (fd, state)) in &mut peers {
-                        if !state.asked {
-                            state.asked = true;
-                            frame_and_send(&node, args.network, *peer, *fd, Command::SendAddrV2);
-                            frame_and_send(&node, args.network, *peer, *fd, Command::GetAddr);
-                        }
-                    }
+        push_tick(&mut ring, Duration::from_secs(1))
+            .map_err(|e| format!("push_tick: {e}"))?;
+        ring.submit_and_wait(1)
+            .map_err(|e| format!("submit_and_wait: {e:?}"))?;
+
+        let mut drained = 0usize;
+        while drained < 1024 {
+            let Some(cqe) = ring.complete() else { break };
+            drained += 1;
+            let (slot, op, g) = decode_user_data(cqe.user_data);
+
+            if op == OP_TICK {
+                continue;
+            }
+            if op == OP_SEND {
+                let send_seq = decode_send_seq(cqe.user_data);
+                send_arena.release(send_seq);
+                if let Some(p) = peers.get_mut(slot) {
+                    p.pending_send_seqs.retain(|s| *s != send_seq);
                 }
             }
-            InboundMsg::Network {
+            if op == OP_LINK_TIMEOUT || op == OP_CLOSE {
+                continue;
+            }
+
+            let res = cqe.result;
+            let Some(peer) = peers.get_mut(slot) else { continue };
+            if peer.generation != g {
+                continue;
+            }
+
+            match op {
+                OP_CONNECT => {
+                    if res < 0 {
+                        peer.state = PeerState::Dead;
+                        close_peer(&mut ring, &mut send_arena, peer);
+                    } else {
+                        push_recv_multishot(
+                            &mut ring,
+                            slot,
+                            peer.generation,
+                            peer.fd.ok_or("no fd on connect")?,
+                            PROVIDED_BUF_GROUP_ID,
+                        )
+                        .map_err(|e| format!("push_recv: {e}"))?;
+                        peer.recv_armed = true;
+                        let seq = push_send(
+                            &mut ring,
+                            &mut send_arena,
+                            args.network,
+                            Command::Version,
+                            &version_payload,
+                            slot,
+                            peer.generation,
+                            peer.fd.ok_or("no fd on connect")?,
+                        )
+                        .map_err(|e| format!("push_send version: {e}"))?;
+                        peer.pending_send_seqs.push(seq);
+                        peer.state = PeerState::HandshakeSendVersion;
+                    }
+                }
+                OP_RECV => {
+                    ingest_recv_cqe(&mut pbr, &mut send_arena, peer, cqe.flags, res, &mut ring);
+                }
+                OP_SEND if res < 0 => {
+                    peer.state = PeerState::Dead;
+                    close_peer(&mut ring, &mut send_arena, peer);
+                }
+                _ => {}
+            }
+        }
+
+        for (slot, peer) in peers.iter_mut() {
+            if peer.state == PeerState::Dead {
+                continue;
+            }
+
+            let was_ready = peer.state == PeerState::Ready;
+            consume_handshake_frames(
+                &mut ring,
+                &mut send_arena,
+                args.network,
+                slot,
                 peer,
-                command,
-                payload,
-            } => {
-                let cmd = Command::from_command_name(CommandName(command));
+                |command, payload| {
+                    handle_app_frame(command, payload, &mut state.harvest);
+                },
+            )
+            .map_err(|e| format!("consume_frames: {e}"))?;
 
-                // Mark the peer as handshook on its first network message —
-                // having proven reachable + protocol-speaking, the peer is
-                // a viable harvest entry even if it never gossips an addr.
-                if let Some((fd, state)) = peers.get_mut(&peer) {
-                    state.handshook = true;
-                    if !state.asked {
-                        let fd_copy = *fd;
-                        state.asked = true;
-                        frame_and_send(&node, args.network, peer, fd_copy, Command::SendAddrV2);
-                        frame_and_send(&node, args.network, peer, fd_copy, Command::GetAddr);
-                    }
-                }
+            if peer.state == PeerState::Ready && !was_ready {
+                state.harvest.insert(peer.addr);
+            }
 
-                match cmd {
-                    Some(Command::Addr) => {
-                        match AddrMsg::decode_limited(&mut Cursor::new(&payload)) {
-                            Ok(msg) => {
-                                for entry in msg.0 {
-                                    // Only IPv4-mapped entries are useful — IPv6
-                                    // works fine over the network but our existing
-                                    // peer code is v4-only.
-                                    if entry.ip[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff]
-                                    {
-                                        let v4 = std::net::Ipv4Addr::new(
-                                            entry.ip[12],
-                                            entry.ip[13],
-                                            entry.ip[14],
-                                            entry.ip[15],
-                                        );
-                                        harvest.insert(SocketAddrV4::new(v4, entry.port));
-                                    }
-                                }
-                            }
-                            Err(e) => eprintln!("  peer {peer:?} sent malformed addr: {e}"),
-                        }
+            if peer.state == PeerState::Ready && !state.asked[slot as usize] {
+                state.asked[slot as usize] = true;
+                if let Some(fd) = peer.fd {
+                    if let Ok(seq) = push_send(
+                        &mut ring,
+                        &mut send_arena,
+                        args.network,
+                        Command::SendAddrV2,
+                        &[],
+                        slot,
+                        peer.generation,
+                        fd,
+                    ) {
+                        peer.pending_send_seqs.push(seq);
                     }
-                    Some(Command::AddrV2) => {
-                        match AddrV2Msg::decode_limited(&mut Cursor::new(&payload)) {
-                            Ok(msg) => {
-                                for entry in msg.0 {
-                                    if let AddrV2Addr::Ipv4(_) = entry.addr
-                                        && let Some(v4) = entry.ip_v4()
-                                    {
-                                        harvest.insert(v4);
-                                    }
-                                }
-                            }
-                            Err(e) => eprintln!("  peer {peer:?} sent malformed addrv2: {e}"),
-                        }
+                    if let Ok(seq) = push_send(
+                        &mut ring,
+                        &mut send_arena,
+                        args.network,
+                        Command::GetAddr,
+                        &[],
+                        slot,
+                        peer.generation,
+                        fd,
+                    ) {
+                        peer.pending_send_seqs.push(seq);
                     }
-                    _ => {}
                 }
             }
+
+            if !peer.recv_armed
+                && peer.state != PeerState::Dead
+                && peer.state != PeerState::Connecting
+                && let Some(fd) = peer.fd
+            {
+                let _ = push_recv_multishot(
+                    &mut ring, slot, peer.generation, fd, PROVIDED_BUF_GROUP_ID,
+                );
+                peer.recv_armed = true;
+            }
+        }
+
+        let now2 = Instant::now();
+        for (slot, peer) in peers.iter_mut() {
+            if peer.state == PeerState::Dead {
+                continue;
+            }
+            if peer.state == PeerState::Connecting
+                && now2.duration_since(peer.connected_at)
+                    > Duration::from_secs(CONNECT_TIMEOUT_SECS + 2)
+            {
+                close_peer(&mut ring, &mut send_arena, peer);
+                peer.state = PeerState::Dead;
+            }
+            if matches!(
+                peer.state,
+                PeerState::HandshakeSendVersion | PeerState::HandshakeRecving
+            ) && now2.duration_since(peer.connected_at)
+                > Duration::from_secs(HANDSHAKE_TIMEOUT_SECS)
+            {
+                close_peer(&mut ring, &mut send_arena, peer);
+                peer.state = PeerState::Dead;
+            }
+            let _ = slot;
+        }
+
+        for slot in peers.dead_slots() {
+            peers.remove(slot);
+            if (slot as usize) < state.asked.len() {
+                state.asked[slot as usize] = false;
+            }
+            if let Some(new_slot) = peers.free_slot()
+                && let Some(p) = dial_next(
+                    &mut ring,
+                    &peer_addrs,
+                    &mut next_addr_idx,
+                    new_slot,
+                    &connect_timeout,
+                )?
+            {
+                peers.insert(new_slot, p);
+            }
+        }
+
+        if now2.duration_since(last_log) >= Duration::from_secs(5) {
+            let ready = peers.values().filter(|p| p.state == PeerState::Ready).count();
+            eprintln!(
+                "  …{} unique peers harvested, {} ready",
+                state.harvest.len(),
+                ready
+            );
+            last_log = now2;
         }
     }
 
-    // Fold in every peer that completed handshake. Bitcoin Core ≥0.21 only
-    // honours `getaddr` from peers it dialed (we're inbound from its
-    // perspective when we dialed it), so a peer typically won't gossip its
-    // addrman to us — but if we got past version handshake, the IP itself
-    // is known-reachable and known-bitcoin-speaking, which is exactly what a
-    // bootstrap peer list needs.
-    let handshook_count = peers.values().filter(|(_, s)| s.handshook).count();
-    for (_, state) in peers.values() {
-        if state.handshook {
-            harvest.insert(state.dialed);
-        }
-    }
-    eprintln!(
-        "  {handshook_count} of {} dialed peers completed handshake; harvest now {}",
-        peer_addrs.len(),
-        harvest.len()
-    );
-    eprintln!("  collected {} unique IPv4 peers", harvest.len());
+    eprintln!("  collected {} unique IPv4 peers", state.harvest.len());
     if let Some(parent) = args.out.parent()
         && !parent.as_os_str().is_empty()
         && let Err(e) = std::fs::create_dir_all(parent)
@@ -361,15 +403,101 @@ fn run(args: &Args) -> Result<(), String> {
         return Err(format!("create_dir_all {}: {e}", parent.display()));
     }
     let mut text = String::new();
-    for addr in &harvest {
+    for addr in &state.harvest {
         text.push_str(&addr.to_string());
         text.push('\n');
     }
-    std::fs::write(&args.out, text).map_err(|e| format!("write {}: {e}", args.out.display()))?;
+    std::fs::write(&args.out, text)
+        .map_err(|e| format!("write {}: {e}", args.out.display()))?;
     eprintln!("  wrote {}", args.out.display());
-
-    node.shutdown();
     Ok(())
+}
+
+fn handle_app_frame(
+    command: CommandName,
+    payload: &[u8],
+    harvest: &mut BTreeSet<SocketAddrV4>,
+) {
+    let cmd = mantle::network::Command::from_command_name(command);
+    match cmd {
+        Some(Command::Addr) => {
+            if let Ok(msg) = AddrMsg::decode_limited(&mut Cursor::new(payload)) {
+                for entry in msg.0 {
+                    if entry.ip[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff] {
+                        let v4 = std::net::Ipv4Addr::new(
+                            entry.ip[12],
+                            entry.ip[13],
+                            entry.ip[14],
+                            entry.ip[15],
+                        );
+                        harvest.insert(SocketAddrV4::new(v4, entry.port));
+                    }
+                }
+            }
+        }
+        Some(Command::AddrV2) => {
+            if let Ok(msg) = AddrV2Msg::decode_limited(&mut Cursor::new(payload)) {
+                for entry in msg.0 {
+                    if let AddrV2Addr::Ipv4(_) = entry.addr
+                        && let Some(v4) = entry.ip_v4()
+                    {
+                        harvest.insert(v4);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn dial_next(
+    ring: &mut ququmatz::IoUring,
+    addrs: &[SocketAddrV4],
+    next_idx: &mut usize,
+    slot: u16,
+    timeout: &Timespec,
+) -> Result<Option<Peer<()>>, String> {
+    if addrs.is_empty() {
+        return Ok(None);
+    }
+    if *next_idx >= addrs.len() {
+        return Ok(None);
+    }
+    let addr = addrs[*next_idx];
+    *next_idx += 1;
+
+    let sock = ququmatz::Socket::with_typed_flags(
+        AddressFamily::Inet,
+        SocketType::Stream,
+        0,
+        SocketFlags::NONBLOCK,
+    )
+    .map_err(|e| format!("socket: {e:?}"))?;
+    let fd = sock.into_fd();
+    let sockaddr = Box::new(SockAddrIn {
+        sin_family: u16::try_from(AddressFamily::Inet.as_raw()).expect("AF_INET fits u16"),
+        sin_port: addr.port().to_be(),
+        sin_addr: u32::from_ne_bytes(addr.ip().octets()),
+        sin_zero: [0; 8],
+    });
+
+    let peer = Peer {
+        addr,
+        fd: Some(fd),
+        sockaddr,
+        state: PeerState::Connecting,
+        recv_buf: Vec::with_capacity(RECV_BUF_CAPACITY),
+        recv_armed: false,
+        connected_at: Instant::now(),
+        generation: 0,
+        pending_send_seqs: Vec::with_capacity(8),
+        app: (),
+    };
+
+    push_connect(ring, slot, peer.generation, fd, &peer.sockaddr, timeout)
+        .map_err(|e| format!("push_connect: {e}"))?;
+
+    Ok(Some(peer))
 }
 
 fn main() -> ExitCode {

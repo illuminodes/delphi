@@ -8,6 +8,8 @@ members = [
     "crates/conformance",
     "crates/storage",
     "crates/validator",
+    "crates/transport",
+    "crates/block-io",
     "crates/replay",
 ]
 

@@ -1,0 +1,12 @@
+[package]
+name = "mantle-block-io"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mantle = { path = "../core" }
+ququmatz.workspace = true
+quetzalcoatl.workspace = true

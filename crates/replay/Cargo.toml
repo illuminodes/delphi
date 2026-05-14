@@ -22,6 +22,7 @@ path = "src/rank_peers.rs"
 mantle = { path = "../core" }
 mantle-consensus = { path = "../consensus" }
 mantle-storage = { path = "../storage" }
+mantle-transport = { path = "../transport" }
 mantle-validator = { path = "../validator" }
 ququmatz.workspace = true
 quetzalcoatl.workspace = true
