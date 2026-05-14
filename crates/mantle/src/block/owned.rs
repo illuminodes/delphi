@@ -1,0 +1,209 @@
+use std::io::{self, Read, Write};
+
+use crate::codec::{Decode, Encode, Error, VarInt};
+use crate::tx::Transaction;
+
+use super::header::BlockHeader;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Block {
+    pub header: BlockHeader,
+    pub transactions: Vec<Transaction>,
+}
+
+impl Encode for Block {
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+        self.header.encode(w)?;
+        VarInt::from(self.transactions.len()).encode(w)?;
+        for tx in &self.transactions {
+            tx.encode(w)?;
+        }
+        Ok(())
+    }
+}
+
+impl Block {
+    /// Block weight per BIP141: base size × 4 + witness-only size × 1.
+    ///
+    /// Base size is the non-witness serialisation (no marker/flag/witness
+    /// fields). Total size is the full BIP144 serialisation. The formula
+    /// `base × 3 + total` is equivalent to `base × 4 + witness_extra`.
+    #[must_use]
+    pub fn weight(&self) -> u64 {
+        let tx_count = self.transactions.len();
+        let header_and_count = BlockHeader::ENCODED_LEN + VarInt::from(tx_count).encoded_len();
+        let base: usize = header_and_count
+            + self
+                .transactions
+                .iter()
+                .map(Transaction::base_encoded_len)
+                .sum::<usize>();
+        let total: usize = header_and_count
+            + self
+                .transactions
+                .iter()
+                .map(Transaction::encoded_len)
+                .sum::<usize>();
+        (base as u64) * 3 + total as u64
+    }
+
+    /// Decode with caller-specified caps forwarded to each `Transaction`.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` if the tx count exceeds `MAX_TXS`, or on any I/O error.
+    pub fn decode_limited<
+        const MAX_TXS: usize,
+        const MAX_INPUTS: usize,
+        const MAX_OUTPUTS: usize,
+    >(
+        r: &mut impl Read,
+    ) -> Result<Self, Error> {
+        let header = BlockHeader::decode(r)?;
+        let tx_count = VarInt::decode(r)?.to_usize()
+            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e.to_string())))?;
+        if tx_count > MAX_TXS {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "tx count exceeds limit",
+            )));
+        }
+        let mut transactions = Vec::with_capacity(tx_count);
+        for _ in 0..tx_count {
+            transactions.push(Transaction::decode_limited::<MAX_INPUTS, MAX_OUTPUTS>(r)?);
+        }
+        Ok(Self {
+            header,
+            transactions,
+        })
+    }
+}
+
+impl Decode for Block {
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
+        Self::decode_limited::<10_000, 10_000, 10_000>(r)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use crate::amount::Satoshi;
+    use crate::codec::{Decode, Encode, Error};
+    use crate::difficulty::CompactBits;
+    use crate::hash::Hash256;
+    use crate::script::Witness;
+    use crate::block::{BlockHeader, Block};
+    use crate::tx::{OutPoint, TxIn, TxOut, Transaction};
+
+    fn encode<T: Encode>(val: &T) -> Vec<u8> {
+        let mut buf = Vec::new();
+        val.encode(&mut buf).expect("Vec<u8> write cannot fail");
+        buf
+    }
+
+    fn decode<T: Decode>(bytes: &[u8]) -> T {
+        T::decode(&mut Cursor::new(bytes)).expect("test data must decode")
+    }
+
+    fn decode_err<T: Decode + std::fmt::Debug>(bytes: &[u8]) -> Error {
+        T::decode(&mut std::io::Cursor::new(bytes)).unwrap_err()
+    }
+
+    #[test]
+    fn block_roundtrip() {
+        let block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block: Hash256::ZERO,
+                merkle_root: Hash256::ZERO,
+                time: 1_231_006_505,
+                bits: CompactBits(0x1d00_ffff),
+                nonce: 2_083_236_893,
+            },
+            transactions: vec![Transaction {
+                version: 1,
+                inputs: vec![TxIn {
+                    previous_output: OutPoint {
+                        txid: Hash256::ZERO,
+                        vout: 0xffff_ffff,
+                    },
+                    script_sig: vec![0x04].into(),
+                    sequence: u32::MAX,
+                    witness: Witness::empty(),
+                }],
+                outputs: vec![TxOut {
+                    value: Satoshi::new(5_000_000_000),
+                    script_pubkey: vec![0xac].into(),
+                }],
+                locktime: 0,
+            }],
+        };
+        let bytes = encode(&block);
+        assert_eq!(decode::<Block>(&bytes), block);
+    }
+
+    #[test]
+    fn block_zero_transactions() {
+        let block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block: Hash256::ZERO,
+                merkle_root: Hash256::ZERO,
+                time: 0,
+                bits: CompactBits(0),
+                nonce: 0,
+            },
+            transactions: vec![],
+        };
+        let bytes = encode(&block);
+        assert_eq!(decode::<Block>(&bytes), block);
+    }
+
+    #[test]
+    fn block_truncated_after_tx_count() {
+        let block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block: Hash256::ZERO,
+                merkle_root: Hash256::ZERO,
+                time: 0,
+                bits: CompactBits(0),
+                nonce: 0,
+            },
+            transactions: vec![],
+        };
+        let mut bytes = encode(&block);
+        // Overwrite tx_count to claim 5 transactions, then provide none.
+        let tx_count_offset = BlockHeader::ENCODED_LEN;
+        bytes[tx_count_offset] = 0x05;
+        let e = decode_err::<Block>(&bytes);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
+    }
+
+    #[test]
+    fn block_tx_count_varint_3byte_encoding() {
+        // Build a block with 253 (0xfd) transactions to force a 3-byte VarInt.
+        let dummy_tx = Transaction {
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            locktime: 0,
+        };
+        let block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block: Hash256::ZERO,
+                merkle_root: Hash256::ZERO,
+                time: 0,
+                bits: CompactBits(0),
+                nonce: 0,
+            },
+            transactions: vec![dummy_tx; 253],
+        };
+        let bytes = encode(&block);
+        // tx_count byte at offset 80 must be 0xfd (3-byte VarInt marker).
+        assert_eq!(bytes[BlockHeader::ENCODED_LEN], 0xfd);
+        assert_eq!(decode::<Block>(&bytes), block);
+    }
+}
