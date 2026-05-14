@@ -627,7 +627,7 @@ impl<const N: usize> fmt::Debug for ScriptBuf<N> {
 impl<const N: usize> Encode for ScriptBuf<N> {
     fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         let s = self.as_slice();
-        VarInt(s.len() as u64).encode(w)?;
+        VarInt::from(s.len()).encode(w)?;
         w.write_all(s)?;
         Ok(())
     }
@@ -814,10 +814,10 @@ impl<const ITEMS: usize, const BYTES: usize> WitnessBuf<ITEMS, BYTES> {
     #[must_use]
     pub fn encoded_len(&self) -> usize {
         let count = self.len();
-        VarInt(count as u64).encoded_len()
+        VarInt::from(count).encoded_len()
             + self
                 .iter()
-                .map(|item| VarInt(item.len() as u64).encoded_len() + item.len())
+                .map(|item| VarInt::from(item.len()).encoded_len() + item.len())
                 .sum::<usize>()
     }
 }
@@ -848,9 +848,9 @@ impl<const ITEMS: usize, const BYTES: usize> fmt::Debug for WitnessBuf<ITEMS, BY
 
 impl<const ITEMS: usize, const BYTES: usize> Encode for WitnessBuf<ITEMS, BYTES> {
     fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
-        VarInt(self.len() as u64).encode(w)?;
+        VarInt::from(self.len()).encode(w)?;
         for item in self {
-            VarInt(item.len() as u64).encode(w)?;
+            VarInt::from(item.len()).encode(w)?;
             w.write_all(item)?;
         }
         Ok(())
@@ -859,8 +859,7 @@ impl<const ITEMS: usize, const BYTES: usize> Encode for WitnessBuf<ITEMS, BYTES>
 
 impl<const ITEMS: usize, const BYTES: usize> Decode for WitnessBuf<ITEMS, BYTES> {
     fn decode(r: &mut impl Read) -> Result<Self, Error> {
-        let n = VarInt::decode(r)?.0;
-        let count = usize::try_from(n).map_err(|_| Error::LengthOverflow(n))?;
+        let count = VarInt::decode(r)?.to_usize()?;
         let mut items: Vec<Vec<u8>> = Vec::with_capacity(count.min(16));
         for _ in 0..count {
             // Witness stack items have no per-item consensus size limit (unlike
@@ -1080,7 +1079,7 @@ impl Transaction {
             .iter()
             .map(|i| {
                 OutPoint::ENCODED_LEN
-                    + VarInt(i.script_sig.len() as u64).encoded_len()
+                    + VarInt::from(i.script_sig.len()).encoded_len()
                     + i.script_sig.len()
                     + 4
             })
@@ -1088,12 +1087,12 @@ impl Transaction {
         let outputs_len: usize = self
             .outputs
             .iter()
-            .map(|o| 8 + VarInt(o.script_pubkey.len() as u64).encoded_len() + o.script_pubkey.len())
+            .map(|o| 8 + VarInt::from(o.script_pubkey.len()).encoded_len() + o.script_pubkey.len())
             .sum();
         4 // version
-            + VarInt(self.inputs.len() as u64).encoded_len()
+            + VarInt::from(self.inputs.len()).encoded_len()
             + inputs_len
-            + VarInt(self.outputs.len() as u64).encoded_len()
+            + VarInt::from(self.outputs.len()).encoded_len()
             + outputs_len
             + 4 // locktime
     }
@@ -1115,11 +1114,11 @@ impl Transaction {
     /// Used for txid computation and as the base of BIP144 encoding.
     fn encode_base(&self, w: &mut impl Write) -> Result<(), Error> {
         self.version.encode(w)?;
-        VarInt(self.inputs.len() as u64).encode(w)?;
+        VarInt::from(self.inputs.len()).encode(w)?;
         for input in &self.inputs {
             input.encode(w)?;
         }
-        VarInt(self.outputs.len() as u64).encode(w)?;
+        VarInt::from(self.outputs.len()).encode(w)?;
         for output in &self.outputs {
             output.encode(w)?;
         }
@@ -1136,11 +1135,11 @@ impl Encode for Transaction {
         }
         self.version.encode(w)?;
         w.write_all(&[0x00, 0x01])?; // marker, flag
-        VarInt(self.inputs.len() as u64).encode(w)?;
+        VarInt::from(self.inputs.len()).encode(w)?;
         for input in &self.inputs {
             input.encode(w)?;
         }
-        VarInt(self.outputs.len() as u64).encode(w)?;
+        VarInt::from(self.outputs.len()).encode(w)?;
         for output in &self.outputs {
             output.encode(w)?;
         }
@@ -1172,8 +1171,7 @@ impl Transaction {
             let flag = u8::decode(r)?;
             if flag == 0x01 {
                 // Segwit: read the real input count.
-                let raw = VarInt::decode(r)?.0;
-                let n = usize::try_from(raw).map_err(|_| Error::LengthOverflow(raw))?;
+                let n = VarInt::decode(r)?.to_usize()?;
                 (true, n, None)
             } else {
                 // Legacy 0-input tx: `first`=0x00 was the input count (0
@@ -1181,8 +1179,7 @@ impl Transaction {
                 (false, 0usize, Some(flag))
             }
         } else {
-            let raw = VarInt::decode_from_first_byte(first, r)?.0;
-            let n = usize::try_from(raw).map_err(|_| Error::LengthOverflow(raw))?;
+            let n = VarInt::decode_from_first_byte(first, r)?.to_usize()?;
             (false, n, None)
         };
 
@@ -1195,11 +1192,9 @@ impl Transaction {
         }
 
         let output_count = if let Some(b) = legacy_output_count_first {
-            let raw = VarInt::decode_from_first_byte(b, r)?.0;
-            usize::try_from(raw).map_err(|_| Error::LengthOverflow(raw))?
+            VarInt::decode_from_first_byte(b, r)?.to_usize()?
         } else {
-            let raw = VarInt::decode(r)?.0;
-            usize::try_from(raw).map_err(|_| Error::LengthOverflow(raw))?
+            VarInt::decode(r)?.to_usize()?
         };
         if output_count > MAX_OUTPUTS {
             return Err(Error::LengthOverflow(output_count as u64));
@@ -1531,12 +1526,12 @@ impl<'a> WitnessRef<'a> {
     /// # Errors
     /// Returns an error if the count or any item length is truncated.
     pub fn decode_at(buf: &'a [u8]) -> Result<Self, Error> {
-        let (VarInt(count), mut rest) = VarInt::decode_ref(buf)?;
-        let count = usize::try_from(count).map_err(|_| Error::LengthOverflow(count))?;
+        let (vi, mut rest) = VarInt::decode_ref(buf)?;
+        let count = vi.to_usize()?;
         let items_start = rest;
         for _ in 0..count {
-            let (VarInt(len), r2) = VarInt::decode_ref(rest)?;
-            let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
+            let (vi, r2) = VarInt::decode_ref(rest)?;
+            let len = vi.to_usize()?;
             if r2.len() < len {
                 return Err(Error::UnexpectedEof);
             }
@@ -1560,12 +1555,12 @@ impl<'a> WitnessRef<'a> {
     /// # Errors
     /// Returns an error if the count or any item length is truncated.
     pub fn pop_from(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
-        let (VarInt(count), mut rest) = VarInt::decode_ref(buf)?;
-        let count = usize::try_from(count).map_err(|_| Error::LengthOverflow(count))?;
+        let (vi, mut rest) = VarInt::decode_ref(buf)?;
+        let count = vi.to_usize()?;
         let items_start = rest;
         for _ in 0..count {
-            let (VarInt(len), r2) = VarInt::decode_ref(rest)?;
-            let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
+            let (vi, r2) = VarInt::decode_ref(rest)?;
+            let len = vi.to_usize()?;
             if r2.len() < len {
                 return Err(Error::UnexpectedEof);
             }
@@ -1583,11 +1578,11 @@ impl<'a> WitnessRef<'a> {
 
     /// Skip one full witness (count + items) and return the trailing slice.
     fn skip_one(buf: &'a [u8]) -> Result<&'a [u8], Error> {
-        let (VarInt(count), mut rest) = VarInt::decode_ref(buf)?;
-        let count = usize::try_from(count).map_err(|_| Error::LengthOverflow(count))?;
+        let (vi, mut rest) = VarInt::decode_ref(buf)?;
+        let count = vi.to_usize()?;
         for _ in 0..count {
-            let (VarInt(len), r2) = VarInt::decode_ref(rest)?;
-            let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
+            let (vi, r2) = VarInt::decode_ref(rest)?;
+            let len = vi.to_usize()?;
             if r2.len() < len {
                 return Err(Error::UnexpectedEof);
             }
@@ -1649,8 +1644,8 @@ impl<'a> Iterator for WitnessRefIter<'a> {
         if self.remaining == 0 {
             return None;
         }
-        let (VarInt(len), rest) = VarInt::decode_ref(self.buf).ok()?;
-        let len = usize::try_from(len).ok()?;
+        let (vi, rest) = VarInt::decode_ref(self.buf).ok()?;
+        let len = vi.to_usize().ok()?;
         if rest.len() < len {
             self.remaining = 0;
             return None;
@@ -1693,8 +1688,8 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
         let (segwit, input_count, buf, legacy_output_first) = if first == 0x00 {
             let (flag, buf) = u8::decode_ref(buf)?;
             if flag == 0x01 {
-                let (VarInt(n), buf) = VarInt::decode_ref(buf)?;
-                let count = usize::try_from(n).map_err(|_| Error::LengthOverflow(n))?;
+                let (vi, buf) = VarInt::decode_ref(buf)?;
+                let count = vi.to_usize()?;
                 (true, count, buf, None)
             } else {
                 // Legacy 0-input tx; `flag` is first byte of output-count VarInt.
@@ -1703,9 +1698,9 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
         } else {
             // Re-decode the VarInt with `first` as its initial byte using a cursor.
             let mut cursor = std::io::Cursor::new(buf);
-            let VarInt(n) = VarInt::decode_from_first_byte(first, &mut cursor)?;
+            let vi = VarInt::decode_from_first_byte(first, &mut cursor)?;
             let consumed = usize::try_from(cursor.position()).map_err(|_| Error::UnexpectedEof)?;
-            let count = usize::try_from(n).map_err(|_| Error::LengthOverflow(n))?;
+            let count = vi.to_usize()?;
             (false, count, &buf[consumed..], None)
         };
 
@@ -1718,13 +1713,13 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
 
         let (output_count, rest) = if let Some(b) = legacy_output_first {
             let mut cursor = std::io::Cursor::new(rest);
-            let VarInt(m) = VarInt::decode_from_first_byte(b, &mut cursor)?;
+            let vi = VarInt::decode_from_first_byte(b, &mut cursor)?;
             let consumed = usize::try_from(cursor.position()).map_err(|_| Error::UnexpectedEof)?;
-            let count = usize::try_from(m).map_err(|_| Error::LengthOverflow(m))?;
+            let count = vi.to_usize()?;
             (count, &rest[consumed..])
         } else {
-            let (VarInt(m), rest) = VarInt::decode_ref(rest)?;
-            let count = usize::try_from(m).map_err(|_| Error::LengthOverflow(m))?;
+            let (vi, rest) = VarInt::decode_ref(rest)?;
+            let count = vi.to_usize()?;
             (count, rest)
         };
         let outputs_buf = rest;
@@ -1739,10 +1734,11 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
         if segwit {
             for _ in 0..input_count {
                 // Each witness: VarInt(item_count) then VarInt(len)+bytes per item.
-                let (VarInt(item_count), mut r) = VarInt::decode_ref(rest)?;
+                let (vi, mut r) = VarInt::decode_ref(rest)?;
+                let item_count = vi.to_u64();
                 for _ in 0..item_count {
-                    let (VarInt(len), r2) = VarInt::decode_ref(r)?;
-                    let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
+                    let (vi, r2) = VarInt::decode_ref(r)?;
+                    let len = vi.to_usize()?;
                     if r2.len() < len {
                         return Err(Error::UnexpectedEof);
                     }
@@ -1796,7 +1792,7 @@ pub struct Block {
 impl Encode for Block {
     fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
         self.header.encode(w)?;
-        VarInt(self.transactions.len() as u64).encode(w)?;
+        VarInt::from(self.transactions.len()).encode(w)?;
         for tx in &self.transactions {
             tx.encode(w)?;
         }
@@ -1813,7 +1809,7 @@ impl Block {
     #[must_use]
     pub fn weight(&self) -> u64 {
         let tx_count = self.transactions.len();
-        let header_and_count = BlockHeader::ENCODED_LEN + VarInt(tx_count as u64).encoded_len();
+        let header_and_count = BlockHeader::ENCODED_LEN + VarInt::from(tx_count).encoded_len();
         let base: usize = header_and_count
             + self
                 .transactions
@@ -1841,8 +1837,8 @@ impl Block {
         r: &mut impl Read,
     ) -> Result<Self, Error> {
         let header = BlockHeader::decode(r)?;
-        let tx_count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let tx_count = VarInt::decode(r)?.to_usize()
+            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e.to_string())))?;
         if tx_count > MAX_TXS {
             return Err(Error::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1909,9 +1905,9 @@ impl<'a> BlockRef<'a> {
 
         // Header is fixed-size (80 bytes) and never aliases the arena.
         let (header, rest) = BlockHeader::decode_ref(wire)?;
-        let (VarInt(tx_count_raw), mut rest) = VarInt::decode_ref(rest)?;
-        let tx_count = usize::try_from(tx_count_raw)
-            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let (vi, mut rest) = VarInt::decode_ref(rest)?;
+        let tx_count = vi.to_usize()
+            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e.to_string())))?;
 
         // Pre-grow the arena: a generous upper bound is the wire length minus
         // 80-byte header. Reserving up front turns the per-tx push into a

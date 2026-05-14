@@ -72,10 +72,6 @@ name = "replay-perf-c"
 path = "src/replay_perf_c.rs"
 
 [[bin]]
-name = "fetch-fixtures"
-path = "src/fetch_fixtures.rs"
-
-[[bin]]
 name = "replay-mainnet"
 path = "src/replay_mainnet.rs"
 

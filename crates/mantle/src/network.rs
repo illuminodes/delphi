@@ -761,7 +761,7 @@ pub struct InvMsg(pub Vec<InvEntry>);
 
 impl Encode for InvMsg {
     fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
-        VarInt(self.0.len() as u64).encode(w)?;
+        VarInt::from(self.0.len()).encode(w)?;
         for entry in &self.0 {
             entry.encode(w)?;
         }
@@ -823,8 +823,7 @@ impl InvMsg {
         buf: &[u8],
     ) -> Result<InvEntryIter<'_>, CodecError> {
         let (varint, rest) = VarInt::decode_ref(buf)?;
-        let count = usize::try_from(varint.0)
-            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let count = varint.to_usize()?;
         if count > MAX_ENTRIES {
             return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -841,8 +840,7 @@ impl InvMsg {
     /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES`, or on any I/O error.
     #[allow(clippy::missing_panics_doc)] // chunks_exact guarantees chunk size — unwrap cannot panic
     pub fn decode_limited<const MAX_ENTRIES: usize>(r: &mut impl Read) -> Result<Self, CodecError> {
-        let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let count = VarInt::decode(r)?.to_usize()?;
         if count > MAX_ENTRIES {
             return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -877,8 +875,7 @@ impl InvMsg {
         r: &mut impl Read,
         out: &mut Vec<InvEntry>,
     ) -> Result<(), CodecError> {
-        let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let count = VarInt::decode(r)?.to_usize()?;
         if count > MAX_ENTRIES {
             return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -966,8 +963,7 @@ impl AddrMsg {
     /// # Errors
     /// `InvalidData` if the entry count exceeds [`Self::MAX_ENTRIES`], or on I/O error.
     pub fn decode_limited(r: &mut impl Read) -> Result<Self, CodecError> {
-        let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let count = VarInt::decode(r)?.to_usize()?;
         if count > Self::MAX_ENTRIES {
             return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1045,8 +1041,7 @@ impl AddrV2Addr {
     pub fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         let mut nid = [0u8; 1];
         r.read_exact(&mut nid).map_err(CodecError::Io)?;
-        let addr_len = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let addr_len = VarInt::decode(r)?.to_usize()?;
         if let Some(expected) = Self::expected_len(nid[0]) {
             if addr_len != expected {
                 return Err(CodecError::Io(io::Error::new(
@@ -1134,7 +1129,7 @@ impl AddrV2Entry {
 impl Decode for AddrV2Entry {
     fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         let time = u32::decode(r)?;
-        let services = VarInt::decode(r)?.0;
+        let services = VarInt::decode(r)?.to_u64();
         let addr = AddrV2Addr::decode(r)?;
         let mut port_bytes = [0u8; 2];
         r.read_exact(&mut port_bytes).map_err(CodecError::Io)?;
@@ -1158,8 +1153,7 @@ impl AddrV2Msg {
     /// # Errors
     /// `InvalidData` if the entry count exceeds [`Self::MAX_ENTRIES`], or on I/O error.
     pub fn decode_limited(r: &mut impl Read) -> Result<Self, CodecError> {
-        let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let count = VarInt::decode(r)?.to_usize()?;
         if count > Self::MAX_ENTRIES {
             return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1191,7 +1185,7 @@ pub struct GetHeadersMsg {
 impl Encode for GetHeadersMsg {
     fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
         self.version.encode(w)?;
-        VarInt(self.locator_hashes.len() as u64).encode(w)?;
+        VarInt::from(self.locator_hashes.len()).encode(w)?;
         for h in &self.locator_hashes {
             h.encode(w)?;
         }
@@ -1233,8 +1227,7 @@ impl GetHeadersMsg {
         r: &mut impl Read,
     ) -> Result<Self, CodecError> {
         let version = u32::decode(r)?;
-        let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let count = VarInt::decode(r)?.to_usize()?;
         if count > MAX_LOCATORS {
             return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1267,7 +1260,7 @@ pub struct HeadersMsg(pub Vec<BlockHeader>);
 
 impl Encode for HeadersMsg {
     fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
-        VarInt(self.0.len() as u64).encode(w)?;
+        VarInt::from(self.0.len()).encode(w)?;
         for header in &self.0 {
             header.encode(w)?;
             w.write_all(&[0x00]).map_err(CodecError::Io)?; // tx_count placeholder (always zero)
@@ -1351,8 +1344,7 @@ impl HeadersMsg {
         buf: &[u8],
     ) -> Result<BlockHeaderIter<'_>, CodecError> {
         let (varint, rest) = VarInt::decode_ref(buf)?;
-        let count = usize::try_from(varint.0)
-            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let count = varint.to_usize()?;
         if count > MAX_HEADERS {
             return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1368,8 +1360,7 @@ impl HeadersMsg {
     /// # Errors
     /// Returns `InvalidData` if the header count exceeds `MAX_HEADERS`, or on any I/O error.
     pub fn decode_limited<const MAX_HEADERS: usize>(r: &mut impl Read) -> Result<Self, CodecError> {
-        let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let count = VarInt::decode(r)?.to_usize()?;
         if count > MAX_HEADERS {
             return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1395,8 +1386,7 @@ impl HeadersMsg {
         r: &mut impl Read,
         out: &mut Vec<BlockHeader>,
     ) -> Result<(), CodecError> {
-        let count = usize::try_from(VarInt::decode(r)?.0)
-            .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        let count = VarInt::decode(r)?.to_usize()?;
         if count > MAX_HEADERS {
             return Err(CodecError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1988,11 +1978,11 @@ mod tests {
         };
         // Manually encode with tx_count = 5 instead of 0.
         let mut buf = Vec::new();
-        crate::codec::VarInt(1)
+        crate::codec::VarInt::from(1u64)
             .encode(&mut buf)
             .expect("Vec<u8> write cannot fail"); // 1 header
         header.encode(&mut buf).expect("Vec<u8> write cannot fail");
-        crate::codec::VarInt(5)
+        crate::codec::VarInt::from(5u64)
             .encode(&mut buf)
             .expect("Vec<u8> write cannot fail"); // non-zero tx_count
         // Decoder reads and discards tx_count regardless of value.

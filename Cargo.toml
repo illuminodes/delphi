@@ -9,7 +9,6 @@ members = [
     "crates/block-io",
     "bench",
     "conformance",
-    "node",
     "replay",
 ]
 

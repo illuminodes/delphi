@@ -12,7 +12,7 @@ fn main() {
 #[divan::bench(args = [0xfcu64, 0xfdu64, 0x1_0000u64, u64::MAX])]
 fn varint_encode(n: u64) -> Vec<u8> {
     let mut buf = Vec::with_capacity(9);
-    VarInt(n)
+    VarInt::from(n)
         .encode(&mut buf)
         .expect("Vec<u8> write cannot fail");
     buf
@@ -21,7 +21,7 @@ fn varint_encode(n: u64) -> Vec<u8> {
 #[divan::bench(args = [0xfcu64, 0xfdu64, 0x1_0000u64, u64::MAX])]
 fn varint_decode(bencher: divan::Bencher, n: u64) {
     let mut buf = Vec::new();
-    VarInt(n)
+    VarInt::from(n)
         .encode(&mut buf)
         .expect("Vec<u8> write cannot fail");
     bencher.bench(|| {
@@ -33,7 +33,7 @@ fn varint_decode(bencher: divan::Bencher, n: u64) {
 #[divan::bench(args = [0xfcu64, 0xfdu64, 0x1_0000u64, u64::MAX])]
 fn varint_decode_ref(bencher: divan::Bencher, n: u64) {
     let mut buf = Vec::new();
-    VarInt(n)
+    VarInt::from(n)
         .encode(&mut buf)
         .expect("Vec<u8> write cannot fail");
     bencher.bench(|| {
@@ -133,7 +133,7 @@ fn i64_decode_ref() -> (i64, &'static [u8]) {
 fn decode_bytes_limited_bench(bencher: divan::Bencher, len: usize) {
     let payload = vec![0xabu8; len];
     let mut buf = Vec::new();
-    VarInt(len as u64)
+    VarInt::from(len)
         .encode(&mut buf)
         .expect("Vec<u8> write cannot fail");
     buf.extend_from_slice(&payload);

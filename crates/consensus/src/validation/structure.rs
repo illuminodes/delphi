@@ -189,9 +189,10 @@ where
 
     let (header, rest) = BlockHeader::decode_ref(wire).map_err(malformed_block)?;
 
-    let (mantle::codec::VarInt(tx_count_raw), mut rest) =
+    let (tx_count_vi, mut rest) =
         mantle::codec::VarInt::decode_ref(rest).map_err(malformed_block)?;
-    let tx_count = usize::try_from(tx_count_raw)
+    let tx_count = tx_count_vi
+        .to_usize()
         .map_err(|_| ValidationError::TooManyTransactions { count: usize::MAX })?;
 
     if tx_count == 0 {
@@ -202,7 +203,7 @@ where
     }
 
     // Single-pass per-transaction scan: parse + validate in one walk.
-    let mut base_size = BlockHeader::ENCODED_LEN + VarInt(tx_count as u64).encoded_len();
+    let mut base_size = BlockHeader::ENCODED_LEN + VarInt::from(tx_count).encoded_len();
     seen_inputs.clear();
     txids.clear();
     txids.reserve(tx_count);
@@ -262,9 +263,9 @@ where
 
     let (_, buf) = i32::decode_ref(wire).map_err(malformed)?; // version
 
-    let (VarInt(n), mut buf) = VarInt::decode_ref(buf).map_err(malformed)?;
+    let (vi, mut buf) = VarInt::decode_ref(buf).map_err(malformed)?;
     let input_count =
-        usize::try_from(n).map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
+        vi.to_usize().map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
     if input_count == 0 {
         return Err(ValidationError::EmptyInputs { tx_index });
     }
@@ -307,9 +308,9 @@ where
         }
     }
 
-    let (VarInt(m), mut buf) = VarInt::decode_ref(buf).map_err(malformed)?;
+    let (vi, mut buf) = VarInt::decode_ref(buf).map_err(malformed)?;
     let output_count =
-        usize::try_from(m).map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
+        vi.to_usize().map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
     if output_count == 0 {
         return Err(ValidationError::EmptyOutputs { tx_index });
     }

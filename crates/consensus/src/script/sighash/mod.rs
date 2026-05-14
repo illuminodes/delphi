@@ -233,7 +233,7 @@ impl<T: TxView> TxSighash for T {
                     let mut buf: Vec<u8> = Vec::new();
                     buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
                     let spk = out.script_pubkey();
-                    let _ = VarInt(spk.len() as u64).encode(&mut buf);
+                    let _ = VarInt::from(spk.len()).encode(&mut buf);
                     buf.extend_from_slice(spk);
                     buf.sha256d()
                 } else {
@@ -249,7 +249,7 @@ impl<T: TxView> TxSighash for T {
         buf.extend_from_slice(&hash_prevouts.0);
         buf.extend_from_slice(&hash_sequence.0);
         let _ = input.previous_output().encode(&mut buf);
-        let _ = VarInt(script_code.len() as u64).encode(&mut buf);
+        let _ = VarInt::from(script_code.len()).encode(&mut buf);
         buf.extend_from_slice(script_code);
         buf.extend_from_slice(&u64::from(amount).to_le_bytes());
         buf.extend_from_slice(&input.sequence().to_le_bytes());
@@ -329,7 +329,7 @@ impl Bip143Cache {
             // Output wire form: value(8 LE) || VarInt(spk_len) || spk.
             outputs_buf.extend_from_slice(&u64::from(output.value()).to_le_bytes());
             let spk = output.script_pubkey();
-            let _ = VarInt(spk.len() as u64).encode(&mut outputs_buf);
+            let _ = VarInt::from(spk.len()).encode(&mut outputs_buf);
             outputs_buf.extend_from_slice(spk);
         }
 
@@ -366,19 +366,19 @@ fn encode_legacy_preimage<T: TxView>(
     // ── Inputs ──────────────────────────────────────────────────────────────
     if anyonecanpay {
         // Keep only the input being signed.
-        let _ = VarInt(1).encode(buf);
+        let _ = VarInt::new(1).encode(buf);
         let input = tx.input(n_in);
         let _ = input.previous_output().encode(buf);
-        let _ = VarInt(script_code.len() as u64).encode(buf);
+        let _ = VarInt::from(script_code.len()).encode(buf);
         buf.extend_from_slice(script_code);
         buf.extend_from_slice(&input.sequence().to_le_bytes());
     } else {
         let n_inputs = tx.input_count();
-        let _ = VarInt(n_inputs as u64).encode(buf);
+        let _ = VarInt::from(n_inputs).encode(buf);
         for (i, input) in tx.inputs().enumerate() {
             let _ = input.previous_output().encode(buf);
             if i == n_in {
-                let _ = VarInt(script_code.len() as u64).encode(buf);
+                let _ = VarInt::from(script_code.len()).encode(buf);
                 buf.extend_from_slice(script_code);
             } else {
                 // Empty scriptSig.
@@ -398,11 +398,11 @@ fn encode_legacy_preimage<T: TxView>(
     match mode {
         SigHashMode::All => {
             let n_out = tx.output_count();
-            let _ = VarInt(n_out as u64).encode(buf);
+            let _ = VarInt::from(n_out).encode(buf);
             for output in tx.outputs() {
                 buf.extend_from_slice(&u64::from(output.value()).to_le_bytes());
                 let spk = output.script_pubkey();
-                let _ = VarInt(spk.len() as u64).encode(buf);
+                let _ = VarInt::from(spk.len()).encode(buf);
                 buf.extend_from_slice(spk);
             }
         }
@@ -414,7 +414,7 @@ fn encode_legacy_preimage<T: TxView>(
             // Keep outputs up to and including `n_in`; everything before
             // `n_in` is replaced with the "null" output (-1 value, empty
             // scriptPubKey). `n_in >= n_outputs` is short-circuited above.
-            let _ = VarInt((n_in + 1) as u64).encode(buf);
+            let _ = VarInt::from(n_in + 1).encode(buf);
             let null_value: u64 = u64::MAX; // -1 as i64 / u64
             for _ in 0..n_in {
                 buf.extend_from_slice(&null_value.to_le_bytes());
@@ -423,7 +423,7 @@ fn encode_legacy_preimage<T: TxView>(
             let output = tx.output(n_in);
             buf.extend_from_slice(&u64::from(output.value()).to_le_bytes());
             let spk = output.script_pubkey();
-            let _ = VarInt(spk.len() as u64).encode(buf);
+            let _ = VarInt::from(spk.len()).encode(buf);
             buf.extend_from_slice(spk);
         }
     }
@@ -734,7 +734,7 @@ impl Bip341Cache {
             let mut h = Sha256::new();
             for spk in spent_spks {
                 let mut buf = Vec::new();
-                let _ = VarInt(spk.len() as u64).encode(&mut buf);
+                let _ = VarInt::from(spk.len()).encode(&mut buf);
                 h.update(&buf);
                 h.update(spk);
             }
@@ -757,7 +757,7 @@ impl Bip341Cache {
                 let mut buf = Vec::new();
                 buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
                 let spk = out.script_pubkey();
-                let _ = VarInt(spk.len() as u64).encode(&mut buf);
+                let _ = VarInt::from(spk.len()).encode(&mut buf);
                 buf.extend_from_slice(spk);
                 h.update(&buf);
             }
@@ -852,7 +852,7 @@ fn compute_bip341_sighash<T: TxView>(
         preimage.extend_from_slice(&ob);
         preimage.extend_from_slice(&u64::from(spent_amount).to_le_bytes());
         let mut spk_buf = Vec::new();
-        let _ = VarInt(spent_spk.len() as u64).encode(&mut spk_buf);
+        let _ = VarInt::from(spent_spk.len()).encode(&mut spk_buf);
         preimage.extend_from_slice(&spk_buf);
         preimage.extend_from_slice(spent_spk);
         preimage.extend_from_slice(&inp.sequence().to_le_bytes());
@@ -864,7 +864,7 @@ fn compute_bip341_sighash<T: TxView>(
     // Annex hash: SHA256(compact_size(len) || annex_bytes).
     if let Some(annex_bytes) = annex {
         let mut buf = Vec::new();
-        let _ = VarInt((annex_bytes.len() as u64) + 1).encode(&mut buf); // +1 for the 0x50 prefix byte
+        let _ = VarInt::new((annex_bytes.len() as u64) + 1).encode(&mut buf); // +1 for the 0x50 prefix byte
         buf.push(0x50);
         buf.extend_from_slice(annex_bytes);
         let h: [u8; 32] = Sha256::digest(&buf).into();
@@ -880,7 +880,7 @@ fn compute_bip341_sighash<T: TxView>(
         let mut buf = Vec::new();
         buf.extend_from_slice(&u64::from(out.value()).to_le_bytes());
         let spk = out.script_pubkey();
-        let _ = VarInt(spk.len() as u64).encode(&mut buf);
+        let _ = VarInt::from(spk.len()).encode(&mut buf);
         buf.extend_from_slice(spk);
         let h: [u8; 32] = Sha256::digest(&buf).into();
         preimage.extend_from_slice(&h);
@@ -911,7 +911,7 @@ impl TapHasher {
         let mut buf = Vec::with_capacity(1 + 9 + script.len());
         buf.push(leaf_version);
         let mut vint = Vec::new();
-        let _ = VarInt(script.len() as u64).encode(&mut vint);
+        let _ = VarInt::from(script.len()).encode(&mut vint);
         buf.extend_from_slice(&vint);
         buf.extend_from_slice(script);
         Schnorr::tagged_hash(b"TapLeaf", &buf)

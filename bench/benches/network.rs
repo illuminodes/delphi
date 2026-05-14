@@ -263,7 +263,7 @@ fn getheaders_decode(bencher: divan::Bencher) {
 fn varint_encode_2000() -> Vec<u8> {
     let mut buf = Vec::with_capacity(2000 * 3);
     for i in 0u64..2000 {
-        VarInt(i)
+        VarInt::from(i)
             .encode(&mut buf)
             .expect("Vec<u8> write cannot fail");
     }

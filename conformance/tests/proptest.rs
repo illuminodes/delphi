@@ -21,10 +21,10 @@ fn arb_hash256() -> impl Strategy<Value = Hash256> {
 fn arb_varint() -> impl Strategy<Value = VarInt> {
     // Cover all four encoding lengths: 1-byte, 3-byte, 5-byte, 9-byte.
     prop_oneof![
-        (0u64..=0xfc_u64).prop_map(VarInt),
-        (0xfd_u64..=0xffff_u64).prop_map(VarInt),
-        (0x1_0000_u64..=0xffff_ffff_u64).prop_map(VarInt),
-        (0x1_0000_0000_u64..=u64::MAX).prop_map(VarInt),
+        (0u64..=0xfc_u64).prop_map(VarInt::from),
+        (0xfd_u64..=0xffff_u64).prop_map(VarInt::from),
+        (0x1_0000_u64..=0xffff_ffff_u64).prop_map(VarInt::from),
+        (0x1_0000_0000_u64..=u64::MAX).prop_map(VarInt::from),
     ]
 }
 
@@ -136,7 +136,7 @@ proptest! {
         let decoded = VarInt::decode(&mut Cursor::new(&first))
             .expect("VarInt canonical decode must succeed");
         let second = encode_to_vec(&decoded);
-        prop_assert_eq!(first, second, "VarInt({}) re-encoded differently", v.0);
+        prop_assert_eq!(first, second, "VarInt({}) re-encoded differently", v.to_u64());
     }
 }
 

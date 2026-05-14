@@ -137,9 +137,28 @@ impl_codec_int!(i64);
 
 /// Bitcoin variable-length integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VarInt(pub u64);
+pub struct VarInt(u64);
 
 impl VarInt {
+    #[inline]
+    #[must_use]
+    pub const fn new(n: u64) -> Self {
+        Self(n)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_u64(self) -> u64 {
+        self.0
+    }
+
+    /// # Errors
+    /// Returns [`Error::LengthOverflow`] if the value exceeds `usize::MAX`.
+    #[inline]
+    pub fn to_usize(self) -> Result<usize, Error> {
+        usize::try_from(self.0).map_err(|_| Error::LengthOverflow(self.0))
+    }
+
     #[inline]
     #[must_use]
     pub fn encoded_len(self) -> usize {
@@ -149,6 +168,27 @@ impl VarInt {
             0x10000..=0xffff_ffff => 5,
             _ => 9,
         }
+    }
+}
+
+impl From<u64> for VarInt {
+    #[inline]
+    fn from(n: u64) -> Self {
+        Self(n)
+    }
+}
+
+impl From<usize> for VarInt {
+    #[inline]
+    fn from(n: usize) -> Self {
+        Self(n as u64)
+    }
+}
+
+impl From<VarInt> for u64 {
+    #[inline]
+    fn from(v: VarInt) -> Self {
+        v.0
     }
 }
 
