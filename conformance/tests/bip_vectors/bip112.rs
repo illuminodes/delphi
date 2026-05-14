@@ -10,7 +10,7 @@
 
 use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, Witness};
 
-use crate::script::{ScriptFlags, verify_script};
+use mantle_consensus::script::{ScriptFlags, verify_script};
 
 // ── Constants (BIP68 / BIP112) ────────────────────────────────────────────────
 

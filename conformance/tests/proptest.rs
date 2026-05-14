@@ -10,7 +10,7 @@ use mantle::primitives::{
 };
 use std::io::Cursor;
 
-use crate::merkle::compute_merkle_root;
+use mantle_consensus::merkle::compute_merkle_root;
 
 // ── Codec roundtrip strategies ────────────────────────────────────────────────
 
@@ -203,7 +203,7 @@ proptest! {
     fn flags_for_height_matches_bitcoinconsensus(h in 0u32..=900_000u32) {
         use mantle::primitives::BlockHeight;
         use mantle_conformance::conformance;
-        use crate::script::ScriptFlags;
+        use mantle_consensus::script::ScriptFlags;
 
         let oracle = conformance::flags_for_height(h);
         let ours   = ScriptFlags::for_height(BlockHeight(h)).bits();
@@ -228,7 +228,7 @@ proptest! {
         amount      in any::<u64>(),
     ) {
         use mantle::primitives::{Hash256, OutPoint, Satoshi, TxIn, TxOut, Witness};
-        use crate::script::{ScriptExecutionCache, ScriptFlags, verify_script_cached};
+        use mantle_consensus::script::{ScriptExecutionCache, ScriptFlags, verify_script_cached};
 
         let flags = ScriptFlags::NONE;
         let amount = Satoshi::new(amount);

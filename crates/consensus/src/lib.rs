@@ -6,8 +6,8 @@ pub mod script;
 pub mod tx_view;
 pub mod validation;
 
-#[cfg(test)]
-pub(crate) mod test_helpers {
+#[allow(clippy::missing_panics_doc, clippy::must_use_candidate)]
+pub mod test_helpers {
     pub fn decode_hex(s: &str) -> Vec<u8> {
         (0..s.len())
             .step_by(2)
@@ -22,9 +22,3 @@ pub(crate) mod test_helpers {
         mantle::primitives::Hash256(hash).to_display_hex()
     }
 }
-
-#[cfg(test)]
-mod tests_proptest;
-
-#[cfg(test)]
-mod tests_bip_vectors;

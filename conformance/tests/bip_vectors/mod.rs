@@ -9,12 +9,12 @@ use mantle::primitives::{
 };
 use std::io::Cursor;
 
-use crate::chain_view::{ChainView, Coin, MemoryChainView};
-use crate::error::ValidationError;
-use crate::genesis::{GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEX};
-use crate::merkle::compute_merkle_root;
-use crate::test_helpers::{decode_hex, hash_to_hex};
-use crate::validation::{
+use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
+use mantle_consensus::error::ValidationError;
+use mantle_consensus::genesis::{GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEX};
+use mantle_consensus::merkle::compute_merkle_root;
+use mantle_consensus::test_helpers::{decode_hex, hash_to_hex};
+use mantle_consensus::validation::{
     BIP34_HEIGHT, MAX_COINBASE_SCRIPTSIG_LEN, MAX_MONEY, MIN_COINBASE_SCRIPTSIG_LEN,
     validate_block_context, validate_block_structure,
 };

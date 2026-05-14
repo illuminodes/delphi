@@ -18,8 +18,8 @@ use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, W
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 
-use crate::script::sighash::{Bip341Cache, TapHasher, TaprootSigHashType, TxSighash};
-use crate::script::{ScriptFlags, verify_script};
+use mantle_consensus::script::sighash::{Bip341Cache, TapHasher, TaprootSigHashType, TxSighash};
+use mantle_consensus::script::{ScriptFlags, verify_script};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -97,7 +97,7 @@ fn tweaked_signing_key(internal_secret: &[u8; 32], merkle_root: &[u8]) -> [u8; 3
     tweak_input.extend_from_slice(&internal_pubkey);
     tweak_input.extend_from_slice(merkle_root);
     let tweak_bytes =
-        crate::script::consensus_crypto::Schnorr::tagged_hash(b"TapTweak", &tweak_input);
+        mantle_consensus::script::consensus_crypto::Schnorr::tagged_hash(b"TapTweak", &tweak_input);
     let t = <Scalar as Reduce<U256>>::reduce(&U256::from_be_bytes(tweak_bytes.into()));
 
     let d: Scalar = *sk.as_nonzero_scalar().as_ref();
@@ -522,7 +522,7 @@ fn diag_schnorr_sign_verify_roundtrip() {
 
     let sig_bytes: [u8; 64] = sig.to_bytes();
     let pk_bytes: [u8; 32] = vk.to_bytes().into();
-    let ok = crate::script::consensus_crypto::Schnorr::verify(&sig_bytes, &pk_bytes, &msg);
+    let ok = mantle_consensus::script::consensus_crypto::Schnorr::verify(&sig_bytes, &pk_bytes, &msg);
     assert!(ok, "Schnorr::verify must pass for k256-signed msg");
 }
 
@@ -584,7 +584,7 @@ fn diag_sighash_determinism() {
     eprintln!("msgs_match: {}", msg1 == rt_msg);
 
     // run_taproot verifies: Schnorr::verify(sig64, program32=output_key, &rt_msg)
-    let ok = crate::script::consensus_crypto::Schnorr::verify(&sig, &output_key, &rt_msg);
+    let ok = mantle_consensus::script::consensus_crypto::Schnorr::verify(&sig, &output_key, &rt_msg);
     eprintln!("verify_schnorr(tweaked_sig, output_key, rt_msg): {ok}");
 }
 
@@ -643,8 +643,8 @@ fn make_two_input_taproot_tx(
 /// `assert_eq!(spent_amounts.len(), tx.input_count())` ran.
 #[test]
 fn bip341_key_path_two_input_succeeds() {
-    use crate::script::SpentOutputs;
-    use crate::script::verify_script_with_spent_outputs;
+    use mantle_consensus::script::SpentOutputs;
+    use mantle_consensus::script::verify_script_with_spent_outputs;
 
     let secret0 = [0x33u8; 32];
     let secret1 = [0x44u8; 32];
@@ -712,9 +712,9 @@ fn bip341_key_path_two_input_succeeds() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn bip341_key_path_two_input_single_anyonecanpay() {
-    use crate::script::SpentOutputs;
-    use crate::script::sighash::TaprootSigHashType;
-    use crate::script::verify_script_with_spent_outputs;
+    use mantle_consensus::script::SpentOutputs;
+    use mantle_consensus::script::sighash::TaprootSigHashType;
+    use mantle_consensus::script::verify_script_with_spent_outputs;
 
     // Two-output tx so SIGHASH_SINGLE has both n_in=0 and n_in=1 outputs to commit to.
     fn make_two_in_two_out_taproot_tx(
@@ -847,8 +847,8 @@ fn bip341_real_mainnet_block_767434_single_anyonecanpay() {
     use mantle::codec::Decode;
     use std::io::Cursor;
 
-    use crate::script::SpentOutputs;
-    use crate::script::verify_script_with_spent_outputs;
+    use mantle_consensus::script::SpentOutputs;
+    use mantle_consensus::script::verify_script_with_spent_outputs;
 
     // Tx d7748e08b2ce8c492c3593df39fba058ed1c2c9ab2bac1de6a5f853ef826b5f8.
     const TX_WIRE_HEX: &str = "02000000000104362cfe19efc4ddc48d3e1aae1fbd5fe16a993ab0ca1c1f2fd99c1548b4bccde200000000171600144c6b82aa8e759d8e8d41792210bd777baaa22145ffffffff362cfe19efc4ddc48d3e1aae1fbd5fe16a993ab0ca1c1f2fd99c1548b4bccde201000000171600144c6b82aa8e759d8e8d41792210bd777baaa22145ffffffff5f2360c1ea9b62f61746dd65a270f6432818931afb56d2ca0a240cd7ba9b4c610000000000ffffffff362cfe19efc4ddc48d3e1aae1fbd5fe16a993ab0ca1c1f2fd99c1548b4bccde20a000000171600144c6b82aa8e759d8e8d41792210bd777baaa22145ffffffff07b00400000000000017a91466d3f0c3febcf2dc0e49bbd71ee8a026792dc5ac871027000000000000225120d553550d056e80ffe07c0630698546ff756c38dc9f8075f7d10c2a8bedc41d07d972000000000000225120c20deca5159cb269fab27e1237e2f2cc39f8c5bcaa668968597ef52c290b33e6d502000000000000160014c015c65276d5f38d599d445c4cb03aa7aa0dc365580200000000000017a91466d3f0c3febcf2dc0e49bbd71ee8a026792dc5ac87580200000000000017a91466d3f0c3febcf2dc0e49bbd71ee8a026792dc5ac876aa901000000000017a91466d3f0c3febcf2dc0e49bbd71ee8a026792dc5ac8702473044022024c9ae64da2d9ad245e620eab60e2c9ccae26268a0c6f67cbf4e44fdd5d8db8902202c91f9db5bb06427203f5a210a43380a1bbc8149c4d0db57dad1f7328aad3126012102d33fb5661ea2afb54bf9fa147c6a2ae2492e81877c3370d07256054b0e5fe3cc02473044022009b9798b20fa54a8d6636a5c352837f22cd476b24d8b7e69da9533894c8486ee02203e996fce541781f425b8b6b80fb10e54a08d08a5d70c1771db8a75a1175886d8012102d33fb5661ea2afb54bf9fa147c6a2ae2492e81877c3370d07256054b0e5fe3cc014113f35fbb2d2e217ad013d10941547125eb118977f21262cb51709fa3fbe73a8df2c03d8057f437e71ef29741c6ac7430153e47fa8fc2184a1a469ff55f4c85a28302483045022100c9ed6d4950e60869f443c637f38467bff14b5426ccbd57a7bfbd0f4a1c85fad202206068d32c4e5dede68292134fbbfd0496a7b9b53b213e115f1217008b0bed8fdc012102d33fb5661ea2afb54bf9fa147c6a2ae2492e81877c3370d07256054b0e5fe3cc00000000";
@@ -902,7 +902,7 @@ fn bip341_real_mainnet_block_767434_single_anyonecanpay() {
 /// `TaprootMissingSpentOutputs` instead of panicking.
 #[test]
 fn bip341_key_path_two_input_without_spent_outputs_errors() {
-    use crate::script::ScriptError;
+    use mantle_consensus::script::ScriptError;
 
     let secret0 = [0x55u8; 32];
     let secret1 = [0x66u8; 32];

@@ -526,6 +526,12 @@ name = "mantle-conformance"
 version = "0.1.0"
 dependencies = [
  "bitcoinconsensus",
+ "k256",
+ "mantle",
+ "mantle-consensus",
+ "proptest",
+ "ripemd",
+ "sha2",
 ]
 
 [[package]]
@@ -534,8 +540,6 @@ version = "0.1.0"
 dependencies = [
  "k256",
  "mantle",
- "mantle-conformance",
- "proptest",
  "ripemd",
  "sha1",
  "sha2",

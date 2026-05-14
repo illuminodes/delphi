@@ -16,7 +16,7 @@
 // trailing sighash byte is split off by `TxSigChecker` before this validator
 // runs. Vector lengths are 8..=72 (the post-split body range).
 
-use crate::script::consensus_crypto::Ecdsa;
+use mantle_consensus::script::consensus_crypto::Ecdsa;
 
 /// Smallest possible canonical DER signature: `r=1, s=1`.
 /// `30 06 02 01 01 02 01 01`.

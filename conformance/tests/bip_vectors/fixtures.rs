@@ -1,5 +1,5 @@
 use super::*;
-use crate::validation::validate_block_wire;
+use mantle_consensus::validation::validate_block_wire;
 use std::collections::HashSet;
 
 // ── Known transaction fixtures ────────────────────────────────────────────────

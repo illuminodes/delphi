@@ -19,7 +19,7 @@ use mantle::codec::Decode;
 use mantle::primitives::{Hash256, Satoshi, Transaction};
 use std::io::Cursor;
 
-use crate::script::sighash::{Bip143Cache, SigHashType, TxSighash};
+use mantle_consensus::script::sighash::{Bip143Cache, SigHashType, TxSighash};
 
 // ── hex helpers ───────────────────────────────────────────────────────────────
 
