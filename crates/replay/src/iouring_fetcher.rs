@@ -47,7 +47,8 @@ use mantle::network::{
 };
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
 use ququmatz::types::{
-    AddressFamily, MsgFlags, SockAddrIn, SocketFlags, SocketType, SqeFlags, TimeoutFlags, Timespec,
+    AddressFamily, MsgFlags, RawFd, SockAddrIn, SocketFlags, SocketType, SqeFlags, TimeoutFlags,
+    Timespec,
 };
 use ququmatz::{IoUring, Sqe};
 
@@ -99,7 +100,7 @@ const CONNECT_TIMEOUT_SECS: u64 = 5;
 
 /// How long to wait for a single peer to deliver a `headers` message after
 /// we sent it `getheaders` before re-electing a different peer.
-const HEADERS_RESPONSE_TIMEOUT_SECS: u64 = 30;
+const HEADERS_RESPONSE_TIMEOUT_SECS: u64 = 10;
 
 /// How long a peer can sit in `HandshakeSendVersion` / `HandshakeRecving`
 /// (TCP connected, but no `version`/`verack` exchange completed) before
@@ -148,7 +149,7 @@ const BLACK_HOLE_GRACE_SECS: u64 = 60;
 const BLOCK_NO_PROGRESS_TIMEOUT_SECS: u64 = 300;
 
 /// Hard cap on a single header-sync phase (one `getheaders` page).
-const HEADERS_PHASE_DEADLINE_SECS: u64 = 600;
+const HEADERS_PHASE_DEADLINE_SECS: u64 = 120;
 
 /// Target number of healthy peers to keep dialed at any one time. The
 /// fetcher will dial up to this many from its pool, replacing dead slots
@@ -156,7 +157,7 @@ const HEADERS_PHASE_DEADLINE_SECS: u64 = 600;
 /// us ~64 hashes in flight network-wide — wide enough that one slow peer
 /// barely dents progress, narrow enough to fit in a single ring's
 /// SQE/CQE budget without backpressure.
-const TARGET_LIVE_PEERS: usize = 32;
+const TARGET_LIVE_PEERS: usize = 64;
 
 /// SQ/CQ depth of the per-session `io_uring`. The kernel rounds up to
 /// the next power of two; we ask for 16 384 so we have generous
@@ -215,7 +216,7 @@ impl From<io::Error> for FetchError {
 #[derive(Debug)]
 struct Peer {
     addr: SocketAddrV4,
-    fd: i32,
+    fd: Option<RawFd>,
     /// Owned sockaddr bytes the kernel reads for the connect SQE; must
     /// outlive the SQE *and* sit at a stable memory address. Boxed so
     /// the address survives the `Peer` being moved into the `peers`
@@ -441,79 +442,648 @@ impl EwmaLatency {
     }
 }
 
-/// Single-ring fetcher. Owns the `IoUring`, peer pool, and download state.
+// ── File I/O thread ─────────────────────────────────────────────────────────
+
+enum FileReq {
+    WriteBlock { height: BlockHeight, data: Vec<u8> },
+    WriteBlockAsync { height: BlockHeight, data: Vec<u8> },
+    ReadBlock { height: BlockHeight },
+    HasBlock { height: BlockHeight },
+    WriteHeaders { start: BlockHeight, data: Vec<u8> },
+    LoadCachedHeaders { start: BlockHeight },
+    FlushBlockIndex,
+    Shutdown,
+}
+
+enum FileResp {
+    Ok,
+    Bool(bool),
+    BlockData(Vec<u8>),
+    Headers(Vec<(BlockHeight, BlockHeader)>),
+    Err(io::Error),
+}
+
+const FILE_RING_CAP: usize = 4096;
+
+struct FileIoHandle {
+    tx: quetzalcoatl::mpsc::Producer<FileReq>,
+    rx: quetzalcoatl::spsc::Consumer<FileResp>,
+}
+
+impl FileIoHandle {
+    fn spawn(data_dir: &Path) -> io::Result<Self> {
+        let blocks = BlockStore::open(data_dir)?;
+        let headers = HeaderStore::open(data_dir)?;
+        let data_dir = data_dir.to_owned();
+
+        let req_ring = quetzalcoatl::mpsc::RingBuffer::new(
+            quetzalcoatl::capacity::Capacity::exact(FILE_RING_CAP),
+        );
+        let resp_ring = quetzalcoatl::spsc::RingBuffer::new(
+            quetzalcoatl::capacity::Capacity::exact(FILE_RING_CAP),
+        );
+        let (req_tx, req_rx) = req_ring.split();
+        let (resp_tx, resp_rx) = resp_ring.split();
+
+        std::thread::Builder::new()
+            .name("file-io".into())
+            .spawn(move || {
+                file_io_worker(req_rx, resp_tx, blocks, headers, &data_dir);
+            })
+            .map_err(|e| io::Error::other(format!("spawn file-io: {e}")))?;
+
+        Ok(Self { tx: req_tx, rx: resp_rx })
+    }
+
+    fn write_block(&mut self, height: BlockHeight, data: Vec<u8>) -> io::Result<()> {
+        self.tx.push(FileReq::WriteBlock { height, data })
+            .map_err(|_| io::Error::other("file-io ring full"))?;
+        match self.rx.pop_block() {
+            Some(FileResp::Ok) => Ok(()),
+            Some(FileResp::Err(e)) => Err(e),
+            _ => Err(io::Error::other("file-io unexpected response")),
+        }
+    }
+
+    fn write_block_async(&self, height: BlockHeight, data: Vec<u8>) -> io::Result<()> {
+        self.tx.push(FileReq::WriteBlockAsync { height, data })
+            .map_err(|_| io::Error::other("file-io ring full"))
+    }
+
+    fn read_block(&mut self, height: BlockHeight) -> io::Result<Vec<u8>> {
+        self.tx.push(FileReq::ReadBlock { height })
+            .map_err(|_| io::Error::other("file-io ring full"))?;
+        match self.rx.pop_block() {
+            Some(FileResp::BlockData(data)) => Ok(data),
+            Some(FileResp::Err(e)) => Err(e),
+            _ => Err(io::Error::other("file-io unexpected response")),
+        }
+    }
+
+    fn write_headers(&mut self, start: BlockHeight, data: Vec<u8>) -> io::Result<()> {
+        self.tx.push(FileReq::WriteHeaders { start, data })
+            .map_err(|_| io::Error::other("file-io ring full"))?;
+        match self.rx.pop_block() {
+            Some(FileResp::Ok) => Ok(()),
+            Some(FileResp::Err(e)) => Err(e),
+            _ => Err(io::Error::other("file-io unexpected response")),
+        }
+    }
+
+    fn flush_block_index(&mut self) -> io::Result<()> {
+        self.tx.push(FileReq::FlushBlockIndex)
+            .map_err(|_| io::Error::other("file-io ring full"))?;
+        match self.rx.pop_block() {
+            Some(FileResp::Ok) => Ok(()),
+            Some(FileResp::Err(e)) => Err(e),
+            _ => Err(io::Error::other("file-io unexpected response")),
+        }
+    }
+
+    fn has_block(&mut self, height: BlockHeight) -> bool {
+        if self.tx.push(FileReq::HasBlock { height }).is_err() {
+            return false;
+        }
+        matches!(self.rx.pop_block(), Some(FileResp::Bool(true)))
+    }
+
+    fn load_cached_headers(
+        &mut self,
+        start: BlockHeight,
+    ) -> Result<Vec<(BlockHeight, BlockHeader)>, FetchError> {
+        self.tx.push(FileReq::LoadCachedHeaders { start })
+            .map_err(|_| FetchError::UringErr("file-io ring full".into()))?;
+        match self.rx.pop_block() {
+            Some(FileResp::Headers(h)) => Ok(h),
+            Some(FileResp::Err(e)) => Err(FetchError::Io(e)),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn shutdown(&mut self) {
+        let _ = self.tx.push(FileReq::Shutdown);
+        let _ = self.rx.pop_block();
+    }
+}
+
+const BLOCK_INDEX_FLUSH_INTERVAL: u64 = 2_000;
+
+fn file_io_worker(
+    mut rx: quetzalcoatl::mpsc::Consumer<FileReq>,
+    tx: quetzalcoatl::spsc::Producer<FileResp>,
+    mut blocks: BlockStore,
+    mut headers: HeaderStore,
+    data_dir: &Path,
+) {
+    let mut ring = match IoUring::new(256) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("file-io: failed to create ring: {e:?}");
+            return;
+        }
+    };
+
+    let mut writes_since_flush: u64 = 0;
+
+    while let Some(req) = rx.pop_block() {
+        let resp = match req {
+            FileReq::WriteBlock { height, data } => {
+                match blocks.write(&mut ring, height, &data) {
+                    Ok(()) => {
+                        writes_since_flush += 1;
+                        if writes_since_flush >= BLOCK_INDEX_FLUSH_INTERVAL {
+                            let _ = blocks.flush_index(data_dir);
+                            writes_since_flush = 0;
+                        }
+                        FileResp::Ok
+                    }
+                    Err(e) => FileResp::Err(e),
+                }
+            }
+            FileReq::WriteBlockAsync { height, data } => {
+                let _ = blocks.write(&mut ring, height, &data);
+                writes_since_flush += 1;
+                if writes_since_flush >= BLOCK_INDEX_FLUSH_INTERVAL {
+                    let _ = blocks.flush_index(data_dir);
+                    writes_since_flush = 0;
+                }
+                continue;
+            }
+            FileReq::ReadBlock { height } => {
+                match blocks.read(&mut ring, height) {
+                    Ok(data) => FileResp::BlockData(data),
+                    Err(e) => FileResp::Err(e),
+                }
+            }
+            FileReq::HasBlock { height } => {
+                FileResp::Bool(blocks.has_block(height))
+            }
+            FileReq::WriteHeaders { start, data } => {
+                match headers.write_raw(&mut ring, start, &data) {
+                    Ok(()) => FileResp::Ok,
+                    Err(e) => FileResp::Err(e),
+                }
+            }
+            FileReq::LoadCachedHeaders { start } => {
+                match headers.load_cached(&mut ring, start) {
+                    Ok(h) => FileResp::Headers(h),
+                    Err(e) => FileResp::Err(io::Error::other(format!("{e}"))),
+                }
+            }
+            FileReq::FlushBlockIndex => {
+                match blocks.flush_index(data_dir) {
+                    Ok(()) => FileResp::Ok,
+                    Err(e) => FileResp::Err(e),
+                }
+            }
+            FileReq::Shutdown => {
+                let _ = tx.push(FileResp::Ok);
+                return;
+            }
+        };
+        let _ = tx.push(resp);
+    }
+}
+
+// ── File-backed store ────────────────────────────────────────────────────────
+
+struct FileStore {
+    #[allow(dead_code)]
+    file: fs::File,
+    fd: RawFd,
+    write_offset: u64,
+}
+
+impl FileStore {
+    fn open(path: &Path) -> io::Result<Self> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        let write_offset = file.metadata()?.len();
+        let fd = file_to_rawfd(&file);
+        Ok(Self { file, fd, write_offset })
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn uring_read(&self, ring: &mut IoUring, offset: u64, len: u32) -> io::Result<Vec<u8>> {
+        let mut buf = vec![0u8; len as usize];
+        let sqe = unsafe {
+            Sqe::read_ptr(self.fd, buf.as_mut_ptr(), len, offset)
+        }.user_data(u64::MAX);
+        ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
+        loop {
+            ring.submit_and_wait(1).map_err(|e| io::Error::other(format!("{e:?}")))?;
+            while let Some(cqe) = ring.complete() {
+                if cqe.user_data == u64::MAX {
+                    if cqe.result < 0 {
+                        return Err(io::Error::from_raw_os_error(-cqe.result));
+                    }
+                    return Ok(buf);
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn uring_write(&self, ring: &mut IoUring, data: &[u8], offset: u64) -> io::Result<()> {
+        let sqe = unsafe {
+            Sqe::write_ptr(self.fd, data.as_ptr(), data.len() as u32, offset)
+        }.user_data(u64::MAX);
+        ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
+        loop {
+            ring.submit_and_wait(1).map_err(|e| io::Error::other(format!("{e:?}")))?;
+            while let Some(cqe) = ring.complete() {
+                if cqe.user_data == u64::MAX {
+                    if cqe.result < 0 {
+                        return Err(io::Error::from_raw_os_error(-cqe.result));
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    fn append(&mut self, ring: &mut IoUring, data: &[u8]) -> io::Result<u64> {
+        let offset = self.write_offset;
+        self.uring_write(ring, data, offset)?;
+        self.write_offset += data.len() as u64;
+        Ok(offset)
+    }
+
+    fn truncate_and_write(&mut self, ring: &mut IoUring, data: &[u8]) -> io::Result<()> {
+        self.file.set_len(0)?;
+        self.write_offset = 0;
+        self.append(ring, data)?;
+        Ok(())
+    }
+}
+
+// ── Block store ─────────────────────────────────────────────────────────────
+
+const BLOCK_INDEX_ENTRY_SIZE: usize = 12;
+
+#[derive(Clone, Copy, Default)]
+struct BlockEntry {
+    offset: u64,
+    length: u32,
+}
+
+impl BlockEntry {
+    fn is_present(self) -> bool {
+        self.length > 0
+    }
+}
+
+struct BlockStore {
+    store: FileStore,
+    index: Vec<BlockEntry>,
+}
+
+impl BlockStore {
+    fn open(data_dir: &Path) -> io::Result<Self> {
+        let store = FileStore::open(&data_dir.join("blocks.bin"))?;
+        let index = load_blocks_index(&data_dir.join("blocks.idx"))?;
+        Ok(Self { store, index })
+    }
+
+    fn has_block(&self, height: BlockHeight) -> bool {
+        self.index
+            .get(height.0 as usize)
+            .copied()
+            .unwrap_or_default()
+            .is_present()
+    }
+
+    fn read(&self, ring: &mut IoUring, height: BlockHeight) -> io::Result<Vec<u8>> {
+        let entry = self.index
+            .get(height.0 as usize)
+            .copied()
+            .unwrap_or_default();
+        if !entry.is_present() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("block {} not in index", height.0),
+            ));
+        }
+        self.store.uring_read(ring, entry.offset, entry.length)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(dead_code)]
+    fn write(&mut self, ring: &mut IoUring, height: BlockHeight, data: &[u8]) -> io::Result<()> {
+        let offset = self.store.append(ring, data)?;
+        let h = height.0 as usize;
+        if h >= self.index.len() {
+            self.index.resize(h + 1, BlockEntry::default());
+        }
+        self.index[h] = BlockEntry {
+            offset,
+            length: data.len() as u32,
+        };
+        Ok(())
+    }
+
+    fn flush_index(&self, data_dir: &Path) -> io::Result<()> {
+        save_blocks_index(&data_dir.join("blocks.idx"), &self.index)
+    }
+}
+
+// ── Header store ────────────────────────────────────────────────────────────
+
+const HEADER_RECORD_SIZE: usize = 80;
+
+struct HeaderStore {
+    store: FileStore,
+    metadata: FileStore,
+}
+
+impl HeaderStore {
+    fn open(data_dir: &Path) -> io::Result<Self> {
+        let store = FileStore::open(&data_dir.join("chain_headers.bin"))?;
+        let metadata = FileStore::open(&data_dir.join("metadata.bin"))?;
+        Ok(Self { store, metadata })
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn load_cached(
+        &self,
+        ring: &mut IoUring,
+        start: BlockHeight,
+    ) -> Result<Vec<(BlockHeight, BlockHeader)>, FetchError> {
+        if self.metadata.write_offset < 4 || self.store.write_offset == 0 {
+            return Ok(Vec::new());
+        }
+        let meta_bytes = self.metadata.uring_read(ring, 0, 4)?;
+        let cached_start = u32::from_le_bytes(meta_bytes[..4].try_into().unwrap());
+        if cached_start != start.0 {
+            return Ok(Vec::new());
+        }
+        let count = self.store.write_offset as usize / HEADER_RECORD_SIZE;
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let data = self.store.uring_read(ring, 0, self.store.write_offset as u32)?;
+        let mut headers = Vec::with_capacity(count);
+        for (i, chunk) in data.chunks_exact(HEADER_RECORD_SIZE).enumerate() {
+            let arr: &[u8; 80] = chunk.try_into().unwrap();
+            let hdr = BlockHeader::from_bytes(arr).map_err(|e| {
+                FetchError::UringErr(format!("cached header {i} decode: {e}"))
+            })?;
+            headers.push((BlockHeight(start.0 + i as u32), hdr));
+        }
+        Ok(headers)
+    }
+
+    fn write_raw(
+        &mut self,
+        ring: &mut IoUring,
+        start: BlockHeight,
+        data: &[u8],
+    ) -> io::Result<()> {
+        self.store.truncate_and_write(ring, data)?;
+        self.metadata.truncate_and_write(ring, &start.0.to_le_bytes())
+    }
+
+    fn write_all(
+        &mut self,
+        ring: &mut IoUring,
+        start: BlockHeight,
+        headers: &[(BlockHeight, BlockHeader)],
+    ) -> io::Result<()> {
+        let mut sorted: Vec<&(BlockHeight, BlockHeader)> = headers.iter().collect();
+        sorted.sort_by_key(|(h, _)| h.0);
+        let mut out = Vec::with_capacity(sorted.len() * HEADER_RECORD_SIZE);
+        for (_, hdr) in &sorted {
+            out.extend_from_slice(&hdr.to_bytes());
+        }
+        self.store.truncate_and_write(ring, &out)?;
+        self.metadata.truncate_and_write(ring, &start.0.to_le_bytes())
+    }
+}
+
+// ── Peer pool ───────────────────────────────────────────────────────────────
+
+const MAX_PEERS: usize = TARGET_LIVE_PEERS;
+
+struct PeerPool {
+    slots: [Option<Peer>; MAX_PEERS],
+}
+
+#[allow(clippy::cast_possible_truncation)]
+impl PeerPool {
+    fn new() -> Self {
+        Self { slots: std::array::from_fn(|_| None) }
+    }
+
+    fn get_mut(&mut self, slot: u16) -> Option<&mut Peer> {
+        self.slots.get_mut(slot as usize)?.as_mut()
+    }
+
+    fn insert(&mut self, slot: u16, peer: Peer) {
+        self.slots[slot as usize] = Some(peer);
+    }
+
+    fn remove(&mut self, slot: u16) -> Option<Peer> {
+        self.slots.get_mut(slot as usize)?.take()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.slots.iter().all(Option::is_none)
+    }
+
+    fn live_count(&self) -> usize {
+        self.slots.iter().filter(|s| {
+            s.as_ref().is_some_and(|p| p.state != PeerState::Dead)
+        }).count()
+    }
+
+    fn free_slot(&self) -> Option<u16> {
+        self.slots.iter().position(Option::is_none).map(|i| i as u16)
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (u16, &mut Peer)> {
+        self.slots.iter_mut().enumerate().filter_map(|(i, s)| {
+            s.as_mut().map(|p| (i as u16, p))
+        })
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Peer> {
+        self.slots.iter_mut().filter_map(|s| s.as_mut())
+    }
+
+    fn values(&self) -> impl Iterator<Item = &Peer> {
+        self.slots.iter().filter_map(|s| s.as_ref())
+    }
+
+    fn dead_slots(&self) -> Vec<u16> {
+        self.slots.iter().enumerate().filter_map(|(i, s)| {
+            s.as_ref().and_then(|p| (p.state == PeerState::Dead).then_some(i as u16))
+        }).collect()
+    }
+}
+
+// ── Fetcher ─────────────────────────────────────────────────────────────────
+
 pub struct Fetcher {
     network: Network,
-    /// Full unconsumed peer pool. Slots are dialed out of this list.
-    peer_pool: Vec<SocketAddrV4>,
-    /// Cursor into `peer_pool` — next index to dial.
-    next_pool_idx: usize,
+    addr_pool: Vec<SocketAddrV4>,
+    next_addr_idx: usize,
     data_dir: PathBuf,
-    /// Owned timeout for the connect `link_timeout`. Reused.
     connect_timeout: Timespec,
+    ring: IoUring,
+    pbr: ququmatz::ProvidedBufferRing,
+    send_arena: SendArena,
+    peers: PeerPool,
+    file_io: FileIoHandle,
 }
 
 impl Fetcher {
-    /// `peer_addrs` is the static peer list to dial from. Order matters —
-    /// earlier entries dialed first, so callers should pre-rank by latency.
-    ///
     /// # Errors
-    /// Returns `io::Error` if the on-disk blocks dir cannot be created.
+    /// Returns `io::Error` if the on-disk blocks dir cannot be created or
+    /// the `io_uring` ring cannot be set up.
     pub fn new(
         network: Network,
         peer_addrs: Vec<SocketAddrV4>,
         data_dir: PathBuf,
     ) -> io::Result<Self> {
-        std::fs::create_dir_all(data_dir.join("blocks"))?;
+        std::fs::create_dir_all(&data_dir)?;
+        let mut ring = make_ring().map_err(|e| io::Error::other(format!("{e}")))?;
+        let pbr = ring
+            .register_provided_buffers(PROVIDED_BUF_GROUP_ID, PROVIDED_BUF_COUNT, PROVIDED_BUF_SIZE)
+            .map_err(|e| io::Error::other(format!("register_provided_buffers: {e:?}")))?;
+
+        let file_io = FileIoHandle::spawn(&data_dir)?;
+
         Ok(Self {
             network,
-            peer_pool: peer_addrs,
-            next_pool_idx: 0,
+            addr_pool: peer_addrs,
+            next_addr_idx: 0,
             data_dir,
             connect_timeout: Timespec::from_millis(CONNECT_TIMEOUT_SECS * 1_000),
+            ring,
+            pbr,
+            send_arena: SendArena::new(),
+            peers: PeerPool::new(),
+            file_io,
         })
     }
 
-    pub fn block_path(&self, height: BlockHeight) -> PathBuf {
-        self.data_dir
-            .join("blocks")
-            .join(format!("{:07}.bin", height.0))
+    fn ensure_peers(&mut self) -> Result<(), FetchError> {
+        let live = self.peers.live_count();
+        let target = TARGET_LIVE_PEERS.min(self.addr_pool.len());
+        for _ in live..target {
+            let Some(slot) = self.peers.free_slot() else { break };
+            if let Some(peer) = self.dial_next_inner(slot)? {
+                self.peers.insert(slot, peer);
+            }
+        }
+        Ok(())
     }
 
-    pub fn headers_path(&self) -> PathBuf {
-        self.data_dir.join("chain_headers.bin")
+    fn dial_next_inner(&mut self, slot: u16) -> Result<Option<Peer>, FetchError> {
+        self.dial_next_avoiding_inner(slot, &[])
     }
 
-    /// # Errors
-    /// `NotFound` if not yet on disk.
-    pub fn read_block_bytes(&self, height: BlockHeight) -> io::Result<Vec<u8>> {
-        std::fs::read(self.block_path(height))
+    fn dial_next_avoiding_inner(
+        &mut self,
+        slot: u16,
+        active: &[SocketAddrV4],
+    ) -> Result<Option<Peer>, FetchError> {
+        let Some(addr) = self.next_pool_addr(active) else {
+            return Ok(None);
+        };
+        let sock = ququmatz::Socket::with_typed_flags(
+            AddressFamily::Inet,
+            SocketType::Stream,
+            0,
+            SocketFlags::NONBLOCK,
+        )
+        .map_err(|e| FetchError::UringErr(format!("socket: {e:?}")))?;
+        let fd = sock.into_fd();
+        let sockaddr = Box::new(SockAddrIn {
+            sin_family: u16::try_from(AddressFamily::Inet.as_raw()).expect("AF_INET fits u16"),
+            sin_port: addr.port().to_be(),
+            sin_addr: u32::from_ne_bytes(addr.ip().octets()),
+            sin_zero: [0; 8],
+        });
+
+        let peer = Peer {
+            addr,
+            fd: Some(fd),
+            sockaddr,
+            state: PeerState::Connecting,
+            recv_buf: Vec::with_capacity(RECV_BUF_CAPACITY),
+            recv_armed: false,
+            in_flight: Vec::new(),
+            connected_at: Instant::now(),
+            generation: 0,
+            assigned_count: 0,
+            delivered_count: 0,
+            last_delivery: Instant::now(),
+            pending_send_seqs: Vec::with_capacity(PEER_SEND_OUTSTANDING_CAP as usize),
+        };
+
+        push_connect(
+            &mut self.ring,
+            slot,
+            peer.generation,
+            fd,
+            &peer.sockaddr,
+            &self.connect_timeout,
+        )?;
+
+        Ok(Some(peer))
     }
 
-    /// Sync headers covering `[start..=end]` from `locator`. One getheaders
-    /// page at a time; reuses the same ring across pages.
+    pub fn read_block_bytes(&mut self, height: BlockHeight) -> io::Result<Vec<u8>> {
+        self.file_io.read_block(height)
+    }
+
+
     pub fn sync_headers(
         &mut self,
         start: BlockHeight,
         end: BlockHeight,
         locator: Hash256,
     ) -> Result<Vec<(BlockHeight, BlockHeader)>, FetchError> {
-        if self.peer_pool.is_empty() {
+        if self.addr_pool.is_empty() {
             return Err(FetchError::NoPeers);
         }
-        let want = u64::from(end.0)
-            .saturating_sub(u64::from(start.0))
-            .saturating_add(1);
-        let mut collected: Vec<(BlockHeight, BlockHeader)> =
-            Vec::with_capacity(usize::try_from(want).unwrap_or(usize::MAX));
-        let mut current_locator = locator;
-        let mut next_height = start.0;
+
+        let mut collected = self.file_io.load_cached_headers(start)?;
+        if !collected.is_empty() {
+            let cached_end = collected.last().unwrap().0;
+            eprintln!(
+                "  headers: loaded {} cached ({}..={})",
+                collected.len(), start.0, cached_end.0,
+            );
+            if cached_end >= end {
+                return Ok(collected);
+            }
+        }
+
+        let mut next_height = if collected.is_empty() {
+            start.0
+        } else {
+            collected.last().unwrap().0 .0 + 1
+        };
+        let mut current_locator = if collected.is_empty() {
+            locator
+        } else {
+            collected.last().unwrap().1.hash()
+        };
 
         loop {
             let page = self.run_getheaders_session(current_locator)?;
             if page.is_empty() {
+                eprintln!("  headers: peer returned empty page at height {next_height} — at tip");
                 break;
             }
+            let page_len = page.len();
             for hdr in page {
                 let h = BlockHeight(next_height);
                 if h > end {
@@ -522,6 +1092,12 @@ impl Fetcher {
                 collected.push((h, hdr));
                 next_height = next_height.wrapping_add(1);
             }
+            eprintln!(
+                "  headers: got {page_len} in page, {} total (height {}..={})",
+                collected.len(),
+                start.0,
+                next_height.saturating_sub(1),
+            );
             if collected.last().is_some_and(|(h, _)| *h >= end) {
                 break;
             }
@@ -529,7 +1105,15 @@ impl Fetcher {
             current_locator = last.1.hash();
         }
 
-        write_headers_bin(&self.headers_path(), start, &collected)?;
+        {
+            let mut sorted: Vec<&(BlockHeight, BlockHeader)> = collected.iter().collect();
+            sorted.sort_by_key(|(h, _)| h.0);
+            let mut out = Vec::with_capacity(sorted.len() * 80);
+            for (_, hdr) in &sorted {
+                out.extend_from_slice(&hdr.to_bytes());
+            }
+            self.file_io.write_headers(start, out)?;
+        }
         Ok(collected)
     }
 
@@ -538,40 +1122,45 @@ impl Fetcher {
         &mut self,
         headers: &[(BlockHeight, BlockHeader)],
     ) -> Result<(), FetchError> {
-        if self.peer_pool.is_empty() {
+        if self.addr_pool.is_empty() {
             return Err(FetchError::NoPeers);
         }
         let needed: Vec<(BlockHeight, Hash256)> = headers
             .iter()
-            .filter(|(h, _)| !self.block_path(*h).exists())
+            .filter(|(h, _)| {
+                !self.file_io.has_block(*h)
+            })
             .map(|(h, hdr)| (*h, hdr.hash()))
             .collect();
         if needed.is_empty() {
             return Ok(());
         }
-        self.run_block_download_session(&needed)
+        self.run_block_download_session(&needed)?;
+        self.file_io.flush_block_index()?;
+        Ok(())
     }
 
     // ── headers session ──────────────────────────────────────────────────
 
     #[allow(clippy::too_many_lines)]
     fn run_getheaders_session(&mut self, locator: Hash256) -> Result<Vec<BlockHeader>, FetchError> {
-        let mut ring = make_ring()?;
-        let mut pbr = ring
-            .register_provided_buffers(PROVIDED_BUF_GROUP_ID, PROVIDED_BUF_COUNT, PROVIDED_BUF_SIZE)
-            .map_err(|e| FetchError::UringErr(format!("register_provided_buffers: {e:?}")))?;
-        let mut send_arena = SendArena::new();
-        let mut peers: HashMap<u16, Peer> = HashMap::new();
-        let mut next_slot: u16 = 0;
-        // Top up with TARGET_LIVE_PEERS dials.
-        for _ in 0..TARGET_LIVE_PEERS.min(self.peer_pool.len()) {
-            if let Some(peer) = self.dial_next(&mut ring, next_slot)? {
-                peers.insert(next_slot, peer);
-                next_slot = next_slot.wrapping_add(1);
-            }
-        }
-        if peers.is_empty() {
+        self.ensure_peers()?;
+        if self.peers.is_empty() {
             return Err(FetchError::PoolExhausted);
+        }
+        eprintln!(
+            "  headers: connecting to {} peers…",
+            self.peers.live_count(),
+        );
+        for (slot, peer) in self.peers.iter_mut() {
+            if !peer.recv_armed
+                && peer.state != PeerState::Dead
+                && peer.state != PeerState::Connecting
+                && peer.fd.is_some()
+            {
+                push_recv_multishot(&mut self.ring, slot, peer.generation, peer.fd.ok_or(FetchError::NoPeers)?)?;
+                peer.recv_armed = true;
+            }
         }
 
         let phase_deadline = Instant::now() + Duration::from_secs(HEADERS_PHASE_DEADLINE_SECS);
@@ -579,15 +1168,16 @@ impl Fetcher {
         let mut elected: Option<(u16, Instant)> = None;
         let dbg_arena = std::env::var_os("MANTLE_URING_DEBUG").is_some_and(|v| v == "1");
         let mut dbg_iter: u64 = 0;
+        let mut last_status = Instant::now();
 
         loop {
             // Submit any pending SQEs and wait for at least one CQE, but
             // also poll a 1s tick so timeouts can fire even if no peer
             // produces a CQE on its own.
-            push_tick(&mut ring, Duration::from_secs(1))?;
-            let dbg_submitted = ring.submit_and_wait(1).map_err(uring_err)?;
-            let dbg_alloc_pre = send_arena.dbg_alloc;
-            let dbg_release_pre = send_arena.dbg_release;
+            push_tick(&mut self.ring, Duration::from_secs(1))?;
+            let dbg_submitted = self.ring.submit_and_wait(1).map_err(uring_err)?;
+            let dbg_alloc_pre = self.send_arena.dbg_alloc;
+            let dbg_release_pre = self.send_arena.dbg_release;
 
             // Drain CQEs, capped so a recv torrent can't starve SEND CQEs.
             let mut drained = 0usize;
@@ -595,7 +1185,7 @@ impl Fetcher {
             let mut dbg_send_res_min: i32 = i32::MAX;
             let mut dbg_send_res_max: i32 = i32::MIN;
             while drained < CQE_DRAIN_CAP {
-                let Some(cqe) = ring.complete() else { break };
+                let Some(cqe) = self.ring.complete() else { break };
                 drained += 1;
                 let (slot, op, g) = decode_user_data(cqe.user_data);
                 let dbg_idx = match op {
@@ -618,22 +1208,22 @@ impl Fetcher {
                         dbg_send_res_max = cqe.result;
                     }
                     let send_seq = decode_send_seq(cqe.user_data);
-                    send_arena.release(send_seq);
-                    if let Some(p) = peers.get_mut(&slot) {
+                    self.send_arena.release(send_seq);
+                    if let Some(p) = self.peers.get_mut(slot) {
                         p.pending_send_seqs.retain(|s| *s != send_seq);
                     }
                 }
                 let res = cqe.result;
-                let Some(peer) = peers.get_mut(&slot) else {
+                let Some(peer) = self.peers.get_mut(slot) else {
                     continue;
                 };
                 if peer.generation != g {
                     continue; // stale CQE for a recycled slot
                 }
                 handle_getheaders_cqe(
-                    &mut ring,
-                    &mut pbr,
-                    &mut send_arena,
+                    &mut self.ring,
+                    &mut self.pbr,
+                    &mut self.send_arena,
                     self.network,
                     slot,
                     peer,
@@ -649,36 +1239,36 @@ impl Fetcher {
             // recv torrent generates dozens of pong/verack sends per
             // CQE drain pass and exhausts the send arena before SEND
             // CQEs surface.
-            for (slot, peer) in &mut peers {
+            for (slot, peer) in self.peers.iter_mut() {
                 if peer.state == PeerState::Dead {
                     continue;
                 }
                 if let Some(headers) =
-                    consume_handshake_frames(&mut ring, &mut send_arena, self.network, *slot, peer)?
+                    consume_handshake_frames(&mut self.ring, &mut self.send_arena, self.network, slot, peer)?
                 {
                     return Ok(headers);
                 }
             }
 
             if dbg_arena {
-                let alloc_iter = send_arena.dbg_alloc - dbg_alloc_pre;
-                let release_iter = send_arena.dbg_release - dbg_release_pre;
-                let in_flight = send_arena.dbg_alloc - send_arena.dbg_release;
-                let free = send_arena.free.len();
+                let alloc_iter = self.send_arena.dbg_alloc - dbg_alloc_pre;
+                let release_iter = self.send_arena.dbg_release - dbg_release_pre;
+                let in_flight = self.send_arena.dbg_alloc - self.send_arena.dbg_release;
+                let free = self.send_arena.free.len();
                 // Only log meaningful iterations: any send activity, or
                 // arena pressure (in_flight > 0). Skip the millions of
                 // pure dial-redial iterations that produce no signal.
                 let interesting =
-                    alloc_iter > 0 || release_iter > 0 || in_flight > 0 || dbg_iter % 1000 == 0;
+                    alloc_iter > 0 || release_iter > 0 || in_flight > 0 || dbg_iter.is_multiple_of(1000);
                 if interesting {
-                    let overflow = ring.cq_overflow();
+                    let overflow = self.ring.cq_overflow();
                     let send_res_str = if dbg_send_res_min == i32::MAX {
                         String::from("-")
                     } else {
                         format!("{dbg_send_res_min}..{dbg_send_res_max}")
                     };
-                    let states: Vec<String> = peers
-                        .iter()
+                    let states: Vec<String> = self.peers
+                        .iter_mut()
                         .map(|(s, p)| {
                             format!(
                                 "{s}:{:?}/snd={}/buf={}/armed={}",
@@ -711,9 +1301,21 @@ impl Fetcher {
             if now > phase_deadline {
                 return Err(FetchError::Timeout("headers"));
             }
+            if now.duration_since(last_status) >= Duration::from_secs(5) {
+                let ready = self.peers.slots.iter().filter(|s| s.as_ref().is_some_and(|p| p.state == PeerState::Ready)).count();
+                let connecting = self.peers.slots.iter().filter(|s| s.as_ref().is_some_and(|p| p.state == PeerState::Connecting)).count();
+                let handshaking = self.peers.slots.iter().filter(|s| s.as_ref().is_some_and(|p| matches!(p.state, PeerState::HandshakeSendVersion | PeerState::HandshakeRecving))).count();
+                let dead = self.peers.slots.iter().filter(|s| s.as_ref().is_some_and(|p| p.state == PeerState::Dead)).count();
+                let waiting = self.peers.slots.iter().filter(|s| s.as_ref().is_some_and(|p| p.state == PeerState::WaitingHeaders)).count();
+                eprintln!(
+                    "  headers: ready={ready} connecting={connecting} handshaking={handshaking} waiting={waiting} dead={dead} elected={:?}",
+                    elected.map(|(s,_)| s),
+                );
+                last_status = now;
+            }
 
             // Drop dead-on-arrival or response-timed-out peers.
-            for (slot, peer) in &mut peers {
+            for (slot, peer) in self.peers.iter_mut() {
                 if peer.state == PeerState::Dead {
                     continue;
                 }
@@ -725,7 +1327,7 @@ impl Fetcher {
                         "  iouring-fetcher: peer {} ({}) connect-timeout",
                         slot, peer.addr
                     );
-                    close_peer(&mut ring, &mut send_arena, peer);
+                    close_peer(&mut self.ring, &mut self.send_arena, peer);
                     peer.state = PeerState::Dead;
                 }
                 // Handshake-stall: connect succeeded but peer never sent
@@ -741,7 +1343,7 @@ impl Fetcher {
                         "  iouring-fetcher: peer {} ({}) handshake-timeout",
                         slot, peer.addr
                     );
-                    close_peer(&mut ring, &mut send_arena, peer);
+                    close_peer(&mut self.ring, &mut self.send_arena, peer);
                     peer.state = PeerState::Dead;
                 }
             }
@@ -749,8 +1351,8 @@ impl Fetcher {
                 && now.duration_since(sent) > Duration::from_secs(HEADERS_RESPONSE_TIMEOUT_SECS)
             {
                 eprintln!("  iouring-fetcher: elected peer {slot} headers-timeout, demoting");
-                if let Some(peer) = peers.get_mut(&slot) {
-                    close_peer(&mut ring, &mut send_arena, peer);
+                if let Some(peer) = self.peers.get_mut(slot) {
+                    close_peer(&mut self.ring, &mut self.send_arena, peer);
                     peer.state = PeerState::Dead;
                 }
                 elected = None;
@@ -763,48 +1365,42 @@ impl Fetcher {
             // the parsed headers Vec by writing them into a sidechannel.
             // For simplicity here, return as soon as the elected peer
             // hits Ready *after* sending getheaders.
-            for peer in peers.values_mut() {
+            for peer in self.peers.values_mut() {
                 if peer.state == PeerState::Ready && peer.recv_buf.iter().any(|_| false) {
                     // Placeholder — actual parse happens in handle path.
                 }
             }
 
-            // Refill dead slots from the pool.
-            let dead_slots: Vec<u16> = peers
-                .iter()
-                .filter_map(|(s, p)| (p.state == PeerState::Dead).then_some(*s))
-                .collect();
-            for slot in dead_slots {
-                if let Some(p) = peers.remove(&slot) {
-                    drop(p);
+            for slot in self.peers.dead_slots() {
+                self.peers.remove(slot);
+                if let Some(peer) = self.dial_next_inner(slot)? {
+                    self.peers.insert(slot, peer);
                 }
-                if let Some(peer) = self.dial_next(&mut ring, next_slot)? {
-                    peers.insert(next_slot, peer);
-                    next_slot = next_slot.wrapping_add(1);
-                }
-                // Note: send_arena/pbr threading would be cleaner with
-                // dial_next taking them, but we don't push send/recv
-                // until OP_CONNECT-success — so the dial path doesn't
-                // need them.
             }
-            if peers.is_empty() {
-                return Err(FetchError::PoolExhausted);
+            if self.peers.live_count() == 0 {
+                eprintln!("  iouring-fetcher: all header peers dead, recycling pool in 5s…");
+                std::thread::sleep(Duration::from_secs(5));
+                self.next_addr_idx = 0;
+                self.ensure_peers()?;
+                if self.peers.is_empty() {
+                    return Err(FetchError::PoolExhausted);
+                }
             }
 
             // Election: any Ready peer with no current pick → send getheaders.
             if elected.is_none()
-                && let Some((&slot, peer)) =
-                    peers.iter_mut().find(|(_, p)| p.state == PeerState::Ready)
+                && let Some((slot, peer)) =
+                    self.peers.iter_mut().find(|(_, p)| p.state == PeerState::Ready)
             {
                 let seq = push_send(
-                    &mut ring,
-                    &mut send_arena,
+                    &mut self.ring,
+                    &mut self.send_arena,
                     self.network,
                     Command::GetHeaders,
                     &payload,
                     slot,
                     peer.generation,
-                    peer.fd,
+                    peer.fd.ok_or(FetchError::NoPeers)?,
                 )?;
                 peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::WaitingHeaders;
@@ -815,13 +1411,13 @@ impl Fetcher {
             // pass. Doing this here rather than inline in the recv
             // handler keeps the SQE ring's pending-work mix balanced
             // across submit_and_wait cycles.
-            for (slot, peer) in &mut peers {
+            for (slot, peer) in self.peers.iter_mut() {
                 if !peer.recv_armed
                     && peer.state != PeerState::Dead
                     && peer.state != PeerState::Connecting
-                    && peer.fd >= 0
+                    && peer.fd.is_some()
                 {
-                    push_recv_multishot(&mut ring, *slot, peer.generation, peer.fd)?;
+                    push_recv_multishot(&mut self.ring, slot, peer.generation, peer.fd.ok_or(FetchError::NoPeers)?)?;
                     peer.recv_armed = true;
                 }
             }
@@ -829,7 +1425,7 @@ impl Fetcher {
             // Publish recycled buffers + arena releases before the
             // next submit_and_wait. Both must be visible to the
             // kernel for the multishot recv to keep firing.
-            pbr.commit();
+            self.pbr.commit();
         }
     }
 
@@ -840,20 +1436,8 @@ impl Fetcher {
         &mut self,
         needed: &[(BlockHeight, Hash256)],
     ) -> Result<(), FetchError> {
-        let mut ring = make_ring()?;
-        let mut pbr = ring
-            .register_provided_buffers(PROVIDED_BUF_GROUP_ID, PROVIDED_BUF_COUNT, PROVIDED_BUF_SIZE)
-            .map_err(|e| FetchError::UringErr(format!("register_provided_buffers: {e:?}")))?;
-        let mut send_arena = SendArena::new();
-        let mut peers: HashMap<u16, Peer> = HashMap::new();
-        let mut next_slot: u16 = 0;
-        for _ in 0..TARGET_LIVE_PEERS.min(self.peer_pool.len()) {
-            if let Some(peer) = self.dial_next(&mut ring, next_slot)? {
-                peers.insert(next_slot, peer);
-                next_slot = next_slot.wrapping_add(1);
-            }
-        }
-        if peers.is_empty() {
+        self.ensure_peers()?;
+        if self.peers.is_empty() {
             return Err(FetchError::PoolExhausted);
         }
 
@@ -888,33 +1472,33 @@ impl Fetcher {
         let mut dbg_iter: u64 = 0;
 
         loop {
-            push_tick(&mut ring, Duration::from_secs(1))?;
-            ring.submit_and_wait(1).map_err(uring_err)?;
-            let dbg_alloc_pre = send_arena.dbg_alloc;
-            let dbg_release_pre = send_arena.dbg_release;
+            push_tick(&mut self.ring, Duration::from_secs(1))?;
+            self.ring.submit_and_wait(1).map_err(uring_err)?;
+            let dbg_alloc_pre = self.send_arena.dbg_alloc;
+            let dbg_release_pre = self.send_arena.dbg_release;
 
             let mut got_block_hashes: Vec<Hash256> = Vec::new();
             let mut drained = 0usize;
             while drained < CQE_DRAIN_CAP {
-                let Some(cqe) = ring.complete() else { break };
+                let Some(cqe) = self.ring.complete() else { break };
                 drained += 1;
                 let (slot, op, g) = decode_user_data(cqe.user_data);
                 if op == OP_TICK {
                     continue;
                 }
                 if op == OP_SEND {
-                    send_arena.release(decode_send_seq(cqe.user_data));
+                    self.send_arena.release(decode_send_seq(cqe.user_data));
                 }
-                let Some(peer) = peers.get_mut(&slot) else {
+                let Some(peer) = self.peers.get_mut(slot) else {
                     continue;
                 };
                 if peer.generation != g {
                     continue;
                 }
                 handle_block_cqe(
-                    &mut ring,
-                    &mut pbr,
-                    &mut send_arena,
+                    &mut self.ring,
+                    &mut self.pbr,
+                    &mut self.send_arena,
                     self.network,
                     slot,
                     peer,
@@ -928,33 +1512,33 @@ impl Fetcher {
             // parse complete frames. Per-iteration parsing (not
             // per-CQE) bounds outbound sends so the arena can't be
             // exhausted by a multishot recv torrent.
-            for (slot, peer) in &mut peers {
+            for (slot, peer) in self.peers.iter_mut() {
                 if peer.state == PeerState::Dead {
                     continue;
                 }
                 consume_block_frames(
-                    &mut ring,
-                    &mut send_arena,
+                    &mut self.ring,
+                    &mut self.send_arena,
                     self.network,
-                    *slot,
+                    slot,
                     peer,
                     &mut pending,
-                    &self.data_dir,
                     &mut saved,
                     &mut got_block_hashes,
+                    &mut self.file_io,
                 )?;
             }
 
             if dbg_arena {
-                let alloc_iter = send_arena.dbg_alloc - dbg_alloc_pre;
-                let release_iter = send_arena.dbg_release - dbg_release_pre;
-                let arena_in_flight = send_arena.dbg_alloc - send_arena.dbg_release;
-                let free = send_arena.free.len();
+                let alloc_iter = self.send_arena.dbg_alloc - dbg_alloc_pre;
+                let release_iter = self.send_arena.dbg_release - dbg_release_pre;
+                let arena_in_flight = self.send_arena.dbg_alloc - self.send_arena.dbg_release;
+                let free = self.send_arena.free.len();
                 eprintln!(
                     "  arena[b iter={dbg_iter}]: drained={drained} alloc+={alloc_iter} \
                      release+={release_iter} in_flight={arena_in_flight} free={free} \
                      peers_live={live} blocks_in_flight={bif} blocks_todo={todo_n} saved={saved}",
-                    live = peers
+                    live = self.peers
                         .values()
                         .filter(|p| p.state != PeerState::Dead)
                         .count(),
@@ -973,8 +1557,8 @@ impl Fetcher {
                     if let Some(info) = in_flight.remove(hash) {
                         let arrival_latency = info.first_issued.elapsed();
                         ewma.observe(arrival_latency);
-                        for slot in &info.issued_to {
-                            if let Some(peer) = peers.get_mut(slot) {
+                        for &s in &info.issued_to {
+                            if let Some(peer) = self.peers.get_mut(s) {
                                 peer.in_flight.retain(|(h, _)| h != hash);
                             }
                         }
@@ -996,7 +1580,7 @@ impl Fetcher {
                 let window = now.duration_since(last_log).as_secs_f64().max(1e-9);
                 #[allow(clippy::cast_precision_loss)]
                 let bps = (saved - saved_at_last_log) as f64 / window;
-                let ready = peers
+                let ready = self.peers
                     .values()
                     .filter(|p| p.state == PeerState::Ready)
                     .count();
@@ -1030,8 +1614,8 @@ impl Fetcher {
             }
             for hash in to_reclaim {
                 if let Some(info) = in_flight.remove(&hash) {
-                    for slot in &info.issued_to {
-                        if let Some(peer) = peers.get_mut(slot) {
+                    for &s in &info.issued_to {
+                        if let Some(peer) = self.peers.get_mut(s) {
                             peer.in_flight.retain(|(h, _)| h != &hash);
                         }
                     }
@@ -1039,14 +1623,12 @@ impl Fetcher {
                 todo.push_front(hash);
             }
 
-            // Connect-timeout + black-hole sweep. Both produce Dead peers
-            // whose work returns to the front of `todo`.
-            for (slot, peer) in &mut peers {
+            for (slot, peer) in self.peers.iter_mut() {
                 if peer.state == PeerState::Connecting
                     && now.duration_since(peer.connected_at)
                         > Duration::from_secs(CONNECT_TIMEOUT_SECS + 2)
                 {
-                    close_peer(&mut ring, &mut send_arena, peer);
+                    close_peer(&mut self.ring, &mut self.send_arena, peer);
                     peer.state = PeerState::Dead;
                     continue;
                 }
@@ -1061,20 +1643,13 @@ impl Fetcher {
                          (assigned={} delivered=0 grace={}s) — evicting",
                         peer.addr, peer.assigned_count, BLACK_HOLE_GRACE_SECS,
                     );
-                    close_peer(&mut ring, &mut send_arena, peer);
+                    close_peer(&mut self.ring, &mut self.send_arena, peer);
                     peer.state = PeerState::Dead;
                 }
             }
 
-            // Refill dead slots. Their in-flight hashes need to be removed
-            // from the per-hash issued_to lists; if no peer still holds a
-            // hash, return it to the front of `todo` so it gets re-issued.
-            let dead_slots: Vec<u16> = peers
-                .iter()
-                .filter_map(|(s, p)| (p.state == PeerState::Dead).then_some(*s))
-                .collect();
-            for slot in dead_slots {
-                if let Some(p) = peers.remove(&slot) {
+            for slot in self.peers.dead_slots() {
+                if let Some(p) = self.peers.remove(slot) {
                     for (h, _) in p.in_flight {
                         if let Some(info) = in_flight.get_mut(&h) {
                             info.issued_to.retain(|s| *s != slot);
@@ -1085,17 +1660,12 @@ impl Fetcher {
                         }
                     }
                 }
-                let active: Vec<SocketAddrV4> = peers.values().map(|p| p.addr).collect();
-                if let Some(peer) = self.dial_next_avoiding(&mut ring, next_slot, &active)? {
-                    peers.insert(next_slot, peer);
-                    next_slot = next_slot.wrapping_add(1);
+                let active: Vec<SocketAddrV4> = self.peers.values().map(|p| p.addr).collect();
+                if let Some(peer) = self.dial_next_avoiding_inner(slot, &active)? {
+                    self.peers.insert(slot, peer);
                 }
             }
 
-            // Now hedge: each entry in `to_hedge` goes to a Ready peer
-            // that doesn't already hold it and has capacity. We do this
-            // *after* dead-slot reaping so freshly-dialed peers are
-            // candidates.
             for hash in to_hedge {
                 let Some(info) = in_flight.get(&hash).cloned() else {
                     continue;
@@ -1105,42 +1675,39 @@ impl Fetcher {
                 }
                 let already: PrehashedSet<u16> = {
                     let mut s = HashSet::with_hasher(BuildPrehashedHasher);
-                    for slot in &info.issued_to {
-                        s.insert(*slot);
+                    for &sl in &info.issued_to {
+                        s.insert(sl);
                     }
                     s
                 };
-                let pick = peers.iter_mut().find(|(slot, peer)| {
+                let pick = self.peers.iter_mut().find(|(slot, peer)| {
                     peer.state == PeerState::Ready
                         && peer.in_flight.len() < PEER_INFLIGHT_CAP
-                        && !already.contains(*slot)
+                        && !already.contains(slot)
                 });
                 if let Some((slot, peer)) = pick {
                     let pl = encode_getdata(&[hash]);
                     let seq = push_send(
-                        &mut ring,
-                        &mut send_arena,
+                        &mut self.ring,
+                        &mut self.send_arena,
                         self.network,
                         Command::GetData,
                         &pl,
-                        *slot,
+                        slot,
                         peer.generation,
-                        peer.fd,
+                        peer.fd.ok_or(FetchError::NoPeers)?,
                     )?;
                     peer.pending_send_seqs.push(seq);
                     peer.in_flight.push((hash, now));
                     peer.assigned_count = peer.assigned_count.saturating_add(1);
                     if let Some(info) = in_flight.get_mut(&hash) {
-                        info.issued_to.push(*slot);
+                        info.issued_to.push(slot);
                         info.last_issued = now;
                     }
                 }
             }
 
-            // Pull-queue assignment: each Ready peer with capacity grabs
-            // the front of `todo`. No per-peer batching — slow peers
-            // simply pull less often.
-            for (slot, peer) in &mut peers {
+            for (slot, peer) in self.peers.iter_mut() {
                 if peer.state != PeerState::Ready {
                     continue;
                 }
@@ -1148,14 +1715,14 @@ impl Fetcher {
                     let Some(hash) = todo.pop_front() else { break };
                     let pl = encode_getdata(&[hash]);
                     let seq = push_send(
-                        &mut ring,
-                        &mut send_arena,
+                        &mut self.ring,
+                        &mut self.send_arena,
                         self.network,
                         Command::GetData,
                         &pl,
-                        *slot,
+                        slot,
                         peer.generation,
-                        peer.fd,
+                        peer.fd.ok_or(FetchError::NoPeers)?,
                     )?;
                     peer.pending_send_seqs.push(seq);
                     peer.in_flight.push((hash, now));
@@ -1163,7 +1730,7 @@ impl Fetcher {
                     in_flight.insert(
                         hash,
                         InFlight {
-                            issued_to: vec![*slot],
+                            issued_to: vec![slot],
                             first_issued: now,
                             last_issued: now,
                         },
@@ -1171,96 +1738,35 @@ impl Fetcher {
                 }
             }
 
-            // Re-arm any peers whose multishot recv terminated this
-            // pass.
-            for (slot, peer) in &mut peers {
+            for (slot, peer) in self.peers.iter_mut() {
                 if !peer.recv_armed
                     && peer.state != PeerState::Dead
                     && peer.state != PeerState::Connecting
-                    && peer.fd >= 0
+                    && peer.fd.is_some()
                 {
-                    push_recv_multishot(&mut ring, *slot, peer.generation, peer.fd)?;
+                    push_recv_multishot(&mut self.ring, slot, peer.generation, peer.fd.ok_or(FetchError::NoPeers)?)?;
                     peer.recv_armed = true;
                 }
             }
 
-            // Publish recycled buffers + arena releases before the
-            // next submit_and_wait so multishot recv keeps firing.
-            pbr.commit();
+            self.pbr.commit();
 
-            if peers.is_empty() && in_flight.is_empty() && todo.is_empty() {
-                return Err(FetchError::PoolExhausted);
+            if self.peers.is_empty() && in_flight.is_empty() && todo.is_empty() {
+                return Ok(());
+            }
+            if self.peers.live_count() == 0 {
+                eprintln!("  iouring-fetcher: all peers dead, recycling pool in 5s…");
+                std::thread::sleep(Duration::from_secs(5));
+                self.next_addr_idx = 0;
+                self.ensure_peers()?;
+                if self.peers.is_empty() {
+                    return Err(FetchError::PoolExhausted);
+                }
             }
         }
     }
 
     // ── peer dial ───────────────────────────────────────────────────────
-
-    fn dial_next(&mut self, ring: &mut IoUring, slot: u16) -> Result<Option<Peer>, FetchError> {
-        self.dial_next_avoiding(ring, slot, &[])
-    }
-
-    /// Dial the next peer from the pool, skipping any address in `active`.
-    /// Lets the block-download loop wrap around the pool without
-    /// re-dialing peers it's already connected to or just evicted.
-    fn dial_next_avoiding(
-        &mut self,
-        ring: &mut IoUring,
-        slot: u16,
-        active: &[SocketAddrV4],
-    ) -> Result<Option<Peer>, FetchError> {
-        let Some(addr) = self.next_pool_addr(active) else {
-            return Ok(None);
-        };
-        let sock = ququmatz::Socket::with_typed_flags(
-            AddressFamily::Inet,
-            SocketType::Stream,
-            0,
-            SocketFlags::NONBLOCK,
-        )
-        .map_err(|e| FetchError::UringErr(format!("socket: {e:?}")))?;
-        let fd = sock.into_fd();
-        let sockaddr = Box::new(SockAddrIn {
-            sin_family: u16::try_from(AddressFamily::Inet.as_raw()).expect("AF_INET fits u16"),
-            sin_port: addr.port().to_be(),
-            sin_addr: u32::from_ne_bytes(addr.ip().octets()),
-            sin_zero: [0; 8],
-        });
-
-        let peer = Peer {
-            addr,
-            fd,
-            sockaddr,
-            state: PeerState::Connecting,
-            recv_buf: Vec::with_capacity(RECV_BUF_CAPACITY),
-            // Multishot recv is armed in the OP_CONNECT-success branch
-            // of the CQE handler. Submitting `recv_multishot` on a
-            // not-yet-connected socket fires `-ENOTCONN` immediately
-            // (multishot doesn't queue-then-deliver like one-shot
-            // recv) and on some kernels poisons the io_wq enough to
-            // abort the linked connect with `-EAFNOSUPPORT`. The
-            // version send is deferred for the same reason.
-            recv_armed: false,
-            in_flight: Vec::new(),
-            connected_at: Instant::now(),
-            generation: 0,
-            assigned_count: 0,
-            delivered_count: 0,
-            last_delivery: Instant::now(),
-            pending_send_seqs: Vec::with_capacity(PEER_SEND_OUTSTANDING_CAP as usize),
-        };
-
-        push_connect(
-            ring,
-            slot,
-            peer.generation,
-            fd,
-            &peer.sockaddr,
-            &self.connect_timeout,
-        )?;
-
-        Ok(Some(peer))
-    }
 
     /// Pull the next pool address, wrapping around the pool if needed
     /// and skipping anything in `avoid`. Returns `None` only when *every*
@@ -1269,20 +1775,46 @@ impl Fetcher {
     /// monotonically modulo `pool.len()` so order roughly matches the
     /// caller-supplied (latency-ranked) ordering.
     fn next_pool_addr(&mut self, avoid: &[SocketAddrV4]) -> Option<SocketAddrV4> {
-        if self.peer_pool.is_empty() {
+        if self.addr_pool.is_empty() {
             return None;
         }
-        let len = self.peer_pool.len();
+        let len = self.addr_pool.len();
         for _ in 0..len {
-            let idx = self.next_pool_idx % len;
-            self.next_pool_idx = idx.wrapping_add(1);
-            let addr = self.peer_pool[idx];
+            let idx = self.next_addr_idx % len;
+            self.next_addr_idx = idx.wrapping_add(1);
+            let addr = self.addr_pool[idx];
             if !avoid.contains(&addr) {
                 return Some(addr);
             }
         }
         None
     }
+}
+
+// ── Block index I/O ─────────────────────────────────────────────────────
+
+fn load_blocks_index(path: &Path) -> io::Result<Vec<BlockEntry>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read(path)?;
+    let count = data.len() / BLOCK_INDEX_ENTRY_SIZE;
+    let mut index = Vec::with_capacity(count);
+    for chunk in data.chunks_exact(BLOCK_INDEX_ENTRY_SIZE) {
+        let offset = u64::from_le_bytes(chunk[..8].try_into().unwrap());
+        let length = u32::from_le_bytes(chunk[8..12].try_into().unwrap());
+        index.push(BlockEntry { offset, length });
+    }
+    Ok(index)
+}
+
+fn save_blocks_index(path: &Path, index: &[BlockEntry]) -> io::Result<()> {
+    let mut data = Vec::with_capacity(index.len() * BLOCK_INDEX_ENTRY_SIZE);
+    for entry in index {
+        data.extend_from_slice(&entry.offset.to_le_bytes());
+        data.extend_from_slice(&entry.length.to_le_bytes());
+    }
+    fs::write(path, &data)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -1308,6 +1840,13 @@ fn decode_user_data(raw: u64) -> (u16, u8, u16) {
     #[allow(clippy::cast_possible_truncation)]
     let g = ((raw >> 32) & 0xffff) as u16;
     (slot, op, g)
+}
+
+#[cfg(unix)]
+#[allow(clippy::cast_sign_loss)]
+fn file_to_rawfd(file: &fs::File) -> RawFd {
+    use std::os::unix::io::AsRawFd;
+    RawFd::from_raw(file.as_raw_fd() as usize)
 }
 
 /// `user_data` for SEND SQEs additionally carries the `SendArena` slot
@@ -1357,7 +1896,6 @@ fn make_ring() -> Result<IoUring, FetchError> {
         .coop_taskrun()
         .build()
     {
-        eprintln!("  io_uring: builder flags (single_issuer+defer_taskrun+coop_taskrun)");
         return Ok(ring);
     }
     IoUring::new(RING_ENTRIES).map_err(|e| FetchError::UringErr(format!("IoUring::new: {e:?}")))
@@ -1379,7 +1917,7 @@ fn push_connect(
     ring: &mut IoUring,
     slot: u16,
     g: u16,
-    fd: i32,
+    fd: RawFd,
     sockaddr: &SockAddrIn,
     timeout: &Timespec,
 ) -> Result<(), FetchError> {
@@ -1422,7 +1960,7 @@ fn push_send(
     payload: &[u8],
     slot: u16,
     g: u16,
-    fd: i32,
+    fd: RawFd,
 ) -> Result<u16, FetchError> {
     let send_seq = arena
         .frame_into(network.magic(), cmd, payload)
@@ -1459,7 +1997,7 @@ fn push_send(
 /// bits of `flags`) until either the peer closes, the kernel hits an
 /// error, or the provided-buffer pool runs dry. On termination the
 /// final CQE clears `MORE`; we re-arm in the per-iteration sweep.
-fn push_recv_multishot(ring: &mut IoUring, slot: u16, g: u16, fd: i32) -> Result<(), FetchError> {
+fn push_recv_multishot(ring: &mut IoUring, slot: u16, g: u16, fd: RawFd) -> Result<(), FetchError> {
     ring.push(
         Sqe::recv_multishot(fd, MsgFlags::default())
             .buffer_select(PROVIDED_BUF_GROUP_ID)
@@ -1479,7 +2017,7 @@ fn close_peer(ring: &mut IoUring, send_arena: &mut SendArena, peer: &mut Peer) {
     for seq in peer.pending_send_seqs.drain(..) {
         send_arena.release(seq);
     }
-    if peer.fd >= 0 {
+    if let Some(fd) = peer.fd.take() {
         // Cancel the outstanding recv first so its CQE arrives with
         // `-ECANCELED` rather than racing the close: the kernel matches
         // `target_user_data` against pending SQEs and terminates the
@@ -1501,13 +2039,10 @@ fn close_peer(ring: &mut IoUring, send_arena: &mut SendArena, peer: &mut Peer) {
                 OP_CLOSE,
             )),
         ) {
-            eprintln!(
-                "  iouring-fetcher: close_peer cancel-recv push failed for fd={}: {e:?}",
-                peer.fd
-            );
+            eprintln!("  iouring-fetcher: close_peer cancel-recv push failed for fd={fd:?}: {e:?}");
         }
         if let Err(e) =
-            ring.push(Sqe::close(peer.fd).user_data(make_user_data(0, peer.generation, OP_CLOSE)))
+            ring.push(Sqe::close(fd).user_data(make_user_data(0, peer.generation, OP_CLOSE)))
         {
             // SQE push failed: kernel won't close the fd via the ring.
             // Fall back to a synchronous close so we don't leak the
@@ -1516,13 +2051,9 @@ fn close_peer(ring: &mut IoUring, send_arena: &mut SendArena, peer: &mut Peer) {
             // Wrap the fd in a Socket and let Drop close it. Safe
             // because we just established (via the failed push) that
             // the kernel doesn't own this fd via the ring.
-            drop(unsafe { ququmatz::Socket::from_fd(peer.fd) });
-            eprintln!(
-                "  iouring-fetcher: close_peer close push failed for fd={}: {e:?} (closed synchronously)",
-                peer.fd
-            );
+            drop(unsafe { ququmatz::Socket::from_fd(fd) });
+            eprintln!("  iouring-fetcher: close_peer close push failed for fd={fd:?}: {e:?} (closed synchronously)");
         }
-        peer.fd = -1;
     }
 }
 
@@ -1567,22 +2098,6 @@ fn our_version() -> VersionMsg {
     }
 }
 
-fn write_headers_bin(
-    path: &Path,
-    start: BlockHeight,
-    headers: &[(BlockHeight, BlockHeader)],
-) -> io::Result<()> {
-    let mut sorted: Vec<&(BlockHeight, BlockHeader)> = headers.iter().collect();
-    sorted.sort_by_key(|(h, _)| h.0);
-    let mut out = Vec::with_capacity(sorted.len() * 80);
-    for (_, hdr) in &sorted {
-        out.extend_from_slice(&hdr.to_bytes());
-    }
-    fs::write(path, &out)?;
-    let metadata = path.parent().unwrap_or(Path::new(".")).join("metadata.bin");
-    fs::write(metadata, start.0.to_le_bytes())?;
-    Ok(())
-}
 
 // ── CQE handlers ────────────────────────────────────────────────────────
 
@@ -1668,7 +2183,7 @@ fn handle_getheaders_cqe(
             // provided-buffer pool, then send our version. Both wait
             // until success so a connect-failed peer doesn't leak
             // SQEs into the kernel without producing CQEs.
-            push_recv_multishot(ring, slot, peer.generation, peer.fd)?;
+            push_recv_multishot(ring, slot, peer.generation, peer.fd.ok_or(FetchError::NoPeers)?)?;
             peer.recv_armed = true;
             let seq = push_send(
                 ring,
@@ -1678,16 +2193,14 @@ fn handle_getheaders_cqe(
                 &our_version().encode_to_vec(),
                 slot,
                 peer.generation,
-                peer.fd,
+                peer.fd.ok_or(FetchError::NoPeers)?,
             )?;
             peer.pending_send_seqs.push(seq);
             peer.state = PeerState::HandshakeSendVersion;
         }
-        OP_SEND => {
-            if res < 0 {
-                peer.state = PeerState::Dead;
-                close_peer(ring, send_arena, peer);
-            }
+        OP_SEND if res < 0 => {
+            peer.state = PeerState::Dead;
+            close_peer(ring, send_arena, peer);
         }
         OP_RECV => {
             ingest_recv_cqe(pbr, send_arena, peer, cqe_flags, res, ring);
@@ -1757,7 +2270,7 @@ fn consume_handshake_frames(
                     &[],
                     slot,
                     peer.generation,
-                    peer.fd,
+                    peer.fd.ok_or(FetchError::NoPeers)?,
                 )?;
                 peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::HandshakeRecving;
@@ -1780,7 +2293,7 @@ fn consume_handshake_frames(
                     &nonce[..copy_len],
                     slot,
                     peer.generation,
-                    peer.fd,
+                    peer.fd.ok_or(FetchError::NoPeers)?,
                 )?;
                 peer.pending_send_seqs.push(seq);
             }
@@ -1806,6 +2319,7 @@ fn consume_handshake_frames(
                     return Ok(None);
                 }
                 peer.recv_buf.drain(..total);
+                peer.state = PeerState::Ready;
                 return Ok(Some(headers));
             }
             _ => {}
@@ -1834,7 +2348,7 @@ fn handle_block_cqe(
                 close_peer(ring, send_arena, peer);
                 return Ok(());
             }
-            push_recv_multishot(ring, slot, peer.generation, peer.fd)?;
+            push_recv_multishot(ring, slot, peer.generation, peer.fd.ok_or(FetchError::NoPeers)?)?;
             peer.recv_armed = true;
             let seq = push_send(
                 ring,
@@ -1844,7 +2358,7 @@ fn handle_block_cqe(
                 &our_version().encode_to_vec(),
                 slot,
                 peer.generation,
-                peer.fd,
+                peer.fd.ok_or(FetchError::NoPeers)?,
             )?;
             peer.pending_send_seqs.push(seq);
             peer.state = PeerState::HandshakeSendVersion;
@@ -1875,9 +2389,9 @@ fn consume_block_frames(
     slot: u16,
     peer: &mut Peer,
     pending: &mut PrehashedMap<Hash256, BlockHeight>,
-    data_dir: &Path,
     saved: &mut usize,
     arrived: &mut Vec<Hash256>,
+    file_io: &mut FileIoHandle,
 ) -> Result<(), FetchError> {
     while peer.recv_buf.len() >= MessageHeader::ENCODED_LEN {
         let Ok(header) = MessageHeader::decode(&mut std::io::Cursor::new(
@@ -1906,7 +2420,7 @@ fn consume_block_frames(
                     &[],
                     slot,
                     peer.generation,
-                    peer.fd,
+                    peer.fd.ok_or(FetchError::NoPeers)?,
                 )?;
                 peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::HandshakeRecving;
@@ -1922,8 +2436,7 @@ fn consume_block_frames(
                 };
                 let hash = block.header.hash();
                 if let Some(height) = pending.remove(&hash) {
-                    let path = data_dir.join("blocks").join(format!("{:07}.bin", height.0));
-                    fs::write(&path, payload_slice)?;
+                    file_io.write_block_async(height, payload_slice.to_vec())?;
                     *saved += 1;
                     peer.delivered_count = peer.delivered_count.saturating_add(1);
                     peer.last_delivery = Instant::now();
@@ -1947,7 +2460,7 @@ fn consume_block_frames(
                     &nonce[..copy_len],
                     slot,
                     peer.generation,
-                    peer.fd,
+                    peer.fd.ok_or(FetchError::NoPeers)?,
                 )?;
                 peer.pending_send_seqs.push(seq);
             }

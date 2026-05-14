@@ -1,3 +1,5 @@
+use ququmatz::types::RawFd;
+
 use crate::network::MessageHeader;
 
 // ── Error ─────────────────────────────────────────────────────────────────────
@@ -151,7 +153,7 @@ pub enum HandshakeState {
 
 pub struct PeerState {
     pub id: PeerId,
-    pub fd: i32,
+    pub fd: RawFd,
     pub handshake: HandshakeState,
     /// Byte reassembly buffer for this peer's inbound stream.
     pub recv_buf: Vec<u8>,
@@ -162,7 +164,7 @@ impl PeerState {
     pub const HEADER_SIZE: usize = MessageHeader::ENCODED_LEN;
 
     #[must_use]
-    pub fn new(id: PeerId, fd: i32) -> Self {
+    pub fn new(id: PeerId, fd: RawFd) -> Self {
         Self {
             id,
             fd,
@@ -181,7 +183,7 @@ pub struct OutboundMsg {
     pub peer: PeerId,
     /// File descriptor to send on — stored here so the TX thread does not need
     /// to look it up from `PeerState` (which lives on the RX thread).
-    pub fd: i32,
+    pub fd: RawFd,
     /// Raw wire bytes (header + payload), already framed by the caller.
     pub bytes: Box<[u8]>,
 }
@@ -206,5 +208,5 @@ pub enum InboundMsg {
 /// Reply carries `(PeerId, fd)` so the caller can construct `OutboundMsg`.
 pub struct ConnectCmd {
     pub addr: std::net::SocketAddrV4,
-    pub reply: quetzalcoatl::spsc::Producer<Result<(PeerId, i32), Error>>,
+    pub reply: quetzalcoatl::spsc::Producer<Result<(PeerId, RawFd), Error>>,
 }

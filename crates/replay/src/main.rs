@@ -41,18 +41,14 @@ use mantle_validator::prefetched_view::{HeaderSnapshot, PrefetchedView};
 use crate::iouring_fetcher::Fetcher;
 use crate::report::Reporter;
 
-type HeaderPairs = Vec<(BlockHeight, BlockHeader)>;
-type ResolvedRange = (BlockHeight, BlockHeight, HeaderPairs);
-
 struct ReplayCtx {
     storage: StorageHandle<'static>,
     skip_script: bool,
+    allow_min_difficulty: bool,
     cache: ScriptExecutionCache,
     token: u64,
 }
 
-/// Headers per `getheaders` response. Used to chunk header sync.
-const HEADERS_PER_PAGE: u32 = 2_000;
 /// Block at which `Durability::Synced` flushes everything to disk. Matches
 /// difficulty-adjustment-period boundaries — a natural checkpoint cadence.
 const SYNC_EVERY: u32 = 2_016;
@@ -211,47 +207,6 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-// ── headers cache I/O ────────────────────────────────────────────────────────
-
-/// Read a previously-persisted `chain_headers.bin` (raw 80-byte records).
-/// Returns `(start_height, headers)` if the file and its sidecar
-/// `metadata.bin` are both present; otherwise `Ok(None)`.
-///
-/// The fetcher's headers cache is named `chain_headers.bin` to avoid
-/// colliding with `<data-dir>/headers.bin`, which the storage engine owns
-/// and writes in a different (112-byte-per-record) format.
-fn try_load_headers(
-    data_dir: &std::path::Path,
-) -> std::io::Result<Option<(BlockHeight, Vec<BlockHeader>)>> {
-    let headers_path = data_dir.join("chain_headers.bin");
-    let metadata_path = data_dir.join("metadata.bin");
-    if !headers_path.exists() || !metadata_path.exists() {
-        return Ok(None);
-    }
-    let metadata = std::fs::read(&metadata_path)?;
-    if metadata.len() != 4 {
-        return Ok(None);
-    }
-    let start = u32::from_le_bytes(metadata.as_slice().try_into().expect("len == 4"));
-
-    let bytes = std::fs::read(&headers_path)?;
-    if !bytes.len().is_multiple_of(80) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "chain_headers.bin size is not a multiple of 80",
-        ));
-    }
-    let mut headers = Vec::with_capacity(bytes.len() / 80);
-    for chunk in bytes.chunks_exact(80) {
-        let arr: &[u8; 80] = chunk.try_into().expect("chunk is 80 bytes");
-        headers.push(
-            BlockHeader::from_bytes(arr)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-        );
-    }
-    Ok(Some((BlockHeight(start), headers)))
-}
-
 // ── header snapshot construction ─────────────────────────────────────────────
 
 /// Lookback applied to the snapshot when starting mid-chain. Big enough
@@ -406,129 +361,87 @@ fn run(args: &Args) -> Result<(), String> {
     let mut fetcher = Fetcher::new(args.network, peer_addrs, args.data_dir.clone())
         .map_err(|e| format!("fetcher init: {e}"))?;
 
-    // ── Headers + blocks ─────────────────────────────────────────────────────
-    let (start_height, stop_height, header_pairs) =
-        resolve_headers_and_blocks(args, start_height, tip.hash, &mut fetcher)?;
+    // ── Phase 1: sync all headers to tip ──────────────────────────────────
+    let locator = if start_height.0 <= 1 {
+        args.network.genesis_hash()
+    } else {
+        tip.hash
+    };
+    let stop_height = args.stop_height
+        .unwrap_or(BlockHeight(u32::MAX));
 
-    // ── Header snapshot for context validation ──────────────────────────────
+    eprintln!(
+        "  syncing headers from height {} to {}…",
+        start_height.0,
+        if stop_height.0 == u32::MAX { "tip".to_string() } else { stop_height.0.to_string() },
+    );
+
+    let header_pairs = fetcher
+        .sync_headers(start_height, stop_height, locator)
+        .map_err(|e| format!("sync headers: {e:?}"))?;
+
+    if header_pairs.is_empty() {
+        eprintln!("  no new headers from peers — already at tip");
+        storage.shutdown().map_err(|e| format!("shutdown: {e}"))?;
+        return Ok(());
+    }
+
+    let actual_stop = header_pairs.last().unwrap().0;
+    eprintln!(
+        "  got {} headers ({}..={})",
+        header_pairs.len(),
+        start_height.0,
+        actual_stop.0,
+    );
+
+    // ── Phase 2: download all blocks ────────────────────────────────────
+    eprintln!("  downloading blocks…");
+    fetcher
+        .fetch_blocks(&header_pairs)
+        .map_err(|e| format!("fetch blocks: {e:?}"))?;
+
+    // ── Phase 3: replay ─────────────────────────────────────────────────
     let headers: Vec<BlockHeader> = header_pairs.iter().map(|(_, h)| *h).collect();
     let snapshot = build_snapshot(start_height, &headers, args.network, &mut storage)?;
 
-    // ── Validation loop ──────────────────────────────────────────────────────
-    eprintln!(
-        "  replaying ({} script verification)…",
-        if args.skip_script { "skipping" } else { "with" }
-    );
+    let allow_min_difficulty = matches!(args.network, Network::Testnet3 | Network::Testnet4);
     let mut ctx = ReplayCtx {
         storage,
         skip_script: args.skip_script,
+        allow_min_difficulty,
         cache: ScriptExecutionCache::new(SCRIPT_CACHE_ENTRIES),
         token: u64::from(tip.height.0).saturating_add(1),
     };
-    let mut reporter = Reporter::new(start_height, stop_height);
+
+    eprintln!(
+        "  replaying {}..={} ({} script verification)…",
+        start_height.0,
+        actual_stop.0,
+        if args.skip_script { "skipping" } else { "with" },
+    );
+
+    let mut reporter = Reporter::new(start_height, actual_stop);
     let mut last_committed = tip.height;
 
     for (height, header) in &header_pairs {
-        replay_one_block(*height, *header, &fetcher, &snapshot, &mut ctx)?;
+        replay_one_block(*height, *header, &mut fetcher, &snapshot, &mut ctx)?;
         last_committed = *height;
         reporter.tick(*height);
     }
-
     reporter.done(last_committed);
+
+    eprintln!("IBD complete at height {}", last_committed.0);
     ctx.storage
         .shutdown()
         .map_err(|e| format!("shutdown storage: {e}"))?;
     Ok(())
 }
 
-fn resolve_headers_and_blocks(
-    args: &Args,
-    start_height: BlockHeight,
-    tip_hash: Hash256,
-    fetcher: &mut Fetcher,
-) -> Result<ResolvedRange, String> {
-    let (cache_start, cached_headers) = match try_load_headers(&args.data_dir) {
-        Ok(Some((s, h))) => (Some(s), h),
-        Ok(None) => (None, Vec::new()),
-        Err(e) => return Err(format!("load headers.bin: {e}")),
-    };
-
-    let cached_end = cache_start.map(|s| {
-        BlockHeight(
-            s.0.saturating_add(u32::try_from(cached_headers.len()).unwrap_or(u32::MAX))
-                .saturating_sub(1),
-        )
-    });
-    let stop_height = match args.stop_height {
-        Some(h) => h,
-        None => {
-            if let Some(end) = cached_end
-                && end >= start_height
-            {
-                end
-            } else {
-                BlockHeight(start_height.0.saturating_add(HEADERS_PER_PAGE - 1))
-            }
-        }
-    };
-
-    eprintln!(
-        "  target range: heights {}..={} ({} blocks)",
-        start_height.0,
-        stop_height.0,
-        u64::from(stop_height.0)
-            .saturating_sub(u64::from(start_height.0))
-            .saturating_add(1),
-    );
-
-    let headers: Vec<BlockHeader> =
-        if cache_start == Some(BlockHeight(1)) && cached_end.is_some_and(|e| e >= stop_height) {
-            let cstart = cache_start.expect("checked above").0;
-            let lo = (start_height.0 - cstart) as usize;
-            let hi = (stop_height.0 - cstart) as usize + 1;
-            cached_headers[lo..hi].to_vec()
-        } else {
-            let locator = if start_height.0 == 1 {
-                args.network.genesis_hash()
-            } else {
-                tip_hash
-            };
-            eprintln!(
-                "  syncing headers from height {} (locator {})…",
-                start_height.0,
-                locator.to_display_hex(),
-            );
-            let pairs = fetcher
-                .sync_headers(start_height, stop_height, locator)
-                .map_err(|e| format!("sync headers: {e:?}"))?;
-            if pairs.is_empty() {
-                return Err("peer returned 0 headers".to_string());
-            }
-            pairs.into_iter().map(|(_, h)| h).collect()
-        };
-
-    let header_pairs: Vec<(BlockHeight, BlockHeader)> = headers
-        .iter()
-        .enumerate()
-        .map(|(i, h)| {
-            (
-                BlockHeight(start_height.0 + u32::try_from(i).expect("i fits u32")),
-                *h,
-            )
-        })
-        .collect();
-    eprintln!("  downloading any missing blocks…");
-    fetcher
-        .fetch_blocks(&header_pairs)
-        .map_err(|e| format!("fetch blocks: {e:?}"))?;
-
-    Ok((start_height, stop_height, header_pairs))
-}
 
 fn replay_one_block(
     height: BlockHeight,
     header: BlockHeader,
-    fetcher: &Fetcher,
+    fetcher: &mut Fetcher,
     snapshot: &HeaderSnapshot,
     ctx: &mut ReplayCtx,
 ) -> Result<(), String> {
@@ -553,7 +466,7 @@ fn replay_one_block(
 
     let empty_coins = PrehashedMap::with_hasher(BuildPrehashedHasher);
     let context_view = PrefetchedView::new(&empty_coins, snapshot, ctx.storage.tip());
-    validate_block_context(&block, &context_view)
+    validate_block_context(&block, &context_view, ctx.allow_min_difficulty)
         .map_err(|e| format!("context check at {}: {e:?}", height.0))?;
 
     let durability = if height.0.is_multiple_of(SYNC_EVERY) {

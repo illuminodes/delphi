@@ -30,6 +30,7 @@ use mantle::network::{
     services,
 };
 use mantle::peer::{InboundMsg, Node, OutboundMsg, PeerId};
+use ququmatz::types::RawFd;
 
 const HELP: &str = "\
 discover-peers — collect a static peer list by talking to DNS seeds.
@@ -164,7 +165,7 @@ fn resolve_peers(network: Network, extras: &[SocketAddrV4]) -> Vec<SocketAddrV4>
     out
 }
 
-fn frame_and_send(node: &Node, network: Network, peer: PeerId, fd: i32, cmd: Command) {
+fn frame_and_send(node: &Node, network: Network, peer: PeerId, fd: RawFd, cmd: Command) {
     let mut framed = Vec::new();
     network
         .magic()
@@ -213,7 +214,7 @@ fn run(args: &Args) -> Result<(), String> {
 
     // Map PeerId → fd + state. We don't care about per-peer sequencing;
     // each peer independently sends us its addr table.
-    let mut peers: std::collections::HashMap<PeerId, (i32, PeerState)> =
+    let mut peers: std::collections::HashMap<PeerId, (RawFd, PeerState)> =
         std::collections::HashMap::new();
     for addr in &peer_addrs {
         match node.connect(*addr) {

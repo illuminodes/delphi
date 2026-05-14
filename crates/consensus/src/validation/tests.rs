@@ -324,7 +324,7 @@ fn unknown_parent_rejected() {
         transactions: vec![tx],
     };
     assert_eq!(
-        validate_block_context(&block, &view),
+        validate_block_context(&block, &view, false),
         Err(ValidationError::UnknownParent)
     );
 }
@@ -362,7 +362,7 @@ fn timestamp_too_early_rejected() {
     };
     let _ = tip_header; // used for clarity
     assert_eq!(
-        validate_block_context(&block, &view),
+        validate_block_context(&block, &view, false),
         Err(ValidationError::TimestampTooEarly)
     );
 }
@@ -398,7 +398,7 @@ fn timestamp_too_far_future_rejected() {
         transactions: vec![tx],
     };
     assert_eq!(
-        validate_block_context_with_clock(&block, &view, &FixedClock(now)),
+        validate_block_context_with_clock(&block, &view, &FixedClock(now), false),
         Err(ValidationError::TimestampTooFarFuture)
     );
 }
@@ -423,7 +423,7 @@ fn bip34_missing_rejected() {
         transactions: vec![tx],
     };
     assert_eq!(
-        validate_block_context(&block, &view),
+        validate_block_context(&block, &view, false),
         Err(ValidationError::Bip34HeightMissing)
     );
 }

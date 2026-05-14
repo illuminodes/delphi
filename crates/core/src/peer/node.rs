@@ -81,7 +81,7 @@ impl Node {
     ///
     /// # Errors
     /// Returns an error if the RX thread has exited or reports a socket/ring error.
-    pub fn connect(&self, addr: std::net::SocketAddrV4) -> Result<(PeerId, i32), Error> {
+    pub fn connect(&self, addr: std::net::SocketAddrV4) -> Result<(PeerId, ququmatz::types::RawFd), Error> {
         let (reply_tx, mut reply_rx) =
             quetzalcoatl::spsc::RingBuffer::new(Capacity::exact(1)).split();
 

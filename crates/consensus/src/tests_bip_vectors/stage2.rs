@@ -61,7 +61,7 @@ fn stage2_unknown_parent_rejected() {
     // Point to an unknown parent.
     block.header.prev_block = Hash256([0xde; 32]);
     assert_eq!(
-        validate_block_context(&block, &view),
+        validate_block_context(&block, &view, false),
         Err(ValidationError::UnknownParent),
     );
 }
@@ -73,7 +73,7 @@ fn stage2_unexpected_difficulty_rejected() {
     // Change the nBits to something different from the parent (non-retarget block).
     block.header.bits = mantle::primitives::CompactBits(0x1d00_ffff);
     assert_eq!(
-        validate_block_context(&block, &view),
+        validate_block_context(&block, &view, false),
         Err(ValidationError::UnexpectedDifficulty),
     );
 }
@@ -150,7 +150,7 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
         }
     };
     assert_eq!(
-        validate_block_context(&bad_block, &view),
+        validate_block_context(&bad_block, &view, false),
         Err(ValidationError::TimestampTooEarly),
     );
 }
@@ -198,7 +198,7 @@ fn stage2_bip34_height_missing_rejected() {
         transactions: vec![coinbase],
     };
     assert_eq!(
-        validate_block_context(&block, &view),
+        validate_block_context(&block, &view, false),
         Err(ValidationError::Bip34HeightMissing),
     );
 }
@@ -212,7 +212,7 @@ fn stage2_bip34_correct_encoding_accepted() {
     );
     let block = stage2_block_for_height(&view, BIP34_HEIGHT, 4);
     // Stage 1 uses easiest PoW so it passes; Stage 2 should also pass.
-    validate_block_context(&block, &view)
+    validate_block_context(&block, &view, false)
         .expect("block with correct BIP34 height encoding must pass Stage 2");
 }
 
@@ -225,7 +225,7 @@ fn stage2_block_version_too_low_rejected() {
     );
     let block = stage2_block_for_height(&view, BlockHeight(388_381), 3); // version 3 < required 4
     assert_eq!(
-        validate_block_context(&block, &view),
+        validate_block_context(&block, &view, false),
         Err(ValidationError::BlockVersionTooLow {
             version: 3,
             required: 4
@@ -267,5 +267,5 @@ fn stage2_valid_block_accepted() {
         },
         transactions: vec![coinbase],
     };
-    validate_block_context(&block, &view).expect("minimal valid block must pass Stage 2");
+    validate_block_context(&block, &view, false).expect("minimal valid block must pass Stage 2");
 }

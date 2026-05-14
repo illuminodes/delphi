@@ -24,3 +24,4 @@ mantle-consensus = { path = "../consensus" }
 mantle-storage = { path = "../storage" }
 mantle-validator = { path = "../validator" }
 ququmatz.workspace = true
+quetzalcoatl.workspace = true

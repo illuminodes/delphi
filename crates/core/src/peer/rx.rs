@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use quetzalcoatl::{mpsc, spmc};
 use ququmatz::types::{
-    AddressFamily, MsgFlags, SockAddrIn, SocketFlags, SocketType, TimeoutFlags, Timespec,
+    AddressFamily, MsgFlags, RawFd, SockAddrIn, SocketFlags, SocketType, TimeoutFlags, Timespec,
 };
 use ququmatz::{IoUring, Sqe};
 
@@ -95,11 +95,7 @@ impl RxThread {
 
             // --- drain all CQEs ---
             let mut had_io = false;
-            loop {
-                let Some(cqe) = self.ring.complete() else {
-                    break;
-                };
-
+            while let Some(cqe) = self.ring.complete() {
                 if cqe.user_data == UserDataTag::TIMEOUT.raw() {
                     if let Some(w) = self.inbound_tx.reserve() {
                         w.write(InboundMsg::Tick).commit();
@@ -147,7 +143,7 @@ impl RxThread {
         let _ = cmd.reply.push(result);
     }
 
-    fn do_connect(&mut self, addr: std::net::SocketAddrV4) -> Result<(PeerId, i32), Error> {
+    fn do_connect(&mut self, addr: std::net::SocketAddrV4) -> Result<(PeerId, RawFd), Error> {
         let id = PeerId(self.next_id);
         self.next_id += 1;
 
@@ -332,7 +328,7 @@ impl RxThread {
     fn send_msg(
         &mut self,
         peer: PeerId,
-        fd: i32,
+        fd: RawFd,
         command: Command,
         payload: &[u8],
     ) -> Result<(), Error> {

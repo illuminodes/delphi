@@ -39,8 +39,9 @@ use structure::BIP34_HEIGHT as _BIP34_HEIGHT;
 pub fn validate_block_context(
     block: &mantle::primitives::Block,
     view: &impl ChainView,
+    allow_min_difficulty: bool,
 ) -> Result<(), ValidationError> {
-    validate_block_context_with_clock(block, view, &_SystemClock)
+    validate_block_context_with_clock(block, view, &_SystemClock, allow_min_difficulty)
 }
 
 /// Stage 2: contextual validation with an injected clock.
@@ -50,12 +51,16 @@ pub fn validate_block_context(
 /// (deterministic clocks) and for historical replay (clock pinned to the
 /// block being replayed).
 ///
+/// `allow_min_difficulty` enables the testnet 20-minute difficulty reset
+/// rule (testnet3/testnet4). Must be false for mainnet/signet.
+///
 /// # Errors
 /// Returns the first `ValidationError` encountered.
 pub fn validate_block_context_with_clock(
     block: &mantle::primitives::Block,
     view: &impl ChainView,
     clock: &impl Clock,
+    allow_min_difficulty: bool,
 ) -> Result<(), ValidationError> {
     let header = &block.header;
 
@@ -69,7 +74,7 @@ pub fn validate_block_context_with_clock(
     let this_height = parent_height + 1;
 
     // nBits must match expected difficulty.
-    let expected_bits = expected_nbits(parent_height, parent, view)?;
+    let expected_bits = expected_nbits(parent_height, parent, view, header.time, allow_min_difficulty)?;
     if header.bits != expected_bits {
         return Err(ValidationError::UnexpectedDifficulty);
     }

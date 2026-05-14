@@ -110,32 +110,63 @@ impl RetargetExt for CompactBits {
 
 // ── expected_nbits ────────────────────────────────────────────────────────────
 
+/// Testnet 20-minute reset: if no block for 20 min, difficulty drops to minimum.
+const TESTNET_RESET_SECONDS: u32 = 1200;
+
 /// Compute the expected nBits for the block at `parent_height + 1`.
+///
+/// `block_time` is the new block's timestamp, needed for the testnet
+/// 20-minute difficulty reset rule (BIP94 / testnet3 legacy).
+/// `allow_min_difficulty` should be true for testnet3/testnet4, false
+/// for mainnet/signet.
 pub(super) fn expected_nbits(
     parent_height: BlockHeight,
     parent: BlockHeader,
     view: &impl ChainView,
+    block_time: u32,
+    allow_min_difficulty: bool,
 ) -> Result<CompactBits, ValidationError> {
     let this_height = parent_height + 1;
 
-    // No retarget — carry parent's bits.
-    if this_height % RETARGET_INTERVAL != 0 {
-        return Ok(parent.bits);
+    // Retarget boundary.
+    if this_height % RETARGET_INTERVAL == 0 {
+        let retarget_height = parent_height + 1 - RETARGET_INTERVAL;
+        let retarget_header = view
+            .get_header_at(retarget_height)?
+            .ok_or(ValidationError::UnknownParent)?;
+
+        let actual_timespan =
+            u64::from(parent.time).saturating_sub(u64::from(retarget_header.time));
+        let clamped = actual_timespan.clamp(MIN_TIMESPAN, MAX_TIMESPAN);
+
+        return parent
+            .bits
+            .retarget(clamped, TARGET_TIMESPAN, POW_LIMIT_BITS)
+            .ok_or(ValidationError::InvalidBits);
     }
 
-    // Retarget: find the block RETARGET_INTERVAL blocks ago.
-    let retarget_height = parent_height + 1 - RETARGET_INTERVAL;
-    let retarget_header = view
-        .get_header_at(retarget_height)?
-        .ok_or(ValidationError::UnknownParent)?;
+    // Testnet 20-minute reset: if the block timestamp exceeds the parent
+    // by more than 2× the target spacing, allow minimum difficulty.
+    if allow_min_difficulty && block_time > parent.time + TESTNET_RESET_SECONDS {
+        return Ok(POW_LIMIT_BITS);
+    }
 
-    let actual_timespan = u64::from(parent.time).saturating_sub(u64::from(retarget_header.time));
-    let clamped = actual_timespan.clamp(MIN_TIMESPAN, MAX_TIMESPAN);
+    // No retarget — carry parent's bits. On testnets, if the parent was a
+    // min-difficulty block but we're back within 20 min, walk back to find
+    // the last non-min-difficulty block's nBits.
+    if allow_min_difficulty && parent.bits == POW_LIMIT_BITS {
+        let mut h = parent_height;
+        let mut hdr = parent;
+        while h > BlockHeight(0) && h % RETARGET_INTERVAL != 0 && hdr.bits == POW_LIMIT_BITS {
+            h = BlockHeight(h.0 - 1);
+            hdr = view
+                .get_header_at(h)?
+                .ok_or(ValidationError::UnknownParent)?;
+        }
+        return Ok(hdr.bits);
+    }
 
-    parent
-        .bits
-        .retarget(clamped, TARGET_TIMESPAN, POW_LIMIT_BITS)
-        .ok_or(ValidationError::InvalidBits)
+    Ok(parent.bits)
 }
 
 // ── U256 ──────────────────────────────────────────────────────────────────────

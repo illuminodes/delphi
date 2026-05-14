@@ -323,9 +323,10 @@ impl RobinHoodTable {
 
     #[cfg(unix)]
     #[must_use]
-    pub fn fd(&self) -> i32 {
+    #[allow(clippy::cast_sign_loss)]
+    pub fn fd(&self) -> ququmatz::types::RawFd {
         use std::os::unix::io::AsRawFd;
-        self.file.as_raw_fd()
+        ququmatz::types::RawFd::from_raw(self.file.as_raw_fd() as usize)
     }
 
     // ── Public API ───────────────────────────────────────────────────────────
@@ -570,7 +571,8 @@ impl RobinHoodTable {
             ring.submit_and_wait(submitted)
                 .map_err(|e| io::Error::other(format!("{e:?}")))?;
 
-            let mut writes: Vec<(u64, usize)> = Vec::new();
+            let mut writes: Vec<u64> = Vec::new();
+            let mut write_cursor: usize = 0;
 
             while let Some(cqe) = ring.complete() {
                 let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
@@ -590,21 +592,31 @@ impl RobinHoodTable {
 
                 let state = &mut states[i];
 
-                if existing.is_empty() {
+                let write_to_slot = if existing.is_empty() {
                     self.live_count += 1;
-                    writes.push((state.slot, i));
                     state.resolved = true;
+                    Some(state.slot)
                 } else if existing.matches(&state.bucket.outpoint()) {
                     state.bucket.probe_distance = existing.probe_distance;
-                    writes.push((state.slot, i));
                     state.resolved = true;
+                    Some(state.slot)
                 } else if existing.probe_distance < state.bucket.probe_distance {
-                    writes.push((state.slot, i));
-                    let displaced = existing;
-                    state.bucket = displaced;
+                    let slot = state.slot;
+                    let to_write = std::mem::replace(&mut state.bucket, existing);
                     state.bucket.probe_distance += 1;
                     state.slot = (state.slot + 1) & self.mask;
                     state.ideal = state.slot;
+                    // Encode the entry we're placing (not the displaced one).
+                    let wb = write_cursor * BUCKET_SIZE;
+                    if wb + BUCKET_SIZE > write_arena.len() {
+                        write_arena.resize(wb + BUCKET_SIZE, 0);
+                    }
+                    to_write.encode(
+                        (&mut write_arena[wb..wb + BUCKET_SIZE]).try_into().unwrap(),
+                    );
+                    writes.push(slot);
+                    write_cursor += 1;
+                    None // already handled
                 } else {
                     state.bucket.probe_distance += 1;
                     state.slot = (state.slot + 1) & self.mask;
@@ -612,18 +624,26 @@ impl RobinHoodTable {
                         state.slot != state.ideal,
                         "insert_batch_uring: table full despite load-factor check"
                     );
+                    None
+                };
+
+                if let Some(slot) = write_to_slot {
+                    let wb = write_cursor * BUCKET_SIZE;
+                    if wb + BUCKET_SIZE > write_arena.len() {
+                        write_arena.resize(wb + BUCKET_SIZE, 0);
+                    }
+                    state.bucket.encode(
+                        (&mut write_arena[wb..wb + BUCKET_SIZE]).try_into().unwrap(),
+                    );
+                    writes.push(slot);
+                    write_cursor += 1;
                 }
             }
 
             let mut write_count = 0u32;
-            for (slot, i) in writes {
-                let buf_start = i * BUCKET_SIZE;
-                states[i].bucket.encode(
-                    (&mut write_arena[buf_start..buf_start + BUCKET_SIZE])
-                        .try_into()
-                        .unwrap(),
-                );
-                let offset = Self::slot_offset(slot);
+            for (w_idx, slot) in writes.iter().enumerate() {
+                let buf_start = w_idx * BUCKET_SIZE;
+                let offset = Self::slot_offset(*slot);
                 let sqe = unsafe {
                     ququmatz::Sqe::write_ptr(
                         fd,
@@ -1133,25 +1153,15 @@ impl RobinHoodEngine {
     }
 
     fn flush_write_buffer(&mut self) -> Result<(), EngineError> {
-        // Collect inserts into a reusable scratch vec.
         self.wb_pairs.clear();
         for (op, entry) in self.write_buffer.drain() {
             let BufferEntry::Live(coin) = entry;
             self.wb_pairs.push((op, coin));
         }
 
-        // Split borrows so we can call the table method while holding scratch vecs.
-        let pairs = std::mem::take(&mut self.wb_pairs);
-        self.table
-            .insert_batch_uring(
-                &pairs,
-                &mut self.ring,
-                &mut self.read_arena,
-                &mut self.wb_write_arena,
-                &mut self.wb_insert_states,
-            )
-            .map_err(io_err)?;
-        self.wb_pairs = pairs;
+        for (op, coin) in self.wb_pairs.drain(..) {
+            self.table.insert(&op, &coin).map_err(io_err)?;
+        }
 
         let deletes = std::mem::take(&mut self.pending_disk_deletes);
         self.table
@@ -1297,14 +1307,12 @@ impl Engine for RobinHoodEngine {
 
     fn read_header_at(&self, h: BlockHeight) -> Result<Option<BlockHeader>, EngineError> {
         let offset = u64::from(h.0) * HEADER_RECORD_SIZE as u64;
-        let mut f = File::open(self.header_path()).map_err(io_err)?;
-        let file_len = f.seek(SeekFrom::End(0)).map_err(io_err)?;
-        if offset + HEADER_RECORD_SIZE as u64 > file_len {
+        if offset + HEADER_RECORD_SIZE as u64 > self.header_write_len {
             return Ok(None);
         }
-        f.seek(SeekFrom::Start(offset)).map_err(io_err)?;
-        let header = read_header_record(&mut f)?;
-        Ok(Some(header))
+        let mut buf = [0u8; HEADER_RECORD_SIZE];
+        pread_exact(&self.header_file, &mut buf, offset).map_err(io_err)?;
+        Ok(Some(decode_header_record(&buf)))
     }
 
     fn write_header(&mut self, h: BlockHeight, header: &BlockHeader) -> Result<(), EngineError> {
@@ -1346,14 +1354,14 @@ impl Engine for RobinHoodEngine {
             0
         };
 
-        // Rebuild header index from headers.bin.
+        // Rebuild header index from headers.bin, up to the checkpoint height.
         self.header_index.clear();
         let header_path = self.header_path();
         if let Ok(mut hf) = File::open(&header_path) {
             let file_len = hf.seek(SeekFrom::End(0)).map_err(io_err)?;
             hf.seek(SeekFrom::Start(0)).map_err(io_err)?;
             let record_count = file_len / HEADER_RECORD_SIZE as u64;
-            for i in 0..record_count {
+            for _i in 0..record_count {
                 let mut buf = [0u8; HEADER_RECORD_SIZE];
                 if hf.read_exact(&mut buf).is_err() {
                     break;
@@ -1362,19 +1370,21 @@ impl Engine for RobinHoodEngine {
                 let height = buf.read_u32_le(112);
                 if height <= checkpoint_height || checkpoint_height == 0 {
                     self.header_index.insert(hash, height);
-                    if i + 1 == record_count {
-                        self.tip = TipInfo {
-                            hash,
-                            height: BlockHeight(height),
-                        };
-                    }
+                    self.tip = TipInfo {
+                        hash,
+                        height: BlockHeight(height),
+                    };
                 }
             }
             self.header_write_len = record_count * HEADER_RECORD_SIZE as u64;
         }
 
-        // UTXO table is self-recovering — its state is persisted in the file header.
-        // Nothing to rebuild.
+        // If there's no checkpoint and no headers, the UTXO table is stale —
+        // wipe it so a fresh start doesn't inherit data from a previous run.
+        if checkpoint_height == 0 && self.header_index.is_empty() && !self.table.is_empty() {
+            let table_path = self.data_dir.join("utxo_table.bin");
+            self.table = RobinHoodTable::create(&table_path, INITIAL_SLOT_COUNT).map_err(io_err)?;
+        }
 
         Ok(self.tip.clone())
     }
@@ -1412,17 +1422,15 @@ fn write_header_record(
 }
 
 #[allow(clippy::cast_possible_wrap)]
-fn read_header_record(f: &mut File) -> Result<BlockHeader, EngineError> {
-    let mut buf = [0u8; HEADER_RECORD_SIZE];
-    f.read_exact(&mut buf).map_err(io_err)?;
-    Ok(BlockHeader {
+fn decode_header_record(buf: &[u8; HEADER_RECORD_SIZE]) -> BlockHeader {
+    BlockHeader {
         version: buf.read_u32_le(32) as i32,
         prev_block: Hash256(buf.read_hash(36)),
         merkle_root: Hash256(buf.read_hash(68)),
         time: buf.read_u32_le(100),
         bits: CompactBits(buf.read_u32_le(104)),
         nonce: buf.read_u32_le(108),
-    })
+    }
 }
 
 // ── Overflow sidecar helpers ────────────────────────────────────────────────
@@ -1538,6 +1546,13 @@ mod tests {
             let _ = std::fs::remove_file(overflow_path(&self.0));
             let _ = std::fs::remove_file(overflow_path(&new_path));
         }
+    }
+
+    fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string()))
+            .collect()
     }
 
     fn make_coin(value: u64, spk: &[u8]) -> Coin {
@@ -2017,4 +2032,433 @@ mod tests {
         assert_eq!(got.bits.0, h.bits.0);
         assert_eq!(got.nonce, h.nonce);
     }
+
+    #[test]
+    fn write_buffer_survives_2000_blocks() {
+        let dir = TmpFile::new("wb-2k");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
+
+        let target_height = 1965u32;
+        let mut prev_hash = Hash256::ZERO;
+
+        for h in 1..=2000u32 {
+            let mut txid_bytes = [0u8; 32];
+            txid_bytes[..4].copy_from_slice(&h.to_le_bytes());
+            let txid = Hash256(txid_bytes);
+            let op = OutPoint { txid, vout: 0 };
+
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
+            let block_hash = Hash256(hash_bytes);
+
+            let req = CommitBlockReq {
+                token: crate::types::ReqToken(u64::from(h)),
+                height: BlockHeight(h),
+                hash: block_hash,
+                prev_hash,
+                header: BlockHeader {
+                    prev_block: prev_hash,
+                    ..make_header(h)
+                },
+                created: &[mantle_consensus::chain_view::NewCoin {
+                    outpoint: op,
+                    value: Satoshi::new(5_000_000_000),
+                    script_pubkey: &[0x00, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05,
+                                     0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+                                     0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14],
+                    coinbase: true,
+                    height: BlockHeight(h),
+                }],
+                spent: &[],
+                block_bytes: None,
+                durability: Durability::Memory,
+            };
+            eng.write_block(&req).unwrap();
+            prev_hash = block_hash;
+        }
+
+        // Look up the coin from block 1965 via read_coin (single).
+        let mut target_txid = [0u8; 32];
+        target_txid[..4].copy_from_slice(&target_height.to_le_bytes());
+        let target_op = OutPoint {
+            txid: Hash256(target_txid),
+            vout: 0,
+        };
+        let coin = eng.read_coin(&target_op).unwrap();
+        assert!(coin.is_some(), "read_coin should find block 1965 coinbase in write buffer");
+        assert_eq!(coin.unwrap().height.0, target_height);
+
+        // Look up via read_coins (batch) — this is the path validate_and_commit uses.
+        let mut out = Vec::new();
+        eng.read_coins(&[target_op], &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].coin.is_some(),
+            "read_coins should find block 1965 coinbase in write buffer"
+        );
+        assert_eq!(out[0].coin.as_ref().unwrap().height.0, target_height);
+    }
+
+    #[test]
+    fn write_buffer_survives_2000_blocks_via_handle() {
+        let dir = TmpFile::new("wb-2k-handle");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let eng = RobinHoodEngine::open(dir.path()).unwrap();
+
+        crate::with_storage(eng, |handle| {
+            let target_height = 1965u32;
+            let mut prev_hash = Hash256::ZERO;
+
+            for h in 1..=2000u32 {
+                let mut txid_bytes = [0u8; 32];
+                txid_bytes[..4].copy_from_slice(&h.to_le_bytes());
+                let op = OutPoint {
+                    txid: Hash256(txid_bytes),
+                    vout: 0,
+                };
+
+                let mut hash_bytes = [0u8; 32];
+                hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
+                let block_hash = Hash256(hash_bytes);
+
+                let spk = [0x00, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05,
+                            0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+                            0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
+                let created = [mantle_consensus::chain_view::NewCoin {
+                    outpoint: op,
+                    value: Satoshi::new(5_000_000_000),
+                    script_pubkey: &spk,
+                    coinbase: true,
+                    height: BlockHeight(h),
+                }];
+                handle
+                    .commit_block_borrowed(CommitBlockReq {
+                        token: crate::types::ReqToken(u64::from(h)),
+                        height: BlockHeight(h),
+                        hash: block_hash,
+                        prev_hash,
+                        header: BlockHeader {
+                            prev_block: prev_hash,
+                            ..make_header(h)
+                        },
+                        created: &created,
+                        spent: &[],
+                        block_bytes: None,
+                        durability: Durability::Memory,
+                    })
+                    .expect("commit_block_borrowed");
+                prev_hash = block_hash;
+            }
+
+            let mut target_txid = [0u8; 32];
+            target_txid[..4].copy_from_slice(&target_height.to_le_bytes());
+            let target_op = OutPoint {
+                txid: Hash256(target_txid),
+                vout: 0,
+            };
+
+            let mut out = Vec::new();
+            handle
+                .lookup_coins_borrowed(&[target_op], &mut out)
+                .expect("lookup_coins_borrowed");
+            assert_eq!(out.len(), 1, "should get exactly one result");
+            assert!(
+                out[0].coin.is_some(),
+                "handle lookup should find block 1965 coinbase in write buffer"
+            );
+            assert_eq!(out[0].coin.as_ref().unwrap().height.0, target_height);
+        })
+        .expect("with_storage");
+    }
+
+    #[test]
+    fn write_buffer_survives_2000_blocks_via_open_robin_hood() {
+        let dir = TmpFile::new("wb-2k-rh");
+        std::fs::create_dir_all(dir.path()).unwrap();
+
+        let mut handle =
+            crate::StorageHandle::open_robin_hood(dir.path()).expect("open_robin_hood");
+
+        let target_height = 1965u32;
+        let mut prev_hash = Hash256::ZERO;
+
+        for h in 1..=2000u32 {
+            let mut txid_bytes = [0u8; 32];
+            txid_bytes[..4].copy_from_slice(&h.to_le_bytes());
+            let op = OutPoint {
+                txid: Hash256(txid_bytes),
+                vout: 0,
+            };
+
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
+            let block_hash = Hash256(hash_bytes);
+
+            let spk = [0x00u8, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05,
+                        0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+                        0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
+            let created = [mantle_consensus::chain_view::NewCoin {
+                outpoint: op,
+                value: Satoshi::new(5_000_000_000),
+                script_pubkey: &spk,
+                coinbase: true,
+                height: BlockHeight(h),
+            }];
+            handle
+                .commit_block_borrowed(CommitBlockReq {
+                    token: crate::types::ReqToken(u64::from(h)),
+                    height: BlockHeight(h),
+                    hash: block_hash,
+                    prev_hash,
+                    header: BlockHeader {
+                        prev_block: prev_hash,
+                        ..make_header(h)
+                    },
+                    created: &created,
+                    spent: &[],
+                    block_bytes: None,
+                    durability: Durability::Memory,
+                })
+                .expect("commit_block_borrowed");
+            prev_hash = block_hash;
+        }
+
+        let mut target_txid = [0u8; 32];
+        target_txid[..4].copy_from_slice(&target_height.to_le_bytes());
+        let target_op = OutPoint {
+            txid: Hash256(target_txid),
+            vout: 0,
+        };
+
+        let mut out = Vec::new();
+        handle
+            .lookup_coins_borrowed(&[target_op], &mut out)
+            .expect("lookup_coins_borrowed");
+        assert_eq!(out.len(), 1, "should get exactly one result");
+        assert!(
+            out[0].coin.is_some(),
+            "open_robin_hood handle should find block 1965 coinbase in write buffer"
+        );
+        assert_eq!(out[0].coin.as_ref().unwrap().height.0, target_height);
+
+        handle.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn replay_block_1965_then_lookup_for_2067() {
+        use mantle::codec::Decode;
+        use mantle::primitives::{Block, TxHash};
+        use mantle_consensus::chain_view::NewCoin;
+
+        let dir = TmpFile::new("replay-1965");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
+
+        let block_1965_hex = "000000205ede77c0cb37c34615b3b20a2a240dfb5ba9e4eb45ca84c91fbf263d0000000081f980c7703039a91a9a7c5365f9902975e2944209629fa58fc36dd1a25e183192433966ffff001d865e2a0001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402ad0700ffffffff0200f2052a01000000160014690912f95570260001bc668468269a82b382fd040000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
+        let block_bytes = decode_hex(block_1965_hex).unwrap();
+        let block = Block::decode(&mut std::io::Cursor::new(&block_bytes)).unwrap();
+
+        let coinbase = &block.transactions[0];
+        let txid = coinbase.txid().unwrap();
+        eprintln!("coinbase txid (internal): {:?}", &txid.0[..4]);
+
+        let mut created = Vec::new();
+        for (vout, output) in coinbase.outputs.iter().enumerate() {
+            created.push(NewCoin {
+                outpoint: OutPoint {
+                    txid,
+                    vout: vout as u32,
+                },
+                value: output.value,
+                script_pubkey: output.script_pubkey.as_slice(),
+                coinbase: true,
+                height: BlockHeight(1965),
+            });
+        }
+
+        let hash = block.header.hash();
+        eng.write_block(&CommitBlockReq {
+            token: crate::types::ReqToken(1965),
+            height: BlockHeight(1965),
+            hash,
+            prev_hash: block.header.prev_block,
+            header: block.header,
+            created: &created,
+            spent: &[],
+            block_bytes: None,
+            durability: Durability::Memory,
+        })
+        .unwrap();
+
+        // Now look up the outpoint that block 2067 tries to spend
+        let block_2067_hex = "00000020f009a7425a6b0962bc12d3a2d2497588182202b9b59d46d33835ad0300000000b2ed3db0e5f468e9faa29b50a2bbe9cb041c40c2ecd53156a3d51173719e8e6c6d4b3966c0ff3f1c65c7bf0102010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0a021308062f4077697a2fffffffff028df2052a01000000160014a54e2a1ec06389203887661535ed118b7d0538890000000000000000266a24aa21a9ed2b5052d89d429b990f78f48e0b0332e2caf6cea8c878168f9847e5b6b3daff8201200000000000000000000000000000000000000000000000000000000000000000000000000200000000010181f980c7703039a91a9a7c5365f9902975e2944209629fa58fc36dd1a25e18310000000000fdffffff022005000000000000160014a54e2a1ec06389203887661535ed118b7d05388953ec052a01000000160014505c4fa6dd11e0b3a0b0211cfa3ddf33958dd8bd02473044022032d0f97adef165f69da184332f68c91fc27782444aacc213088ac7c5ba6fe3a602206d7dbb42dcc78ba1661bb3106bb8ae1b424036592c0a16c9b51adcad46731eba012102476e8b9914532f15a42d34840b3b143746d1bb35d536055a276b41f1321479e111080000";
+        let block_2067_bytes = decode_hex(block_2067_hex).unwrap();
+        let block_2067 = Block::decode(&mut std::io::Cursor::new(&block_2067_bytes)).unwrap();
+
+        let spend_input = &block_2067.transactions[1].inputs[0];
+        let spend_op = spend_input.previous_output;
+        eprintln!(
+            "block 2067 tx[1] input[0] spends {:?}:{}",
+            &spend_op.txid.0[..4],
+            spend_op.vout
+        );
+        eprintln!("txids match: {}", spend_op.txid == txid);
+
+        let coin = eng.read_coin(&spend_op).unwrap();
+        assert!(
+            coin.is_some(),
+            "engine should find block 1965 coinbase output 0"
+        );
+    }
+
+    #[test]
+    fn flush_then_lookup_via_engine() {
+        let dir = TmpFile::new("flush-lookup");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
+
+        let target_height = 1965u32;
+        let mut prev_hash = Hash256::ZERO;
+
+        for h in 1..=2016u32 {
+            let mut txid_bytes = [0u8; 32];
+            txid_bytes[..4].copy_from_slice(&h.to_le_bytes());
+            let op = OutPoint {
+                txid: Hash256(txid_bytes),
+                vout: 0,
+            };
+
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
+            let block_hash = Hash256(hash_bytes);
+
+            let durability = if h == 2016 {
+                Durability::Synced
+            } else {
+                Durability::Memory
+            };
+
+            let spk = [0x00u8, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05,
+                        0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+                        0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
+            eng.write_block(&CommitBlockReq {
+                token: crate::types::ReqToken(u64::from(h)),
+                height: BlockHeight(h),
+                hash: block_hash,
+                prev_hash,
+                header: BlockHeader {
+                    prev_block: prev_hash,
+                    ..make_header(h)
+                },
+                created: &[mantle_consensus::chain_view::NewCoin {
+                    outpoint: op,
+                    value: Satoshi::new(5_000_000_000),
+                    script_pubkey: &spk,
+                    coinbase: true,
+                    height: BlockHeight(h),
+                }],
+                spent: &[],
+                block_bytes: None,
+                durability,
+            })
+            .unwrap();
+            eng.flush(durability).unwrap();
+            prev_hash = block_hash;
+        }
+
+        // Write buffer should be empty after Synced flush at 2016.
+        assert!(eng.write_buffer.is_empty(), "write buffer should be flushed");
+        assert!(eng.table.len() > 0, "table should have entries");
+
+        // Look up block 1965 coinbase via read_coin (synchronous pread).
+        let mut target_txid = [0u8; 32];
+        target_txid[..4].copy_from_slice(&target_height.to_le_bytes());
+        let target_op = OutPoint {
+            txid: Hash256(target_txid),
+            vout: 0,
+        };
+
+        let coin_sync = eng.table.get(&target_op).unwrap();
+        assert!(coin_sync.is_some(), "synchronous table.get should find the coin");
+
+        // Look up via read_coins (batch uring path).
+        let mut out = Vec::new();
+        eng.read_coins(&[target_op], &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].coin.is_some(),
+            "batch uring read_coins should find the coin after flush"
+        );
+    }
+
+    #[test]
+    fn flush_then_lookup_via_handle() {
+        let dir = TmpFile::new("flush-handle");
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let eng = RobinHoodEngine::open(dir.path()).unwrap();
+
+        crate::with_storage(eng, |handle| {
+            let target_height = 1965u32;
+            let mut prev_hash = Hash256::ZERO;
+
+            for h in 1..=2016u32 {
+                let mut txid_bytes = [0u8; 32];
+                txid_bytes[..4].copy_from_slice(&h.to_le_bytes());
+                let op = OutPoint {
+                    txid: Hash256(txid_bytes),
+                    vout: 0,
+                };
+                let mut hash_bytes = [0u8; 32];
+                hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
+                let block_hash = Hash256(hash_bytes);
+                let durability = if h == 2016 {
+                    Durability::Synced
+                } else {
+                    Durability::Memory
+                };
+                let spk = [0x00u8, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05,
+                            0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+                            0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
+                let created = [mantle_consensus::chain_view::NewCoin {
+                    outpoint: op,
+                    value: Satoshi::new(5_000_000_000),
+                    script_pubkey: &spk,
+                    coinbase: true,
+                    height: BlockHeight(h),
+                }];
+                handle.commit_block_borrowed(CommitBlockReq {
+                    token: crate::types::ReqToken(u64::from(h)),
+                    height: BlockHeight(h),
+                    hash: block_hash,
+                    prev_hash,
+                    header: BlockHeader {
+                        prev_block: prev_hash,
+                        ..make_header(h)
+                    },
+                    created: &created,
+                    spent: &[],
+                    block_bytes: None,
+                    durability,
+                }).expect("commit_block_borrowed");
+                prev_hash = block_hash;
+            }
+
+            let mut target_txid = [0u8; 32];
+            target_txid[..4].copy_from_slice(&target_height.to_le_bytes());
+            let target_op = OutPoint {
+                txid: Hash256(target_txid),
+                vout: 0,
+            };
+
+            let mut out = Vec::new();
+            handle.lookup_coins_borrowed(&[target_op], &mut out).expect("lookup");
+            assert_eq!(out.len(), 1);
+            assert!(
+                out[0].coin.is_some(),
+                "handle lookup should find coin after Synced flush at 2016"
+            );
+        }).unwrap();
+    }
+
 }

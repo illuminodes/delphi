@@ -34,9 +34,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use mantle::network::Network;
+use mantle::codec::Encode;
+use mantle::network::{Command, Network, NetworkAddr, VersionMsg, services};
 use ququmatz::types::{
-    AddressFamily, SockAddrIn, SocketFlags, SocketType, SqeFlags, TimeoutFlags, Timespec,
+    AddressFamily, MsgFlags, RawFd, SockAddrIn, SocketFlags, SocketType, SqeFlags, TimeoutFlags,
+    Timespec,
 };
 use ququmatz::{IoUring, Sqe};
 
@@ -162,6 +164,8 @@ enum Op {
     Connect = 0,
     LinkTimeout = 1,
     Close = 2,
+    Send = 3,
+    Recv = 4,
 }
 
 impl Op {
@@ -169,6 +173,8 @@ impl Op {
         match b {
             0 => Self::Connect,
             2 => Self::Close,
+            3 => Self::Send,
+            4 => Self::Recv,
             _ => Self::LinkTimeout,
         }
     }
@@ -191,23 +197,22 @@ fn split_tag(raw: u64) -> (u32, Op) {
 /// stays owned by the slot until the probe completes.
 struct Slot {
     addr: SocketAddrV4,
-    fd: i32,
+    fd: Option<RawFd>,
     sockaddr: SockAddrIn,
     started_at: Instant,
-    /// Connect outcome observed (success or kernel-cancelled). Once this is
-    /// `true` and `closed` is `true`, the slot is reset and a new peer dialed.
     recv_done: bool,
-    /// `Some(rtt)` if connect succeeded; `None` if it failed/timed out.
     recv_rtt: Option<Duration>,
-    /// Has the close CQE been observed?
     closed: bool,
+    version_buf: Vec<u8>,
+    magic_buf: [u8; 4],
+    magic_verified: bool,
 }
 
 impl Slot {
     fn new() -> Self {
         Self {
             addr: SocketAddrV4::new(std::net::Ipv4Addr::UNSPECIFIED, 0),
-            fd: -1,
+            fd: None,
             sockaddr: SockAddrIn {
                 sin_family: 0,
                 sin_port: 0,
@@ -218,6 +223,9 @@ impl Slot {
             recv_done: false,
             recv_rtt: None,
             closed: true,
+            version_buf: Vec::new(),
+            magic_buf: [0u8; 4],
+            magic_verified: false,
         }
     }
 }
@@ -304,27 +312,67 @@ fn run(args: &Args) -> Result<(), String> {
 
             match op {
                 Op::Connect => {
-                    // res >= 0 means connect succeeded (3-way handshake done).
-                    // Negative is either a real errno (-ECONNREFUSED, -EHOSTUNREACH)
-                    // or `-ECANCELED` from the link_timeout firing.
-                    if res >= 0 {
+                    if res < 0 {
+                        slot.recv_done = true;
+                        if let Some(fd) = slot.fd.take() {
+                            let _ = ring.push(
+                                Sqe::close(fd)
+                                    .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::Close)),
+                            );
+                        }
+                    } else if let Some(fd) = slot.fd {
                         slot.recv_rtt = Some(slot.started_at.elapsed());
-                    }
-                    slot.recv_done = true;
-                    if slot.fd >= 0 {
+                        let magic = args.network.magic();
+                        let ver = our_version();
+                        let mut framed = Vec::new();
+                        let mut payload = Vec::new();
+                        let _ = ver.encode(&mut payload);
+                        let _ = magic.frame(Command::Version, &payload, &mut framed);
+                        slot.version_buf = framed;
                         let _ = ring.push(
-                            Sqe::close(slot.fd)
+                            Sqe::send(fd, &slot.version_buf, MsgFlags::default())
+                                .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::Send)),
+                        );
+                    }
+                }
+                Op::Send => {
+                    if res < 0 {
+                        slot.recv_done = true;
+                        if let Some(fd) = slot.fd.take() {
+                            let _ = ring.push(
+                                Sqe::close(fd)
+                                    .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::Close)),
+                            );
+                        }
+                    } else if let Some(fd) = slot.fd {
+                        let _ = ring.push(
+                            Sqe::recv(fd, &mut slot.magic_buf, MsgFlags::default())
+                                .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::Recv))
+                                .flags(SqeFlags::IO_LINK),
+                        );
+                        let _ = ring.push(
+                            Sqe::link_timeout(&timeouts[slot_idx], TimeoutFlags::default())
+                                .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::LinkTimeout)),
+                        );
+                    }
+                }
+                Op::Recv => {
+                    slot.recv_done = true;
+                    if res >= 4 {
+                        let expected = args.network.magic().bytes();
+                        slot.magic_verified = slot.magic_buf == expected;
+                    }
+                    if !slot.magic_verified {
+                        slot.recv_rtt = None;
+                    }
+                    if let Some(fd) = slot.fd.take() {
+                        let _ = ring.push(
+                            Sqe::close(fd)
                                 .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::Close)),
                         );
-                        slot.fd = -1;
                     }
                 }
-                Op::LinkTimeout => {
-                    // Always paired with a Connect — its CQE carries either
-                    // -ETIME (timeout fired and cancelled the connect) or
-                    // -ECANCELED (connect completed first). Either way, the
-                    // outcome is recorded by the Connect arm above.
-                }
+                Op::LinkTimeout => {}
                 Op::Close => {
                     slot.closed = true;
                 }
@@ -337,7 +385,7 @@ fn run(args: &Args) -> Result<(), String> {
                     results.push((slot.addr, rtt));
                     succeeded += 1;
                 }
-                slot.fd = -1;
+                slot.fd = None;
                 slot.recv_done = false;
                 slot.closed = true;
                 slot.recv_rtt = None;
@@ -408,7 +456,7 @@ fn launch_probe(
     let fd = sock.into_fd();
 
     slot.addr = addr;
-    slot.fd = fd;
+    slot.fd = Some(fd);
     slot.sockaddr = SockAddrIn {
         sin_family: u16::try_from(AddressFamily::Inet.as_raw()).expect("AF_INET fits u16"),
         sin_port: addr.port().to_be(),
@@ -446,6 +494,33 @@ fn launch_probe(
     .map_err(|e| format!("push link_timeout: {e:?}"))?;
 
     Ok(())
+}
+
+fn our_version() -> VersionMsg {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX);
+    let empty = NetworkAddr {
+        services: 0,
+        ip: [0u8; 16],
+        port: 0,
+    };
+    VersionMsg {
+        version: 70016,
+        services: services::NODE_NETWORK,
+        timestamp: now,
+        receiver: empty,
+        sender: empty,
+        nonce: 0xfeed_face_dead_beef,
+        user_agent: "/mantle-rank-peers:0.1.0/".to_string(),
+        start_height: 0,
+        relay: false,
+    }
 }
 
 fn main() -> ExitCode {
