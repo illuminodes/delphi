@@ -157,7 +157,7 @@ fn main() {
         storage.shutdown().expect("shutdown");
 
         let dt = it_start.elapsed();
-        if iter_idx < 5 || iter_idx % 50 == 0 {
+        if iter_idx < 5 || iter_idx.is_multiple_of(50) {
             eprintln!(
                 "[B] iter={iter_idx} dt={:.2}ms wall={:.2}s",
                 dt.as_secs_f64() * 1000.0,

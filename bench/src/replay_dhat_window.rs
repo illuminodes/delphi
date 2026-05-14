@@ -93,7 +93,7 @@ fn load_headers_file(dir: &Path) -> Vec<BlockHeader> {
     let bytes = std::fs::read(dir.join("headers.bin"))
         .expect("headers.bin not found — run fetch-fixtures first");
     assert!(
-        bytes.len() % 80 == 0,
+        bytes.len().is_multiple_of(80),
         "headers.bin size not a multiple of 80"
     );
     bytes
@@ -179,7 +179,10 @@ fn main() {
         }
     };
 
-    eprintln!("[dhat-{}] warming up... synced={}", args.preset, args.synced);
+    eprintln!(
+        "[dhat-{}] warming up... synced={}",
+        args.preset, args.synced
+    );
     if args.reuse {
         let mut bufs = BenchReplayBufs::new();
         let mut txs_scratch = Vec::new();

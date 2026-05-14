@@ -7,27 +7,12 @@ use ququmatz::IoUring;
 use crate::store::{BlockStore, HeaderStore};
 
 enum FileReq {
-    WriteBlock {
-        height: BlockHeight,
-        data: Vec<u8>,
-    },
-    WriteBlockAsync {
-        height: BlockHeight,
-        data: Vec<u8>,
-    },
-    ReadBlock {
-        height: BlockHeight,
-    },
-    HasBlock {
-        height: BlockHeight,
-    },
-    WriteHeaders {
-        start: BlockHeight,
-        data: Vec<u8>,
-    },
-    LoadCachedHeaders {
-        start: BlockHeight,
-    },
+    WriteBlock { height: BlockHeight, data: Vec<u8> },
+    WriteBlockAsync { height: BlockHeight, data: Vec<u8> },
+    ReadBlock { height: BlockHeight },
+    HasBlock { height: BlockHeight },
+    WriteHeaders { start: BlockHeight, data: Vec<u8> },
+    LoadCachedHeaders { start: BlockHeight },
     FlushBlockIndex,
     Shutdown,
 }

@@ -287,7 +287,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
     };
     let clock = FixedClock(clock_now + 3600);
     bencher.bench(|| {
-        validate_block_context_with_clock(black_box(&block), &view, &clock)
+        validate_block_context_with_clock(black_box(&block), &view, &clock, false)
             .expect("valid block must pass context validation");
     });
 }

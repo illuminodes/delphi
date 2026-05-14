@@ -522,7 +522,8 @@ fn diag_schnorr_sign_verify_roundtrip() {
 
     let sig_bytes: [u8; 64] = sig.to_bytes();
     let pk_bytes: [u8; 32] = vk.to_bytes().into();
-    let ok = mantle_consensus::script::consensus_crypto::Schnorr::verify(&sig_bytes, &pk_bytes, &msg);
+    let ok =
+        mantle_consensus::script::consensus_crypto::Schnorr::verify(&sig_bytes, &pk_bytes, &msg);
     assert!(ok, "Schnorr::verify must pass for k256-signed msg");
 }
 
@@ -584,7 +585,8 @@ fn diag_sighash_determinism() {
     eprintln!("msgs_match: {}", msg1 == rt_msg);
 
     // run_taproot verifies: Schnorr::verify(sig64, program32=output_key, &rt_msg)
-    let ok = mantle_consensus::script::consensus_crypto::Schnorr::verify(&sig, &output_key, &rt_msg);
+    let ok =
+        mantle_consensus::script::consensus_crypto::Schnorr::verify(&sig, &output_key, &rt_msg);
     eprintln!("verify_schnorr(tweaked_sig, output_key, rt_msg): {ok}");
 }
 

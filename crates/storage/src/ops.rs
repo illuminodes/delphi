@@ -4,7 +4,9 @@ use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint};
 use mantle_consensus::chain_view::TipInfo;
 
 use crate::handle::StorageHandle;
-use crate::types::{CommitBlockReq, CommittedResp, LookupResult, StorageError, StorageReq, StorageResp};
+use crate::types::{
+    CommitBlockReq, CommittedResp, LookupResult, StorageError, StorageReq, StorageResp,
+};
 
 /// Abstraction over `StorageHandle` used by `mantle-validator`.
 ///

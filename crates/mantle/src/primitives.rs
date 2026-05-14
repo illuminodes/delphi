@@ -1983,7 +1983,11 @@ impl<'a> BlockRef<'a> {
         let raw_consumed = wire.len() - rest.len();
         let raw = &wire[..raw_consumed];
 
-        Ok(Self { header, raw, txs: txs.as_slice() })
+        Ok(Self {
+            header,
+            raw,
+            txs: txs.as_slice(),
+        })
     }
 
     /// Number of transactions in this block.
@@ -2682,8 +2686,8 @@ mod tests {
         let expected_segwit = segwit.txid().expect("segwit txid");
 
         let mut txs_buf = Vec::new();
-        let block_ref =
-            BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf).expect("BlockRef decode must succeed");
+        let block_ref = BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf)
+            .expect("BlockRef decode must succeed");
         assert_eq!(block_ref.tx_count(), 2);
 
         let tx0 = &block_ref.txs[0];
@@ -2721,12 +2725,14 @@ mod tests {
         // (otherwise the arena would grow unboundedly across IBD blocks).
         {
             let mut txs_buf = Vec::new();
-            let _br = BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf).expect("decode 1");
+            let _br =
+                BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf).expect("decode 1");
         }
         let cap_before = arena.capacity();
         {
             let mut txs_buf = Vec::new();
-            let br2 = BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf).expect("decode 2");
+            let br2 =
+                BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf).expect("decode 2");
             assert_eq!(
                 br2.txs[0].txid_into(&mut Vec::new()).expect("hash"),
                 segwit.txid().expect("owned txid")

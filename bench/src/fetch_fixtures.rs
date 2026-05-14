@@ -240,7 +240,7 @@ fn encode_getheaders(locator: Hash256) -> Vec<u8> {
     GetHeadersMsg::single_locator(locator).encode_to_vec()
 }
 
-fn frame_and_send(node: &Node, peer: PeerId, fd: i32, cmd: Command, payload: &[u8]) {
+fn frame_and_send(node: &Node, peer: PeerId, fd: ququmatz::types::RawFd, cmd: Command, payload: &[u8]) {
     let mut framed = Vec::new();
     NETWORK
         .magic()
@@ -306,7 +306,7 @@ enum PeerPhase {
 
 struct PeerSlot {
     id: PeerId,
-    fd: i32,
+    fd: ququmatz::types::RawFd,
     phase: PeerPhase,
     /// Blocks assigned to this peer: (hash, `time_assigned`).
     in_flight: Vec<(Hash256, Instant)>,
@@ -353,13 +353,9 @@ fn run(fixtures: &Path, args: &Args, have: &mut [bool]) -> Result<bool, mantle::
     let mut retry: Vec<Hash256> = Vec::new();
 
     let mut saved = 0u32;
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_mins(2);
 
-    loop {
-        // Block until the RX thread delivers the next message or a Tick.
-        let Some(msg) = inbound.pop_block() else {
-            break;
-        };
+    while let Some(msg) = inbound.pop_block() {
 
         match msg {
             InboundMsg::Tick => {

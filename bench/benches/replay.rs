@@ -504,7 +504,9 @@ fn do_replay_ordinals_block(
     all_ops.extend_from_slice(&bip30_ops);
 
     let mut lookup = Vec::new();
-    storage.send_lookup_borrowed(&all_ops, &mut lookup).expect("send_lookup");
+    storage
+        .send_lookup_borrowed(&all_ops, &mut lookup)
+        .expect("send_lookup");
     let hash = block.header.hash();
     let tip = storage.tip();
     storage.recv_lookup().expect("recv_lookup");
@@ -528,8 +530,17 @@ fn do_replay_ordinals_block(
         },
     };
     let mut scratch2 = Vec::new();
-    let result = connect_block(block, height, &view, &mut scratch2, &mut ConnectScratch::new(), true, Some(cache), None)
-        .unwrap_or_else(|e| panic!("connect_block {}: {e}", height.0));
+    let result = connect_block(
+        block,
+        height,
+        &view,
+        &mut scratch2,
+        &mut ConnectScratch::new(),
+        true,
+        Some(cache),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("connect_block {}: {e}", height.0));
     storage
         .commit_block_borrowed(CommitBlockReq {
             token: mantle_storage::types::ReqToken(token),

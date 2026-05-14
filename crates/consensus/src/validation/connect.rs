@@ -100,7 +100,12 @@ where
         let v = std::mem::take(&mut connect_scratch.coins);
         // SAFETY: Option<&'static Coin> and Option<&'view Coin> have identical layout.
         // The vec is cleared inside get_coins_into before each use.
-        unsafe { std::mem::transmute::<Vec<Option<&'static crate::chain_view::Coin>>, Vec<Option<&crate::chain_view::Coin>>>(v) }
+        unsafe {
+            std::mem::transmute::<
+                Vec<Option<&'static crate::chain_view::Coin>>,
+                Vec<Option<&crate::chain_view::Coin>>,
+            >(v)
+        }
     };
 
     let mut total_fees = Satoshi::ZERO;

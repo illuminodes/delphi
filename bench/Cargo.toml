@@ -104,6 +104,7 @@ mantle = { path = "../crates/mantle" }
 mantle-consensus = { path = "../crates/consensus" }
 mantle-storage = { path = "../crates/storage" }
 mantle-validator = { path = "../crates/validator" }
+ququmatz.workspace = true
 dhat = "0.3"
 k256 = { workspace = true, features = ["ecdsa", "arithmetic"] }
 sha2 = { workspace = true }

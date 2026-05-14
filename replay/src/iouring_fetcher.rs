@@ -7,7 +7,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::SocketAddrV4;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use mantle::codec::{Decode, Encode};
@@ -24,8 +23,8 @@ use mantle_transport::{
     encode_version, ingest_recv_cqe, make_ring, push_connect, push_recv_multishot, push_send,
     push_tick,
 };
-use ququmatz::types::{AddressFamily, SockAddrIn, SocketFlags, SocketType, Timespec};
 use ququmatz::IoUring;
+use ququmatz::types::{AddressFamily, SockAddrIn, SocketFlags, SocketType, Timespec};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -173,15 +172,15 @@ impl Fetcher {
     pub fn new(
         network: Network,
         peer_addrs: Vec<SocketAddrV4>,
-        data_dir: PathBuf,
+        data_dir: &std::path::Path,
     ) -> io::Result<Self> {
-        std::fs::create_dir_all(&data_dir)?;
+        std::fs::create_dir_all(data_dir)?;
         let mut ring = make_ring()?;
         let pbr = ring
             .register_provided_buffers(PROVIDED_BUF_GROUP_ID, PROVIDED_BUF_COUNT, PROVIDED_BUF_SIZE)
             .map_err(|e| io::Error::other(format!("register_provided_buffers: {e:?}")))?;
 
-        let file_io = FileIoHandle::spawn(&data_dir)?;
+        let file_io = FileIoHandle::spawn(data_dir)?;
 
         Ok(Self {
             network,
@@ -293,7 +292,7 @@ impl Fetcher {
         let mut next_height = if collected.is_empty() {
             start.0
         } else {
-            collected.last().unwrap().0 .0 + 1
+            collected.last().unwrap().0.0 + 1
         };
         let mut current_locator = if collected.is_empty() {
             locator
@@ -1118,7 +1117,6 @@ fn getheaders_payload(locator: Hash256) -> Vec<u8> {
         stop_hash: Hash256::ZERO,
     };
     let mut buf = Vec::new();
-    msg.encode(&mut buf)
-        .expect("Vec<u8> Write is infallible");
+    msg.encode(&mut buf).expect("Vec<u8> Write is infallible");
     buf
 }

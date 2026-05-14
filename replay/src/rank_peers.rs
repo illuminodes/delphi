@@ -315,10 +315,11 @@ fn run(args: &Args) -> Result<(), String> {
                     if res < 0 {
                         slot.recv_done = true;
                         if let Some(fd) = slot.fd.take() {
-                            let _ = ring.push(
-                                Sqe::close(fd)
-                                    .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::Close)),
-                            );
+                            let _ =
+                                ring.push(Sqe::close(fd).user_data(tag(
+                                    u32::try_from(slot_idx).unwrap_or(0),
+                                    Op::Close,
+                                )));
                         }
                     } else if let Some(fd) = slot.fd {
                         slot.recv_rtt = Some(slot.started_at.elapsed());
@@ -339,10 +340,11 @@ fn run(args: &Args) -> Result<(), String> {
                     if res < 0 {
                         slot.recv_done = true;
                         if let Some(fd) = slot.fd.take() {
-                            let _ = ring.push(
-                                Sqe::close(fd)
-                                    .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::Close)),
-                            );
+                            let _ =
+                                ring.push(Sqe::close(fd).user_data(tag(
+                                    u32::try_from(slot_idx).unwrap_or(0),
+                                    Op::Close,
+                                )));
                         }
                     } else if let Some(fd) = slot.fd {
                         let _ = ring.push(
@@ -352,7 +354,10 @@ fn run(args: &Args) -> Result<(), String> {
                         );
                         let _ = ring.push(
                             Sqe::link_timeout(&timeouts[slot_idx], TimeoutFlags::default())
-                                .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::LinkTimeout)),
+                                .user_data(tag(
+                                    u32::try_from(slot_idx).unwrap_or(0),
+                                    Op::LinkTimeout,
+                                )),
                         );
                     }
                 }

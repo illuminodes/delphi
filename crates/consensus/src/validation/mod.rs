@@ -74,7 +74,13 @@ pub fn validate_block_context_with_clock(
     let this_height = parent_height + 1;
 
     // nBits must match expected difficulty.
-    let expected_bits = expected_nbits(parent_height, parent, view, header.time, allow_min_difficulty)?;
+    let expected_bits = expected_nbits(
+        parent_height,
+        parent,
+        view,
+        header.time,
+        allow_min_difficulty,
+    )?;
     if header.bits != expected_bits {
         return Err(ValidationError::UnexpectedDifficulty);
     }

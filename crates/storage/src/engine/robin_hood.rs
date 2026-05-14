@@ -393,7 +393,10 @@ impl RobinHoodTable {
 
             current.probe_distance += 1;
             slot = (slot + 1) & self.mask;
-            assert!(slot != ideal, "RobinHoodTable::insert: table full despite load-factor check");
+            assert!(
+                slot != ideal,
+                "RobinHoodTable::insert: table full despite load-factor check"
+            );
         }
     }
 
@@ -517,8 +520,7 @@ impl RobinHoodTable {
             return Ok(());
         }
 
-        if (self.live_count + u64::try_from(pairs.len()).expect("batch fits u64"))
-            * LOAD_FACTOR_DEN
+        if (self.live_count + u64::try_from(pairs.len()).expect("batch fits u64")) * LOAD_FACTOR_DEN
             > self.slot_count * LOAD_FACTOR_NUM
         {
             self.resize()?;
@@ -611,9 +613,7 @@ impl RobinHoodTable {
                     if wb + BUCKET_SIZE > write_arena.len() {
                         write_arena.resize(wb + BUCKET_SIZE, 0);
                     }
-                    to_write.encode(
-                        (&mut write_arena[wb..wb + BUCKET_SIZE]).try_into().unwrap(),
-                    );
+                    to_write.encode((&mut write_arena[wb..wb + BUCKET_SIZE]).try_into().unwrap());
                     writes.push(slot);
                     write_cursor += 1;
                     None // already handled
@@ -632,9 +632,9 @@ impl RobinHoodTable {
                     if wb + BUCKET_SIZE > write_arena.len() {
                         write_arena.resize(wb + BUCKET_SIZE, 0);
                     }
-                    state.bucket.encode(
-                        (&mut write_arena[wb..wb + BUCKET_SIZE]).try_into().unwrap(),
-                    );
+                    state
+                        .bucket
+                        .encode((&mut write_arena[wb..wb + BUCKET_SIZE]).try_into().unwrap());
                     writes.push(slot);
                     write_cursor += 1;
                 }
@@ -1071,8 +1071,6 @@ pub struct RobinHoodEngine {
     uring_resolved: Vec<bool>,
     // Scratch buffers reused across flush_write_buffer calls.
     wb_pairs: Vec<(OutPoint, Coin)>,
-    wb_write_arena: Vec<u8>,
-    wb_insert_states: Vec<InsertState>,
     wb_del_slots: Vec<u64>,
     wb_del_dists: Vec<u16>,
     wb_del_resolved: Vec<bool>,
@@ -1130,8 +1128,6 @@ impl RobinHoodEngine {
             uring_dists: Vec::new(),
             uring_resolved: Vec::new(),
             wb_pairs: Vec::new(),
-            wb_write_arena: Vec::new(),
-            wb_insert_states: Vec::new(),
             wb_del_slots: Vec::new(),
             wb_del_dists: Vec::new(),
             wb_del_resolved: Vec::new(),
@@ -1506,7 +1502,8 @@ fn flush_if_full(
                 .map_err(|e| io::Error::other(format!("{e:?}")))?;
             while ring.complete().is_some() {}
             *submitted = 0;
-            ring.push(copy).map_err(|e| io::Error::other(format!("{e:?}")))?;
+            ring.push(copy)
+                .map_err(|e| io::Error::other(format!("{e:?}")))?;
             *submitted += 1;
             Ok(())
         }
@@ -1797,7 +1794,15 @@ mod tests {
         let mut results = Vec::new();
         let (mut slots, mut dists, mut resolved) = (Vec::new(), Vec::new(), Vec::new());
         table
-            .get_batch_uring(&ops, &mut results, &mut ring, &mut arena, &mut slots, &mut dists, &mut resolved)
+            .get_batch_uring(
+                &ops,
+                &mut results,
+                &mut ring,
+                &mut arena,
+                &mut slots,
+                &mut dists,
+                &mut resolved,
+            )
             .unwrap();
 
         assert_eq!(results.len(), count as usize);
@@ -1810,7 +1815,15 @@ mod tests {
         let miss_ops: Vec<OutPoint> = (200..210u8).map(make_op).collect();
         let mut miss_results = Vec::new();
         table
-            .get_batch_uring(&miss_ops, &mut miss_results, &mut ring, &mut arena, &mut slots, &mut dists, &mut resolved)
+            .get_batch_uring(
+                &miss_ops,
+                &mut miss_results,
+                &mut ring,
+                &mut arena,
+                &mut slots,
+                &mut dists,
+                &mut resolved,
+            )
             .unwrap();
         assert!(miss_results.iter().all(Option::is_none));
     }
@@ -2064,9 +2077,10 @@ mod tests {
                 created: &[mantle_consensus::chain_view::NewCoin {
                     outpoint: op,
                     value: Satoshi::new(5_000_000_000),
-                    script_pubkey: &[0x00, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05,
-                                     0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
-                                     0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14],
+                    script_pubkey: &[
+                        0x00, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+                        0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
+                    ],
                     coinbase: true,
                     height: BlockHeight(h),
                 }],
@@ -2086,7 +2100,10 @@ mod tests {
             vout: 0,
         };
         let coin = eng.read_coin(&target_op).unwrap();
-        assert!(coin.is_some(), "read_coin should find block 1965 coinbase in write buffer");
+        assert!(
+            coin.is_some(),
+            "read_coin should find block 1965 coinbase in write buffer"
+        );
         assert_eq!(coin.unwrap().height.0, target_height);
 
         // Look up via read_coins (batch) — this is the path validate_and_commit uses.
@@ -2122,9 +2139,10 @@ mod tests {
                 hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
                 let block_hash = Hash256(hash_bytes);
 
-                let spk = [0x00, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05,
-                            0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
-                            0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
+                let spk = [
+                    0x00, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+                    0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
+                ];
                 let created = [mantle_consensus::chain_view::NewCoin {
                     outpoint: op,
                     value: Satoshi::new(5_000_000_000),
@@ -2195,9 +2213,10 @@ mod tests {
             hash_bytes[..4].copy_from_slice(&(h + 10000).to_le_bytes());
             let block_hash = Hash256(hash_bytes);
 
-            let spk = [0x00u8, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05,
-                        0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
-                        0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
+            let spk = [
+                0x00u8, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+                0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
+            ];
             let created = [mantle_consensus::chain_view::NewCoin {
                 outpoint: op,
                 value: Satoshi::new(5_000_000_000),
@@ -2268,6 +2287,7 @@ mod tests {
             created.push(NewCoin {
                 outpoint: OutPoint {
                     txid,
+                    #[allow(clippy::cast_possible_truncation)]
                     vout: vout as u32,
                 },
                 value: output.value,
@@ -2339,9 +2359,10 @@ mod tests {
                 Durability::Memory
             };
 
-            let spk = [0x00u8, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05,
-                        0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
-                        0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
+            let spk = [
+                0x00u8, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+                0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
+            ];
             eng.write_block(&CommitBlockReq {
                 token: crate::types::ReqToken(u64::from(h)),
                 height: BlockHeight(h),
@@ -2368,8 +2389,11 @@ mod tests {
         }
 
         // Write buffer should be empty after Synced flush at 2016.
-        assert!(eng.write_buffer.is_empty(), "write buffer should be flushed");
-        assert!(eng.table.len() > 0, "table should have entries");
+        assert!(
+            eng.write_buffer.is_empty(),
+            "write buffer should be flushed"
+        );
+        assert!(!eng.table.is_empty(), "table should have entries");
 
         // Look up block 1965 coinbase via read_coin (synchronous pread).
         let mut target_txid = [0u8; 32];
@@ -2380,7 +2404,10 @@ mod tests {
         };
 
         let coin_sync = eng.table.get(&target_op).unwrap();
-        assert!(coin_sync.is_some(), "synchronous table.get should find the coin");
+        assert!(
+            coin_sync.is_some(),
+            "synchronous table.get should find the coin"
+        );
 
         // Look up via read_coins (batch uring path).
         let mut out = Vec::new();
@@ -2417,9 +2444,10 @@ mod tests {
                 } else {
                     Durability::Memory
                 };
-                let spk = [0x00u8, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05,
-                            0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
-                            0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
+                let spk = [
+                    0x00u8, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+                    0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
+                ];
                 let created = [mantle_consensus::chain_view::NewCoin {
                     outpoint: op,
                     value: Satoshi::new(5_000_000_000),
@@ -2427,20 +2455,22 @@ mod tests {
                     coinbase: true,
                     height: BlockHeight(h),
                 }];
-                handle.commit_block_borrowed(CommitBlockReq {
-                    token: crate::types::ReqToken(u64::from(h)),
-                    height: BlockHeight(h),
-                    hash: block_hash,
-                    prev_hash,
-                    header: BlockHeader {
-                        prev_block: prev_hash,
-                        ..make_header(h)
-                    },
-                    created: &created,
-                    spent: &[],
-                    block_bytes: None,
-                    durability,
-                }).expect("commit_block_borrowed");
+                handle
+                    .commit_block_borrowed(CommitBlockReq {
+                        token: crate::types::ReqToken(u64::from(h)),
+                        height: BlockHeight(h),
+                        hash: block_hash,
+                        prev_hash,
+                        header: BlockHeader {
+                            prev_block: prev_hash,
+                            ..make_header(h)
+                        },
+                        created: &created,
+                        spent: &[],
+                        block_bytes: None,
+                        durability,
+                    })
+                    .expect("commit_block_borrowed");
                 prev_hash = block_hash;
             }
 
@@ -2452,13 +2482,15 @@ mod tests {
             };
 
             let mut out = Vec::new();
-            handle.lookup_coins_borrowed(&[target_op], &mut out).expect("lookup");
+            handle
+                .lookup_coins_borrowed(&[target_op], &mut out)
+                .expect("lookup");
             assert_eq!(out.len(), 1);
             assert!(
                 out[0].coin.is_some(),
                 "handle lookup should find coin after Synced flush at 2016"
             );
-        }).unwrap();
+        })
+        .unwrap();
     }
-
 }

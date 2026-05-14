@@ -1,4 +1,8 @@
-#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc, clippy::must_use_candidate)]
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate
+)]
 
 mod arena;
 mod handshake;
@@ -14,8 +18,7 @@ pub use ops::{
 };
 pub use peer::{PEER_SEND_OUTSTANDING_CAP, Peer, PeerPool, PeerState};
 pub use ring::{
-    close_peer, ingest_recv_cqe, make_ring, push_connect, push_recv_multishot, push_send,
-    push_tick,
+    close_peer, ingest_recv_cqe, make_ring, push_connect, push_recv_multishot, push_send, push_tick,
 };
 
 pub use ququmatz;

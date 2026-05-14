@@ -96,8 +96,8 @@ fn csv_blocks_tx_greater_accepts() {
 /// Require 100 time-units; nSequence encodes 200 time-units → satisfied.
 #[test]
 fn csv_time_tx_greater_accepts() {
-    let spk = csv_spk(i64::from(SEQ_TYPE | 100));
-    let tx = make_tx(2, SEQ_TYPE | 200);
+    let spk = csv_spk(i64::from(SEQ_TYPE | 0x0064));
+    let tx = make_tx(2, SEQ_TYPE | 0x00c8);
     assert!(verify_script(&[], &spk, &tx, 0, Satoshi::new(1000), flags()).is_ok());
 }
 
@@ -106,7 +106,7 @@ fn csv_time_tx_greater_accepts() {
 fn csv_stack_disable_flag_is_nop_accepts() {
     // The *script* value has bit 31 set. CSV is inert in that case regardless
     // of the tx — BIP112 §"OP_CHECKSEQUENCEVERIFY".
-    let spk = csv_spk(i64::from(SEQ_DISABLE | 999));
+    let spk = csv_spk(i64::from(SEQ_DISABLE | 0x03e7));
     let tx = make_tx(2, 0); // nSequence 0 would normally fail for a 999-unit req
     assert!(verify_script(&[], &spk, &tx, 0, Satoshi::new(1000), flags()).is_ok());
 }
@@ -143,7 +143,7 @@ fn csv_input_disable_flag_rejects() {
 #[test]
 fn csv_type_mismatch_blocks_vs_time_rejects() {
     let spk = csv_spk(10); // blocks
-    let tx = make_tx(2, SEQ_TYPE | 10); // time
+    let tx = make_tx(2, SEQ_TYPE | 0x000a); // time
     assert!(verify_script(&[], &spk, &tx, 0, Satoshi::new(1000), flags()).is_err());
 }
 
@@ -151,7 +151,7 @@ fn csv_type_mismatch_blocks_vs_time_rejects() {
 /// type mismatch → reject.
 #[test]
 fn csv_type_mismatch_time_vs_blocks_rejects() {
-    let spk = csv_spk(i64::from(SEQ_TYPE | 10)); // time
+    let spk = csv_spk(i64::from(SEQ_TYPE | 0x000a)); // time
     let tx = make_tx(2, 10); // blocks
     assert!(verify_script(&[], &spk, &tx, 0, Satoshi::new(1000), flags()).is_err());
 }

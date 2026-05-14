@@ -47,7 +47,7 @@ fn load_headers(fixtures: &Path) -> Vec<BlockHeader> {
     let bytes = std::fs::read(fixtures.join("headers.bin"))
         .expect("fixtures/headers.bin not found — run fetch-fixtures first");
     assert!(
-        bytes.len() % 80 == 0,
+        bytes.len().is_multiple_of(80),
         "headers.bin size not a multiple of 80"
     );
     bytes
@@ -261,7 +261,9 @@ fn replay_block(
     all_ops.extend_from_slice(&bip30_ops);
 
     let mut lookup = Vec::new();
-    storage.send_lookup_borrowed(&all_ops, &mut lookup).expect("send_lookup");
+    storage
+        .send_lookup_borrowed(&all_ops, &mut lookup)
+        .expect("send_lookup");
     let hash = block.header.hash();
     let tip = storage.tip();
     storage.recv_lookup().expect("recv_lookup");
@@ -276,8 +278,17 @@ fn replay_block(
     let view = BenchView::new(coins, snap, tip, dummy_on_miss);
 
     let mut scratch2 = Vec::new();
-    let result = connect_block(block, height, &view, &mut scratch2, &mut ConnectScratch::new(), true, Some(cache), None)
-        .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+    let result = connect_block(
+        block,
+        height,
+        &view,
+        &mut scratch2,
+        &mut ConnectScratch::new(),
+        true,
+        Some(cache),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage
         .commit_block_borrowed(CommitBlockReq {

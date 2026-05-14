@@ -2,9 +2,7 @@ use std::io;
 use std::time::Duration;
 
 use mantle::network::{Command, Network};
-use ququmatz::types::{
-    MsgFlags, RawFd, SockAddrIn, SqeFlags, TimeoutFlags, Timespec,
-};
+use ququmatz::types::{MsgFlags, RawFd, SockAddrIn, SqeFlags, TimeoutFlags, Timespec};
 use ququmatz::{IoUring, ProvidedBufferRing, Sqe};
 
 use crate::arena::SendArena;
@@ -47,8 +45,11 @@ pub fn push_connect(
     )
     .map_err(uring_err)?;
     ring.push(
-        Sqe::link_timeout(timeout, TimeoutFlags::default())
-            .user_data(make_user_data(slot, g, OP_LINK_TIMEOUT)),
+        Sqe::link_timeout(timeout, TimeoutFlags::default()).user_data(make_user_data(
+            slot,
+            g,
+            OP_LINK_TIMEOUT,
+        )),
     )
     .map_err(uring_err)?;
     Ok(())
@@ -65,13 +66,15 @@ pub fn push_send(
     g: u16,
     fd: RawFd,
 ) -> Result<u16, io::Error> {
-    let send_seq = arena.frame_into(network.magic(), cmd, payload).ok_or_else(|| {
-        io::Error::other(format!(
-            "send arena exhausted (peer slot={slot} g={g}, free={} cap={})",
-            arena.free_count(),
-            SendArena::slot_count()
-        ))
-    })?;
+    let send_seq = arena
+        .frame_into(network.magic(), cmd, payload)
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "send arena exhausted (peer slot={slot} g={g}, free={} cap={})",
+                arena.free_count(),
+                SendArena::slot_count()
+            ))
+        })?;
     let bytes = arena.slice(send_seq);
     let bytes_static: &[u8] = unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
     let r = ring
@@ -118,12 +121,13 @@ pub fn close_peer<T>(ring: &mut IoUring, send_arena: &mut SendArena, peer: &mut 
     }
     if let Some(fd) = peer.fd.take() {
         if let Err(e) = ring.push(
-            Sqe::cancel(make_user_data(0, peer.generation, OP_RECV))
-                .user_data(make_user_data(0, peer.generation, OP_CLOSE)),
+            Sqe::cancel(make_user_data(0, peer.generation, OP_RECV)).user_data(make_user_data(
+                0,
+                peer.generation,
+                OP_CLOSE,
+            )),
         ) {
-            eprintln!(
-                "  transport: close_peer cancel-recv push failed for fd={fd:?}: {e:?}"
-            );
+            eprintln!("  transport: close_peer cancel-recv push failed for fd={fd:?}: {e:?}");
         }
         if let Err(e) =
             ring.push(Sqe::close(fd).user_data(make_user_data(0, peer.generation, OP_CLOSE)))

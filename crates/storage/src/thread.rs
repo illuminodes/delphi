@@ -100,11 +100,7 @@ pub fn with_storage<E, F, R>(engine: E, f: F) -> Result<R, StorageError>
 where
     E: Engine + Send,
     F: for<'req> FnOnce(
-        &mut crate::handle::StorageHandle<
-            'req,
-            &MpscRing<StorageReq<'req>>,
-            &SpscRing<StorageResp>,
-        >,
+        &mut crate::handle::StorageHandle<'req, &MpscRing<StorageReq<'req>>, &SpscRing<StorageResp>>,
     ) -> R,
 {
     let req_ring: MpscRing<StorageReq<'_>> = MpscRing::new(Capacity::exact(RING_CAP));

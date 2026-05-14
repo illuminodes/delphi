@@ -3,8 +3,8 @@ use std::io;
 use std::path::Path;
 
 use mantle::primitives::{BlockHeader, BlockHeight};
-use ququmatz::types::RawFd;
 use ququmatz::IoUring;
+use ququmatz::types::RawFd;
 
 // ── File-backed store ──────────────────────────────────────────────────────
 
@@ -55,10 +55,9 @@ impl FileStore {
 
     #[allow(clippy::cast_possible_truncation)]
     pub fn uring_write(&self, ring: &mut IoUring, data: &[u8], offset: u64) -> io::Result<()> {
-        let sqe = unsafe {
-            ququmatz::Sqe::write_ptr(self.fd, data.as_ptr(), data.len() as u32, offset)
-        }
-        .user_data(u64::MAX);
+        let sqe =
+            unsafe { ququmatz::Sqe::write_ptr(self.fd, data.as_ptr(), data.len() as u32, offset) }
+                .user_data(u64::MAX);
         ring.push(sqe)
             .map_err(|e| io::Error::other(format!("{e:?}")))?;
         loop {

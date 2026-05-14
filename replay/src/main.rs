@@ -358,7 +358,7 @@ fn run(args: &Args) -> Result<(), String> {
             args.network.name()
         ));
     }
-    let mut fetcher = Fetcher::new(args.network, peer_addrs, args.data_dir.clone())
+    let mut fetcher = Fetcher::new(args.network, peer_addrs, &args.data_dir)
         .map_err(|e| format!("fetcher init: {e}"))?;
 
     // ── Phase 1: sync all headers to tip ──────────────────────────────────
@@ -367,13 +367,16 @@ fn run(args: &Args) -> Result<(), String> {
     } else {
         tip.hash
     };
-    let stop_height = args.stop_height
-        .unwrap_or(BlockHeight(u32::MAX));
+    let stop_height = args.stop_height.unwrap_or(BlockHeight(u32::MAX));
 
     eprintln!(
         "  syncing headers from height {} to {}…",
         start_height.0,
-        if stop_height.0 == u32::MAX { "tip".to_string() } else { stop_height.0.to_string() },
+        if stop_height.0 == u32::MAX {
+            "tip".to_string()
+        } else {
+            stop_height.0.to_string()
+        },
     );
 
     let header_pairs = fetcher
@@ -436,7 +439,6 @@ fn run(args: &Args) -> Result<(), String> {
         .map_err(|e| format!("shutdown storage: {e}"))?;
     Ok(())
 }
-
 
 fn replay_one_block(
     height: BlockHeight,

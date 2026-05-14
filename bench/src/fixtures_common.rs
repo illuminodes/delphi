@@ -48,7 +48,7 @@ pub fn load_headers(fixtures: &Path) -> Vec<BlockHeader> {
     let bytes = std::fs::read(fixtures.join("headers.bin"))
         .expect("headers.bin not found — run fetch-fixtures first");
     assert!(
-        bytes.len() % 80 == 0,
+        bytes.len().is_multiple_of(80),
         "headers.bin size not a multiple of 80"
     );
     bytes
@@ -238,7 +238,9 @@ pub fn replay_block(
     all_ops.extend_from_slice(&bip30_ops);
 
     let mut lookup = Vec::new();
-    storage.send_lookup_borrowed(&all_ops, &mut lookup).expect("send_lookup");
+    storage
+        .send_lookup_borrowed(&all_ops, &mut lookup)
+        .expect("send_lookup");
     let hash = block.header.hash();
     let tip = storage.tip();
     storage.recv_lookup().expect("recv_lookup");
@@ -253,8 +255,17 @@ pub fn replay_block(
     let view = BenchView::new(&coins, snap, tip, dummy_on_miss);
 
     let mut scratch2 = Vec::new();
-    let result = connect_block(block, height, &view, &mut scratch2, &mut ConnectScratch::new(), true, Some(cache), None)
-        .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+    let result = connect_block(
+        block,
+        height,
+        &view,
+        &mut scratch2,
+        &mut ConnectScratch::new(),
+        true,
+        Some(cache),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
 
     storage
         .commit_block_borrowed(CommitBlockReq {
@@ -297,7 +308,9 @@ pub fn replay_block_ref(
     let (txids, intra, all_ops) = build_ref_outpoints(&block_ref);
 
     let mut lookup = Vec::new();
-    storage.send_lookup_borrowed(&all_ops, &mut lookup).expect("send_lookup");
+    storage
+        .send_lookup_borrowed(&all_ops, &mut lookup)
+        .expect("send_lookup");
     let hash = block_ref.header.hash();
     let prev_hash = block_ref.header.prev_block;
     let tip = storage.tip();
@@ -486,9 +499,8 @@ pub fn replay_block_ref_reusing(
     // SAFETY: txs_scratch is cleared inside decode_with_arena on entry.
     // Between calls the vec is empty — no dangling lifetime references.
     // TransactionRef layout is identical for all lifetimes.
-    let txs_buf: &mut Vec<TransactionRef<'_>> = unsafe {
-        &mut *std::ptr::from_mut(txs_scratch).cast::<Vec<TransactionRef<'_>>>()
-    };
+    let txs_buf: &mut Vec<TransactionRef<'_>> =
+        unsafe { &mut *std::ptr::from_mut(txs_scratch).cast::<Vec<TransactionRef<'_>>>() };
     let block_ref = BlockRef::decode_with_arena(wire, arena, txs_buf)
         .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.0));
 
@@ -560,7 +572,9 @@ pub fn replay_block_ref_reusing(
 
     bufs.spend_ops.extend_from_slice(&bufs.bip30_ops);
 
-    storage.send_lookup_borrowed(&bufs.spend_ops, &mut bufs.lookup).expect("send_lookup");
+    storage
+        .send_lookup_borrowed(&bufs.spend_ops, &mut bufs.lookup)
+        .expect("send_lookup");
     let hash = block_ref.header.hash();
     let prev_hash = block_ref.header.prev_block;
     let tip = storage.tip();

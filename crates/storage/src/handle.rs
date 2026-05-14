@@ -109,7 +109,10 @@ where
             out,
         };
         let req_static: crate::types::LookupCoinsReq<'static> = unsafe {
-            std::mem::transmute::<crate::types::LookupCoinsReq<'_>, crate::types::LookupCoinsReq<'static>>(req)
+            std::mem::transmute::<
+                crate::types::LookupCoinsReq<'_>,
+                crate::types::LookupCoinsReq<'static>,
+            >(req)
         };
         self.send_raw(StorageReq::LookupCoins(req_static))
     }
@@ -272,11 +275,13 @@ impl StorageHandle<'static> {
     }
 }
 
-fn open_arc(engine: impl crate::engine::Engine + Send + 'static) -> Result<StorageHandle<'static>, StorageError> {
+fn open_arc(
+    engine: impl crate::engine::Engine + Send + 'static,
+) -> Result<StorageHandle<'static>, StorageError> {
+    use crate::thread::StorageWorker;
     use quetzalcoatl::capacity::Capacity;
     use quetzalcoatl::mpsc::RingBuffer as MpscRing;
     use quetzalcoatl::spsc::RingBuffer as SpscRing;
-    use crate::thread::StorageWorker;
 
     const RING_CAP: usize = 1024;
     let initial_tip = engine.tip();

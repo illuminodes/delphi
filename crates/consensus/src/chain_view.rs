@@ -70,8 +70,9 @@ impl ConnectScratch {
     pub fn reclaim(&mut self, mut result: ConnectResult<'_>) {
         result.created.clear();
         // SAFETY: the vec is empty — no elements carry the `'blk` lifetime.
-        self.created =
-            unsafe { std::mem::transmute::<Vec<NewCoin<'_>>, Vec<NewCoin<'static>>>(result.created) };
+        self.created = unsafe {
+            std::mem::transmute::<Vec<NewCoin<'_>>, Vec<NewCoin<'static>>>(result.created)
+        };
         self.spent = result.spent;
         self.spent.clear();
     }

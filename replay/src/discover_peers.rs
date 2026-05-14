@@ -19,18 +19,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use mantle::network::{
-    AddrMsg, AddrV2Addr, AddrV2Msg, Command, CommandName, Network,
-};
+use mantle::network::{AddrMsg, AddrV2Addr, AddrV2Msg, Command, CommandName, Network};
 use mantle_transport::{
     OP_CLOSE, OP_CONNECT, OP_LINK_TIMEOUT, OP_RECV, OP_SEND, OP_TICK, Peer, PeerPool, PeerState,
     SendArena, close_peer, consume_handshake_frames, decode_send_seq, decode_user_data,
     encode_version, ingest_recv_cqe, make_ring, push_connect, push_recv_multishot, push_send,
     push_tick,
 };
-use ququmatz::types::{
-    AddressFamily, SockAddrIn, SocketFlags, SocketType, Timespec,
-};
+use ququmatz::types::{AddressFamily, SockAddrIn, SocketFlags, SocketType, Timespec};
 
 const HELP: &str = "\
 discover-peers — collect a static peer list by talking to DNS seeds.
@@ -206,8 +202,7 @@ fn run(args: &Args) -> Result<(), String> {
             break;
         }
 
-        push_tick(&mut ring, Duration::from_secs(1))
-            .map_err(|e| format!("push_tick: {e}"))?;
+        push_tick(&mut ring, Duration::from_secs(1)).map_err(|e| format!("push_tick: {e}"))?;
         ring.submit_and_wait(1)
             .map_err(|e| format!("submit_and_wait: {e:?}"))?;
 
@@ -232,7 +227,9 @@ fn run(args: &Args) -> Result<(), String> {
             }
 
             let res = cqe.result;
-            let Some(peer) = peers.get_mut(slot) else { continue };
+            let Some(peer) = peers.get_mut(slot) else {
+                continue;
+            };
             if peer.generation != g {
                 continue;
             }
@@ -336,7 +333,11 @@ fn run(args: &Args) -> Result<(), String> {
                 && let Some(fd) = peer.fd
             {
                 let _ = push_recv_multishot(
-                    &mut ring, slot, peer.generation, fd, PROVIDED_BUF_GROUP_ID,
+                    &mut ring,
+                    slot,
+                    peer.generation,
+                    fd,
+                    PROVIDED_BUF_GROUP_ID,
                 );
                 peer.recv_armed = true;
             }
@@ -385,7 +386,10 @@ fn run(args: &Args) -> Result<(), String> {
         }
 
         if now2.duration_since(last_log) >= Duration::from_secs(5) {
-            let ready = peers.values().filter(|p| p.state == PeerState::Ready).count();
+            let ready = peers
+                .values()
+                .filter(|p| p.state == PeerState::Ready)
+                .count();
             eprintln!(
                 "  …{} unique peers harvested, {} ready",
                 state.harvest.len(),
@@ -407,17 +411,12 @@ fn run(args: &Args) -> Result<(), String> {
         text.push_str(&addr.to_string());
         text.push('\n');
     }
-    std::fs::write(&args.out, text)
-        .map_err(|e| format!("write {}: {e}", args.out.display()))?;
+    std::fs::write(&args.out, text).map_err(|e| format!("write {}: {e}", args.out.display()))?;
     eprintln!("  wrote {}", args.out.display());
     Ok(())
 }
 
-fn handle_app_frame(
-    command: CommandName,
-    payload: &[u8],
-    harvest: &mut BTreeSet<SocketAddrV4>,
-) {
+fn handle_app_frame(command: CommandName, payload: &[u8], harvest: &mut BTreeSet<SocketAddrV4>) {
     let cmd = mantle::network::Command::from_command_name(command);
     match cmd {
         Some(Command::Addr) => {

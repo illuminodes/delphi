@@ -62,7 +62,7 @@ fn is_tapscript_input(prev_spk: &[u8], witness_items: usize, last_item: &[u8]) -
         return false;
     }
     // Control block: 1 byte (leaf_version | parity) + 32 (internal key) + 32*m.
-    if last_item.len() < 33 || (last_item.len() - 33) % 32 != 0 {
+    if last_item.len() < 33 || !(last_item.len() - 33).is_multiple_of(32) {
         return false;
     }
     // Tapleaf v0: leaf_version & 0xfe == 0xc0.

@@ -104,7 +104,7 @@ fn load_headers_file(dir: &Path) -> Vec<BlockHeader> {
     let bytes = std::fs::read(dir.join("headers.bin"))
         .expect("headers.bin not found — run fetch-fixtures first");
     assert!(
-        bytes.len() % 80 == 0,
+        bytes.len().is_multiple_of(80),
         "headers.bin size not a multiple of 80"
     );
     bytes
@@ -260,7 +260,9 @@ fn replay_block_timed(
     // ── lookup ───────────────────────────────────────────────────────────
     let t0 = Instant::now();
     let mut lookup_results = Vec::new();
-    storage.send_lookup_borrowed(&all_ops, &mut lookup_results).expect("send_lookup");
+    storage
+        .send_lookup_borrowed(&all_ops, &mut lookup_results)
+        .expect("send_lookup");
     let hash = block_ref.header.hash();
     let prev_hash = block_ref.header.prev_block;
     let tip = storage.tip();
