@@ -22,7 +22,7 @@ use mantle_validator::prefetched_view::HeaderSnapshot;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-const EASY_BITS: CompactBits = CompactBits(0x207f_ffff);
+const EASY_BITS: CompactBits = CompactBits::new(0x207f_ffff);
 const BASE_TIME: u32 = 1_231_006_505;
 
 fn coinbase_tx(height: u32, value: u64) -> Transaction {

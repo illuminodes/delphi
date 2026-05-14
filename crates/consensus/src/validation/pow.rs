@@ -23,7 +23,7 @@ pub(super) const MAX_TIMESPAN: u64 = TARGET_TIMESPAN * 4;
 /// inter-block gap can never push the target above the network minimum
 /// difficulty — matches Bitcoin Core's `consensus.powLimit` clamp in
 /// `pow.cpp::CalculateNextWorkRequired`.
-pub(super) const POW_LIMIT_BITS: CompactBits = CompactBits(0x1d00_ffff);
+pub(super) const POW_LIMIT_BITS: CompactBits = CompactBits::new(0x1d00_ffff);
 
 // ── HeaderValidationExt ───────────────────────────────────────────────────────
 

@@ -43,7 +43,7 @@ fn arb_block_header() -> impl Strategy<Value = BlockHeader> {
                 prev_block,
                 merkle_root,
                 time,
-                bits: CompactBits(bits),
+                bits: CompactBits::new(bits),
                 nonce,
             },
         )

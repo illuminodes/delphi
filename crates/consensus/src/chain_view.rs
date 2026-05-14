@@ -306,7 +306,7 @@ mod tests {
             prev_block: prev,
             merkle_root: Hash256::ZERO,
             time,
-            bits: mantle::primitives::CompactBits(0x1d00_ffff),
+            bits: mantle::primitives::CompactBits::new(0x1d00_ffff),
             nonce: 0,
         }
     }

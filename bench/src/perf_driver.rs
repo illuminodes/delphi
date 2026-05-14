@@ -95,7 +95,7 @@ fn valid_block(txs: Vec<Transaction>) -> Block {
             prev_block: Hash256::ZERO,
             merkle_root: root,
             time: 1_231_006_505,
-            bits: mantle::primitives::CompactBits(0x207f_ffff),
+            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: txs,

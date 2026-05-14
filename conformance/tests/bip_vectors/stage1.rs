@@ -10,7 +10,7 @@ fn stage1_empty_block_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 0,
-            bits: mantle::primitives::CompactBits(0x207f_ffff),
+            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![],
@@ -45,7 +45,7 @@ fn stage1_first_tx_not_coinbase_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 0,
-            bits: mantle::primitives::CompactBits(0x207f_ffff),
+            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![non_cb],
@@ -88,7 +88,7 @@ fn stage1_non_coinbase_with_null_outpoint_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 0,
-            bits: mantle::primitives::CompactBits(0x207f_ffff),
+            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![fake_cb, imposter],
@@ -157,7 +157,7 @@ fn stage1_output_value_over_max_money_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 0,
-            bits: mantle::primitives::CompactBits(0x207f_ffff),
+            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![coinbase],
@@ -213,7 +213,7 @@ fn stage1_duplicate_inputs_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 0,
-            bits: mantle::primitives::CompactBits(0x207f_ffff),
+            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![coinbase, tx],
@@ -238,7 +238,7 @@ fn stage1_merkle_mismatch_rejected() {
 #[test]
 fn stage1_invalid_bits_rejected() {
     let mut block = minimal_block(vec![0x51, 0x52], vec![]);
-    block.header.bits = mantle::primitives::CompactBits(0); // zero nBits is always invalid
+    block.header.bits = mantle::primitives::CompactBits::new(0); // zero nBits is always invalid
     // Also recompute merkle (header bits don't affect merkle root — this is fine).
     assert_eq!(
         validate_block_structure(&block),
@@ -252,7 +252,7 @@ fn stage1_insufficient_pow_rejected() {
     // requires the hash to be almost zero). The block header nonce is 0 so
     // the hash is effectively random and almost certainly fails this target.
     let mut block = minimal_block(vec![0x51, 0x52], vec![]);
-    block.header.bits = mantle::primitives::CompactBits(0x1900_0001); // very hard target
+    block.header.bits = mantle::primitives::CompactBits::new(0x1900_0001); // very hard target
     // Recompute the hash check — the actual hash won't satisfy target 0x0001…
     // Note: we don't update merkle root for the bits field (it only appears in
     // the header, not in tx data). So we need to rebuild:

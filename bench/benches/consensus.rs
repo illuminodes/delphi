@@ -16,7 +16,7 @@ fn main() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const EASY_BITS: CompactBits = CompactBits(0x207f_ffff);
+const EASY_BITS: CompactBits = CompactBits::new(0x207f_ffff);
 
 fn coinbase_tx(value: u64) -> Transaction {
     Transaction {

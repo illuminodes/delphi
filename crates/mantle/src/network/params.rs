@@ -161,7 +161,7 @@ fn mainnet_genesis_header() -> BlockHeader {
         )
         .expect("hardcoded genesis merkle_root must parse"),
         time: 1_231_006_505,
-        bits: CompactBits(0x1d00_ffff),
+        bits: CompactBits::new(0x1d00_ffff),
         nonce: 2_083_236_893,
     }
 }
@@ -184,7 +184,7 @@ fn testnet4_genesis_header() -> BlockHeader {
         )
         .expect("hardcoded testnet4 genesis merkle_root must parse"),
         time: 1_714_777_860,
-        bits: CompactBits(0x1d00_ffff),
+        bits: CompactBits::new(0x1d00_ffff),
         nonce: 393_743_547,
     }
 }
@@ -204,7 +204,7 @@ fn signet_genesis_header() -> BlockHeader {
         )
         .expect("hardcoded signet genesis merkle_root must parse"),
         time: 1_598_918_400,
-        bits: CompactBits(0x1e03_77ae),
+        bits: CompactBits::new(0x1e03_77ae),
         nonce: 52_613_770,
     }
 }

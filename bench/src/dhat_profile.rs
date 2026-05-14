@@ -75,7 +75,7 @@ fn build_chain(len: u32) -> MemoryChainView {
             prev_block: prev,
             merkle_root: Hash256::ZERO,
             time: 1_296_688_602 + i * 600,
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         };
         prev = h.hash();
@@ -115,7 +115,7 @@ fn make_valid_block(txs: Vec<Transaction>) -> Block {
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 1_231_006_505,
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: txs,

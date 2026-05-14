@@ -36,7 +36,7 @@ mod tests {
 
         assert_eq!(header.version, 1);
         assert_eq!(header.time, 1_231_006_505);
-        assert_eq!(header.bits, mantle::primitives::CompactBits(0x1d00_ffff));
+        assert_eq!(header.bits, mantle::primitives::CompactBits::new(0x1d00_ffff));
         assert_eq!(header.nonce, 2_083_236_893);
         assert_eq!(header.prev_block, mantle::primitives::Hash256::ZERO);
     }

@@ -56,7 +56,7 @@ fn stage2_block_for_height(
 
 #[test]
 fn stage2_unknown_parent_rejected() {
-    let view = build_chain(10, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let view = build_chain(10, mantle::primitives::CompactBits::new(0x207f_ffff), 1_000_000);
     let mut block = stage2_block_for_height(&view, BlockHeight(10), 4);
     // Point to an unknown parent.
     block.header.prev_block = Hash256::from_bytes([0xde; 32]);
@@ -68,10 +68,10 @@ fn stage2_unknown_parent_rejected() {
 
 #[test]
 fn stage2_unexpected_difficulty_rejected() {
-    let view = build_chain(10, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let view = build_chain(10, mantle::primitives::CompactBits::new(0x207f_ffff), 1_000_000);
     let mut block = stage2_block_for_height(&view, BlockHeight(10), 4);
     // Change the nBits to something different from the parent (non-retarget block).
-    block.header.bits = mantle::primitives::CompactBits(0x1d00_ffff);
+    block.header.bits = mantle::primitives::CompactBits::new(0x1d00_ffff);
     assert_eq!(
         validate_block_context(&block, &view, false),
         Err(ValidationError::UnexpectedDifficulty),
@@ -80,7 +80,7 @@ fn stage2_unexpected_difficulty_rejected() {
 
 #[test]
 fn stage2_timestamp_not_greater_than_mtp_rejected() {
-    let view = build_chain(12, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let view = build_chain(12, mantle::primitives::CompactBits::new(0x207f_ffff), 1_000_000);
     let tip = view.tip();
     let parent_bits = view
         .get_header_at(tip.height)
@@ -159,7 +159,7 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
 fn stage2_bip34_height_missing_rejected() {
     let view = build_chain_at(
         BIP34_HEIGHT - 1u32,
-        mantle::primitives::CompactBits(0x207f_ffff),
+        mantle::primitives::CompactBits::new(0x207f_ffff),
         1_000_000,
     );
     let tip = view.tip();
@@ -207,7 +207,7 @@ fn stage2_bip34_height_missing_rejected() {
 fn stage2_bip34_correct_encoding_accepted() {
     let view = build_chain_at(
         BIP34_HEIGHT - 1u32,
-        mantle::primitives::CompactBits(0x207f_ffff),
+        mantle::primitives::CompactBits::new(0x207f_ffff),
         1_000_000,
     );
     let block = stage2_block_for_height(&view, BIP34_HEIGHT, 4);
@@ -220,7 +220,7 @@ fn stage2_bip34_correct_encoding_accepted() {
 fn stage2_block_version_too_low_rejected() {
     let view = build_chain_at(
         BlockHeight(388_381 - 1),
-        mantle::primitives::CompactBits(0x207f_ffff),
+        mantle::primitives::CompactBits::new(0x207f_ffff),
         1_000_000,
     );
     let block = stage2_block_for_height(&view, BlockHeight(388_381), 3); // version 3 < required 4
@@ -236,7 +236,7 @@ fn stage2_block_version_too_low_rejected() {
 #[test]
 fn stage2_valid_block_accepted() {
     // Small chain, pre-BIP34: no height encoding required, version 1 is fine.
-    let view = build_chain(5, mantle::primitives::CompactBits(0x207f_ffff), 1_000_000);
+    let view = build_chain(5, mantle::primitives::CompactBits::new(0x207f_ffff), 1_000_000);
     let tip = view.tip();
     let parent_bits = view
         .get_header_at(tip.height)

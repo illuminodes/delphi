@@ -22,7 +22,7 @@ fn make_header(i: usize) -> BlockHeader {
         prev_block: Hash256::from_bytes([u8::try_from(i).expect("bench index fits u8"); 32]),
         merkle_root: Hash256::ZERO,
         time: u32::try_from(i).expect("bench index fits u32"),
-        bits: mantle::primitives::CompactBits(0x1d00_ffff),
+        bits: mantle::primitives::CompactBits::new(0x1d00_ffff),
         nonce: u32::try_from(i).expect("bench index fits u32"),
     }
 }

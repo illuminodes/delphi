@@ -486,7 +486,7 @@ fn write_header_record(
     f.write_all(header.merkle_root.as_bytes()).map_err(|e| io_err(&e))?;
     f.write_all(&header.time.to_le_bytes())
         .map_err(|e| io_err(&e))?;
-    f.write_all(&header.bits.0.to_le_bytes())
+    f.write_all(&header.bits.to_le_bytes())
         .map_err(|e| io_err(&e))?;
     f.write_all(&header.nonce.to_le_bytes())
         .map_err(|e| io_err(&e))?;
@@ -509,7 +509,7 @@ fn parse_header_record(buf: &[u8; HEADER_RECORD_SIZE]) -> BlockHeader {
         prev_block: Hash256::from_bytes(buf.read_hash(36)),
         merkle_root: Hash256::from_bytes(buf.read_hash(68)),
         time: buf.read_u32_le(100),
-        bits: mantle::primitives::CompactBits(buf.read_u32_le(104)),
+        bits: mantle::primitives::CompactBits::new(buf.read_u32_le(104)),
         nonce: buf.read_u32_le(108),
     }
 }
@@ -572,7 +572,7 @@ mod tests {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time,
-            bits: CompactBits(0x1d00_ffff),
+            bits: CompactBits::new(0x1d00_ffff),
             nonce: 0,
         }
     }
@@ -586,7 +586,7 @@ mod tests {
             prev_block: Hash256::from_bytes([0x11; 32]),
             merkle_root: Hash256::from_bytes([0x22; 32]),
             time: 12_345,
-            bits: CompactBits(0x1d00_ffff),
+            bits: CompactBits::new(0x1d00_ffff),
             nonce: 0xdead_beef,
         };
         eng.write_header(BlockHeight(0), &h).unwrap();
@@ -595,7 +595,7 @@ mod tests {
         assert_eq!(got.prev_block, h.prev_block);
         assert_eq!(got.merkle_root, h.merkle_root);
         assert_eq!(got.time, h.time);
-        assert_eq!(got.bits.0, h.bits.0);
+        assert_eq!(got.bits.to_u32(), h.bits.to_u32());
         assert_eq!(got.nonce, h.nonce);
     }
 

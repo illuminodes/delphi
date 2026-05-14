@@ -80,7 +80,7 @@ fn minimal_block(coinbase_script_sig: Vec<u8>, transactions: Vec<Transaction>) -
             prev_block: Hash256::ZERO,
             merkle_root,
             time: 1_231_006_505,
-            bits: mantle::primitives::CompactBits(0x207f_ffff), // regtest easiest target
+            bits: mantle::primitives::CompactBits::new(0x207f_ffff), // regtest easiest target
             nonce: 0,
         },
         transactions: txs,

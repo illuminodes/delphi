@@ -23,7 +23,7 @@ use mantle_storage::types::{Durability, ReqToken};
 use mantle_validator::pipeline::validate_and_commit;
 use mantle_validator::prefetched_view::HeaderSnapshot;
 
-const EASY_BITS: CompactBits = CompactBits(0x207f_ffff);
+const EASY_BITS: CompactBits = CompactBits::new(0x207f_ffff);
 const BASE_TIME: u32 = 1_231_006_505;
 const SECS: Duration = Duration::from_secs(5);
 

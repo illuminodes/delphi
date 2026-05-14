@@ -29,7 +29,7 @@ fn main() {
     divan::main();
 }
 
-const EASY_BITS: CompactBits = CompactBits(0x207f_ffff);
+const EASY_BITS: CompactBits = CompactBits::new(0x207f_ffff);
 const BASE_TIME: u32 = 1_231_006_505;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -7,19 +7,25 @@ use crate::codec::{Decode, DecodeRef, Encode, Error};
 ///
 /// Wraps a `u32` to make difficulty fields type-distinct from plain integers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct CompactBits(pub u32);
+pub struct CompactBits(u32);
 
-impl From<u32> for CompactBits {
+impl CompactBits {
     #[inline]
-    fn from(v: u32) -> Self {
-        Self(v)
+    #[must_use]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
     }
-}
 
-impl From<CompactBits> for u32 {
     #[inline]
-    fn from(v: CompactBits) -> Self {
-        v.0
+    #[must_use]
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
     }
 }
 

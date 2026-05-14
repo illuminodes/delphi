@@ -299,7 +299,7 @@ mod tests {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 1_231_006_505,
-            bits: CompactBits(0x1d00_ffff),
+            bits: CompactBits::new(0x1d00_ffff),
             nonce: 2_083_236_893,
         };
         let msg = HeadersMsg(vec![header]);
@@ -322,7 +322,7 @@ mod tests {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 0,
-            bits: CompactBits(0x1d00_ffff),
+            bits: CompactBits::new(0x1d00_ffff),
             nonce: 0,
         };
         // Manually encode with tx_count = 5 instead of 0.
@@ -346,7 +346,7 @@ mod tests {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 0,
-            bits: CompactBits(0),
+            bits: CompactBits::new(0),
             nonce: 0,
         };
         let mut bytes = encode(&HeadersMsg(vec![header]));
@@ -363,7 +363,7 @@ mod tests {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 0,
-            bits: CompactBits(0x1d00_ffff),
+            bits: CompactBits::new(0x1d00_ffff),
             nonce,
         }
     }

@@ -100,7 +100,7 @@ fn empty_block_rejected() {
             prev_block: Hash256::ZERO,
             merkle_root: Hash256::ZERO,
             time: 0,
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![],
@@ -114,7 +114,7 @@ fn empty_block_rejected() {
 #[test]
 fn first_tx_not_coinbase_rejected() {
     let tx = regular_tx(Hash256::from_bytes([1u8; 32]), 0, 1000);
-    let mut block = make_block(vec![tx], CompactBits(0x207f_ffff));
+    let mut block = make_block(vec![tx], CompactBits::new(0x207f_ffff));
     // Fix merkle root so we reach the coinbase check.
     // (make_block already does this, but the block won't have PoW — that's fine,
     // we're testing structure checks which run before PoW.)
@@ -129,7 +129,7 @@ fn first_tx_not_coinbase_rejected() {
 fn coinbase_script_too_short() {
     let mut tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
     tx.inputs[0].script_sig = vec![0x01].into(); // 1 byte < MIN (2)
-    let block = make_block(vec![tx], CompactBits(0x207f_ffff));
+    let block = make_block(vec![tx], CompactBits::new(0x207f_ffff));
     assert_eq!(
         validate_block_structure(&block),
         Err(ValidationError::CoinbaseScriptSigLength { len: 1 })
@@ -140,7 +140,7 @@ fn coinbase_script_too_short() {
 fn coinbase_script_too_long() {
     let mut tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
     tx.inputs[0].script_sig = vec![0x00; 101].into(); // 101 > MAX (100)
-    let block = make_block(vec![tx], CompactBits(0x207f_ffff));
+    let block = make_block(vec![tx], CompactBits::new(0x207f_ffff));
     assert_eq!(
         validate_block_structure(&block),
         Err(ValidationError::CoinbaseScriptSigLength { len: 101 })
@@ -152,7 +152,7 @@ fn output_value_out_of_range() {
     let mut tx = coinbase_tx(BlockHeight(1), MAX_MONEY.to_u64() + 1);
     tx.outputs[0].value = Satoshi::new(MAX_MONEY.to_u64() + 1);
     // Re-encode the block with the bad tx — merkle root will be recomputed.
-    let block = make_block(vec![tx], CompactBits(0x207f_ffff));
+    let block = make_block(vec![tx], CompactBits::new(0x207f_ffff));
     assert_eq!(
         validate_block_structure(&block),
         Err(ValidationError::OutputValueOutOfRange {
@@ -168,7 +168,7 @@ fn duplicate_inputs_rejected() {
     let mut tx2 = regular_tx(Hash256::from_bytes([2u8; 32]), 0, 1000);
     // Add a duplicate input.
     tx2.inputs.push(tx2.inputs[0].clone());
-    let block = make_block(vec![cb, tx2], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb, tx2], CompactBits::new(0x207f_ffff));
     assert_eq!(
         validate_block_structure(&block),
         Err(ValidationError::DuplicateInput { tx_index: 1 })
@@ -187,7 +187,7 @@ fn duplicate_transaction_rejected() {
     let cb = coinbase_tx(BlockHeight(1), 5_000_000_000);
     let tx = regular_tx(Hash256::from_bytes([0x42; 32]), 0, 1000);
     let dup = tx.clone();
-    let block = make_block(vec![cb, tx, dup], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb, tx, dup], CompactBits::new(0x207f_ffff));
     assert_eq!(
         validate_block_structure(&block),
         Err(ValidationError::DuplicateTransaction)
@@ -197,7 +197,7 @@ fn duplicate_transaction_rejected() {
 #[test]
 fn merkle_root_mismatch() {
     let tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
-    let mut block = make_block(vec![tx], CompactBits(0x207f_ffff));
+    let mut block = make_block(vec![tx], CompactBits::new(0x207f_ffff));
     block.header.merkle_root = Hash256::from_bytes([0xde; 32]); // corrupt root
     assert_eq!(
         validate_block_structure(&block),
@@ -209,7 +209,7 @@ fn merkle_root_mismatch() {
 fn pow_invalid() {
     let tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
     // Use a very hard nBits — nonce=0 will almost certainly fail PoW.
-    let block = make_block(vec![tx], CompactBits(0x1d00_ffff));
+    let block = make_block(vec![tx], CompactBits::new(0x1d00_ffff));
     assert_eq!(
         validate_block_structure(&block),
         Err(ValidationError::InsufficientProofOfWork)
@@ -220,7 +220,7 @@ fn pow_invalid() {
 fn valid_block_easy_pow() {
     let tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
     // 0x207fffff is the easiest possible nBits (used in regtest).
-    let block = mine_block(make_block(vec![tx], CompactBits(0x207f_ffff)));
+    let block = mine_block(make_block(vec![tx], CompactBits::new(0x207f_ffff)));
     assert!(validate_block_structure(&block).is_ok());
 }
 
@@ -228,7 +228,7 @@ fn valid_block_easy_pow() {
 
 #[test]
 fn nbits_roundtrip_genesis() {
-    let bits = CompactBits(0x1d00_ffff);
+    let bits = CompactBits::new(0x1d00_ffff);
     let target = bits.to_target().expect("genesis nBits must decode");
     let back = CompactBits::from_target(target).expect("genesis target must re-encode");
     assert_eq!(back, bits);
@@ -236,13 +236,13 @@ fn nbits_roundtrip_genesis() {
 
 #[test]
 fn nbits_zero_mantissa_is_invalid() {
-    assert!(CompactBits(0x0300_0000).to_target().is_none());
+    assert!(CompactBits::new(0x0300_0000).to_target().is_none());
 }
 
 #[test]
 fn nbits_negative_is_invalid() {
     // High bit of mantissa set → negative.
-    assert!(CompactBits(0x0380_0000).to_target().is_none());
+    assert!(CompactBits::new(0x0380_0000).to_target().is_none());
 }
 
 // ── BIP34 height encoding ─────────────────────────────────────────────────
@@ -274,7 +274,7 @@ fn build_view_with_chain(len: u32) -> MemoryChainView {
             prev_block: prev,
             merkle_root: Hash256::ZERO,
             time: 1_296_688_602 + i * 600,
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         };
         prev = h.hash();
@@ -297,7 +297,7 @@ fn build_view_at_height(tip_height: BlockHeight) -> MemoryChainView {
             prev_block: prev,
             merkle_root: Hash256::ZERO,
             time: 1_296_688_602 + (start + i) * 600,
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         };
         prev = h.hash();
@@ -317,7 +317,7 @@ fn unknown_parent_rejected() {
             merkle_root: compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
             time: 1_296_688_602 + 600,
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![tx],
@@ -343,7 +343,7 @@ fn timestamp_too_early_rejected() {
             prev_block: tip.hash,
             merkle_root: Hash256::ZERO,
             time: 0,
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         })
         .expect("median_time_past must succeed for a populated chain");
@@ -354,7 +354,7 @@ fn timestamp_too_early_rejected() {
             merkle_root: compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
             time: mtp, // exactly MTP — must be > MTP
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![tx],
@@ -391,7 +391,7 @@ fn timestamp_too_far_future_rejected() {
             merkle_root: compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
             time: u32::try_from(block_time).expect("test block_time fits in u32"),
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![tx],
@@ -416,7 +416,7 @@ fn bip34_missing_rejected() {
             merkle_root: compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
             time: 1_296_688_602 + BIP34_HEIGHT.0 * 600 + 600,
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
         transactions: vec![tx],
@@ -535,7 +535,7 @@ fn u256_ordering() {
 /// records.
 #[test]
 fn first_mainnet_retarget_matches_core() {
-    let old_bits = CompactBits(0x1d00_ffff);
+    let old_bits = CompactBits::new(0x1d00_ffff);
     let actual = 1_262_152_739_u64 - 1_231_006_505_u64;
     assert_eq!(actual, 31_146_234, "raw timespan from block headers");
 
@@ -548,9 +548,9 @@ fn first_mainnet_retarget_matches_core() {
 
     assert_eq!(
         new_bits,
-        CompactBits(0x1d00_ffff),
+        CompactBits::new(0x1d00_ffff),
         "first mainnet retarget must clamp to powLimit, got {:#010x}",
-        new_bits.0,
+        new_bits.to_u32(),
     );
 }
 
@@ -563,7 +563,7 @@ fn first_mainnet_retarget_matches_core() {
 /// roughly halve the target (= double the difficulty).
 #[test]
 fn retarget_arithmetic_round_trip() {
-    let old_bits = CompactBits(0x1c05_a3f4);
+    let old_bits = CompactBits::new(0x1c05_a3f4);
     let old_target = old_bits.to_target().expect("old_bits must decode");
     let actual = TARGET_TIMESPAN / 2; // blocks came twice as fast
     let clamped = actual.clamp(MIN_TIMESPAN, MAX_TIMESPAN);
@@ -607,7 +607,7 @@ fn retarget_clamps_to_pow_limit() {
     assert_eq!(
         new_bits, POW_LIMIT_BITS,
         "target above powLimit must clamp back, got {:#010x}",
-        new_bits.0,
+        new_bits.to_u32(),
     );
 }
 
@@ -628,7 +628,7 @@ fn connect_setup(height: u32) -> (MemoryChainView, Block, Hash256) {
             prev_block: prev,
             merkle_root: Hash256::ZERO,
             time: 1_231_006_505 + i * 600,
-            bits: CompactBits(0x207f_ffff),
+            bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         };
         prev = h.hash();
@@ -637,7 +637,7 @@ fn connect_setup(height: u32) -> (MemoryChainView, Block, Hash256) {
     let h = BlockHeight(height);
     let cb = coinbase_tx(h, block_subsidy(h).to_u64());
     let txid = cb.txid().expect("txid encoding cannot fail");
-    let block = make_block(vec![cb], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb], CompactBits::new(0x207f_ffff));
     (view, block, txid)
 }
 
@@ -688,7 +688,7 @@ fn connect_block_with_spend() {
     );
     let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
     let spend = regular_tx(prev_op.txid, 0, 40_000); // 10_000 fee
-    let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     let result = connect_block(
         &block,
@@ -713,7 +713,7 @@ fn connect_missing_input_rejected() {
     let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
     // Spend a coin that doesn't exist in the view.
     let ghost = regular_tx(Hash256::from_bytes([0xff; 32]), 0, 1_000);
-    let block = make_block(vec![cb, ghost], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb, ghost], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
         connect_block(
@@ -752,7 +752,7 @@ fn connect_coinbase_maturity_rejected() {
     );
     let cb = coinbase_tx(BlockHeight(50), block_subsidy(BlockHeight(50)).to_u64());
     let spend = regular_tx(prev_op.txid, 0, 90_000);
-    let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
         connect_block(
@@ -796,7 +796,7 @@ fn connect_script_verify_failure_propagates() {
     );
     let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
     let spend = regular_tx(prev_op.txid, 0, 40_000);
-    let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     let r = connect_block(
         &block,
@@ -841,7 +841,7 @@ fn connect_skip_script_bypasses_verification() {
     );
     let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
     let spend = regular_tx(prev_op.txid, 0, 40_000);
-    let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     // With skip_script=false this would be ScriptVerifyFailed.
     connect_block(
@@ -876,7 +876,7 @@ fn connect_exec_cache_hits_on_second_call() {
     );
     let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
     let spend = regular_tx(prev_op.txid, 0, 40_000);
-    let block = make_block(vec![cb, spend], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     let mut cache = crate::script::ScriptExecutionCache::new(64);
     // Cold call — populates cache.
@@ -930,7 +930,7 @@ fn connect_negative_fee_rejected() {
     let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
     // Output exceeds input value.
     let overspend = regular_tx(prev_op.txid, 0, 2_000);
-    let block = make_block(vec![cb, overspend], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb, overspend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
         connect_block(
@@ -965,7 +965,7 @@ fn connect_coinbase_reward_exceeds_subsidy_rejected() {
         }],
         locktime: 0,
     };
-    let block = make_block(vec![greedy_cb], CompactBits(0x207f_ffff));
+    let block = make_block(vec![greedy_cb], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
         connect_block(
@@ -1029,7 +1029,7 @@ fn connect_sigops_limit_exceeded() {
         }],
         locktime: 0,
     };
-    let block = make_block(vec![cb], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     let err = connect_block(
         &block,
@@ -1067,7 +1067,7 @@ fn connect_bip30_violation_rejected() {
     );
     // Build a block with the identical coinbase tx — same txid, guaranteed collision.
     let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
-    let block = make_block(vec![cb], CompactBits(0x207f_ffff));
+    let block = make_block(vec![cb], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
         connect_block(
@@ -1100,7 +1100,7 @@ fn nbits_target_roundtrip_canonical_examples() {
         0x1903_a30c,     // mid-2010s mainnet difficulty (illustrative shape)
         0x207f_ffff,     // regtest
     ] {
-        let bits = CompactBits(raw);
+        let bits = CompactBits::new(raw);
         let target = bits
             .to_target()
             .unwrap_or_else(|| panic!("bits {raw:#010x} must decode to a target"));
@@ -1109,7 +1109,7 @@ fn nbits_target_roundtrip_canonical_examples() {
         assert_eq!(
             back, bits,
             "round-trip failed for {raw:#010x} → {:#010x}",
-            back.0
+            back.to_u32()
         );
     }
 }
