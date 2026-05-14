@@ -62,7 +62,7 @@ const PROVIDED_BUF_SIZE: u32 = 256 * 1024;
 /// two (kernel ABI). Sized so 32 peers each in the middle of streaming
 /// a 4 MiB block plus handshake/inv noise stays comfortably inside
 /// the pool.
-const PROVIDED_BUF_COUNT: u32 = 1_024;
+const PROVIDED_BUF_COUNT: u32 = 4_096;
 
 /// `io_uring` buffer-group id we register the provided-buffer ring
 /// under. The recv SQE references this same id via `buffer_select`.
@@ -85,7 +85,7 @@ const SEND_SLOT_COUNT: u16 = 8_192;
 /// recently-pushed SEND SQEs sit in the SQ ring with no chance of
 /// surfacing their CQEs. Capping the drain forces a round-trip
 /// through the kernel between bursts.
-const CQE_DRAIN_CAP: usize = 256;
+const CQE_DRAIN_CAP: usize = 1024;
 
 /// Maximum simultaneous in-flight `getdata` requests per peer. Small on
 /// purpose: with the global pull queue + hedging, a per-peer window of 2
@@ -125,7 +125,7 @@ const HEDGE_FANOUT: usize = 2;
 
 /// Floor for the reclaim threshold. After this long with no delivery from
 /// any peer that holds the hash, we put it back at the front of the queue.
-const RECLAIM_FLOOR_MS: u64 = 30_000;
+const RECLAIM_FLOOR_MS: u64 = 10_000;
 
 /// Multiplier applied to the EWMA of arrival latency for the reclaim path.
 /// Reclaim is "give up entirely and re-queue" — strictly later than hedge.
@@ -165,7 +165,7 @@ const TARGET_LIVE_PEERS: usize = 64;
 /// `link_timeout`) during peer churn, plus the per-session tick.
 /// Headroom matters because a full SQ ring backpressures `push()` with
 /// `EAGAIN` and a full CQ ring drops completions on the kernel side.
-const RING_ENTRIES: u32 = 16_384;
+const RING_ENTRIES: u32 = 32_768;
 
 /// Capacity of the per-peer parse buffer (`Peer::recv_buf`). Sized to
 /// hold one large mainnet block (~4 MiB witness blocks at peak heights)
@@ -180,7 +180,7 @@ const INITIAL_EWMA_MS: u64 = 1_000;
 /// Smoothing factor for the EWMA — bigger N = slower to adapt. Each new
 /// sample contributes `1/N` of its value. 16 is gentle enough that one
 /// outlier doesn't poison the threshold.
-const EWMA_N: u32 = 16;
+const EWMA_N: u32 = 8;
 
 /// Errors surfaced from fetcher operations.
 #[derive(Debug)]
@@ -420,14 +420,13 @@ impl EwmaLatency {
     /// `1/EWMA_N`, so larger `EWMA_N` = slower to adapt.
     fn observe(&mut self, sample: Duration) {
         let s = u64::try_from(sample.as_millis()).unwrap_or(u64::MAX);
-        // EWMA: new = old + (sample - old) / N, computed as a signed
-        // delta to avoid arithmetic overflow on large `s` or `old`.
         let n = u64::from(EWMA_N);
         if s >= self.ms {
             self.ms = self.ms.saturating_add((s - self.ms) / n);
         } else {
             self.ms = self.ms.saturating_sub((self.ms - s) / n);
         }
+        self.ms = self.ms.min(10_000);
     }
 
     /// Threshold = `max(floor_ms, factor * ewma_ms)`, returned as a
@@ -1508,10 +1507,10 @@ impl Fetcher {
                 )?;
             }
 
-            // After draining CQEs, walk every peer's recv_buf once to
-            // parse complete frames. Per-iteration parsing (not
-            // per-CQE) bounds outbound sends so the arena can't be
-            // exhausted by a multishot recv torrent.
+            // Publish recycled provided buffers immediately so the kernel
+            // can reuse them for the next multishot recv delivery.
+            self.pbr.commit();
+
             for (slot, peer) in self.peers.iter_mut() {
                 if peer.state == PeerState::Dead {
                     continue;
@@ -1892,8 +1891,6 @@ fn make_ring() -> Result<IoUring, FetchError> {
         eprintln!("  io_uring: bare (MANTLE_URING_BARE=1)");
     } else if let Ok(ring) = IoUring::builder(RING_ENTRIES)
         .single_issuer()
-        .defer_taskrun()
-        .coop_taskrun()
         .build()
     {
         return Ok(ring);
