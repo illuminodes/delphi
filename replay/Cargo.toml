@@ -19,11 +19,11 @@ name = "rank-peers"
 path = "src/rank_peers.rs"
 
 [dependencies]
-mantle = { path = "../core" }
-mantle-block-io = { path = "../block-io" }
-mantle-consensus = { path = "../consensus" }
-mantle-storage = { path = "../storage" }
-mantle-transport = { path = "../transport" }
-mantle-validator = { path = "../validator" }
+mantle = { path = "../crates/mantle" }
+mantle-block-io = { path = "../crates/block-io" }
+mantle-consensus = { path = "../crates/consensus" }
+mantle-storage = { path = "../crates/storage" }
+mantle-transport = { path = "../crates/transport" }
+mantle-validator = { path = "../crates/validator" }
 ququmatz.workspace = true
 quetzalcoatl.workspace = true

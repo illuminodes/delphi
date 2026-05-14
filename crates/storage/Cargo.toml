@@ -10,7 +10,7 @@ workspace = true
 storage-dbg = []
 
 [dependencies]
-mantle = { path = "../core" }
+mantle = { path = "../mantle" }
 mantle-consensus = { path = "../consensus" }
 quetzalcoatl.workspace = true
 ququmatz.workspace = true

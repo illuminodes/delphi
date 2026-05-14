@@ -7,6 +7,6 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-mantle = { path = "../core" }
+mantle = { path = "../mantle" }
 ququmatz.workspace = true
 quetzalcoatl.workspace = true

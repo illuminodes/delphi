@@ -12,7 +12,7 @@ workspace = true
 # of test/fuzz crates.
 [dependencies]
 bitcoinconsensus = { workspace = true }
-mantle = { path = "../crates/core" }
+mantle = { path = "../crates/mantle" }
 mantle-consensus = { path = "../crates/consensus" }
 proptest = "1"
 k256 = { workspace = true, features = ["ecdsa", "schnorr", "arithmetic"] }

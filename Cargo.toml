@@ -1,16 +1,16 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/core",
+    "crates/mantle",
     "crates/consensus",
-    "crates/node",
-    "bench",
-    "conformance",
     "crates/storage",
     "crates/validator",
     "crates/transport",
     "crates/block-io",
-    "crates/replay",
+    "bench",
+    "conformance",
+    "node",
+    "replay",
 ]
 
 [workspace.package]

@@ -100,7 +100,7 @@ name = "replay-dhat-window"
 path = "src/replay_dhat_window.rs"
 
 [dependencies]
-mantle = { path = "../crates/core" }
+mantle = { path = "../crates/mantle" }
 mantle-consensus = { path = "../crates/consensus" }
 mantle-storage = { path = "../crates/storage" }
 mantle-validator = { path = "../crates/validator" }

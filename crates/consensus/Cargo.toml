@@ -7,7 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-mantle = { path = "../core" }
+mantle = { path = "../mantle" }
 sha2 = { workspace = true }
 sha1 = { workspace = true }
 ripemd = { workspace = true }

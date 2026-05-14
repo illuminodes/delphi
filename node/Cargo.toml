@@ -14,6 +14,6 @@ workspace = true
 dhat-heap = ["dep:dhat"]
 
 [dependencies]
-mantle = { path = "../core" }
+mantle = { path = "../crates/mantle" }
 quetzalcoatl.workspace = true
 dhat = { version = "0.3", optional = true }
