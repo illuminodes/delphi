@@ -1,1 +1,7 @@
-// Placeholder — block I/O crate will be populated after transport is wired.
+#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc, clippy::must_use_candidate)]
+
+mod handle;
+mod store;
+
+pub use handle::FileIoHandle;
+pub use store::{BlockStore, FileStore, HeaderStore};

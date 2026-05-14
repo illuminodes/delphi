@@ -555,6 +555,7 @@ name = "mantle-replay"
 version = "0.1.0"
 dependencies = [
  "mantle",
+ "mantle-block-io",
  "mantle-consensus",
  "mantle-storage",
  "mantle-transport",

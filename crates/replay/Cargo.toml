@@ -20,6 +20,7 @@ path = "src/rank_peers.rs"
 
 [dependencies]
 mantle = { path = "../core" }
+mantle-block-io = { path = "../block-io" }
 mantle-consensus = { path = "../consensus" }
 mantle-storage = { path = "../storage" }
 mantle-transport = { path = "../transport" }
