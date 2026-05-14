@@ -130,7 +130,7 @@ fn make_snapshot(chain: &[(Hash256, BlockHeader)]) -> HeaderSnapshot {
     let mut entries = Vec::with_capacity(chain.len() + 1);
     entries.push((Hash256::ZERO, pre_genesis_header()));
     entries.extend_from_slice(chain);
-    HeaderSnapshot::new(BlockHeight(0), entries).expect("snapshot fits u32")
+    HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
 }
 
 struct TmpDir(std::path::PathBuf);
@@ -170,7 +170,7 @@ fn commit(
         Durability::Memory,
         ReqToken(token),
     )
-    .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.0));
+    .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.to_u32()));
 }
 
 // ── Bench: single coinbase-only block ─────────────────────────────────────────
@@ -190,7 +190,7 @@ fn replay_coinbase_only(bencher: divan::Bencher) {
         commit(
             &mut storage,
             black_box(&block),
-            BlockHeight(1),
+            BlockHeight::new(1),
             &snap,
             &mut cache,
             1,
@@ -270,7 +270,7 @@ fn replay_n_spends(bencher: divan::Bencher, n: usize) {
         commit(
             &mut storage,
             &fund_block,
-            BlockHeight(FUND_HEIGHT),
+            BlockHeight::new(FUND_HEIGHT),
             &snap,
             &mut cache,
             1,
@@ -279,7 +279,7 @@ fn replay_n_spends(bencher: divan::Bencher, n: usize) {
             commit(
                 &mut storage,
                 b,
-                BlockHeight(2 + u32::try_from(i).unwrap()),
+                BlockHeight::new(2 + u32::try_from(i).unwrap()),
                 &snap,
                 &mut cache,
                 2 + i as u64,
@@ -288,7 +288,7 @@ fn replay_n_spends(bencher: divan::Bencher, n: usize) {
         commit(
             &mut storage,
             black_box(&spend_block),
-            BlockHeight(SPEND_HEIGHT),
+            BlockHeight::new(SPEND_HEIGHT),
             &snap,
             &mut cache,
             u64::from(SPEND_HEIGHT),
@@ -322,7 +322,7 @@ fn replay_chain_k(bencher: divan::Bencher, k: usize) {
         let mut cache = ScriptExecutionCache::new(1024);
 
         for (i, block) in blocks.iter().enumerate() {
-            let height = BlockHeight(u32::try_from(i + 1).expect("fits"));
+            let height = BlockHeight::new(u32::try_from(i + 1).expect("fits"));
             commit(
                 &mut storage,
                 black_box(block),
@@ -398,7 +398,7 @@ fn ordinals_fixtures() -> Option<&'static OrdinalFixtures> {
 
         let entries: Vec<(Hash256, BlockHeader)> =
             headers.iter().map(|hdr| (hdr.hash(), *hdr)).collect();
-        let snap = HeaderSnapshot::new(BlockHeight(start), entries).ok()?;
+        let snap = HeaderSnapshot::new(BlockHeight::new(start), entries).ok()?;
 
         Some(OrdinalFixtures {
             start,
@@ -524,7 +524,7 @@ fn do_replay_ordinals_block(
         dummy: Coin {
             value: Satoshi::new(2_100_000_000_000_000),
             script_pubkey: vec![0x51].into(),
-            height: BlockHeight(0),
+            height: BlockHeight::new(0),
             coinbase: false,
         },
     };
@@ -539,7 +539,7 @@ fn do_replay_ordinals_block(
         Some(cache),
         None,
     )
-    .unwrap_or_else(|e| panic!("connect_block {}: {e}", height.0));
+    .unwrap_or_else(|e| panic!("connect_block {}: {e}", height.to_u32()));
     storage
         .commit_block_borrowed(CommitBlockReq {
             token: mantle_storage::types::ReqToken(token),
@@ -552,7 +552,7 @@ fn do_replay_ordinals_block(
             block_bytes: None,
             durability: mantle_storage::types::Durability::Memory,
         })
-        .unwrap_or_else(|e| panic!("commit_block {}: {e}", height.0));
+        .unwrap_or_else(|e| panic!("commit_block {}: {e}", height.to_u32()));
 }
 
 // Indices into the fixture block array (0 = height 767430).
@@ -575,7 +575,7 @@ fn replay_ordinals_block(bencher: divan::Bencher, idx: usize) {
         return;
     }
     let block = &fix.blocks[idx];
-    let height = BlockHeight(fix.start + u32::try_from(idx).expect("fits"));
+    let height = BlockHeight::new(fix.start + u32::try_from(idx).expect("fits"));
 
     bencher.bench_local(|| {
         let (mut storage, _dir) = tmp_storage();

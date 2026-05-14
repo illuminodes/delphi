@@ -35,7 +35,7 @@ fn main() {
             if i % 10 == 0 {
                 eprint!("h{} ", i + 1);
             }
-            let height = BlockHeight(u32::try_from(i + 1).expect("fits"));
+            let height = BlockHeight::new(u32::try_from(i + 1).expect("fits"));
             commit(
                 &mut storage,
                 black_box(block),

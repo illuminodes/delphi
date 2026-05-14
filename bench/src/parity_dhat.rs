@@ -74,7 +74,7 @@ fn build_jobs() -> Vec<Job> {
         };
         // ScriptFlags::for_height is verified to match bitcoinconsensus's
         // height_to_flags via the M4 proptest in mantle-consensus.
-        let flags = ScriptFlags::for_height(BlockHeight(h));
+        let flags = ScriptFlags::for_height(BlockHeight::new(h));
 
         for tx in &block.transactions {
             let txid = tx.txid().expect("txid");

@@ -30,7 +30,7 @@ pub const MAX_COINBASE_SCRIPTSIG_LEN: usize = 100;
 pub const MIN_COINBASE_SCRIPTSIG_LEN: usize = 2;
 
 /// BIP34 activation height on mainnet.
-pub const BIP34_HEIGHT: BlockHeight = BlockHeight(227_931);
+pub const BIP34_HEIGHT: BlockHeight = BlockHeight::new(227_931);
 
 /// Maximum number of transactions per block (practical consensus limit).
 pub const MAX_BLOCK_TRANSACTIONS: usize = 1_000_000;

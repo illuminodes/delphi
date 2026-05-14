@@ -119,7 +119,7 @@ fn memory_chain_view_utxo_insert_lookup_spend() {
     let coin = Coin {
         value: mantle::primitives::Satoshi::new(100_000),
         script_pubkey: vec![0x76, 0xa9, 0x14].into(), // OP_DUP OP_HASH160 OP_DATA14
-        height: BlockHeight(500_000),
+        height: BlockHeight::new(500_000),
         coinbase: false,
     };
 

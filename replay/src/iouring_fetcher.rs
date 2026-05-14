@@ -280,8 +280,8 @@ impl Fetcher {
             eprintln!(
                 "  headers: loaded {} cached ({}..={})",
                 collected.len(),
-                start.0,
-                cached_end.0,
+                start.to_u32(),
+                cached_end.to_u32(),
             );
             if cached_end >= end {
                 return Ok(collected);
@@ -289,9 +289,9 @@ impl Fetcher {
         }
 
         let mut next_height = if collected.is_empty() {
-            start.0
+            start.to_u32()
         } else {
-            collected.last().unwrap().0.0 + 1
+            collected.last().unwrap().0.to_u32() + 1
         };
         let mut current_locator = if collected.is_empty() {
             locator
@@ -307,7 +307,7 @@ impl Fetcher {
             }
             let page_len = page.len();
             for hdr in page {
-                let h = BlockHeight(next_height);
+                let h = BlockHeight::new(next_height);
                 if h > end {
                     break;
                 }
@@ -317,7 +317,7 @@ impl Fetcher {
             eprintln!(
                 "  headers: got {page_len} in page, {} total (height {}..={})",
                 collected.len(),
-                start.0,
+                start.to_u32(),
                 next_height.saturating_sub(1),
             );
             if collected.last().is_some_and(|(h, _)| *h >= end) {
@@ -329,7 +329,7 @@ impl Fetcher {
 
         {
             let mut sorted: Vec<&(BlockHeight, BlockHeader)> = collected.iter().collect();
-            sorted.sort_by_key(|(h, _)| h.0);
+            sorted.sort_by_key(|(h, _)| h.to_u32());
             let mut out = Vec::with_capacity(sorted.len() * 80);
             for (_, hdr) in &sorted {
                 out.extend_from_slice(&hdr.to_bytes());

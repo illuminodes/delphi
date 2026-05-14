@@ -181,7 +181,7 @@ fn main() {
         let view = build_chain(200);
         for i in 0..1000u32 {
             let _ = view
-                .get_header_at(BlockHeight(i % 200))
+                .get_header_at(BlockHeight::new(i % 200))
                 .expect("storage error");
             let tip = view.tip();
             let _ = view.get_header(&tip.hash).expect("storage error");
@@ -213,7 +213,7 @@ fn main() {
                 Coin {
                     value: Satoshi::new(1000),
                     script_pubkey: vec![0x51].into(),
-                    height: BlockHeight(i),
+                    height: BlockHeight::new(i),
                     coinbase: false,
                 },
             );

@@ -116,7 +116,7 @@ fn make_snapshot(chain: &[(Hash256, BlockHeader)]) -> HeaderSnapshot {
     let mut entries = Vec::with_capacity(chain.len() + 1);
     entries.push((Hash256::ZERO, pre_genesis_header()));
     entries.extend_from_slice(chain);
-    HeaderSnapshot::new(BlockHeight(0), entries).expect("snapshot fits u32")
+    HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
 }
 
 struct TmpDir(std::path::PathBuf);
@@ -156,7 +156,7 @@ fn commit(
         Durability::Memory,
         ReqToken(token),
     )
-    .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.0));
+    .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.to_u32()));
 }
 
 fn run_for(dur: Duration, mut f: impl FnMut()) -> u64 {
@@ -184,7 +184,7 @@ fn main() {
             commit(
                 &mut storage,
                 black_box(&block),
-                BlockHeight(1),
+                BlockHeight::new(1),
                 &snap,
                 &mut cache,
                 1,
@@ -262,7 +262,7 @@ fn main() {
             commit(
                 &mut storage,
                 &fund_block,
-                BlockHeight(FUND_H),
+                BlockHeight::new(FUND_H),
                 &snap,
                 &mut cache,
                 1,
@@ -272,7 +272,7 @@ fn main() {
                 commit(
                     &mut storage,
                     b,
-                    BlockHeight(2 + u32::try_from(i).expect("fits")),
+                    BlockHeight::new(2 + u32::try_from(i).expect("fits")),
                     &snap,
                     &mut cache,
                     2 + i as u64,
@@ -282,7 +282,7 @@ fn main() {
             commit(
                 &mut storage,
                 black_box(&spend_block),
-                BlockHeight(SPEND_H),
+                BlockHeight::new(SPEND_H),
                 &snap,
                 &mut cache,
                 u64::from(SPEND_H),
@@ -328,7 +328,7 @@ fn main() {
             let (mut storage, _dir) = tmp_storage();
             let mut cache = ScriptExecutionCache::new(1024);
             for (i, block) in blocks.iter().enumerate() {
-                let height = BlockHeight(u32::try_from(i + 1).expect("fits"));
+                let height = BlockHeight::new(u32::try_from(i + 1).expect("fits"));
                 commit(
                     &mut storage,
                     black_box(block),

@@ -67,7 +67,7 @@ fn main() {
             let mut cache = ScriptExecutionCache::new(64 * 1024);
             replay_block_ref(
                 wire,
-                BlockHeight(*height),
+                BlockHeight::new(*height),
                 &mut storage,
                 &snap,
                 &mut cache,

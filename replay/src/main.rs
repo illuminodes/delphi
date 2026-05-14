@@ -182,7 +182,7 @@ fn parse_args() -> Result<Args, String> {
                 let n: u32 = v
                     .parse()
                     .map_err(|e| format!("invalid --start-height {v}: {e}"))?;
-                start_height = Some(BlockHeight(n));
+                start_height = Some(BlockHeight::new(n));
             }
             "--stop-height" => {
                 i += 1;
@@ -190,7 +190,7 @@ fn parse_args() -> Result<Args, String> {
                 let n: u32 = v
                     .parse()
                     .map_err(|e| format!("invalid --stop-height {v}: {e}"))?;
-                stop_height = Some(BlockHeight(n));
+                stop_height = Some(BlockHeight::new(n));
             }
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -241,7 +241,7 @@ fn build_snapshot(
     if headers.is_empty() {
         return Err("no headers to build a snapshot from".to_string());
     }
-    if start.0 == 1 {
+    if start.to_u32() == 1 {
         let genesis = network.genesis_header().ok_or_else(|| {
             format!(
                 "{} genesis header not yet baked in; supply --start-height \
@@ -255,7 +255,7 @@ fn build_snapshot(
         for hdr in headers {
             entries.push((hdr.hash(), *hdr));
         }
-        return HeaderSnapshot::new(BlockHeight(0), entries)
+        return HeaderSnapshot::new(BlockHeight::new(0), entries)
             .map_err(|e| format!("snapshot too large: {e:?}"));
     }
     // start > 1 — pull lookback from storage. Stored heights span
@@ -264,9 +264,9 @@ fn build_snapshot(
     // header so that `expected_nbits` at the next retarget boundary
     // (which looks up `this_height - 2016`) finds a valid record at
     // height 0.
-    let storage_lo = start.0.saturating_sub(SNAPSHOT_LOOKBACK).max(1);
-    let need_genesis = start.0.saturating_sub(SNAPSHOT_LOOKBACK) == 0;
-    let lookback_count = start.0 - storage_lo;
+    let storage_lo = start.to_u32().saturating_sub(SNAPSHOT_LOOKBACK).max(1);
+    let need_genesis = start.to_u32().saturating_sub(SNAPSHOT_LOOKBACK) == 0;
+    let lookback_count = start.to_u32() - storage_lo;
     let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(
         usize::from(need_genesis) + usize::try_from(lookback_count).unwrap_or(0) + headers.len(),
     );
@@ -279,13 +279,13 @@ fn build_snapshot(
             )
         })?;
         entries.push((genesis.hash(), genesis));
-        BlockHeight(0)
+        BlockHeight::new(0)
     } else {
-        BlockHeight(storage_lo)
+        BlockHeight::new(storage_lo)
     };
-    for h in storage_lo..start.0 {
+    for h in storage_lo..start.to_u32() {
         let hdr = storage
-            .read_header_at(BlockHeight(h))
+            .read_header_at(BlockHeight::new(h))
             .map_err(|e| format!("read stored header at {h}: {e}"))?
             .ok_or_else(|| format!("storage missing committed header at height {h}"))?;
         entries.push((hdr.hash(), hdr));
@@ -336,17 +336,17 @@ fn run(args: &Args) -> Result<(), String> {
     let mut storage =
         StorageHandle::open_robin_hood(&args.data_dir).map_err(|e| format!("open storage: {e}"))?;
     let tip = storage.tip();
-    let next_to_validate = BlockHeight(tip.height.0.saturating_add(1));
+    let next_to_validate = BlockHeight::new(tip.height.to_u32().saturating_add(1));
     let start_height = args.start_height.unwrap_or(next_to_validate);
     if start_height < next_to_validate {
         return Err(format!(
             "--start-height {} precedes storage tip + 1 ({}); refusing to overwrite",
-            start_height.0, next_to_validate.0
+            start_height.to_u32(), next_to_validate.to_u32()
         ));
     }
     eprintln!(
         "  storage tip = {} ({:?}); validating from height {}",
-        tip.height.0, tip.hash, start_height.0,
+        tip.height.to_u32(), tip.hash, start_height.to_u32(),
     );
 
     // ── Peers ────────────────────────────────────────────────────────────────
@@ -365,20 +365,20 @@ fn run(args: &Args) -> Result<(), String> {
         .map_err(|e| format!("fetcher init: {e}"))?;
 
     // ── Phase 1: sync all headers to tip ──────────────────────────────────
-    let locator = if start_height.0 <= 1 {
+    let locator = if start_height.to_u32() <= 1 {
         args.network.genesis_hash()
     } else {
         tip.hash
     };
-    let stop_height = args.stop_height.unwrap_or(BlockHeight(u32::MAX));
+    let stop_height = args.stop_height.unwrap_or(BlockHeight::new(u32::MAX));
 
     eprintln!(
         "  syncing headers from height {} to {}…",
-        start_height.0,
-        if stop_height.0 == u32::MAX {
+        start_height.to_u32(),
+        if stop_height.to_u32() == u32::MAX {
             "tip".to_string()
         } else {
-            stop_height.0.to_string()
+            stop_height.to_u32().to_string()
         },
     );
 
@@ -396,8 +396,8 @@ fn run(args: &Args) -> Result<(), String> {
     eprintln!(
         "  got {} headers ({}..={})",
         header_pairs.len(),
-        start_height.0,
-        actual_stop.0,
+        start_height.to_u32(),
+        actual_stop.to_u32(),
     );
 
     // ── Phase 2: download all blocks ────────────────────────────────────
@@ -416,13 +416,13 @@ fn run(args: &Args) -> Result<(), String> {
         skip_script: args.skip_script,
         allow_min_difficulty,
         cache: ScriptExecutionCache::new(SCRIPT_CACHE_ENTRIES),
-        token: u64::from(tip.height.0).saturating_add(1),
+        token: u64::from(tip.height.to_u32()).saturating_add(1),
     };
 
     eprintln!(
         "  replaying {}..={} ({} script verification)…",
-        start_height.0,
-        actual_stop.0,
+        start_height.to_u32(),
+        actual_stop.to_u32(),
         if args.skip_script { "skipping" } else { "with" },
     );
 
@@ -436,7 +436,7 @@ fn run(args: &Args) -> Result<(), String> {
     }
     reporter.done(last_committed);
 
-    eprintln!("IBD complete at height {}", last_committed.0);
+    eprintln!("IBD complete at height {}", last_committed.to_u32());
     ctx.storage
         .shutdown()
         .map_err(|e| format!("shutdown storage: {e}"))?;
@@ -452,29 +452,29 @@ fn replay_one_block(
 ) -> Result<(), String> {
     let bytes = fetcher
         .read_block_bytes(height)
-        .map_err(|e| format!("read block {} bytes: {e}", height.0))?;
+        .map_err(|e| format!("read block {} bytes: {e}", height.to_u32()))?;
 
     let block = Block::decode(&mut std::io::Cursor::new(&bytes))
-        .map_err(|e| format!("decode block {}: {e}", height.0))?;
+        .map_err(|e| format!("decode block {}: {e}", height.to_u32()))?;
 
     if block.header.hash() != header.hash() {
         return Err(format!(
             "block {} hash mismatch: header says {}, payload says {}",
-            height.0,
+            height.to_u32(),
             header.hash().to_display_hex(),
             block.header.hash().to_display_hex()
         ));
     }
 
     validate_block_structure(&block)
-        .map_err(|e| format!("structure check at {}: {e:?}", height.0))?;
+        .map_err(|e| format!("structure check at {}: {e:?}", height.to_u32()))?;
 
     let empty_coins = PrehashedMap::with_hasher(BuildPrehashedHasher);
     let context_view = PrefetchedView::new(&empty_coins, snapshot, ctx.storage.tip());
     validate_block_context(&block, &context_view, ctx.allow_min_difficulty)
-        .map_err(|e| format!("context check at {}: {e:?}", height.0))?;
+        .map_err(|e| format!("context check at {}: {e:?}", height.to_u32()))?;
 
-    let durability = if height.0.is_multiple_of(SYNC_EVERY) {
+    let durability = if height.to_u32().is_multiple_of(SYNC_EVERY) {
         Durability::Synced
     } else {
         Durability::Memory
@@ -490,7 +490,7 @@ fn replay_one_block(
         durability,
         ReqToken(ctx.token),
     )
-    .map_err(|e| format!("validate_and_commit at {}: {e}", height.0))?;
+    .map_err(|e| format!("validate_and_commit at {}: {e}", height.to_u32()))?;
 
     ctx.token = ctx.token.saturating_add(1);
     Ok(())

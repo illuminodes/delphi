@@ -114,7 +114,7 @@ fn make_snapshot(chain: &[(Hash256, BlockHeader)]) -> HeaderSnapshot {
     let mut entries = Vec::with_capacity(chain.len() + 1);
     entries.push((Hash256::ZERO, pre_genesis_header()));
     entries.extend_from_slice(chain);
-    HeaderSnapshot::new(BlockHeight(0), entries).expect("snapshot fits u32")
+    HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
 }
 
 struct TmpDir(std::path::PathBuf);
@@ -156,7 +156,7 @@ fn commit<S>(
         Durability::Memory,
         ReqToken(token),
     )
-    .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.0));
+    .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.to_u32()));
 }
 
 fn main() {
@@ -178,7 +178,7 @@ fn scenario_coinbase_only() {
         commit(
             &mut storage,
             &block,
-            BlockHeight(i),
+            BlockHeight::new(i),
             &snap,
             &mut cache,
             u64::from(i),
@@ -245,7 +245,7 @@ fn scenario_spend_blocks() {
         commit(
             &mut storage,
             &fund_block,
-            BlockHeight(FUND_H),
+            BlockHeight::new(FUND_H),
             &snap,
             &mut cache,
             1,
@@ -254,7 +254,7 @@ fn scenario_spend_blocks() {
             commit(
                 &mut storage,
                 b,
-                BlockHeight(2 + u32::try_from(i).expect("fits")),
+                BlockHeight::new(2 + u32::try_from(i).expect("fits")),
                 &snap,
                 &mut cache,
                 2 + u64::try_from(i).expect("fits"),
@@ -263,7 +263,7 @@ fn scenario_spend_blocks() {
         commit(
             &mut storage,
             &spend_block,
-            BlockHeight(SPEND_H),
+            BlockHeight::new(SPEND_H),
             &snap,
             &mut cache,
             u64::from(SPEND_H),

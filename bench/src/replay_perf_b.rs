@@ -96,7 +96,7 @@ fn build_scenario() -> Scenario {
     commit(
         &mut seed_storage,
         &fund_block,
-        BlockHeight(FUND_H),
+        BlockHeight::new(FUND_H),
         &snap,
         &mut cache,
         1,
@@ -105,7 +105,7 @@ fn build_scenario() -> Scenario {
         commit(
             &mut seed_storage,
             b,
-            BlockHeight(2 + u32::try_from(i).expect("fits")),
+            BlockHeight::new(2 + u32::try_from(i).expect("fits")),
             &snap,
             &mut cache,
             2 + u64::try_from(i).expect("fits"),
@@ -149,7 +149,7 @@ fn main() {
         commit(
             &mut storage,
             black_box(&spend_block),
-            BlockHeight(SPEND_H),
+            BlockHeight::new(SPEND_H),
             &snap,
             &mut cache,
             u64::from(SPEND_H),

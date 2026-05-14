@@ -81,7 +81,7 @@ fn block_183_input_divergence() {
         "block 183 has at least one non-coinbase tx"
     );
 
-    let flags_bits = ScriptFlags::for_height(BlockHeight(183)).bits();
+    let flags_bits = ScriptFlags::for_height(BlockHeight::new(183)).bits();
     eprintln!("block 183 script flags = {flags_bits:#010x}");
 
     for (tx_idx, tx) in block.transactions.iter().enumerate().skip(1) {

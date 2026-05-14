@@ -119,7 +119,7 @@ impl BlockStore {
 
     pub fn has_block(&self, height: BlockHeight) -> bool {
         self.index
-            .get(height.0 as usize)
+            .get(height.to_u32() as usize)
             .copied()
             .unwrap_or_default()
             .is_present()
@@ -128,13 +128,13 @@ impl BlockStore {
     pub fn read(&self, ring: &mut IoUring, height: BlockHeight) -> io::Result<Vec<u8>> {
         let entry = self
             .index
-            .get(height.0 as usize)
+            .get(height.to_u32() as usize)
             .copied()
             .unwrap_or_default();
         if !entry.is_present() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("block {} not in index", height.0),
+                format!("block {} not in index", height.to_u32()),
             ));
         }
         self.store.uring_read(ring, entry.offset, entry.length)
@@ -148,7 +148,7 @@ impl BlockStore {
         data: &[u8],
     ) -> io::Result<()> {
         let offset = self.store.append(ring, data)?;
-        let h = height.0 as usize;
+        let h = height.to_u32() as usize;
         if h >= self.index.len() {
             self.index.resize(h + 1, BlockEntry::default());
         }
@@ -191,7 +191,7 @@ impl HeaderStore {
         }
         let meta_bytes = self.metadata.uring_read(ring, 0, 4)?;
         let cached_start = u32::from_le_bytes(meta_bytes[..4].try_into().unwrap());
-        if cached_start != start.0 {
+        if cached_start != start.to_u32() {
             return Ok(Vec::new());
         }
         let count = self.store.write_offset as usize / HEADER_RECORD_SIZE;
@@ -207,7 +207,7 @@ impl HeaderStore {
             let arr: &[u8; 80] = chunk.try_into().unwrap();
             let hdr = BlockHeader::from_bytes(arr)
                 .map_err(|e| io::Error::other(format!("cached header {i} decode: {e}")))?;
-            headers.push((BlockHeight(start.0 + i as u32), hdr));
+            headers.push((BlockHeight::new(start.to_u32() + i as u32), hdr));
         }
         Ok(headers)
     }
@@ -220,7 +220,7 @@ impl HeaderStore {
     ) -> io::Result<()> {
         self.store.truncate_and_write(ring, data)?;
         self.metadata
-            .truncate_and_write(ring, &start.0.to_le_bytes())
+            .truncate_and_write(ring, &start.to_u32().to_le_bytes())
     }
 }
 

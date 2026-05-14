@@ -87,13 +87,13 @@ pub fn make_snapshot_from_genesis(headers: &[BlockHeader]) -> HeaderSnapshot {
     for hdr in headers {
         entries.push((hdr.hash(), *hdr));
     }
-    HeaderSnapshot::new(BlockHeight(0), entries).expect("snapshot fits u32")
+    HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
 }
 
 pub fn make_snapshot_mid_chain(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
     let entries: Vec<(Hash256, BlockHeader)> =
         headers.iter().map(|hdr| (hdr.hash(), *hdr)).collect();
-    HeaderSnapshot::new(BlockHeight(start), entries).expect("snapshot fits u32")
+    HeaderSnapshot::new(BlockHeight::new(start), entries).expect("snapshot fits u32")
 }
 
 // ── BenchView ────────────────────────────────────────────────────────────────
@@ -123,7 +123,7 @@ impl<'a> BenchView<'a> {
             dummy: Coin {
                 value: Satoshi::new(2_100_000_000_000_000),
                 script_pubkey: vec![0x51].into(),
-                height: BlockHeight(0),
+                height: BlockHeight::new(0),
                 coinbase: false,
             },
         }
@@ -265,7 +265,7 @@ pub fn replay_block(
         Some(cache),
         None,
     )
-    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.to_u32()));
 
     storage
         .commit_block_borrowed(CommitBlockReq {
@@ -279,7 +279,7 @@ pub fn replay_block(
             block_bytes: None,
             durability: Durability::Memory,
         })
-        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.0));
+        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.to_u32()));
 }
 
 // ── replay_block_ref (zero-copy / wire-bytes path) ───────────────────────────
@@ -303,7 +303,7 @@ pub fn replay_block_ref(
 ) {
     let mut txs_buf = Vec::new();
     let block_ref = BlockRef::decode_with_arena(wire, arena, &mut txs_buf)
-        .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.0));
+        .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.to_u32()));
 
     let (txids, intra, all_ops) = build_ref_outpoints(&block_ref);
 
@@ -335,7 +335,7 @@ pub fn replay_block_ref(
         Some(cache),
         Some(&txids),
     )
-    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.to_u32()));
 
     storage
         .commit_block_borrowed(CommitBlockReq {
@@ -349,7 +349,7 @@ pub fn replay_block_ref(
             block_bytes: None,
             durability: Durability::Memory,
         })
-        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.0));
+        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.to_u32()));
 }
 
 fn build_ref_outpoints(
@@ -502,7 +502,7 @@ pub fn replay_block_ref_reusing(
     let txs_buf: &mut Vec<TransactionRef<'_>> =
         unsafe { &mut *std::ptr::from_mut(txs_scratch).cast::<Vec<TransactionRef<'_>>>() };
     let block_ref = BlockRef::decode_with_arena(wire, arena, txs_buf)
-        .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.0));
+        .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.to_u32()));
 
     let tx_count = block_ref.tx_count();
     let total_inputs: usize = block_ref
@@ -599,7 +599,7 @@ pub fn replay_block_ref_reusing(
         Some(cache),
         Some(&bufs.txids),
     )
-    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.to_u32()));
 
     storage
         .commit_block_borrowed(CommitBlockReq {
@@ -613,7 +613,7 @@ pub fn replay_block_ref_reusing(
             block_bytes: None,
             durability,
         })
-        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.0));
+        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.to_u32()));
     bufs.connect_scratch.reclaim(result);
 }
 

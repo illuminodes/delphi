@@ -206,7 +206,7 @@ proptest! {
         use mantle_consensus::script::ScriptFlags;
 
         let oracle = conformance::flags_for_height(h);
-        let ours   = ScriptFlags::for_height(BlockHeight(h)).bits();
+        let ours   = ScriptFlags::for_height(BlockHeight::new(h)).bits();
         prop_assert_eq!(
             oracle, ours,
             "flags_for_height({}) diverged: oracle={:#010x} ours={:#010x}",

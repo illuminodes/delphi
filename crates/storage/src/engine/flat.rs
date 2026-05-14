@@ -192,7 +192,7 @@ impl Engine for FlatEngine {
             req.hash,
             self.header_write_len,
         )?;
-        self.header_index.insert(req.hash, req.height.0);
+        self.header_index.insert(req.hash, req.height.to_u32());
 
         self.tip = TipInfo {
             hash: req.hash,
@@ -205,11 +205,11 @@ impl Engine for FlatEngine {
         let Some(&height_u32) = self.header_index.get(hash) else {
             return Ok(None);
         };
-        self.read_header_at(BlockHeight(height_u32))
+        self.read_header_at(BlockHeight::new(height_u32))
     }
 
     fn read_header_at(&self, h: BlockHeight) -> Result<Option<BlockHeader>, EngineError> {
-        let offset = u64::from(h.0) * HEADER_RECORD_SIZE as u64;
+        let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE as u64;
         let mut f = File::open(self.header_path()).map_err(|e| io_err(&e))?;
         let file_len = f.seek(SeekFrom::End(0)).map_err(|e| io_err(&e))?;
         if offset + HEADER_RECORD_SIZE as u64 > file_len {
@@ -229,7 +229,7 @@ impl Engine for FlatEngine {
             hash,
             self.header_write_len,
         )?;
-        self.header_index.insert(hash, h.0);
+        self.header_index.insert(hash, h.to_u32());
         Ok(())
     }
 
@@ -246,7 +246,7 @@ impl Engine for FlatEngine {
             self.checkpoint_file
                 .seek(SeekFrom::Start(0))
                 .map_err(|e| io_err(&e))?;
-            let h = self.tip.height.0.to_le_bytes();
+            let h = self.tip.height.to_u32().to_le_bytes();
             self.checkpoint_file.write_all(&h).map_err(|e| io_err(&e))?;
             self.checkpoint_file.sync_all().map_err(|e| io_err(&e))?;
         }
@@ -286,7 +286,7 @@ impl Engine for FlatEngine {
                     // Only need the tip hash/height; the parsed header itself is not kept.
                     self.tip = TipInfo {
                         hash,
-                        height: BlockHeight(height),
+                        height: BlockHeight::new(height),
                     };
                 }
             }
@@ -343,7 +343,7 @@ fn write_coin_record<W: Write>(f: &mut W, nc: &NewCoin) -> Result<(), EngineErro
     f.write_all(&[1u8]).map_err(|e| io_err(&e))?;
     f.write_all(&nc.value.to_le_bytes())
         .map_err(|e| io_err(&e))?;
-    f.write_all(&nc.height.0.to_le_bytes())
+    f.write_all(&nc.height.to_u32().to_le_bytes())
         .map_err(|e| io_err(&e))?;
     f.write_all(&[u8::from(nc.coinbase)])
         .map_err(|e| io_err(&e))?;
@@ -393,7 +393,7 @@ fn read_coin_record(f: &mut File) -> Result<Option<Coin>, EngineError> {
     Ok(Some(Coin {
         value: Satoshi::new(value),
         script_pubkey: ScriptPubKey::from(spk),
-        height: BlockHeight(height),
+        height: BlockHeight::new(height),
         coinbase,
     }))
 }
@@ -433,7 +433,7 @@ fn read_utxo_log_entry(
     let coin = Coin {
         value: Satoshi::new(value),
         script_pubkey: ScriptPubKey::from(spk),
-        height: BlockHeight(height),
+        height: BlockHeight::new(height),
         coinbase,
     };
     // 36 (outpoint) + 1 (tag) + 8 + 4 + 1 + 4 + spk_len
@@ -463,7 +463,7 @@ fn write_header_record(
     // Files are opened with O_APPEND, so every write goes to EOF regardless
     // of any prior seek. We only have to extend the file to `offset` when
     // there is a gap; the actual record then appends naturally.
-    let offset = u64::from(h.0) * HEADER_RECORD_SIZE as u64;
+    let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE as u64;
     let new_len = if offset > file_len {
         // Use ftruncate to extend the file; the gap becomes a sparse hole on
         // every Linux filesystem we support (ext4/xfs/btrfs/tmpfs) — no zero
@@ -490,7 +490,7 @@ fn write_header_record(
         .map_err(|e| io_err(&e))?;
     f.write_all(&header.nonce.to_le_bytes())
         .map_err(|e| io_err(&e))?;
-    f.write_all(&h.0.to_le_bytes()).map_err(|e| io_err(&e))?;
+    f.write_all(&h.to_u32().to_le_bytes()).map_err(|e| io_err(&e))?;
     Ok(new_len + HEADER_RECORD_SIZE as u64)
 }
 
@@ -589,8 +589,8 @@ mod tests {
             bits: CompactBits::new(0x1d00_ffff),
             nonce: 0xdead_beef,
         };
-        eng.write_header(BlockHeight(0), &h).unwrap();
-        let got = eng.read_header_at(BlockHeight(0)).unwrap().unwrap();
+        eng.write_header(BlockHeight::new(0), &h).unwrap();
+        let got = eng.read_header_at(BlockHeight::new(0)).unwrap().unwrap();
         assert_eq!(got.version, h.version);
         assert_eq!(got.prev_block, h.prev_block);
         assert_eq!(got.merkle_root, h.merkle_root);
@@ -612,11 +612,11 @@ mod tests {
             value: Satoshi::new(5_000_000_000),
             script_pubkey: &[0xac],
             coinbase: true,
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
         };
         let req = crate::types::CommitBlockReq {
             token: crate::types::ReqToken(1),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             hash: Hash256::from_bytes([2u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
@@ -644,11 +644,11 @@ mod tests {
             value: Satoshi::new(1000),
             script_pubkey: &[],
             coinbase: false,
-            height: BlockHeight(10),
+            height: BlockHeight::new(10),
         };
         let req1 = crate::types::CommitBlockReq {
             token: crate::types::ReqToken(1),
-            height: BlockHeight(10),
+            height: BlockHeight::new(10),
             hash: Hash256::from_bytes([4u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
@@ -662,7 +662,7 @@ mod tests {
 
         let req2 = crate::types::CommitBlockReq {
             token: crate::types::ReqToken(2),
-            height: BlockHeight(11),
+            height: BlockHeight::new(11),
             hash: Hash256::from_bytes([5u8; 32]),
             prev_hash: Hash256::from_bytes([4u8; 32]),
             header: BlockHeader {
@@ -692,11 +692,11 @@ mod tests {
                 value: Satoshi::new(999),
                 script_pubkey: &[0x51],
                 coinbase: false,
-                height: BlockHeight(5),
+                height: BlockHeight::new(5),
             };
             let req = crate::types::CommitBlockReq {
                 token: crate::types::ReqToken(1),
-                height: BlockHeight(5),
+                height: BlockHeight::new(5),
                 hash: Hash256::from_bytes([8u8; 32]),
                 prev_hash: Hash256::ZERO,
                 header: make_header(0),

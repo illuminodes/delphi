@@ -69,7 +69,7 @@ impl Bucket {
         Ok(Coin {
             value: Satoshi::new(self.value),
             script_pubkey,
-            height: BlockHeight(self.height),
+            height: BlockHeight::new(self.height),
             coinbase: self.coinbase,
         })
     }
@@ -97,7 +97,7 @@ impl Bucket {
             } else {
                 OVERFLOW_MARKER
             },
-            height: coin.height.0,
+            height: coin.height.to_u32(),
             value: coin.value.to_u64(),
             txid: *op.txid.as_bytes(),
             vout: op.vout,
@@ -1285,7 +1285,7 @@ impl Engine for RobinHoodEngine {
             req.hash,
             self.header_write_len,
         )?;
-        self.header_index.insert(req.hash, req.height.0);
+        self.header_index.insert(req.hash, req.height.to_u32());
 
         self.tip = TipInfo {
             hash: req.hash,
@@ -1298,11 +1298,11 @@ impl Engine for RobinHoodEngine {
         let Some(&height_u32) = self.header_index.get(hash) else {
             return Ok(None);
         };
-        self.read_header_at(BlockHeight(height_u32))
+        self.read_header_at(BlockHeight::new(height_u32))
     }
 
     fn read_header_at(&self, h: BlockHeight) -> Result<Option<BlockHeader>, EngineError> {
-        let offset = u64::from(h.0) * HEADER_RECORD_SIZE as u64;
+        let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE as u64;
         if offset + HEADER_RECORD_SIZE as u64 > self.header_write_len {
             return Ok(None);
         }
@@ -1320,7 +1320,7 @@ impl Engine for RobinHoodEngine {
             hash,
             self.header_write_len,
         )?;
-        self.header_index.insert(hash, h.0);
+        self.header_index.insert(hash, h.to_u32());
         Ok(())
     }
 
@@ -1333,7 +1333,7 @@ impl Engine for RobinHoodEngine {
             self.checkpoint_file
                 .seek(SeekFrom::Start(0))
                 .map_err(io_err)?;
-            let h = self.tip.height.0.to_le_bytes();
+            let h = self.tip.height.to_u32().to_le_bytes();
             self.checkpoint_file.write_all(&h).map_err(io_err)?;
             self.checkpoint_file.sync_all().map_err(io_err)?;
         }
@@ -1368,7 +1368,7 @@ impl Engine for RobinHoodEngine {
                     self.header_index.insert(hash, height);
                     self.tip = TipInfo {
                         hash,
-                        height: BlockHeight(height),
+                        height: BlockHeight::new(height),
                     };
                 }
             }
@@ -1399,7 +1399,7 @@ fn write_header_record(
     hash: Hash256,
     file_len: u64,
 ) -> Result<u64, EngineError> {
-    let offset = u64::from(h.0) * HEADER_RECORD_SIZE as u64;
+    let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE as u64;
     let new_len = if offset > file_len {
         f.set_len(offset).map_err(io_err)?;
         offset
@@ -1413,7 +1413,7 @@ fn write_header_record(
     f.write_all(&header.time.to_le_bytes()).map_err(io_err)?;
     f.write_all(&header.bits.to_le_bytes()).map_err(io_err)?;
     f.write_all(&header.nonce.to_le_bytes()).map_err(io_err)?;
-    f.write_all(&h.0.to_le_bytes()).map_err(io_err)?;
+    f.write_all(&h.to_u32().to_le_bytes()).map_err(io_err)?;
     Ok(new_len + HEADER_RECORD_SIZE as u64)
 }
 
@@ -1556,7 +1556,7 @@ mod tests {
         Coin {
             value: Satoshi::new(value),
             script_pubkey: ScriptPubKey::from_slice(spk),
-            height: BlockHeight(100),
+            height: BlockHeight::new(100),
             coinbase: false,
         }
     }
@@ -1842,7 +1842,7 @@ mod tests {
         // Create a coin — goes into write buffer, not disk.
         let req1 = CommitBlockReq {
             token: crate::types::ReqToken(1),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             hash: Hash256::from_bytes([11u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
@@ -1851,7 +1851,7 @@ mod tests {
                 value: Satoshi::new(1000),
                 script_pubkey: &[0x51],
                 coinbase: false,
-                height: BlockHeight(1),
+                height: BlockHeight::new(1),
             }],
             spent: &[],
             block_bytes: None,
@@ -1868,7 +1868,7 @@ mod tests {
         // Spend the coin — should elide (never hits disk).
         let req2 = CommitBlockReq {
             token: crate::types::ReqToken(2),
-            height: BlockHeight(2),
+            height: BlockHeight::new(2),
             hash: Hash256::from_bytes([12u8; 32]),
             prev_hash: Hash256::from_bytes([11u8; 32]),
             header: BlockHeader {
@@ -1900,7 +1900,7 @@ mod tests {
         };
         let req = CommitBlockReq {
             token: crate::types::ReqToken(1),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             hash: Hash256::from_bytes([21u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
@@ -1909,7 +1909,7 @@ mod tests {
                 value: Satoshi::new(2000),
                 script_pubkey: &[0x51],
                 coinbase: false,
-                height: BlockHeight(1),
+                height: BlockHeight::new(1),
             }],
             spent: &[],
             block_bytes: None,
@@ -1953,7 +1953,7 @@ mod tests {
         };
         let req = CommitBlockReq {
             token: crate::types::ReqToken(1),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             hash: Hash256::from_bytes([2u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
@@ -1962,7 +1962,7 @@ mod tests {
                 value: Satoshi::new(5_000_000_000),
                 script_pubkey: &[0x51],
                 coinbase: true,
-                height: BlockHeight(1),
+                height: BlockHeight::new(1),
             }],
             spent: &[],
             block_bytes: None,
@@ -1986,7 +1986,7 @@ mod tests {
         };
         let req1 = CommitBlockReq {
             token: crate::types::ReqToken(1),
-            height: BlockHeight(10),
+            height: BlockHeight::new(10),
             hash: Hash256::from_bytes([4u8; 32]),
             prev_hash: Hash256::ZERO,
             header: make_header(0),
@@ -1995,7 +1995,7 @@ mod tests {
                 value: Satoshi::new(1000),
                 script_pubkey: &[],
                 coinbase: false,
-                height: BlockHeight(10),
+                height: BlockHeight::new(10),
             }],
             spent: &[],
             block_bytes: None,
@@ -2006,7 +2006,7 @@ mod tests {
 
         let req2 = CommitBlockReq {
             token: crate::types::ReqToken(2),
-            height: BlockHeight(11),
+            height: BlockHeight::new(11),
             hash: Hash256::from_bytes([5u8; 32]),
             prev_hash: Hash256::from_bytes([4u8; 32]),
             header: BlockHeader {
@@ -2036,8 +2036,8 @@ mod tests {
             bits: CompactBits::new(0x1d00_ffff),
             nonce: 0xdead_beef,
         };
-        eng.write_header(BlockHeight(0), &h).unwrap();
-        let got = eng.read_header_at(BlockHeight(0)).unwrap().unwrap();
+        eng.write_header(BlockHeight::new(0), &h).unwrap();
+        let got = eng.read_header_at(BlockHeight::new(0)).unwrap().unwrap();
         assert_eq!(got.version, h.version);
         assert_eq!(got.prev_block, h.prev_block);
         assert_eq!(got.merkle_root, h.merkle_root);
@@ -2067,7 +2067,7 @@ mod tests {
 
             let req = CommitBlockReq {
                 token: crate::types::ReqToken(u64::from(h)),
-                height: BlockHeight(h),
+                height: BlockHeight::new(h),
                 hash: block_hash,
                 prev_hash,
                 header: BlockHeader {
@@ -2082,7 +2082,7 @@ mod tests {
                         0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14,
                     ],
                     coinbase: true,
-                    height: BlockHeight(h),
+                    height: BlockHeight::new(h),
                 }],
                 spent: &[],
                 block_bytes: None,
@@ -2104,7 +2104,7 @@ mod tests {
             coin.is_some(),
             "read_coin should find block 1965 coinbase in write buffer"
         );
-        assert_eq!(coin.unwrap().height.0, target_height);
+        assert_eq!(coin.unwrap().height.to_u32(), target_height);
 
         // Look up via read_coins (batch) — this is the path validate_and_commit uses.
         let mut out = Vec::new();
@@ -2114,7 +2114,7 @@ mod tests {
             out[0].coin.is_some(),
             "read_coins should find block 1965 coinbase in write buffer"
         );
-        assert_eq!(out[0].coin.as_ref().unwrap().height.0, target_height);
+        assert_eq!(out[0].coin.as_ref().unwrap().height.to_u32(), target_height);
     }
 
     #[test]
@@ -2148,12 +2148,12 @@ mod tests {
                     value: Satoshi::new(5_000_000_000),
                     script_pubkey: &spk,
                     coinbase: true,
-                    height: BlockHeight(h),
+                    height: BlockHeight::new(h),
                 }];
                 handle
                     .commit_block_borrowed(CommitBlockReq {
                         token: crate::types::ReqToken(u64::from(h)),
-                        height: BlockHeight(h),
+                        height: BlockHeight::new(h),
                         hash: block_hash,
                         prev_hash,
                         header: BlockHeader {
@@ -2185,7 +2185,7 @@ mod tests {
                 out[0].coin.is_some(),
                 "handle lookup should find block 1965 coinbase in write buffer"
             );
-            assert_eq!(out[0].coin.as_ref().unwrap().height.0, target_height);
+            assert_eq!(out[0].coin.as_ref().unwrap().height.to_u32(), target_height);
         })
         .expect("with_storage");
     }
@@ -2222,12 +2222,12 @@ mod tests {
                 value: Satoshi::new(5_000_000_000),
                 script_pubkey: &spk,
                 coinbase: true,
-                height: BlockHeight(h),
+                height: BlockHeight::new(h),
             }];
             handle
                 .commit_block_borrowed(CommitBlockReq {
                     token: crate::types::ReqToken(u64::from(h)),
-                    height: BlockHeight(h),
+                    height: BlockHeight::new(h),
                     hash: block_hash,
                     prev_hash,
                     header: BlockHeader {
@@ -2259,7 +2259,7 @@ mod tests {
             out[0].coin.is_some(),
             "open_robin_hood handle should find block 1965 coinbase in write buffer"
         );
-        assert_eq!(out[0].coin.as_ref().unwrap().height.0, target_height);
+        assert_eq!(out[0].coin.as_ref().unwrap().height.to_u32(), target_height);
 
         handle.shutdown().expect("shutdown");
     }
@@ -2293,14 +2293,14 @@ mod tests {
                 value: output.value,
                 script_pubkey: output.script_pubkey.as_slice(),
                 coinbase: true,
-                height: BlockHeight(1965),
+                height: BlockHeight::new(1965),
             });
         }
 
         let hash = block.header.hash();
         eng.write_block(&CommitBlockReq {
             token: crate::types::ReqToken(1965),
-            height: BlockHeight(1965),
+            height: BlockHeight::new(1965),
             hash,
             prev_hash: block.header.prev_block,
             header: block.header,
@@ -2365,7 +2365,7 @@ mod tests {
             ];
             eng.write_block(&CommitBlockReq {
                 token: crate::types::ReqToken(u64::from(h)),
-                height: BlockHeight(h),
+                height: BlockHeight::new(h),
                 hash: block_hash,
                 prev_hash,
                 header: BlockHeader {
@@ -2377,7 +2377,7 @@ mod tests {
                     value: Satoshi::new(5_000_000_000),
                     script_pubkey: &spk,
                     coinbase: true,
-                    height: BlockHeight(h),
+                    height: BlockHeight::new(h),
                 }],
                 spent: &[],
                 block_bytes: None,
@@ -2453,12 +2453,12 @@ mod tests {
                     value: Satoshi::new(5_000_000_000),
                     script_pubkey: &spk,
                     coinbase: true,
-                    height: BlockHeight(h),
+                    height: BlockHeight::new(h),
                 }];
                 handle
                     .commit_block_borrowed(CommitBlockReq {
                         token: crate::types::ReqToken(u64::from(h)),
-                        height: BlockHeight(h),
+                        height: BlockHeight::new(h),
                         hash: block_hash,
                         prev_hash,
                         header: BlockHeader {

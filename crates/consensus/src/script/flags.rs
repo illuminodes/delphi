@@ -135,7 +135,7 @@ impl ScriptFlags {
     /// across every mainnet height in M4.
     #[must_use]
     pub fn for_height(height: BlockHeight) -> Self {
-        let h = height.0;
+        let h = height.to_u32();
         let mut flags = Self::NONE;
         let mut i = 0;
         while i < Self::ACTIVATIONS.len() {
@@ -217,19 +217,19 @@ mod tests {
 
     #[test]
     fn for_height_genesis_is_none() {
-        assert_eq!(ScriptFlags::for_height(BlockHeight(0)), ScriptFlags::NONE);
+        assert_eq!(ScriptFlags::for_height(BlockHeight::new(0)), ScriptFlags::NONE);
     }
 
     #[test]
     fn for_height_after_p2sh_includes_p2sh() {
-        let f = ScriptFlags::for_height(BlockHeight(200_000));
+        let f = ScriptFlags::for_height(BlockHeight::new(200_000));
         assert!(f.contains(ScriptFlags::P2SH));
         assert!(!f.contains(ScriptFlags::DERSIG));
     }
 
     #[test]
     fn for_height_post_taproot_includes_everything() {
-        let f = ScriptFlags::for_height(BlockHeight(800_000));
+        let f = ScriptFlags::for_height(BlockHeight::new(800_000));
         for bit in [
             ScriptFlags::P2SH,
             ScriptFlags::DERSIG,

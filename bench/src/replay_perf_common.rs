@@ -113,7 +113,7 @@ pub fn make_snapshot(chain: &[(Hash256, BlockHeader)]) -> HeaderSnapshot {
     let mut entries = Vec::with_capacity(chain.len() + 1);
     entries.push((Hash256::ZERO, pre_genesis_header()));
     entries.extend_from_slice(chain);
-    HeaderSnapshot::new(BlockHeight(0), entries).expect("snapshot fits u32")
+    HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
 }
 
 pub struct TmpDir(pub std::path::PathBuf);
@@ -155,7 +155,7 @@ pub fn commit<S>(
         Durability::Memory,
         ReqToken(token),
     )
-    .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.0));
+    .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.to_u32()));
 }
 
 pub fn run_for(dur: Duration, mut f: impl FnMut()) -> u64 {

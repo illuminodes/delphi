@@ -57,7 +57,7 @@ fn stage2_block_for_height(
 #[test]
 fn stage2_unknown_parent_rejected() {
     let view = build_chain(10, mantle::primitives::CompactBits::new(0x207f_ffff), 1_000_000);
-    let mut block = stage2_block_for_height(&view, BlockHeight(10), 4);
+    let mut block = stage2_block_for_height(&view, BlockHeight::new(10), 4);
     // Point to an unknown parent.
     block.header.prev_block = Hash256::from_bytes([0xde; 32]);
     assert_eq!(
@@ -69,7 +69,7 @@ fn stage2_unknown_parent_rejected() {
 #[test]
 fn stage2_unexpected_difficulty_rejected() {
     let view = build_chain(10, mantle::primitives::CompactBits::new(0x207f_ffff), 1_000_000);
-    let mut block = stage2_block_for_height(&view, BlockHeight(10), 4);
+    let mut block = stage2_block_for_height(&view, BlockHeight::new(10), 4);
     // Change the nBits to something different from the parent (non-retarget block).
     block.header.bits = mantle::primitives::CompactBits::new(0x1d00_ffff);
     assert_eq!(
@@ -219,11 +219,11 @@ fn stage2_bip34_correct_encoding_accepted() {
 #[test]
 fn stage2_block_version_too_low_rejected() {
     let view = build_chain_at(
-        BlockHeight(388_381 - 1),
+        BlockHeight::new(388_381 - 1),
         mantle::primitives::CompactBits::new(0x207f_ffff),
         1_000_000,
     );
-    let block = stage2_block_for_height(&view, BlockHeight(388_381), 3); // version 3 < required 4
+    let block = stage2_block_for_height(&view, BlockHeight::new(388_381), 3); // version 3 < required 4
     assert_eq!(
         validate_block_context(&block, &view, false),
         Err(ValidationError::BlockVersionTooLow {

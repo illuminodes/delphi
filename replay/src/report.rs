@@ -47,7 +47,7 @@ impl Reporter {
         let elapsed = now.duration_since(self.start).as_secs_f64().max(1e-9);
         #[allow(clippy::cast_precision_loss)]
         let bps_overall = self.total_committed as f64 / elapsed;
-        let remaining = u64::from(self.target_height.0).saturating_sub(u64::from(height.0));
+        let remaining = u64::from(self.target_height.to_u32()).saturating_sub(u64::from(height.to_u32()));
         let eta_secs = if bps_window > 0.0 {
             #[allow(
                 clippy::cast_precision_loss,
@@ -58,13 +58,13 @@ impl Reporter {
         } else {
             None
         };
-        let pct = 100.0 * f64::from(height.0 - self.start_height.0)
-            / f64::from((self.target_height.0 - self.start_height.0).max(1));
+        let pct = 100.0 * f64::from(height.to_u32() - self.start_height.to_u32())
+            / f64::from((self.target_height.to_u32() - self.start_height.to_u32()).max(1));
 
         eprintln!(
             "  [{:>7}/{:>7}]  {:>5.1}%  {:>7.1} bps (now) / {:>7.1} bps (avg)  ETA {}",
-            height.0,
-            self.target_height.0,
+            height.to_u32(),
+            self.target_height.to_u32(),
             pct,
             bps_window,
             bps_overall,
@@ -77,10 +77,10 @@ impl Reporter {
     /// Called once after the final commit. Prints a summary line.
     pub fn done(&self, final_height: BlockHeight) {
         let elapsed = self.start.elapsed().as_secs_f64();
-        let bps = f64::from(final_height.0) / elapsed.max(1e-9);
+        let bps = f64::from(final_height.to_u32()) / elapsed.max(1e-9);
         eprintln!(
             "Replay complete: {} blocks in {elapsed:.1}s ({bps:.1} blocks/s)",
-            final_height.0,
+            final_height.to_u32(),
         );
     }
 }

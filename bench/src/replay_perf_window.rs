@@ -126,11 +126,11 @@ fn make_snapshot(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
         for hdr in headers {
             entries.push((hdr.hash(), *hdr));
         }
-        HeaderSnapshot::new(BlockHeight(0), entries).expect("snapshot fits u32")
+        HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
     } else {
         let entries: Vec<(Hash256, BlockHeader)> =
             headers.iter().map(|hdr| (hdr.hash(), *hdr)).collect();
-        HeaderSnapshot::new(BlockHeight(start), entries).expect("snapshot fits u32")
+        HeaderSnapshot::new(BlockHeight::new(start), entries).expect("snapshot fits u32")
     }
 }
 
@@ -181,7 +181,7 @@ fn replay_block_timed(
     let t0 = Instant::now();
     let mut txs_buf = Vec::new();
     let block_ref = BlockRef::decode_with_arena(wire, arena, &mut txs_buf)
-        .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.0));
+        .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.to_u32()));
 
     let tx_count = block_ref.tx_count();
     let total_inputs: usize = block_ref
@@ -290,7 +290,7 @@ fn replay_block_timed(
         cache_arg,
         Some(&txids),
     )
-    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.to_u32()));
     let connect = t0.elapsed();
 
     // ── commit ───────────────────────────────────────────────────────────
@@ -307,7 +307,7 @@ fn replay_block_timed(
             block_bytes: None,
             durability: Durability::Memory,
         })
-        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.0));
+        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.to_u32()));
     let commit = t0.elapsed();
 
     PhaseTimings {
@@ -381,7 +381,7 @@ fn main() {
     );
     let t0 = Instant::now();
     for (i, wire) in wires.iter().enumerate() {
-        let height = BlockHeight(start + u32::try_from(i).expect("fits"));
+        let height = BlockHeight::new(start + u32::try_from(i).expect("fits"));
         let token = u64::try_from(i + 1).expect("fits");
         let phases = replay_block_timed(
             wire,

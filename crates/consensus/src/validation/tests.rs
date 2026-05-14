@@ -127,7 +127,7 @@ fn first_tx_not_coinbase_rejected() {
 
 #[test]
 fn coinbase_script_too_short() {
-    let mut tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
+    let mut tx = coinbase_tx(BlockHeight::new(1), 5_000_000_000);
     tx.inputs[0].script_sig = vec![0x01].into(); // 1 byte < MIN (2)
     let block = make_block(vec![tx], CompactBits::new(0x207f_ffff));
     assert_eq!(
@@ -138,7 +138,7 @@ fn coinbase_script_too_short() {
 
 #[test]
 fn coinbase_script_too_long() {
-    let mut tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
+    let mut tx = coinbase_tx(BlockHeight::new(1), 5_000_000_000);
     tx.inputs[0].script_sig = vec![0x00; 101].into(); // 101 > MAX (100)
     let block = make_block(vec![tx], CompactBits::new(0x207f_ffff));
     assert_eq!(
@@ -149,7 +149,7 @@ fn coinbase_script_too_long() {
 
 #[test]
 fn output_value_out_of_range() {
-    let mut tx = coinbase_tx(BlockHeight(1), MAX_MONEY.to_u64() + 1);
+    let mut tx = coinbase_tx(BlockHeight::new(1), MAX_MONEY.to_u64() + 1);
     tx.outputs[0].value = Satoshi::new(MAX_MONEY.to_u64() + 1);
     // Re-encode the block with the bad tx — merkle root will be recomputed.
     let block = make_block(vec![tx], CompactBits::new(0x207f_ffff));
@@ -164,7 +164,7 @@ fn output_value_out_of_range() {
 
 #[test]
 fn duplicate_inputs_rejected() {
-    let cb = coinbase_tx(BlockHeight(1), 5_000_000_000);
+    let cb = coinbase_tx(BlockHeight::new(1), 5_000_000_000);
     let mut tx2 = regular_tx(Hash256::from_bytes([2u8; 32]), 0, 1000);
     // Add a duplicate input.
     tx2.inputs.push(tx2.inputs[0].clone());
@@ -184,7 +184,7 @@ fn duplicate_inputs_rejected() {
 /// same txid and exercise the CVE-2012-2459 defence directly.
 #[test]
 fn duplicate_transaction_rejected() {
-    let cb = coinbase_tx(BlockHeight(1), 5_000_000_000);
+    let cb = coinbase_tx(BlockHeight::new(1), 5_000_000_000);
     let tx = regular_tx(Hash256::from_bytes([0x42; 32]), 0, 1000);
     let dup = tx.clone();
     let block = make_block(vec![cb, tx, dup], CompactBits::new(0x207f_ffff));
@@ -196,7 +196,7 @@ fn duplicate_transaction_rejected() {
 
 #[test]
 fn merkle_root_mismatch() {
-    let tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
+    let tx = coinbase_tx(BlockHeight::new(1), 5_000_000_000);
     let mut block = make_block(vec![tx], CompactBits::new(0x207f_ffff));
     block.header.merkle_root = Hash256::from_bytes([0xde; 32]); // corrupt root
     assert_eq!(
@@ -207,7 +207,7 @@ fn merkle_root_mismatch() {
 
 #[test]
 fn pow_invalid() {
-    let tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
+    let tx = coinbase_tx(BlockHeight::new(1), 5_000_000_000);
     // Use a very hard nBits — nonce=0 will almost certainly fail PoW.
     let block = make_block(vec![tx], CompactBits::new(0x1d00_ffff));
     assert_eq!(
@@ -218,7 +218,7 @@ fn pow_invalid() {
 
 #[test]
 fn valid_block_easy_pow() {
-    let tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
+    let tx = coinbase_tx(BlockHeight::new(1), 5_000_000_000);
     // 0x207fffff is the easiest possible nBits (used in regtest).
     let block = mine_block(make_block(vec![tx], CompactBits::new(0x207f_ffff)));
     assert!(validate_block_structure(&block).is_ok());
@@ -250,15 +250,15 @@ fn nbits_negative_is_invalid() {
 #[test]
 fn bip34_height_encoding() {
     assert_eq!(
-        Transaction::bip34_height_script(BlockHeight(1)),
+        Transaction::bip34_height_script(BlockHeight::new(1)),
         vec![0x01, 0x01]
     );
     assert_eq!(
-        Transaction::bip34_height_script(BlockHeight(256)),
+        Transaction::bip34_height_script(BlockHeight::new(256)),
         vec![0x02, 0x00, 0x01]
     );
     assert_eq!(
-        Transaction::bip34_height_script(BlockHeight(0x80)),
+        Transaction::bip34_height_script(BlockHeight::new(0x80)),
         vec![0x02, 0x80, 0x00]
     );
 }
@@ -288,8 +288,8 @@ fn build_view_with_chain(len: u32) -> MemoryChainView {
 /// plus up to 11 ancestors for MTP.
 fn build_view_at_height(tip_height: BlockHeight) -> MemoryChainView {
     let window = 12u32;
-    let start = tip_height.0.saturating_sub(window - 1);
-    let mut view = MemoryChainView::with_height_base(BlockHeight(start));
+    let start = tip_height.to_u32().saturating_sub(window - 1);
+    let mut view = MemoryChainView::with_height_base(BlockHeight::new(start));
     let mut prev = Hash256::ZERO;
     for i in 0..window {
         let h = BlockHeader {
@@ -309,7 +309,7 @@ fn build_view_at_height(tip_height: BlockHeight) -> MemoryChainView {
 #[test]
 fn unknown_parent_rejected() {
     let view = build_view_with_chain(1);
-    let tx = coinbase_tx(BlockHeight(1), 5_000_000_000);
+    let tx = coinbase_tx(BlockHeight::new(1), 5_000_000_000);
     let block = Block {
         header: BlockHeader {
             version: 4,
@@ -415,7 +415,7 @@ fn bip34_missing_rejected() {
             prev_block: tip.hash,
             merkle_root: compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
-            time: 1_296_688_602 + BIP34_HEIGHT.0 * 600 + 600,
+            time: 1_296_688_602 + BIP34_HEIGHT.to_u32() * 600 + 600,
             bits: CompactBits::new(0x207f_ffff),
             nonce: 0,
         },
@@ -634,7 +634,7 @@ fn connect_setup(height: u32) -> (MemoryChainView, Block, Hash256) {
         prev = h.hash();
         view.push_header(h);
     }
-    let h = BlockHeight(height);
+    let h = BlockHeight::new(height);
     let cb = coinbase_tx(h, block_subsidy(h).to_u64());
     let txid = cb.txid().expect("txid encoding cannot fail");
     let block = make_block(vec![cb], CompactBits::new(0x207f_ffff));
@@ -647,7 +647,7 @@ fn connect_coinbase_only_block() {
     let mut scratch = Vec::new();
     let result = connect_block(
         &block,
-        BlockHeight(1),
+        BlockHeight::new(1),
         &view,
         &mut scratch,
         &mut ConnectScratch::new(),
@@ -682,17 +682,17 @@ fn connect_block_with_spend() {
         Coin {
             value: Satoshi::new(50_000),
             script_pubkey: vec![0x51].into(),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             coinbase: false,
         },
     );
-    let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+    let cb = coinbase_tx(BlockHeight::new(200), block_subsidy(BlockHeight::new(200)).to_u64());
     let spend = regular_tx(prev_op.txid, 0, 40_000); // 10_000 fee
     let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     let result = connect_block(
         &block,
-        BlockHeight(200),
+        BlockHeight::new(200),
         &view,
         &mut scratch,
         &mut ConnectScratch::new(),
@@ -710,7 +710,7 @@ fn connect_block_with_spend() {
 #[test]
 fn connect_missing_input_rejected() {
     let (view, _, _) = connect_setup(200);
-    let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+    let cb = coinbase_tx(BlockHeight::new(200), block_subsidy(BlockHeight::new(200)).to_u64());
     // Spend a coin that doesn't exist in the view.
     let ghost = regular_tx(Hash256::from_bytes([0xff; 32]), 0, 1_000);
     let block = make_block(vec![cb, ghost], CompactBits::new(0x207f_ffff));
@@ -718,7 +718,7 @@ fn connect_missing_input_rejected() {
     assert_eq!(
         connect_block(
             &block,
-            BlockHeight(200),
+            BlockHeight::new(200),
             &view,
             &mut scratch,
             &mut ConnectScratch::new(),
@@ -746,18 +746,18 @@ fn connect_coinbase_maturity_rejected() {
         Coin {
             value: Satoshi::new(100_000),
             script_pubkey: vec![0x51].into(),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             coinbase: true, // coinbase output, immature at height 50
         },
     );
-    let cb = coinbase_tx(BlockHeight(50), block_subsidy(BlockHeight(50)).to_u64());
+    let cb = coinbase_tx(BlockHeight::new(50), block_subsidy(BlockHeight::new(50)).to_u64());
     let spend = regular_tx(prev_op.txid, 0, 90_000);
     let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
         connect_block(
             &block,
-            BlockHeight(50),
+            BlockHeight::new(50),
             &view,
             &mut scratch,
             &mut ConnectScratch::new(),
@@ -790,17 +790,17 @@ fn connect_script_verify_failure_propagates() {
             value: Satoshi::new(50_000),
             // OP_RETURN — guaranteed to fail any script verification.
             script_pubkey: vec![0x6a].into(),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             coinbase: false,
         },
     );
-    let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+    let cb = coinbase_tx(BlockHeight::new(200), block_subsidy(BlockHeight::new(200)).to_u64());
     let spend = regular_tx(prev_op.txid, 0, 40_000);
     let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     let r = connect_block(
         &block,
-        BlockHeight(200),
+        BlockHeight::new(200),
         &view,
         &mut scratch,
         &mut ConnectScratch::new(),
@@ -835,18 +835,18 @@ fn connect_skip_script_bypasses_verification() {
         Coin {
             value: Satoshi::new(50_000),
             script_pubkey: vec![0x6a].into(), // OP_RETURN — would always fail
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             coinbase: false,
         },
     );
-    let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+    let cb = coinbase_tx(BlockHeight::new(200), block_subsidy(BlockHeight::new(200)).to_u64());
     let spend = regular_tx(prev_op.txid, 0, 40_000);
     let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     // With skip_script=false this would be ScriptVerifyFailed.
     connect_block(
         &block,
-        BlockHeight(200),
+        BlockHeight::new(200),
         &view,
         &mut scratch,
         &mut ConnectScratch::new(),
@@ -870,11 +870,11 @@ fn connect_exec_cache_hits_on_second_call() {
         Coin {
             value: Satoshi::new(50_000),
             script_pubkey: vec![0x51].into(), // OP_1 — always passes
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             coinbase: false,
         },
     );
-    let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+    let cb = coinbase_tx(BlockHeight::new(200), block_subsidy(BlockHeight::new(200)).to_u64());
     let spend = regular_tx(prev_op.txid, 0, 40_000);
     let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
@@ -882,7 +882,7 @@ fn connect_exec_cache_hits_on_second_call() {
     // Cold call — populates cache.
     connect_block(
         &block,
-        BlockHeight(200),
+        BlockHeight::new(200),
         &view,
         &mut scratch,
         &mut ConnectScratch::new(),
@@ -896,7 +896,7 @@ fn connect_exec_cache_hits_on_second_call() {
     // Hot call — must hit the cache.
     connect_block(
         &block,
-        BlockHeight(200),
+        BlockHeight::new(200),
         &view,
         &mut scratch,
         &mut ConnectScratch::new(),
@@ -923,11 +923,11 @@ fn connect_negative_fee_rejected() {
         Coin {
             value: Satoshi::new(1_000),
             script_pubkey: vec![0x51].into(),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             coinbase: false,
         },
     );
-    let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+    let cb = coinbase_tx(BlockHeight::new(200), block_subsidy(BlockHeight::new(200)).to_u64());
     // Output exceeds input value.
     let overspend = regular_tx(prev_op.txid, 0, 2_000);
     let block = make_block(vec![cb, overspend], CompactBits::new(0x207f_ffff));
@@ -935,7 +935,7 @@ fn connect_negative_fee_rejected() {
     assert_eq!(
         connect_block(
             &block,
-            BlockHeight(200),
+            BlockHeight::new(200),
             &view,
             &mut scratch,
             &mut ConnectScratch::new(),
@@ -955,7 +955,7 @@ fn connect_coinbase_reward_exceeds_subsidy_rejected() {
         version: 1,
         inputs: vec![TxIn {
             previous_output: NULL_OUTPOINT,
-            script_sig: Transaction::bip34_height_script(BlockHeight(1)).into(),
+            script_sig: Transaction::bip34_height_script(BlockHeight::new(1)).into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
         }],
@@ -970,7 +970,7 @@ fn connect_coinbase_reward_exceeds_subsidy_rejected() {
     assert_eq!(
         connect_block(
             &block,
-            BlockHeight(1),
+            BlockHeight::new(1),
             &view,
             &mut scratch,
             &mut ConnectScratch::new(),
@@ -985,16 +985,16 @@ fn connect_coinbase_reward_exceeds_subsidy_rejected() {
 #[test]
 fn block_subsidy_halvings() {
     // Genesis era: 50 BTC
-    assert_eq!(block_subsidy(BlockHeight(0)).to_u64(), 50 * 100_000_000);
+    assert_eq!(block_subsidy(BlockHeight::new(0)).to_u64(), 50 * 100_000_000);
     // First halving at 210,000
     assert_eq!(
-        block_subsidy(BlockHeight(210_000)).to_u64(),
+        block_subsidy(BlockHeight::new(210_000)).to_u64(),
         25 * 100_000_000
     );
     // Second halving at 420,000
-    assert_eq!(block_subsidy(BlockHeight(420_000)).to_u64(), 1_250_000_000);
+    assert_eq!(block_subsidy(BlockHeight::new(420_000)).to_u64(), 1_250_000_000);
     // After 64 halvings: zero
-    assert_eq!(block_subsidy(BlockHeight(64 * 210_000)).to_u64(), 0);
+    assert_eq!(block_subsidy(BlockHeight::new(64 * 210_000)).to_u64(), 0);
 }
 
 #[test]
@@ -1019,12 +1019,12 @@ fn connect_sigops_limit_exceeded() {
         version: 1,
         inputs: vec![TxIn {
             previous_output: NULL_OUTPOINT,
-            script_sig: Transaction::bip34_height_script(BlockHeight(1)).into(),
+            script_sig: Transaction::bip34_height_script(BlockHeight::new(1)).into(),
             sequence: u32::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
-            value: Satoshi::new(block_subsidy(BlockHeight(1)).to_u64()),
+            value: Satoshi::new(block_subsidy(BlockHeight::new(1)).to_u64()),
             script_pubkey: many_sigops.into(),
         }],
         locktime: 0,
@@ -1033,7 +1033,7 @@ fn connect_sigops_limit_exceeded() {
     let mut scratch = Vec::new();
     let err = connect_block(
         &block,
-        BlockHeight(1),
+        BlockHeight::new(1),
         &view,
         &mut scratch,
         &mut ConnectScratch::new(),
@@ -1050,7 +1050,7 @@ fn connect_bip30_violation_rejected() {
     let (mut view, _, _prior_coinbase_txid) = connect_setup(200);
     // Re-use the identical coinbase tx at the same height so its txid is
     // deterministic and we can pre-populate the UTXO set with a collision.
-    let collision_txid = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64())
+    let collision_txid = coinbase_tx(BlockHeight::new(200), block_subsidy(BlockHeight::new(200)).to_u64())
         .txid()
         .expect("txid encoding cannot fail");
     view.insert_coin(
@@ -1061,18 +1061,18 @@ fn connect_bip30_violation_rejected() {
         Coin {
             value: Satoshi::new(1_000),
             script_pubkey: vec![0x51].into(),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             coinbase: true,
         },
     );
     // Build a block with the identical coinbase tx — same txid, guaranteed collision.
-    let cb = coinbase_tx(BlockHeight(200), block_subsidy(BlockHeight(200)).to_u64());
+    let cb = coinbase_tx(BlockHeight::new(200), block_subsidy(BlockHeight::new(200)).to_u64());
     let block = make_block(vec![cb], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
     assert_eq!(
         connect_block(
             &block,
-            BlockHeight(200),
+            BlockHeight::new(200),
             &view,
             &mut scratch,
             &mut ConnectScratch::new(),

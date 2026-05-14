@@ -50,7 +50,7 @@ impl Transaction {
         if height == BlockHeight::ZERO {
             return vec![0x00];
         }
-        let mut le = height.0.to_le_bytes().to_vec();
+        let mut le = height.to_u32().to_le_bytes().to_vec();
         while le.last() == Some(&0) {
             le.pop();
         }

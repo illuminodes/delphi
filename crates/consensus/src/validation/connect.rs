@@ -76,7 +76,7 @@ where
             "precomputed txids length must match block tx count",
         );
     }
-    let is_bip30_exception = BIP30_EXCEPTION_HEIGHTS.contains(&height.0);
+    let is_bip30_exception = BIP30_EXCEPTION_HEIGHTS.contains(&height.to_u32());
     let subsidy = block_subsidy(height);
     let script_flags = ScriptFlags::for_height(height);
 
@@ -186,7 +186,7 @@ where
 
             // Coinbase maturity: coinbase outputs must be 100 blocks deep.
             if coin.coinbase {
-                let depth = height.0.saturating_sub(coin.height.0);
+                let depth = height.to_u32().saturating_sub(coin.height.to_u32());
                 if depth < 100 {
                     return Err(ValidationError::CoinbaseMaturityViolation {
                         tx_index,
@@ -316,7 +316,7 @@ impl BlockHeightExt for BlockHeight {
 // ── block_subsidy / count_legacy_sigops ───────────────────────────────────────
 
 pub(super) fn block_subsidy(height: BlockHeight) -> Satoshi {
-    let halvings = height.0 / HALVING_INTERVAL;
+    let halvings = height.to_u32() / HALVING_INTERVAL;
     if halvings >= 64 {
         return Satoshi::ZERO;
     }

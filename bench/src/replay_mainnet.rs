@@ -102,7 +102,7 @@ fn make_snapshot_from_genesis(headers: &[BlockHeader]) -> HeaderSnapshot {
     for hdr in headers {
         entries.push((hdr.hash(), *hdr));
     }
-    HeaderSnapshot::new(BlockHeight(0), entries).expect("snapshot fits u32")
+    HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
 }
 
 /// Build a snapshot for a mid-chain range.
@@ -111,7 +111,7 @@ fn make_snapshot_from_genesis(headers: &[BlockHeader]) -> HeaderSnapshot {
 fn make_snapshot_mid_chain(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
     let entries: Vec<(Hash256, BlockHeader)> =
         headers.iter().map(|hdr| (hdr.hash(), *hdr)).collect();
-    HeaderSnapshot::new(BlockHeight(start), entries).expect("snapshot fits u32")
+    HeaderSnapshot::new(BlockHeight::new(start), entries).expect("snapshot fits u32")
 }
 
 // ── BenchView: PrefetchedView with dummy-coin fallback for mid-chain ──────────
@@ -143,7 +143,7 @@ impl<'a> BenchView<'a> {
             dummy: Coin {
                 value: mantle::primitives::Satoshi::new(2_100_000_000_000_000),
                 script_pubkey: vec![0x51].into(),
-                height: BlockHeight(0),
+                height: BlockHeight::new(0),
                 coinbase: false,
             },
         }
@@ -288,7 +288,7 @@ fn replay_block(
         Some(cache),
         None,
     )
-    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.0));
+    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.to_u32()));
 
     storage
         .commit_block_borrowed(CommitBlockReq {
@@ -302,7 +302,7 @@ fn replay_block(
             block_bytes: None,
             durability: Durability::Memory,
         })
-        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.0));
+        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.to_u32()));
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -340,7 +340,7 @@ fn main() {
     let t0 = Instant::now();
 
     for (i, block) in blocks.iter().enumerate() {
-        let height = BlockHeight(start_height + u32::try_from(i).expect("fits"));
+        let height = BlockHeight::new(start_height + u32::try_from(i).expect("fits"));
         let token = u64::try_from(i + 1).expect("fits");
         replay_block(
             block,

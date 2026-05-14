@@ -113,11 +113,11 @@ fn make_snapshot(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
         for hdr in headers {
             entries.push((hdr.hash(), *hdr));
         }
-        HeaderSnapshot::new(BlockHeight(0), entries).expect("snapshot fits u32")
+        HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
     } else {
         let entries: Vec<(Hash256, BlockHeader)> =
             headers.iter().map(|hdr| (hdr.hash(), *hdr)).collect();
-        HeaderSnapshot::new(BlockHeight(start), entries).expect("snapshot fits u32")
+        HeaderSnapshot::new(BlockHeight::new(start), entries).expect("snapshot fits u32")
     }
 }
 
@@ -188,7 +188,7 @@ fn main() {
         let mut txs_scratch = Vec::new();
         replay_block_ref_reusing(
             &wires[0],
-            BlockHeight(start),
+            BlockHeight::new(start),
             &mut storage,
             &snap,
             &mut cache,
@@ -204,7 +204,7 @@ fn main() {
         let _profiler = dhat::Profiler::new_heap();
         for (i, wire) in wires[1..].iter().enumerate() {
             let h = start + 1 + u32::try_from(i).expect("fits");
-            let height = BlockHeight(h);
+            let height = BlockHeight::new(h);
             let token = u64::try_from(i + 2).expect("fits");
             replay_block_ref_reusing(
                 wire,
@@ -223,7 +223,7 @@ fn main() {
     } else {
         replay_block_ref(
             &wires[0],
-            BlockHeight(start),
+            BlockHeight::new(start),
             &mut storage,
             &snap,
             &mut cache,
@@ -235,7 +235,7 @@ fn main() {
         eprintln!("[dhat-{}] replaying...", args.preset);
         let _profiler = dhat::Profiler::new_heap();
         for (i, wire) in wires[1..].iter().enumerate() {
-            let height = BlockHeight(start + 1 + u32::try_from(i).expect("fits"));
+            let height = BlockHeight::new(start + 1 + u32::try_from(i).expect("fits"));
             let token = u64::try_from(i + 2).expect("fits");
             replay_block_ref(
                 wire,

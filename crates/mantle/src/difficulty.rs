@@ -115,10 +115,22 @@ impl CompactBits {
 ///
 /// Wraps a `u32` to make height values type-distinct from plain integers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct BlockHeight(pub u32);
+pub struct BlockHeight(u32);
 
 impl BlockHeight {
     pub const ZERO: Self = Self(0);
+
+    #[inline]
+    #[must_use]
+    pub const fn new(h: u32) -> Self {
+        Self(h)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
 
     #[must_use]
     pub fn checked_add(self, rhs: u32) -> Option<Self> {
@@ -128,27 +140,6 @@ impl BlockHeight {
     #[must_use]
     pub fn saturating_sub(self, rhs: u32) -> Self {
         Self(self.0.saturating_sub(rhs))
-    }
-}
-
-impl From<u32> for BlockHeight {
-    #[inline]
-    fn from(v: u32) -> Self {
-        Self(v)
-    }
-}
-
-impl From<BlockHeight> for u32 {
-    #[inline]
-    fn from(v: BlockHeight) -> Self {
-        v.0
-    }
-}
-
-impl From<BlockHeight> for usize {
-    #[inline]
-    fn from(v: BlockHeight) -> Self {
-        v.0 as usize
     }
 }
 

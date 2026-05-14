@@ -64,9 +64,9 @@ impl HeaderValidationExt for BlockHeader {
     }
 
     fn check_version(&self, height: BlockHeight) -> Result<(), ValidationError> {
-        let required: i32 = if height >= BlockHeight(388_381) {
+        let required: i32 = if height >= BlockHeight::new(388_381) {
             4
-        } else if height >= BlockHeight(363_725) {
+        } else if height >= BlockHeight::new(363_725) {
             3
         } else if height >= BIP34_HEIGHT {
             2
@@ -157,8 +157,8 @@ pub(super) fn expected_nbits(
     if allow_min_difficulty && parent.bits == POW_LIMIT_BITS {
         let mut h = parent_height;
         let mut hdr = parent;
-        while h > BlockHeight(0) && h % RETARGET_INTERVAL != 0 && hdr.bits == POW_LIMIT_BITS {
-            h = BlockHeight(h.0 - 1);
+        while h > BlockHeight::ZERO && h % RETARGET_INTERVAL != 0 && hdr.bits == POW_LIMIT_BITS {
+            h = h.saturating_sub(1);
             hdr = view
                 .get_header_at(h)?
                 .ok_or(ValidationError::UnknownParent)?;

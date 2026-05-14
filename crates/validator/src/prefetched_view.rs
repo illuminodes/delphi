@@ -42,18 +42,18 @@ impl HeaderSnapshot {
     ) -> Result<Self, HeaderSnapshotOverflow> {
         let len = u32::try_from(entries.len()).map_err(|_| HeaderSnapshotOverflow)?;
         base_height
-            .0
+            .to_u32()
             .checked_add(len)
             .ok_or(HeaderSnapshotOverflow)?;
         let mut by_hash = PrehashedMap::default();
         for (i, (hash, _)) in entries.iter().enumerate() {
             // i < len, and len fits in u32 per the check above.
-            let h = base_height.0 + u32::try_from(i).expect("i < len which fits u32");
+            let h = base_height.to_u32() + u32::try_from(i).expect("i < len which fits u32");
             by_hash.insert(*hash, h);
         }
         Ok(Self {
             headers: entries,
-            base: base_height.0,
+            base: base_height.to_u32(),
             by_hash,
         })
     }
@@ -67,12 +67,12 @@ impl HeaderSnapshot {
 
     #[must_use]
     pub fn get_header_at(&self, height: BlockHeight) -> Option<BlockHeader> {
-        let idx = usize::try_from(height.0.checked_sub(self.base)?).ok()?;
+        let idx = usize::try_from(height.to_u32().checked_sub(self.base)?).ok()?;
         self.headers.get(idx).map(|(_, hdr)| *hdr)
     }
 
     pub fn height_of(&self, hash: &Hash256) -> Option<BlockHeight> {
-        self.by_hash.get(hash).copied().map(BlockHeight)
+        self.by_hash.get(hash).copied().map(BlockHeight::new)
     }
 
     /// # Panics
@@ -90,7 +90,7 @@ impl HeaderSnapshot {
                     u32::try_from(self.headers.len()).expect("len fits u32 per new()") - 1;
                 TipInfo {
                     hash: *hash,
-                    height: BlockHeight(self.base + last_offset),
+                    height: BlockHeight::new(self.base + last_offset),
                 }
             }
         }

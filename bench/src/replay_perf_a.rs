@@ -27,7 +27,7 @@ fn main() {
         commit(
             &mut storage,
             black_box(&block),
-            BlockHeight(1),
+            BlockHeight::new(1),
             &snap,
             &mut cache,
             1,

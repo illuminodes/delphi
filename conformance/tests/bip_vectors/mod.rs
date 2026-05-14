@@ -115,8 +115,8 @@ fn build_chain_at(
     base_time: u32,
 ) -> MemoryChainView {
     let window = 12u32;
-    let start = tip_height.0.saturating_sub(window - 1);
-    let mut view = MemoryChainView::with_height_base(BlockHeight(start));
+    let start = tip_height.to_u32().saturating_sub(window - 1);
+    let mut view = MemoryChainView::with_height_base(BlockHeight::new(start));
     let mut prev = Hash256::ZERO;
     for i in 0..window {
         let h = BlockHeader {

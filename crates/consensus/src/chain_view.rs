@@ -194,7 +194,7 @@ impl MemoryChainView {
     #[must_use]
     pub fn with_height_base(base_height: BlockHeight) -> Self {
         Self {
-            height_base: base_height.0,
+            height_base: base_height.to_u32(),
             ..Self::default()
         }
     }
@@ -204,7 +204,7 @@ impl MemoryChainView {
     /// # Panics
     /// Panics if the chain grows beyond `u32::MAX` headers (impossible in practice).
     pub fn push_header(&mut self, header: BlockHeader) {
-        let height = BlockHeight(
+        let height = BlockHeight::new(
             self.height_base
                 .checked_add(u32::try_from(self.headers.len()).expect("chain height exceeds u32"))
                 .expect("chain height exceeds u32"),
@@ -234,13 +234,13 @@ impl ChainView for MemoryChainView {
         Ok(self
             .header_index
             .get(hash)
-            .and_then(|h| h.0.checked_sub(self.height_base))
+            .and_then(|h| h.to_u32().checked_sub(self.height_base))
             .and_then(|i| self.headers.get(i as usize))
             .copied())
     }
 
     fn get_header_at(&self, height: BlockHeight) -> Result<Option<BlockHeader>, ChainViewError> {
-        let idx = height.0.checked_sub(self.height_base).map(|i| i as usize);
+        let idx = height.to_u32().checked_sub(self.height_base).map(|i| i as usize);
         Ok(idx.and_then(|i| self.headers.get(i)).copied())
     }
 
@@ -261,7 +261,7 @@ impl ChainView for MemoryChainView {
         };
 
         // Convert absolute height to Vec index.
-        let ph_abs = parent_height.0;
+        let ph_abs = parent_height.to_u32();
         let ph_idx = ph_abs.saturating_sub(self.height_base) as usize;
 
         // Window of up to 11, but capped by how many headers we actually have.
@@ -284,7 +284,7 @@ impl ChainView for MemoryChainView {
             },
             Some(h) => {
                 let idx = u32::try_from(self.headers.len() - 1).expect("chain height exceeds u32");
-                let height = BlockHeight(self.height_base.saturating_add(idx));
+                let height = BlockHeight::new(self.height_base.saturating_add(idx));
                 TipInfo {
                     hash: h.hash(),
                     height,
@@ -333,21 +333,21 @@ mod tests {
         let mut view = MemoryChainView::new();
         push_chain(&mut view, &[1_000, 2_000, 3_000]);
         assert_eq!(
-            view.get_header_at(BlockHeight(0))
+            view.get_header_at(BlockHeight::new(0))
                 .expect("no error")
                 .expect("height 0 exists")
                 .time,
             1_000
         );
         assert_eq!(
-            view.get_header_at(BlockHeight(2))
+            view.get_header_at(BlockHeight::new(2))
                 .expect("no error")
                 .expect("height 2 exists")
                 .time,
             3_000
         );
         assert!(
-            view.get_header_at(BlockHeight(3))
+            view.get_header_at(BlockHeight::new(3))
                 .expect("no error")
                 .is_none()
         );
@@ -379,7 +379,7 @@ mod tests {
         let coin = Coin {
             value: Satoshi::new(5_000_000_000),
             script_pubkey: vec![0xac].into(),
-            height: BlockHeight(100),
+            height: BlockHeight::new(100),
             coinbase: false,
         };
         assert!(view.get_coin(&op).expect("no error").is_none());
@@ -445,7 +445,7 @@ mod tests {
         let coin = Coin {
             value: Satoshi::new(1000),
             script_pubkey: vec![].into(),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             coinbase: false,
         };
         view.insert_coin(op1, coin.clone());

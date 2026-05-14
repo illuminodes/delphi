@@ -307,7 +307,7 @@ fn chain_view_get_header_by_hash(bencher: divan::Bencher) {
 fn chain_view_get_header_at(bencher: divan::Bencher) {
     let view = build_chain(100);
     bencher.bench(|| {
-        view.get_header_at(black_box(BlockHeight(50)))
+        view.get_header_at(black_box(BlockHeight::new(50)))
             .expect("storage error")
     });
 }
@@ -337,7 +337,7 @@ fn chain_view_get_coin_hit(bencher: divan::Bencher) {
         Coin {
             value: Satoshi::new(5_000_000_000),
             script_pubkey: vec![0x51].into(),
-            height: BlockHeight(1),
+            height: BlockHeight::new(1),
             coinbase: false,
         },
     );
@@ -369,7 +369,7 @@ fn chain_view_get_coins_batch(bencher: divan::Bencher, n: usize) {
             Coin {
                 value: Satoshi::new(1000),
                 script_pubkey: vec![].into(),
-                height: BlockHeight(1),
+                height: BlockHeight::new(1),
                 coinbase: false,
             },
         );
