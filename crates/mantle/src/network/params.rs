@@ -1,0 +1,240 @@
+use crate::primitives::{BlockHeader, CompactBits, Hash256};
+
+use super::magic::Magic;
+
+// ── Network ───────────────────────────────────────────────────────────────────
+
+/// One of the well-known Bitcoin networks. CLIs use this to look up the
+/// magic, default port, default seed peers, and genesis hash for a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Network {
+    Mainnet,
+    Testnet3,
+    Testnet4,
+    Signet,
+    Regtest,
+}
+
+impl Network {
+    /// Parse a `--network` flag value. Accepts the short names used by Bitcoin
+    /// Core (`main`/`test`/`testnet4`/`signet`/`regtest`) and the long form
+    /// (`mainnet`/`testnet3`/`testnet4`/`signet`/`regtest`), case-insensitive.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "main" | "mainnet" => Some(Self::Mainnet),
+            "test" | "testnet" | "testnet3" => Some(Self::Testnet3),
+            "testnet4" => Some(Self::Testnet4),
+            "signet" => Some(Self::Signet),
+            "regtest" => Some(Self::Regtest),
+            _ => None,
+        }
+    }
+
+    /// Short canonical name used in user-facing output.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mainnet => "mainnet",
+            Self::Testnet3 => "testnet3",
+            Self::Testnet4 => "testnet4",
+            Self::Signet => "signet",
+            Self::Regtest => "regtest",
+        }
+    }
+
+    /// P2P magic for this network.
+    #[must_use]
+    pub fn magic(self) -> Magic {
+        match self {
+            Self::Mainnet => Magic::Mainnet,
+            Self::Testnet3 => Magic::Testnet3,
+            Self::Testnet4 => Magic::Testnet4,
+            Self::Signet => Magic::Signet,
+            Self::Regtest => Magic::Regtest,
+        }
+    }
+
+    /// Default P2P port for this network. Used when `--peer` does not include a
+    /// port.
+    #[must_use]
+    pub fn default_port(self) -> u16 {
+        match self {
+            Self::Mainnet => 8333,
+            Self::Testnet3 => 18333,
+            Self::Testnet4 => 48333,
+            Self::Signet => 38333,
+            Self::Regtest => 18444,
+        }
+    }
+
+    /// Genesis block hash in *internal* (little-endian) byte order — this is
+    /// the form `Hash256` carries throughout the codebase, and the form a
+    /// `getheaders` locator wants. The display-hex version (what block
+    /// explorers show) is the byte-reverse of this.
+    ///
+    /// # Panics
+    /// Never in practice: parses a fixed compile-time string. The `expect` is
+    /// load-bearing only in the sense of guarding a typo if the constants are
+    /// edited.
+    #[must_use]
+    pub fn genesis_hash(self) -> Hash256 {
+        // Display-hex constants from Bitcoin Core's `chainparams.cpp`. Parsed
+        // via `Hash256::from_display_hex` which handles the byte reversal.
+        let display_hex = match self {
+            Self::Mainnet => "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+            Self::Testnet3 => "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943",
+            Self::Testnet4 => "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043",
+            Self::Signet => "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6",
+            Self::Regtest => "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
+        };
+        Hash256::from_display_hex(display_hex).expect("hardcoded genesis hash must parse")
+    }
+
+    /// Decoded genesis block header. Currently mainnet only — the other
+    /// networks return `None` until their hardcoded bytes are added. Callers
+    /// that need a pre-genesis snapshot slot (so block 1's `prev_block` and
+    /// MTP lookups resolve) use this; callers that only need the hash should
+    /// use [`Self::genesis_hash`].
+    #[must_use]
+    pub fn genesis_header(self) -> Option<BlockHeader> {
+        match self {
+            Self::Mainnet => Some(mainnet_genesis_header()),
+            Self::Testnet4 => Some(testnet4_genesis_header()),
+            Self::Signet => Some(signet_genesis_header()),
+            Self::Testnet3 | Self::Regtest => None,
+        }
+    }
+
+    /// Default seed peers as `host:port` strings. Entries may be either
+    /// literal `IP:PORT` (mainnet's hand-picked list) or DNS `HOST:PORT`
+    /// (testnet4 / signet — callers do the resolution at peer-list build
+    /// time). Networks without a seed list return an empty slice — supply
+    /// peers via `--peer`.
+    #[must_use]
+    pub fn default_seeds(self) -> &'static [&'static str] {
+        match self {
+            Self::Mainnet => MAINNET_SEEDS,
+            Self::Testnet4 => TESTNET4_SEEDS,
+            Self::Signet => SIGNET_SEEDS,
+            Self::Testnet3 | Self::Regtest => &[],
+        }
+    }
+}
+
+/// Seed peers for mainnet bootstrap. Same set used by `mantle-node` and the
+/// bench `fetch-fixtures` tool.
+const MAINNET_SEEDS: &[&str] = &[
+    "5.161.244.95:8333",
+    "172.105.64.213:8333",
+    "61.68.41.135:8333",
+    "43.154.28.63:8333",
+    "62.93.65.111:8333",
+];
+
+/// Seed peers for testnet4 bootstrap. DNS hostnames from Bitcoin Core
+/// `chainparams.cpp::CTestNet4Params`; the replay binary resolves them to
+/// IPv4 addresses at peer-list build time.
+const TESTNET4_SEEDS: &[&str] = &[
+    "seed.testnet4.bitcoin.sprovoost.nl:48333",
+    "seed.testnet4.wiz.biz:48333",
+];
+
+/// Seed peers for the default signet. DNS hostnames from Bitcoin Core
+/// `chainparams.cpp::SigNetParams`.
+const SIGNET_SEEDS: &[&str] = &[
+    "seed.signet.bitcoin.sprovoost.nl:38333",
+    "seed.signet.achownodes.xyz:38333",
+];
+
+/// The actual mainnet genesis block header. Field values from Bitcoin Core
+/// `chainparams.cpp::CMainParams` (genesis is 2009-01-03 18:15:05 UTC,
+/// `0x1d00ffff` difficulty, nonce `2083236893`). Verified by the
+/// `mainnet_genesis_header_hashes_correctly` unit test against the well-known
+/// mainnet genesis hash.
+fn mainnet_genesis_header() -> BlockHeader {
+    BlockHeader {
+        version: 1,
+        prev_block: Hash256::ZERO,
+        merkle_root: Hash256::from_display_hex(
+            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
+        )
+        .expect("hardcoded genesis merkle_root must parse"),
+        time: 1_231_006_505,
+        bits: CompactBits(0x1d00_ffff),
+        nonce: 2_083_236_893,
+    }
+}
+
+/// The testnet4 (BIP94) genesis block header. Field values from Bitcoin Core
+/// `chainparams.cpp::CTestNet4Params`:
+///   - time   = `1714777860` (2024-05-04 00:11:00 UTC)
+///   - bits   = `0x1d00ffff`
+///   - nonce  = `393_743_547`
+///   - merkle = `7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e`
+///
+/// Verified by the `testnet4_genesis_header_hashes_correctly` unit test
+/// against the well-known testnet4 genesis hash.
+fn testnet4_genesis_header() -> BlockHeader {
+    BlockHeader {
+        version: 1,
+        prev_block: Hash256::ZERO,
+        merkle_root: Hash256::from_display_hex(
+            "7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e",
+        )
+        .expect("hardcoded testnet4 genesis merkle_root must parse"),
+        time: 1_714_777_860,
+        bits: CompactBits(0x1d00_ffff),
+        nonce: 393_743_547,
+    }
+}
+
+/// The default signet (BIP325) genesis block header. Field values from
+/// Bitcoin Core `chainparams.cpp::SigNetParams`:
+///   - time   = `1598918400` (2020-09-01 00:00:00 UTC)
+///   - bits   = `0x1e0377ae`
+///   - nonce  = `52_613_770`
+///   - merkle = same as mainnet (`4a5e1e…da33b`)
+fn signet_genesis_header() -> BlockHeader {
+    BlockHeader {
+        version: 1,
+        prev_block: Hash256::ZERO,
+        merkle_root: Hash256::from_display_hex(
+            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
+        )
+        .expect("hardcoded signet genesis merkle_root must parse"),
+        time: 1_598_918_400,
+        bits: CompactBits(0x1e03_77ae),
+        nonce: 52_613_770,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mainnet_genesis_header_hashes_correctly() {
+        // Load-bearing: catches a typo in the literal merkle_root / time /
+        // nonce / bits before it silently corrupts the replay loop's MTP
+        // check at block 1.
+        let hdr = Network::Mainnet.genesis_header().expect("mainnet has one");
+        assert_eq!(hdr.hash(), Network::Mainnet.genesis_hash());
+    }
+
+    #[test]
+    fn testnet4_genesis_header_hashes_correctly() {
+        // Same load-bearing role as the mainnet test: tying the literal
+        // header bytes to the documented testnet4 genesis hash.
+        let hdr = Network::Testnet4
+            .genesis_header()
+            .expect("testnet4 has one");
+        assert_eq!(hdr.hash(), Network::Testnet4.genesis_hash());
+    }
+
+    #[test]
+    fn signet_genesis_header_hashes_correctly() {
+        let hdr = Network::Signet.genesis_header().expect("signet has one");
+        assert_eq!(hdr.hash(), Network::Signet.genesis_hash());
+    }
+}
