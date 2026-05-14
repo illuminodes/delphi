@@ -4,7 +4,6 @@ fuzz/corpus/
 fuzz/artifacts/
 fuzz/*.log
 dhat-heap.json
-crates/consensus/proptest-regressions/
 *.svg
 perf*.data
 perf*.data.old
