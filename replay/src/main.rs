@@ -82,7 +82,8 @@ Usage:
     mantle-replay [OPTIONS]
 
 Options:
-    --data-dir DIR        Storage + block-cache root (default: ./mantle-data)
+    --data-dir DIR        Storage + block-cache root
+                          (default: ./data/<network>)
     --network NAME        mainnet | testnet3 | testnet4 | signet | regtest
                           (default: mainnet). Aliases: main, test, testnet.
     --peer HOST:PORT      Extra P2P peer; may be repeated. Required when the
@@ -105,7 +106,7 @@ Options:
 
 #[allow(clippy::too_many_lines)]
 fn parse_args() -> Result<Args, String> {
-    let mut data_dir = PathBuf::from("./mantle-data");
+    let mut data_dir: Option<PathBuf> = None;
     let mut network = Network::Mainnet;
     let mut extra_peers: Vec<SocketAddrV4> = Vec::new();
     let mut skip_script = false;
@@ -124,7 +125,7 @@ fn parse_args() -> Result<Args, String> {
             "--data-dir" => {
                 i += 1;
                 let v = raw.get(i).ok_or("--data-dir requires a path")?;
-                data_dir = PathBuf::from(v);
+                data_dir = Some(PathBuf::from(v));
             }
             "--network" => {
                 i += 1;
@@ -195,6 +196,8 @@ fn parse_args() -> Result<Args, String> {
         }
         i += 1;
     }
+
+    let data_dir = data_dir.unwrap_or_else(|| PathBuf::from(format!("./data/{}", network.name())));
 
     Ok(Args {
         data_dir,
