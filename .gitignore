@@ -8,5 +8,5 @@ crates/consensus/proptest-regressions/
 *.svg
 perf*.data
 perf*.data.old
-crates/bench/fixtures/
+bench/fixtures/
 mantle-data-*/

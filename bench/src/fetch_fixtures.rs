@@ -1,4 +1,4 @@
-/// Download a range of mainnet blocks and persist them to crates/bench/fixtures/.
+/// Download a range of mainnet blocks and persist them to bench/fixtures/.
 ///
 /// Layout after a successful run:
 ///   fixtures/headers.bin           — N × 80-byte raw headers in height order

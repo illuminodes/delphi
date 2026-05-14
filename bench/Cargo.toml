@@ -100,10 +100,10 @@ name = "replay-dhat-window"
 path = "src/replay_dhat_window.rs"
 
 [dependencies]
-mantle = { path = "../core" }
-mantle-consensus = { path = "../consensus" }
-mantle-storage = { path = "../storage" }
-mantle-validator = { path = "../validator" }
+mantle = { path = "../crates/core" }
+mantle-consensus = { path = "../crates/consensus" }
+mantle-storage = { path = "../crates/storage" }
+mantle-validator = { path = "../crates/validator" }
 dhat = "0.3"
 k256 = { workspace = true, features = ["ecdsa", "arithmetic"] }
 sha2 = { workspace = true }

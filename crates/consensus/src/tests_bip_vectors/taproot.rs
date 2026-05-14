@@ -840,7 +840,7 @@ fn bip341_key_path_two_input_single_anyonecanpay() {
 /// annex hash, putting it in the wrong position in the BIP341 message.
 ///
 /// Wire bytes captured from the ordinals fixture corpus via
-/// `crates/bench/src/find_tx.rs`. Embedded here as a hex string so the test
+/// `bench/src/find_tx.rs`. Embedded here as a hex string so the test
 /// is self-contained and runs without the fixture present.
 #[test]
 fn bip341_real_mainnet_block_767434_single_anyonecanpay() {

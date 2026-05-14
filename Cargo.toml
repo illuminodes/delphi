@@ -4,7 +4,7 @@ members = [
     "crates/core",
     "crates/consensus",
     "crates/node",
-    "crates/bench",
+    "bench",
     "crates/conformance",
     "crates/storage",
     "crates/validator",
