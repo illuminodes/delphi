@@ -1,13 +1,18 @@
 use std::io;
-use std::path::Path;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256};
+use quetzalcoatl::capacity::Capacity;
+use quetzalcoatl::mpsc::RingBuffer as MpscRing;
+use quetzalcoatl::spsc::RingBuffer as SpscRing;
 use ququmatz::IoUring;
 
 use crate::slab::BlockIoSlab;
 use crate::store::{BlockStore, HeaderStore};
 
-enum FileReq {
+pub enum FileReq {
     WriteBlock { height: BlockHeight, data: Vec<u8> },
     WriteBlockAsync { height: BlockHeight, data: Vec<u8> },
     ReadBlock { height: BlockHeight },
@@ -19,7 +24,7 @@ enum FileReq {
     Shutdown,
 }
 
-enum FileResp {
+pub enum FileResp {
     Ok,
     Bool(bool),
     BlockData(Vec<u8>),
@@ -31,37 +36,29 @@ enum FileResp {
 const FILE_RING_CAP: usize = 4096;
 const BLOCK_INDEX_FLUSH_INTERVAL: u64 = 2_000;
 
-pub struct FileIoHandle {
-    tx: quetzalcoatl::mpsc::Producer<FileReq>,
-    rx: quetzalcoatl::spsc::Consumer<FileResp>,
+// ── Generic handle ───────────────────────────────────────────────────────────
+
+pub struct FileIoHandle<
+    RReq = Arc<MpscRing<FileReq>>,
+    RResp = Arc<SpscRing<FileResp>>,
+> where
+    RReq: Deref<Target = MpscRing<FileReq>>,
+    RResp: Deref<Target = SpscRing<FileResp>>,
+{
+    tx: quetzalcoatl::mpsc::Producer<FileReq, RReq>,
+    rx: quetzalcoatl::spsc::Consumer<FileResp, RResp>,
 }
 
-impl FileIoHandle {
-    pub fn spawn(data_dir: &Path) -> io::Result<Self> {
-        let blocks = BlockStore::open(data_dir)?;
-        let headers = HeaderStore::open(data_dir)?;
-        let data_dir = data_dir.to_owned();
-
-        let req_ring = quetzalcoatl::mpsc::RingBuffer::new(
-            quetzalcoatl::capacity::Capacity::exact(FILE_RING_CAP),
-        );
-        let resp_ring = quetzalcoatl::spsc::RingBuffer::new(
-            quetzalcoatl::capacity::Capacity::exact(FILE_RING_CAP),
-        );
-        let (req_tx, req_rx) = req_ring.split();
-        let (resp_tx, resp_rx) = resp_ring.split();
-
-        std::thread::Builder::new()
-            .name("file-io".into())
-            .spawn(move || {
-                file_io_worker(req_rx, resp_tx, blocks, headers, &data_dir);
-            })
-            .map_err(|e| io::Error::other(format!("spawn file-io: {e}")))?;
-
-        Ok(Self {
-            tx: req_tx,
-            rx: resp_rx,
-        })
+impl<RReq, RResp> FileIoHandle<RReq, RResp>
+where
+    RReq: Deref<Target = MpscRing<FileReq>>,
+    RResp: Deref<Target = SpscRing<FileResp>>,
+{
+    pub(crate) fn from_parts(
+        tx: quetzalcoatl::mpsc::Producer<FileReq, RReq>,
+        rx: quetzalcoatl::spsc::Consumer<FileResp, RResp>,
+    ) -> Self {
+        Self { tx, rx }
     }
 
     pub fn write_block(&mut self, height: BlockHeight, data: Vec<u8>) -> io::Result<()> {
@@ -92,12 +89,6 @@ impl FileIoHandle {
         }
     }
 
-    /// Read, decode, and hash-verify a block on the worker thread.
-    ///
-    /// The worker reads into a pre-allocated slab slot, decodes in place,
-    /// verifies the header hash matches `expected_hash`, and returns the
-    /// owned `Block`. No per-read allocation on the worker — the slab
-    /// buffer is reused across calls.
     pub fn read_block_decoded(
         &mut self,
         height: BlockHeight,
@@ -165,96 +156,178 @@ impl FileIoHandle {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
-fn file_io_worker(
-    mut rx: quetzalcoatl::mpsc::Consumer<FileReq>,
-    tx: quetzalcoatl::spsc::Producer<FileResp>,
-    mut blocks: BlockStore,
-    mut headers: HeaderStore,
-    data_dir: &Path,
-) {
-    let mut ring = match IoUring::new(256) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("file-io: failed to create ring: {e:?}");
-            return;
-        }
-    };
+// ── Arc-based spawn (backward compat) ────────────────────────────────────────
 
-    let mut writes_since_flush: u64 = 0;
-    let mut slab = BlockIoSlab::new();
+impl FileIoHandle {
+    pub fn spawn(data_dir: &Path) -> io::Result<Self> {
+        let blocks = BlockStore::open(data_dir)?;
+        let headers = HeaderStore::open(data_dir)?;
+        let data_dir = data_dir.to_owned();
 
-    while let Some(req) = rx.pop_block() {
-        let resp = match req {
-            FileReq::WriteBlock { height, data } => match blocks.write(&mut ring, height, &data) {
-                Ok(()) => {
+        let req_ring = MpscRing::new(Capacity::exact(FILE_RING_CAP));
+        let resp_ring = SpscRing::new(Capacity::exact(FILE_RING_CAP));
+        let (req_tx, req_rx) = req_ring.split();
+        let (resp_tx, resp_rx) = resp_ring.split();
+
+        std::thread::Builder::new()
+            .name("file-io".into())
+            .spawn(move || {
+                FileIoWorker {
+                    req_rx,
+                    resp_tx,
+                    blocks,
+                    headers,
+                    data_dir,
+                    ring: IoUring::new(256).expect("io_uring"),
+                    slab: BlockIoSlab::new(),
+                }
+                .run();
+            })
+            .map_err(|e| io::Error::other(format!("spawn file-io: {e}")))?;
+
+        Ok(Self::from_parts(req_tx, resp_rx))
+    }
+}
+
+// ── Scoped-thread entry point ────────────────────────────────────────────────
+
+pub fn with_file_io<F, R>(data_dir: &Path, f: F) -> io::Result<R>
+where
+    F: FnOnce(&mut FileIoHandle<&MpscRing<FileReq>, &SpscRing<FileResp>>) -> R,
+{
+    let blocks = BlockStore::open(data_dir)?;
+    let headers = HeaderStore::open(data_dir)?;
+    let data_dir_owned = data_dir.to_owned();
+
+    let req_ring: MpscRing<FileReq> = MpscRing::new(Capacity::exact(FILE_RING_CAP));
+    let resp_ring: SpscRing<FileResp> = SpscRing::new(Capacity::exact(FILE_RING_CAP));
+
+    let result = std::thread::scope(|s| {
+        let (req_tx, req_rx) = req_ring.split_borrowed();
+        let (resp_tx, resp_rx) = resp_ring.split_borrowed();
+
+        s.spawn(|| {
+            FileIoWorker {
+                req_rx,
+                resp_tx,
+                blocks,
+                headers,
+                data_dir: data_dir_owned,
+                ring: IoUring::new(256).expect("io_uring"),
+                slab: BlockIoSlab::new(),
+            }
+            .run();
+        });
+
+        let mut handle = FileIoHandle::from_parts(req_tx, resp_rx);
+        f(&mut handle)
+    });
+
+    Ok(result)
+}
+
+// ── Worker ───────────────────────────────────────────────────────────────────
+
+struct FileIoWorker<
+    RReq: Deref<Target = MpscRing<FileReq>>,
+    RResp: Deref<Target = SpscRing<FileResp>>,
+> {
+    req_rx: quetzalcoatl::mpsc::Consumer<FileReq, RReq>,
+    resp_tx: quetzalcoatl::spsc::Producer<FileResp, RResp>,
+    blocks: BlockStore,
+    headers: HeaderStore,
+    data_dir: PathBuf,
+    ring: IoUring,
+    slab: BlockIoSlab,
+}
+
+impl<RReq, RResp> FileIoWorker<RReq, RResp>
+where
+    RReq: Deref<Target = MpscRing<FileReq>>,
+    RResp: Deref<Target = SpscRing<FileResp>>,
+{
+    fn run(mut self) {
+        let mut writes_since_flush: u64 = 0;
+
+        while let Some(req) = self.req_rx.pop_block() {
+            let resp = match req {
+                FileReq::WriteBlock { height, data } => {
+                    match self.blocks.write(&mut self.ring, height, &data) {
+                        Ok(()) => {
+                            writes_since_flush += 1;
+                            if writes_since_flush >= BLOCK_INDEX_FLUSH_INTERVAL {
+                                let _ = self.blocks.flush_index(&self.data_dir);
+                                writes_since_flush = 0;
+                            }
+                            FileResp::Ok
+                        }
+                        Err(e) => FileResp::Err(e),
+                    }
+                }
+                FileReq::WriteBlockAsync { height, data } => {
+                    let _ = self.blocks.write(&mut self.ring, height, &data);
                     writes_since_flush += 1;
                     if writes_since_flush >= BLOCK_INDEX_FLUSH_INTERVAL {
-                        let _ = blocks.flush_index(data_dir);
+                        let _ = self.blocks.flush_index(&self.data_dir);
                         writes_since_flush = 0;
                     }
-                    FileResp::Ok
+                    continue;
                 }
-                Err(e) => FileResp::Err(e),
-            },
-            FileReq::WriteBlockAsync { height, data } => {
-                let _ = blocks.write(&mut ring, height, &data);
-                writes_since_flush += 1;
-                if writes_since_flush >= BLOCK_INDEX_FLUSH_INTERVAL {
-                    let _ = blocks.flush_index(data_dir);
-                    writes_since_flush = 0;
-                }
-                continue;
-            }
-            FileReq::ReadBlock { height } => {
-                match blocks.block_location(height) {
+                FileReq::ReadBlock { height } => match self.blocks.block_location(height) {
                     Ok((offset, length)) => {
-                        match slab.read_raw(blocks.file_store(), &mut ring, offset, length) {
+                        match self
+                            .slab
+                            .read_raw(self.blocks.file_store(), &mut self.ring, offset, length)
+                        {
                             Ok(data) => FileResp::BlockData(data),
                             Err(e) => FileResp::Err(e),
                         }
                     }
                     Err(e) => FileResp::Err(e),
+                },
+                FileReq::ReadBlockDecoded {
+                    height,
+                    expected_hash,
+                } => match self.blocks.block_location(height) {
+                    Ok((offset, length)) => {
+                        match self.slab.read_decode_verify(
+                            self.blocks.file_store(),
+                            &mut self.ring,
+                            offset,
+                            length,
+                            expected_hash,
+                        ) {
+                            Ok(block) => FileResp::DecodedBlock(block),
+                            Err(e) => FileResp::Err(e),
+                        }
+                    }
+                    Err(e) => FileResp::Err(e),
+                },
+                FileReq::HasBlock { height } => {
+                    FileResp::Bool(self.blocks.has_block(height))
                 }
-            }
-            FileReq::ReadBlockDecoded {
-                height,
-                expected_hash,
-            } => match blocks.block_location(height) {
-                Ok((offset, length)) => {
-                    match slab.read_decode_verify(
-                        blocks.file_store(),
-                        &mut ring,
-                        offset,
-                        length,
-                        expected_hash,
-                    ) {
-                        Ok(block) => FileResp::DecodedBlock(block),
+                FileReq::WriteHeaders { start, data } => {
+                    match self.headers.write_raw(&mut self.ring, start, &data) {
+                        Ok(()) => FileResp::Ok,
                         Err(e) => FileResp::Err(e),
                     }
                 }
-                Err(e) => FileResp::Err(e),
-            },
-            FileReq::HasBlock { height } => FileResp::Bool(blocks.has_block(height)),
-            FileReq::WriteHeaders { start, data } => {
-                match headers.write_raw(&mut ring, start, &data) {
+                FileReq::LoadCachedHeaders { start } => {
+                    match self.headers.load_cached(&mut self.ring, start) {
+                        Ok(h) => FileResp::Headers(h),
+                        Err(e) => FileResp::Err(e),
+                    }
+                }
+                FileReq::FlushBlockIndex => match self.blocks.flush_index(&self.data_dir) {
                     Ok(()) => FileResp::Ok,
                     Err(e) => FileResp::Err(e),
+                },
+                FileReq::Shutdown => {
+                    let _ = self.resp_tx.push(FileResp::Ok);
+                    return;
                 }
-            }
-            FileReq::LoadCachedHeaders { start } => match headers.load_cached(&mut ring, start) {
-                Ok(h) => FileResp::Headers(h),
-                Err(e) => FileResp::Err(e),
-            },
-            FileReq::FlushBlockIndex => match blocks.flush_index(data_dir) {
-                Ok(()) => FileResp::Ok,
-                Err(e) => FileResp::Err(e),
-            },
-            FileReq::Shutdown => {
-                let _ = tx.push(FileResp::Ok);
-                return;
-            }
-        };
-        let _ = tx.push(resp);
+            };
+            let _ = self.resp_tx.push(resp);
+        }
     }
 }

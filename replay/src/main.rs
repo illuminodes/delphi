@@ -27,10 +27,9 @@ use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mantle::codec::Decode;
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
 use mantle::network::Network;
-use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256};
+use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_consensus::validation::{validate_block_context, validate_block_structure};
 use mantle_storage::StorageHandle;
@@ -447,28 +446,20 @@ fn run(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-fn replay_one_block(
+fn replay_one_block<RReq, RResp>(
     height: BlockHeight,
     header: BlockHeader,
-    fetcher: &mut Fetcher,
+    fetcher: &mut Fetcher<RReq, RResp>,
     snapshot: &HeaderSnapshot,
     ctx: &mut ReplayCtx,
-) -> Result<(), String> {
-    let bytes = fetcher
-        .read_block_bytes(height)
-        .map_err(|e| format!("read block {} bytes: {e}", height.to_u32()))?;
-
-    let block = Block::decode(&mut std::io::Cursor::new(&bytes))
-        .map_err(|e| format!("decode block {}: {e}", height.to_u32()))?;
-
-    if block.header.hash() != header.hash() {
-        return Err(format!(
-            "block {} hash mismatch: header says {}, payload says {}",
-            height.to_u32(),
-            header.hash().to_display_hex(),
-            block.header.hash().to_display_hex()
-        ));
-    }
+) -> Result<(), String>
+where
+    RReq: std::ops::Deref<Target = quetzalcoatl::mpsc::RingBuffer<mantle_block_io::FileReq>>,
+    RResp: std::ops::Deref<Target = quetzalcoatl::spsc::RingBuffer<mantle_block_io::FileResp>>,
+{
+    let block = fetcher
+        .read_block_decoded(height, header.hash())
+        .map_err(|e| format!("read block {}: {e}", height.to_u32()))?;
 
     validate_block_structure(&block)
         .map_err(|e| format!("structure check at {}: {e:?}", height.to_u32()))?;

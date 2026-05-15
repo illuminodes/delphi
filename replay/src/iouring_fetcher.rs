@@ -15,7 +15,11 @@ use mantle::network::{
     Command, GetHeadersMsg, HeadersMsg, InvEntry, InvMsg, InvType, MessageHeader, Network,
 };
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
-use mantle_block_io::FileIoHandle;
+use std::ops::Deref;
+
+use mantle_block_io::{FileIoHandle, FileReq, FileResp};
+use quetzalcoatl::mpsc::RingBuffer as MpscRing;
+use quetzalcoatl::spsc::RingBuffer as SpscRing;
 use mantle_transport::{
     CqeData, IoUringExt, Op, Peer, PeerPool, PeerState, SendArena, consume_handshake_frames,
     encode_version, make_ring,
@@ -153,7 +157,10 @@ impl EwmaLatency {
 
 // ── Fetcher ────────────────────────────────────────────────────────────────
 
-pub struct Fetcher {
+pub struct Fetcher<
+    RReq: Deref<Target = MpscRing<FileReq>> = std::sync::Arc<MpscRing<FileReq>>,
+    RResp: Deref<Target = SpscRing<FileResp>> = std::sync::Arc<SpscRing<FileResp>>,
+> {
     network: Network,
     addr_pool: Vec<SocketAddrV4>,
     next_addr_idx: usize,
@@ -162,7 +169,7 @@ pub struct Fetcher {
     pbr: ququmatz::ProvidedBufferRing,
     send_arena: SendArena,
     peers: FPool,
-    file_io: FileIoHandle,
+    file_io: FileIoHandle<RReq, RResp>,
 }
 
 impl Fetcher {
@@ -171,13 +178,25 @@ impl Fetcher {
         peer_addrs: Vec<SocketAddrV4>,
         data_dir: &std::path::Path,
     ) -> io::Result<Self> {
-        std::fs::create_dir_all(data_dir)?;
+        let file_io = FileIoHandle::spawn(data_dir)?;
+        Self::with_handle(network, peer_addrs, file_io)
+    }
+}
+
+impl<RReq, RResp> Fetcher<RReq, RResp>
+where
+    RReq: Deref<Target = MpscRing<FileReq>>,
+    RResp: Deref<Target = SpscRing<FileResp>>,
+{
+    pub fn with_handle(
+        network: Network,
+        peer_addrs: Vec<SocketAddrV4>,
+        file_io: FileIoHandle<RReq, RResp>,
+    ) -> io::Result<Self> {
         let mut ring = make_ring()?;
         let pbr = ring
             .register_provided_buffers(PROVIDED_BUF_GROUP_ID, PROVIDED_BUF_COUNT, PROVIDED_BUF_SIZE)
             .map_err(|e| io::Error::other(format!("register_provided_buffers: {e:?}")))?;
-
-        let file_io = FileIoHandle::spawn(data_dir)?;
 
         Ok(Self {
             network,
@@ -259,6 +278,14 @@ impl Fetcher {
 
     pub fn read_block_bytes(&mut self, height: BlockHeight) -> io::Result<Vec<u8>> {
         self.file_io.read_block(height)
+    }
+
+    pub fn read_block_decoded(
+        &mut self,
+        height: BlockHeight,
+        expected_hash: Hash256,
+    ) -> io::Result<mantle::primitives::Block> {
+        self.file_io.read_block_decoded(height, expected_hash)
     }
 
     pub fn sync_headers(
@@ -996,7 +1023,7 @@ fn handle_connect_or_recv(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn consume_block_frames(
+fn consume_block_frames<RReq, RResp>(
     ring: &mut IoUring,
     send_arena: &mut SendArena,
     network: Network,
@@ -1005,8 +1032,12 @@ fn consume_block_frames(
     pending: &mut PrehashedMap<Hash256, BlockHeight>,
     saved: &mut usize,
     arrived: &mut Vec<Hash256>,
-    file_io: &mut FileIoHandle,
-) -> Result<(), FetchError> {
+    file_io: &mut FileIoHandle<RReq, RResp>,
+) -> Result<(), FetchError>
+where
+    RReq: Deref<Target = MpscRing<FileReq>>,
+    RResp: Deref<Target = SpscRing<FileResp>>,
+{
     while peer.recv_buf.len() >= MessageHeader::ENCODED_LEN {
         let Ok(header) = MessageHeader::decode(&mut std::io::Cursor::new(
             &peer.recv_buf[..MessageHeader::ENCODED_LEN],

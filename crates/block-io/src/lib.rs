@@ -8,5 +8,5 @@ mod handle;
 mod slab;
 mod store;
 
-pub use handle::FileIoHandle;
+pub use handle::{FileIoHandle, FileReq, FileResp, with_file_io};
 pub use store::{BlockStore, FileStore, HeaderStore};
