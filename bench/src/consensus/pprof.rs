@@ -38,31 +38,27 @@ fn print_top(report: &pprof::Report, name: &str, iters: u64, duration_secs: u64)
         return;
     }
 
-    let mut entries: Vec<_> = report
-        .data
-        .iter()
-        .map(|(frames, &count)| {
-            let name = frames
-                .frames
-                .last()
-                .and_then(|syms| syms.last())
-                .map_or_else(|| "<unknown>".to_string(), pprof::Symbol::name);
-            (name, count)
-        })
-        .collect();
-
-    let mut merged: std::collections::HashMap<String, isize> = std::collections::HashMap::new();
-    for (name, count) in &entries {
-        *merged.entry(name.clone()).or_default() += count;
+    let mut flat: std::collections::HashMap<String, isize> = std::collections::HashMap::new();
+    for (frames, &count) in &report.data {
+        let mut seen = std::collections::HashSet::new();
+        for sym_list in &frames.frames {
+            for sym in sym_list {
+                let fname = sym.name();
+                if seen.insert(fname.clone()) {
+                    *flat.entry(fname).or_default() += count;
+                }
+            }
+        }
     }
-    entries = merged.into_iter().collect();
+
+    let mut entries: Vec<_> = flat.into_iter().collect();
     entries.sort_by_key(|e| std::cmp::Reverse(e.1));
 
-    println!("  {:<60} {:>8} {:>7}", "FUNCTION", "SAMPLES", "%");
-    for (name, count) in entries.iter().take(20) {
+    println!("  {:<70} {:>8} {:>7}", "FUNCTION", "SAMPLES", "%");
+    for (fname, count) in entries.iter().take(25) {
         #[allow(clippy::cast_precision_loss)]
         let pct = *count as f64 / total_samples as f64 * 100.0;
-        println!("  {name:<60} {count:>8} {pct:>6.1}%");
+        println!("  {fname:<70} {count:>8} {pct:>6.1}%");
     }
     println!();
 }
