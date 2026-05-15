@@ -41,31 +41,68 @@ impl InvType {
     }
 }
 
-/// A single inventory entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A single inventory entry: `type(4 LE) || hash(32)`.
+///
+/// `#[repr(C)]` guarantees the field layout matches the wire format exactly —
+/// no padding, no reordering. `size_of::<InvEntry>() == 36`.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct InvEntry {
-    pub kind: InvType,
-    pub hash: Hash256,
+    kind_raw: u32,
+    hash: Hash256,
 }
 
 impl InvEntry {
     pub const ENCODED_LEN: usize = 36; // 4 (type) + 32 (hash)
 
+    #[inline]
+    #[must_use]
+    pub fn new(kind: InvType, hash: Hash256) -> Self {
+        Self {
+            kind_raw: kind.to_u32(),
+            hash,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn kind(&self) -> InvType {
+        InvType::from_u32(self.kind_raw)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn hash(&self) -> Hash256 {
+        self.hash
+    }
+
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::ENCODED_LEN] {
         let mut buf = [0u8; Self::ENCODED_LEN];
-        buf[0..4].copy_from_slice(&self.kind.to_u32().to_le_bytes());
+        buf[0..4].copy_from_slice(&self.kind_raw.to_le_bytes());
         buf[4..36].copy_from_slice(self.hash.as_bytes());
         buf
     }
 
     #[must_use]
     pub fn from_bytes(b: &[u8; Self::ENCODED_LEN]) -> Self {
-        let [k0, k1, k2, k3, ref hash @ ..] = *b;
+        let kind_raw = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&b[4..36]);
         Self {
-            kind: InvType::from_u32(u32::from_le_bytes([k0, k1, k2, k3])),
-            hash: Hash256::from_bytes(*hash),
+            kind_raw,
+            hash: Hash256::from_bytes(hash),
         }
+    }
+}
+
+#[allow(clippy::missing_fields_in_debug)]
+impl std::fmt::Debug for InvEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvEntry")
+            .field("kind", &self.kind())
+            .field("hash", &self.hash)
+            .finish()
     }
 }
 
@@ -282,14 +319,8 @@ mod tests {
     #[test]
     fn inv_msg_roundtrip() {
         let inv = InvMsg(vec![
-            InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::ZERO,
-            },
-            InvEntry {
-                kind: InvType::Tx,
-                hash: Hash256::ZERO,
-            },
+            InvEntry::new(InvType::Block, Hash256::ZERO),
+            InvEntry::new(InvType::Tx, Hash256::ZERO),
         ]);
         let bytes = encode(&inv);
         assert_eq!(decode::<InvMsg>(&bytes), inv);
@@ -305,27 +336,18 @@ mod tests {
 
     #[test]
     fn inv_msg_unknown_inv_type() {
-        let entry = InvEntry {
-            kind: InvType::Unknown(0xdead_beef),
-            hash: Hash256::ZERO,
-        };
+        let entry = InvEntry::new(InvType::Unknown(0xdead_beef), Hash256::ZERO);
         let msg = InvMsg(vec![entry]);
         let bytes = encode(&msg);
         let decoded = decode::<InvMsg>(&bytes);
-        assert_eq!(decoded.0[0].kind, InvType::Unknown(0xdead_beef));
+        assert_eq!(decoded.0[0].kind(), InvType::Unknown(0xdead_beef));
     }
 
     #[test]
     fn inv_msg_truncated_entries() {
         let mut bytes = encode(&InvMsg(vec![
-            InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::ZERO,
-            },
-            InvEntry {
-                kind: InvType::Tx,
-                hash: Hash256::ZERO,
-            },
+            InvEntry::new(InvType::Block, Hash256::ZERO),
+            InvEntry::new(InvType::Tx, Hash256::ZERO),
         ]));
         // Truncate to cut off the second entry.
         bytes.truncate(1 + 36); // VarInt(2) + one full entry
@@ -336,14 +358,8 @@ mod tests {
     #[test]
     fn inv_iter_matches_owned() {
         let inv = InvMsg(vec![
-            InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::ZERO,
-            },
-            InvEntry {
-                kind: InvType::Tx,
-                hash: Hash256::ZERO,
-            },
+            InvEntry::new(InvType::Block, Hash256::ZERO),
+            InvEntry::new(InvType::Tx, Hash256::ZERO),
         ]);
         let bytes = encode(&inv);
         let iter_entries: Vec<InvEntry> = InvMsg::iter_entries::<50_000>(&bytes)
@@ -365,18 +381,9 @@ mod tests {
     #[test]
     fn inv_iter_exact_size() {
         let inv = InvMsg(vec![
-            InvEntry {
-                kind: InvType::Tx,
-                hash: Hash256::ZERO,
-            },
-            InvEntry {
-                kind: InvType::Tx,
-                hash: Hash256::ZERO,
-            },
-            InvEntry {
-                kind: InvType::Tx,
-                hash: Hash256::ZERO,
-            },
+            InvEntry::new(InvType::Tx, Hash256::ZERO),
+            InvEntry::new(InvType::Tx, Hash256::ZERO),
+            InvEntry::new(InvType::Tx, Hash256::ZERO),
         ]);
         let bytes = encode(&inv);
         let iter = InvMsg::iter_entries::<50_000>(&bytes)
@@ -387,14 +394,8 @@ mod tests {
     #[test]
     fn inv_iter_limit_exceeded() {
         let inv = InvMsg(vec![
-            InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::ZERO,
-            },
-            InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::ZERO,
-            },
+            InvEntry::new(InvType::Block, Hash256::ZERO),
+            InvEntry::new(InvType::Block, Hash256::ZERO),
         ]);
         let bytes = encode(&inv);
         let err = InvMsg::iter_entries::<1>(&bytes).unwrap_err();
@@ -407,14 +408,8 @@ mod tests {
     #[test]
     fn inv_iter_truncated_entry() {
         let inv = InvMsg(vec![
-            InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::ZERO,
-            },
-            InvEntry {
-                kind: InvType::Tx,
-                hash: Hash256::ZERO,
-            },
+            InvEntry::new(InvType::Block, Hash256::ZERO),
+            InvEntry::new(InvType::Tx, Hash256::ZERO),
         ]);
         let mut bytes = encode(&inv);
         bytes.truncate(1 + 36 + 10); // VarInt + full entry + partial second entry
@@ -433,14 +428,8 @@ mod tests {
     #[test]
     fn inv_decode_into_reuses_capacity() {
         let inv = InvMsg(vec![
-            InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::ZERO,
-            },
-            InvEntry {
-                kind: InvType::Tx,
-                hash: Hash256::ZERO,
-            },
+            InvEntry::new(InvType::Block, Hash256::ZERO),
+            InvEntry::new(InvType::Tx, Hash256::ZERO),
         ]);
         let bytes = encode(&inv);
         let mut buf: Vec<InvEntry> = Vec::new();
@@ -459,14 +448,8 @@ mod tests {
     #[test]
     fn inv_decode_into_limit_exceeded() {
         let inv = InvMsg(vec![
-            InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::ZERO,
-            },
-            InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::ZERO,
-            },
+            InvEntry::new(InvType::Block, Hash256::ZERO),
+            InvEntry::new(InvType::Block, Hash256::ZERO),
         ]);
         let bytes = encode(&inv);
         let mut buf = Vec::new();
@@ -476,5 +459,13 @@ mod tests {
             err,
             CodecError::Io(_) | CodecError::LengthOverflow(_)
         ));
+    }
+
+    #[test]
+    fn inv_entry_size_eq_encoded_len() {
+        assert_eq!(
+            std::mem::size_of::<InvEntry>(),
+            InvEntry::ENCODED_LEN,
+        );
     }
 }

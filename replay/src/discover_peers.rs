@@ -422,14 +422,9 @@ fn handle_app_frame(command: CommandName, payload: &[u8], harvest: &mut BTreeSet
         Some(Command::Addr) => {
             if let Ok(msg) = AddrMsg::decode_limited(&mut Cursor::new(payload)) {
                 for entry in msg.0 {
-                    if entry.ip[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff] {
-                        let v4 = std::net::Ipv4Addr::new(
-                            entry.ip[12],
-                            entry.ip[13],
-                            entry.ip[14],
-                            entry.ip[15],
-                        );
-                        harvest.insert(SocketAddrV4::new(v4, entry.port));
+                    if let Some(octets) = entry.ip_v4() {
+                        let v4 = std::net::Ipv4Addr::from(octets);
+                        harvest.insert(SocketAddrV4::new(v4, entry.port()));
                     }
                 }
             }

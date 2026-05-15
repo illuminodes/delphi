@@ -1020,17 +1020,18 @@ fn consume_block_frames(
         )) else {
             break;
         };
-        let total = MessageHeader::ENCODED_LEN + header.length as usize;
+        let total = MessageHeader::ENCODED_LEN + header.length() as usize;
         if peer.recv_buf.len() < total {
             break;
         }
         let payload_slice = &peer.recv_buf[MessageHeader::ENCODED_LEN..total];
-        if Hash256::checksum(payload_slice) != header.checksum {
+        if Hash256::checksum(payload_slice) != header.checksum() {
             peer.state = PeerState::Dead;
             close_peer(ring, send_arena, peer);
             return Ok(());
         }
-        let cmd = header.command.as_str();
+        let command = header.command();
+        let cmd = command.as_str();
         match (peer.state, cmd) {
             (PeerState::HandshakeSendVersion | PeerState::HandshakeRecving, "version") => {
                 let seq = push_send(
@@ -1097,10 +1098,7 @@ fn consume_block_frames(
 fn encode_getdata(hashes: &[Hash256]) -> Vec<u8> {
     let entries: Vec<InvEntry> = hashes
         .iter()
-        .map(|&hash| InvEntry {
-            kind: InvType::WitnessBlock,
-            hash,
-        })
+        .map(|&hash| InvEntry::new(InvType::WitnessBlock, hash))
         .collect();
     let mut buf = Vec::new();
     InvMsg(entries)

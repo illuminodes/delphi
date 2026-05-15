@@ -100,4 +100,12 @@ mod tests {
         let e = decode_err::<OutPoint>(&[0u8; 16]);
         assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
+
+    #[test]
+    fn outpoint_size_eq_encoded_len() {
+        assert_eq!(
+            std::mem::size_of::<OutPoint>(),
+            OutPoint::ENCODED_LEN,
+        );
+    }
 }

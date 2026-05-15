@@ -6,33 +6,83 @@ use crate::codec::{Decode, Error as CodecError, VarInt};
 
 /// One legacy `addr` entry: `time(4) || services(8) || ip(16) || port(2 BE)`.
 ///
-/// Used in the unsolicited and `getaddr`-response `addr` payload. Each entry
-/// is 30 bytes total. `time` is the peer's last-seen Unix timestamp.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `#[repr(C)]` guarantees the field layout matches the wire format exactly —
+/// no padding, no reordering. `size_of::<AddrEntry>() == 30`.
+///
+/// `services` is stored as `[u8; 8]` (LE) rather than `u64` to avoid 8-byte
+/// alignment that would insert padding after `time`.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct AddrEntry {
-    pub time: u32,
-    pub services: u64,
+    time_le: [u8; 4],
+    services_le: [u8; 8],
     /// IPv6 address (IPv4 mapped as `::ffff:0:0/96`).
-    pub ip: [u8; 16],
-    pub port: u16,
+    ip: [u8; 16],
+    port_be: [u8; 2],
 }
 
 impl AddrEntry {
     pub const ENCODED_LEN: usize = 4 + 8 + 16 + 2;
+
+    #[inline]
+    #[must_use]
+    pub fn time(&self) -> u32 {
+        u32::from_le_bytes(self.time_le)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn services(&self) -> u64 {
+        u64::from_le_bytes(self.services_le)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn ip(&self) -> [u8; 16] {
+        self.ip
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn ip_v4(&self) -> Option<[u8; 4]> {
+        if self.ip[..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff] {
+            Some([self.ip[12], self.ip[13], self.ip[14], self.ip[15]])
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        u16::from_be_bytes(self.port_be)
+    }
+}
+
+#[allow(clippy::missing_fields_in_debug)]
+impl std::fmt::Debug for AddrEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AddrEntry")
+            .field("time", &self.time())
+            .field("services", &self.services())
+            .field("ip", &self.ip)
+            .field("port", &self.port())
+            .finish()
+    }
 }
 
 impl Decode for AddrEntry {
     fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
-        let time = u32::decode(r)?;
-        let services = u64::decode(r)?;
+        let time_le = <[u8; 4]>::decode(r)?;
+        let services_le = <[u8; 8]>::decode(r)?;
         let ip = <[u8; 16]>::decode(r)?;
-        let mut port_bytes = [0u8; 2];
-        r.read_exact(&mut port_bytes).map_err(CodecError::Io)?;
+        let mut port_be = [0u8; 2];
+        r.read_exact(&mut port_be).map_err(CodecError::Io)?;
         Ok(Self {
-            time,
-            services,
+            time_le,
+            services_le,
             ip,
-            port: u16::from_be_bytes(port_bytes),
+            port_be,
         })
     }
 }
@@ -290,9 +340,9 @@ mod tests {
 
         let msg = decode::<AddrMsg>(&bytes);
         assert_eq!(msg.0.len(), 2);
-        assert_eq!(msg.0[0].port, 18_333);
-        assert_eq!(msg.0[0].ip[12..], [1, 2, 3, 4]);
-        assert_eq!(msg.0[1].port, 8333);
+        assert_eq!(msg.0[0].port(), 18_333);
+        assert_eq!(msg.0[0].ip()[12..], [1, 2, 3, 4]);
+        assert_eq!(msg.0[1].port(), 8333);
     }
 
     #[test]
@@ -364,5 +414,13 @@ mod tests {
         bytes.extend_from_slice(&48_333u16.to_be_bytes());
         let mut cur = std::io::Cursor::new(&bytes);
         assert!(AddrV2Msg::decode_limited(&mut cur).is_err());
+    }
+
+    #[test]
+    fn addr_entry_size_eq_encoded_len() {
+        assert_eq!(
+            std::mem::size_of::<AddrEntry>(),
+            AddrEntry::ENCODED_LEN,
+        );
     }
 }

@@ -45,12 +45,12 @@ fn make_version_msg() -> VersionMsg {
 #[divan::bench]
 fn message_header_decode(bencher: divan::Bencher) {
     let payload = b"nonce_8_bytes___";
-    let bytes = encode_bytes(&MessageHeader {
-        magic: Magic::Mainnet,
-        command: CommandName::new("ping"),
-        length: u32::try_from(payload.len()).expect("payload fits u32"),
-        checksum: Hash256::checksum(payload),
-    });
+    let bytes = encode_bytes(&MessageHeader::new(
+        Magic::Mainnet,
+        CommandName::new("ping"),
+        u32::try_from(payload.len()).expect("payload fits u32"),
+        Hash256::checksum(payload),
+    ));
     bencher.bench(|| {
         MessageHeader::decode(&mut Cursor::new(bytes.as_slice()))
             .expect("MessageHeader decode cannot fail on valid bytes")
@@ -105,10 +105,7 @@ fn ping_decode(bencher: divan::Bencher) {
 fn inv_msg_encode(bencher: divan::Bencher, n: usize) {
     let msg = InvMsg(
         (0..n)
-            .map(|i| InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
-            })
+            .map(|i| InvEntry::new(InvType::Block, Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32])))
             .collect(),
     );
     bencher.bench(|| encode_bytes(&msg));
@@ -118,10 +115,7 @@ fn inv_msg_encode(bencher: divan::Bencher, n: usize) {
 fn inv_msg_decode(bencher: divan::Bencher, n: usize) {
     let msg = InvMsg(
         (0..n)
-            .map(|i| InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
-            })
+            .map(|i| InvEntry::new(InvType::Block, Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32])))
             .collect(),
     );
     let bytes = encode_bytes(&msg);
@@ -135,10 +129,7 @@ fn inv_msg_decode(bencher: divan::Bencher, n: usize) {
 fn inv_msg_iter(bencher: divan::Bencher, n: usize) {
     let msg = InvMsg(
         (0..n)
-            .map(|i| InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
-            })
+            .map(|i| InvEntry::new(InvType::Block, Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32])))
             .collect(),
     );
     let bytes = encode_bytes(&msg);
@@ -158,10 +149,7 @@ fn inv_msg_iter(bencher: divan::Bencher, n: usize) {
 fn inv_msg_decode_into(bencher: divan::Bencher, n: usize) {
     let msg = InvMsg(
         (0..n)
-            .map(|i| InvEntry {
-                kind: InvType::Block,
-                hash: Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
-            })
+            .map(|i| InvEntry::new(InvType::Block, Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32])))
             .collect(),
     );
     let bytes = encode_bytes(&msg);
