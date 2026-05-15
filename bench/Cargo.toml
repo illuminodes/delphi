@@ -40,10 +40,6 @@ name = "validator"
 harness = false
 
 [[bench]]
-name = "replay"
-harness = false
-
-[[bench]]
 name = "replay_parity"
 harness = false
 
