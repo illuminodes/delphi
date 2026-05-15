@@ -6,7 +6,7 @@
 //! past the end of the slice.
 
 use crate::script::error::ScriptError;
-use crate::script::opcodes::Opcode;
+use crate::script::opcodes::{Opcode, OpcodeFlags};
 
 /// One decoded step of a script: the opcode plus, for push opcodes, the
 /// raw data bytes that follow.
@@ -14,6 +14,8 @@ use crate::script::opcodes::Opcode;
 pub struct Step<'a> {
     /// The decoded opcode.
     pub opcode: Opcode,
+    /// Precomputed property flags resolved from the raw wire byte.
+    pub flags: OpcodeFlags,
     /// For push opcodes, the bytes pushed. Empty for non-push opcodes and
     /// for `OP_0`/`OP_1NEGATE`/`OP_N` (those produce constants without
     /// reading from the script body).
@@ -86,7 +88,7 @@ impl<'a> ScriptReader<'a> {
             _ => &[],
         };
 
-        Ok(Some(Step { opcode, data }))
+        Ok(Some(Step { opcode, flags: Opcode::flags_for_byte(op_byte), data }))
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8], ScriptError> {

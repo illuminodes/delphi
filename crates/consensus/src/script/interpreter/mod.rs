@@ -196,33 +196,27 @@ impl<'a, C: SignatureChecker> Interpreter<'a, C> {
         // - OP_SUCCESSx (BIP342): if any such opcode appears *anywhere* in a
         //   tapscript (even in an unexecuted branch), the whole script
         //   succeeds immediately.
-        match step.opcode {
-            Opcode::VerIf | Opcode::VerNotIf => {
-                return Err(ScriptError::BadOpcodeReserved);
-            }
-            op if op.is_disabled() && self.sig_version.is_base() => {
-                return Err(ScriptError::DisabledOpcode);
-            }
-            op if op.is_tapscript_success() && self.sig_version == SigVersion::Tapscript => {
-                // OP_SUCCESSx: entire script succeeds immediately.
+        if step.flags.is_verif_class() {
+            return Err(ScriptError::BadOpcodeReserved);
+        }
+
+        if self.sig_version == SigVersion::Tapscript {
+            if step.opcode.is_tapscript_success() {
                 return Ok(());
             }
-            _ => {}
+        } else {
+            if step.opcode.is_disabled() {
+                return Err(ScriptError::DisabledOpcode);
+            }
+            if step.flags.counts_toward_op_limit() {
+                self.op_count += 1;
+                if self.op_count > MAX_OPS_PER_SCRIPT {
+                    return Err(ScriptError::OpCount);
+                }
+            }
         }
 
         let executing = self.conditions.executing();
-
-        // Op count: not enforced in tapscript (BIP342 replaces per-script
-        // op limit with a per-input weight-based sigop budget).
-        if self.sig_version != SigVersion::Tapscript
-            && !step.opcode.is_push()
-            && step.opcode.to_byte() > Opcode::OpN(16).to_byte()
-        {
-            self.op_count += 1;
-            if self.op_count > MAX_OPS_PER_SCRIPT {
-                return Err(ScriptError::OpCount);
-            }
-        }
 
         // Conditional opcodes are *always* dispatched — they manipulate the
         // condition stack regardless of the executing flag. Everything else

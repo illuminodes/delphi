@@ -584,6 +584,51 @@ impl Opcode {
             | 0xbb..=0xfe
         )
     }
+
+    // ── Precomputed per-byte flag table ────────────────────────────────
+
+    /// Bit 0: counts toward op limit (non-push, byte > 0x60).
+    /// Bit 1: is `VerIf` (0x65) or `VerNotIf` (0x66).
+    const FLAGS: [u8; 256] = {
+        let mut t = [0u8; 256];
+        let mut b = 0x61u16;
+        while b <= 0xFF {
+            t[b as usize] |= 1;
+            b += 1;
+        }
+        t[0x65] |= 2;
+        t[0x66] |= 2;
+        t
+    };
+
+    /// Look up the precomputed flags for a raw opcode byte.
+    #[inline]
+    #[must_use]
+    pub const fn flags_for_byte(byte: u8) -> OpcodeFlags {
+        OpcodeFlags(Self::FLAGS[byte as usize])
+    }
+}
+
+/// Precomputed opcode property flags — resolved once from the raw byte in
+/// `ScriptReader::next_step`, then queried in the interpreter step loop
+/// without calling `to_byte()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpcodeFlags(u8);
+
+impl OpcodeFlags {
+    /// `true` if this opcode counts toward the 201-op-per-script limit.
+    #[inline]
+    #[must_use]
+    pub const fn counts_toward_op_limit(self) -> bool {
+        self.0 & 1 != 0
+    }
+
+    /// `true` if this is `OP_VERIF` or `OP_VERNOTIF`.
+    #[inline]
+    #[must_use]
+    pub const fn is_verif_class(self) -> bool {
+        self.0 & 2 != 0
+    }
 }
 
 #[cfg(test)]
