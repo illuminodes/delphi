@@ -14,7 +14,7 @@ fn main() {
     divan::main();
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Shared helpers ──────────────────────────────────────────────────────────
 
 const EASY_BITS: CompactBits = CompactBits::new(0x207f_ffff);
 
@@ -105,314 +105,329 @@ fn build_chain(len: u32) -> MemoryChainView {
     view
 }
 
-// ── txid ──────────────────────────────────────────────────────────────────────
-
-#[divan::bench]
-fn txid_coinbase() {
-    black_box(
-        coinbase_tx(5_000_000_000)
-            .txid()
-            .expect("txid encoding cannot fail"),
-    );
+fn make_n_tx_block(n: usize) -> Block {
+    let mut txs = vec![coinbase_tx(5_000_000_000)];
+    for i in 1..n {
+        txs.push(regular_tx(
+            Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
+            0,
+            1000,
+        ));
+    }
+    make_valid_block(txs)
 }
 
-#[divan::bench(args = [1usize, 4, 16])]
-fn txid_regular(bencher: divan::Bencher, n_inputs: usize) {
-    let tx = regular_tx(Hash256::from_bytes([0xabu8; 32]), 0, 1000);
-    // Build a tx with n_inputs inputs to vary serialisation size.
-    let big_tx = Transaction {
-        inputs: (0..n_inputs)
-            .map(|i| TxIn {
+// ── txid ────────────────────────────────────────────────────────────────────
+
+mod txid {
+    use super::*;
+
+    #[divan::bench]
+    fn coinbase() {
+        black_box(
+            coinbase_tx(5_000_000_000)
+                .txid()
+                .expect("txid encoding cannot fail"),
+        );
+    }
+
+    #[divan::bench(args = [1usize, 4, 16])]
+    fn regular(bencher: divan::Bencher, n_inputs: usize) {
+        let tx = regular_tx(Hash256::from_bytes([0xabu8; 32]), 0, 1000);
+        let big_tx = Transaction {
+            inputs: (0..n_inputs)
+                .map(|i| TxIn {
+                    previous_output: OutPoint {
+                        txid: Hash256::from_bytes(
+                            [u8::try_from(i).expect("bench index fits u8"); 32],
+                        ),
+                        vout: u32::try_from(i).expect("bench index fits u32"),
+                    },
+                    script_sig: vec![0x51; 20].into(),
+                    sequence: Sequence::MAX,
+                    witness: Witness::empty(),
+                })
+                .collect(),
+            ..tx
+        };
+        bencher.bench(|| black_box(big_tx.txid()));
+    }
+}
+
+// ── merkle_root ─────────────────────────────────────────────────────────────
+
+mod merkle_root {
+    use super::*;
+
+    fn make_txids(n: usize) -> Vec<Hash256> {
+        (0..n)
+            .map(|i| Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]))
+            .collect()
+    }
+
+    #[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
+    fn fresh(bencher: divan::Bencher, n: usize) {
+        let txids = make_txids(n);
+        bencher.bench(|| compute_merkle_root(black_box(&txids)));
+    }
+
+    #[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
+    fn reusing(bencher: divan::Bencher, n: usize) {
+        let txids = make_txids(n);
+        let mut buf: Vec<Hash256> = Vec::with_capacity(n);
+        bencher.bench_local(|| compute_merkle_root_reusing(black_box(&txids), &mut buf));
+    }
+
+    /// 9,001 leaves — matches Bitcoin Core's `MerkleRoot` bench
+    /// (src/bench/merkle_root.cpp).
+    #[divan::bench]
+    fn core_parity_9001(bencher: divan::Bencher) {
+        let txids: Vec<Hash256> = (0..9_001usize)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = u8::try_from(i & 0xff).unwrap();
+                h[1] = u8::try_from((i >> 8) & 0xff).unwrap();
+                Hash256::from_bytes(h)
+            })
+            .collect();
+        bencher.bench(|| compute_merkle_root(black_box(&txids)));
+    }
+
+    /// Same workload with the reusing variant — measures allocation savings
+    /// vs Core's single-allocation path.
+    #[divan::bench]
+    fn core_parity_9001_reusing(bencher: divan::Bencher) {
+        let txids: Vec<Hash256> = (0..9_001usize)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[0] = u8::try_from(i & 0xff).unwrap();
+                h[1] = u8::try_from((i >> 8) & 0xff).unwrap();
+                Hash256::from_bytes(h)
+            })
+            .collect();
+        let mut buf: Vec<Hash256> = Vec::with_capacity(9_001);
+        bencher.bench_local(|| compute_merkle_root_reusing(black_box(&txids), &mut buf));
+    }
+}
+
+// ── validate_block_structure (Stage 1) ──────────────────────────────────────
+
+mod stage1_structure {
+    use super::*;
+
+    #[divan::bench]
+    fn single_coinbase(bencher: divan::Bencher) {
+        let block = make_valid_block(vec![coinbase_tx(5_000_000_000)]);
+        bencher.bench(|| {
+            validate_block_structure(black_box(&block))
+                .expect("valid block must pass structure validation");
+        });
+    }
+
+    #[divan::bench(args = [2usize, 10, 100])]
+    fn n_txs(bencher: divan::Bencher, n: usize) {
+        let block = make_n_tx_block(n);
+        bencher.bench(|| {
+            validate_block_structure(black_box(&block))
+                .expect("valid block must pass structure validation");
+        });
+    }
+}
+
+// ── validate_block_wire (Stage 1, zero-copy) ────────────────────────────────
+
+mod stage1_wire {
+    use super::*;
+
+    #[divan::bench]
+    fn single_coinbase(bencher: divan::Bencher) {
+        let block = make_valid_block(vec![coinbase_tx(5_000_000_000)]);
+        let mut wire = Vec::new();
+        block.encode(&mut wire).expect("Vec<u8> write cannot fail");
+        let mut t = Vec::new();
+        let mut mb = Vec::new();
+        let mut si = std::collections::HashSet::new();
+        let mut st = std::collections::HashSet::new();
+        bencher.bench_local(|| {
+            validate_block_wire(black_box(&wire), &mut t, &mut mb, &mut si, &mut st)
+                .expect("valid block wire must pass validation");
+        });
+    }
+
+    #[divan::bench(args = [2usize, 10, 100])]
+    fn n_txs(bencher: divan::Bencher, n: usize) {
+        let block = make_n_tx_block(n);
+        let mut wire = Vec::new();
+        block.encode(&mut wire).expect("Vec<u8> write cannot fail");
+        let mut t = Vec::new();
+        let mut mb = Vec::new();
+        let mut si = std::collections::HashSet::new();
+        let mut st = std::collections::HashSet::new();
+        bencher.bench_local(|| {
+            validate_block_wire(black_box(&wire), &mut t, &mut mb, &mut si, &mut st)
+                .expect("valid block wire must pass validation");
+        });
+    }
+}
+
+// ── validate_block_context (Stage 2) ────────────────────────────────────────
+
+mod stage2_context {
+    use super::*;
+
+    #[divan::bench]
+    fn chain_12(bencher: divan::Bencher) {
+        let view = build_chain(12);
+        let tip = view.tip();
+        let parent_time = view
+            .get_header_at(tip.height)
+            .expect("storage error")
+            .expect("tip header must exist")
+            .time();
+        let clock_now = u64::from(parent_time) + 600;
+
+        let tx = Transaction {
+            version: TxVersion::new(4),
+            inputs: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Hash256::from_bytes([u8::try_from(i).expect("bench index fits u8"); 32]),
-                    vout: u32::try_from(i).expect("bench index fits u32"),
+                    txid: Hash256::ZERO,
+                    vout: u32::MAX,
                 },
-                script_sig: vec![0x51; 20].into(),
+                script_sig: vec![0x03, 0x0d, 0x00, 0x00].into(), // height=13
                 sequence: Sequence::MAX,
                 witness: Witness::empty(),
-            })
-            .collect(),
-        ..tx
-    };
-    bencher.bench(|| black_box(big_tx.txid()));
-}
-
-// ── compute_merkle_root ───────────────────────────────────────────────────────
-
-#[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
-fn merkle_root(bencher: divan::Bencher, n: usize) {
-    let txids: Vec<Hash256> = (0..n)
-        .map(|i| Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]))
-        .collect();
-    bencher.bench(|| compute_merkle_root(black_box(&txids)));
-}
-
-#[divan::bench(args = [1usize, 2, 3, 7, 8, 100, 2000])]
-fn merkle_root_reusing(bencher: divan::Bencher, n: usize) {
-    let txids: Vec<Hash256> = (0..n)
-        .map(|i| Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]))
-        .collect();
-    let mut buf: Vec<Hash256> = Vec::with_capacity(n);
-    bencher.bench_local(|| compute_merkle_root_reusing(black_box(&txids), &mut buf));
-}
-
-// ── validate_block_structure ──────────────────────────────────────────────────
-
-#[divan::bench]
-fn validate_structure_single_coinbase(bencher: divan::Bencher) {
-    let block = make_valid_block(vec![coinbase_tx(5_000_000_000)]);
-    bencher.bench(|| {
-        validate_block_structure(black_box(&block))
-            .expect("valid block must pass structure validation");
-    });
-}
-
-#[divan::bench(args = [2usize, 10, 100])]
-fn validate_structure_n_txs(bencher: divan::Bencher, n: usize) {
-    let mut txs = vec![coinbase_tx(5_000_000_000)];
-    for i in 1..n {
-        txs.push(regular_tx(
-            Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
-            0,
-            1000,
-        ));
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(5_000_000_000),
+                script_pubkey: vec![0x51].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+        let merkle_root = compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
+            .expect("single-tx merkle root must exist");
+        let mtp = view
+            .median_time_past(&BlockHeader::new(
+                4,
+                tip.hash,
+                Hash256::ZERO,
+                0,
+                EASY_BITS,
+                0,
+            ))
+            .expect("median_time_past must succeed on valid chain");
+        let block = Block {
+            header: BlockHeader::new(4, tip.hash, merkle_root, (mtp + 1).to_u32(), EASY_BITS, 0),
+            transactions: vec![tx],
+        };
+        let clock = FixedClock(clock_now + 3600);
+        bencher.bench(|| {
+            validate_block_context_with_clock(black_box(&block), &view, &clock, false)
+                .expect("valid block must pass context validation");
+        });
     }
-    let block = make_valid_block(txs);
-    bencher.bench(|| {
-        validate_block_structure(black_box(&block))
-            .expect("valid block must pass structure validation");
-    });
 }
 
-// ── validate_block_wire ───────────────────────────────────────────────────────
+// ── MemoryChainView lookups ─────────────────────────────────────────────────
 
-#[divan::bench]
-fn validate_wire_single_coinbase(bencher: divan::Bencher) {
-    let block = make_valid_block(vec![coinbase_tx(5_000_000_000)]);
-    let mut wire = Vec::new();
-    block.encode(&mut wire).expect("Vec<u8> write cannot fail");
-    let mut t = Vec::new();
-    let mut mb = Vec::new();
-    let mut si = std::collections::HashSet::new();
-    let mut st = std::collections::HashSet::new();
-    bencher.bench_local(|| {
-        validate_block_wire(black_box(&wire), &mut t, &mut mb, &mut si, &mut st)
-            .expect("valid block wire must pass validation");
-    });
-}
+mod chain_view {
+    use super::*;
 
-#[divan::bench(args = [2usize, 10, 100])]
-fn validate_wire_n_txs(bencher: divan::Bencher, n: usize) {
-    let mut txs = vec![coinbase_tx(5_000_000_000)];
-    for i in 1..n {
-        txs.push(regular_tx(
-            Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
-            0,
-            1000,
-        ));
+    #[divan::bench]
+    fn get_header_by_hash(bencher: divan::Bencher) {
+        let view = build_chain(100);
+        let tip = view.tip();
+        bencher.bench(|| {
+            view.get_header(black_box(&tip.hash))
+                .expect("storage error")
+        });
     }
-    let block = make_valid_block(txs);
-    let mut wire = Vec::new();
-    block.encode(&mut wire).expect("Vec<u8> write cannot fail");
-    let mut t = Vec::new();
-    let mut mb = Vec::new();
-    let mut si = std::collections::HashSet::new();
-    let mut st = std::collections::HashSet::new();
-    bencher.bench_local(|| {
-        validate_block_wire(black_box(&wire), &mut t, &mut mb, &mut si, &mut st)
-            .expect("valid block wire must pass validation");
-    });
-}
 
-// ── validate_block_context ────────────────────────────────────────────────────
+    #[divan::bench]
+    fn get_header_at(bencher: divan::Bencher) {
+        let view = build_chain(100);
+        bencher.bench(|| {
+            view.get_header_at(black_box(BlockHeight::new(50)))
+                .expect("storage error")
+        });
+    }
 
-#[divan::bench]
-fn validate_context_chain_12(bencher: divan::Bencher) {
-    let view = build_chain(12);
-    let tip = view.tip();
-    let parent_time = view
-        .get_header_at(tip.height)
-        .expect("storage error")
-        .expect("tip header must exist")
-        .time();
-    let clock_now = u64::from(parent_time) + 600;
+    #[divan::bench]
+    fn height_of(bencher: divan::Bencher) {
+        let view = build_chain(100);
+        let tip = view.tip();
+        bencher.bench(|| view.height_of(black_box(&tip.hash)).expect("storage error"));
+    }
 
-    let tx = Transaction {
-        version: TxVersion::new(4),
-        inputs: vec![TxIn {
-            previous_output: OutPoint {
-                txid: Hash256::ZERO,
-                vout: u32::MAX,
-            },
-            script_sig: vec![0x03, 0x0d, 0x00, 0x00].into(), // height=13
-            sequence: Sequence::MAX,
-            witness: Witness::empty(),
-        }],
-        outputs: vec![TxOut {
-            value: Satoshi::new(5_000_000_000),
-            script_pubkey: vec![0x51].into(),
-        }],
-        locktime: Locktime::new(0),
-    };
-    let merkle_root = compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
-        .expect("single-tx merkle root must exist");
-    let mtp = view
-        .median_time_past(&BlockHeader::new(
-            4,
-            tip.hash,
-            Hash256::ZERO,
-            0,
-            EASY_BITS,
-            0,
-        ))
-        .expect("median_time_past must succeed on valid chain");
-    let block = Block {
-        header: BlockHeader::new(4, tip.hash, merkle_root, (mtp + 1).to_u32(), EASY_BITS, 0),
-        transactions: vec![tx],
-    };
-    let clock = FixedClock(clock_now + 3600);
-    bencher.bench(|| {
-        validate_block_context_with_clock(black_box(&block), &view, &clock, false)
-            .expect("valid block must pass context validation");
-    });
-}
+    #[divan::bench]
+    fn tip(bencher: divan::Bencher) {
+        let view = build_chain(100);
+        bencher.bench(|| black_box(view.tip()));
+    }
 
-// ── MemoryChainView lookups ───────────────────────────────────────────────────
-
-#[divan::bench]
-fn chain_view_get_header_by_hash(bencher: divan::Bencher) {
-    let view = build_chain(100);
-    let tip = view.tip();
-    bencher.bench(|| {
-        view.get_header(black_box(&tip.hash))
-            .expect("storage error")
-    });
-}
-
-#[divan::bench]
-fn chain_view_get_header_at(bencher: divan::Bencher) {
-    let view = build_chain(100);
-    bencher.bench(|| {
-        view.get_header_at(black_box(BlockHeight::new(50)))
-            .expect("storage error")
-    });
-}
-
-#[divan::bench]
-fn chain_view_height_of(bencher: divan::Bencher) {
-    let view = build_chain(100);
-    let tip = view.tip();
-    bencher.bench(|| view.height_of(black_box(&tip.hash)).expect("storage error"));
-}
-
-#[divan::bench]
-fn chain_view_tip(bencher: divan::Bencher) {
-    let view = build_chain(100);
-    bencher.bench(|| black_box(view.tip()));
-}
-
-#[divan::bench]
-fn chain_view_get_coin_hit(bencher: divan::Bencher) {
-    let mut view = MemoryChainView::new();
-    let op = OutPoint {
-        txid: Hash256::from_bytes([1u8; 32]),
-        vout: 0,
-    };
-    view.insert_coin(
-        op,
-        Coin {
-            value: Satoshi::new(5_000_000_000),
-            script_pubkey: vec![0x51].into(),
-            height: BlockHeight::new(1),
-            coinbase: false,
-        },
-    );
-    bencher.bench(|| view.get_coin(black_box(&op)).expect("storage error"));
-}
-
-#[divan::bench]
-fn chain_view_get_coin_miss(bencher: divan::Bencher) {
-    let view = MemoryChainView::new();
-    let op = OutPoint {
-        txid: Hash256::from_bytes([0xffu8; 32]),
-        vout: 0,
-    };
-    bencher.bench(|| view.get_coin(black_box(&op)).expect("storage error"));
-}
-
-#[divan::bench(args = [1usize, 10, 100])]
-fn chain_view_get_coins_batch(bencher: divan::Bencher, n: usize) {
-    let mut view = MemoryChainView::new();
-    let ops: Vec<OutPoint> = (0..n)
-        .map(|i| OutPoint {
-            txid: Hash256::from_bytes([u8::try_from(i).expect("bench index fits u8"); 32]),
+    #[divan::bench]
+    fn get_coin_hit(bencher: divan::Bencher) {
+        let mut view = MemoryChainView::new();
+        let op = OutPoint {
+            txid: Hash256::from_bytes([1u8; 32]),
             vout: 0,
-        })
-        .collect();
-    for &op in &ops {
+        };
         view.insert_coin(
             op,
             Coin {
-                value: Satoshi::new(1000),
-                script_pubkey: vec![].into(),
+                value: Satoshi::new(5_000_000_000),
+                script_pubkey: vec![0x51].into(),
                 height: BlockHeight::new(1),
                 coinbase: false,
             },
         );
+        bencher.bench(|| view.get_coin(black_box(&op)).expect("storage error"));
     }
-    let mut out = Vec::new();
-    bencher.bench_local(|| {
-        view.get_coins_into(black_box(&ops), &mut out)
-            .expect("storage error");
-    });
-}
 
-// ── Bitcoin Core parity ───────────────────────────────────────────────────────
-// These benchmarks use the same workload sizes as Bitcoin Core's
-// src/bench/merkle_root.cpp so the numbers can be compared directly.
-//
-// Core reference: MerkleRoot over 9,001 pseudo-random hashes (hardcoded leaf
-// count in bench/merkle_root.cpp).
+    #[divan::bench]
+    fn get_coin_miss(bencher: divan::Bencher) {
+        let view = MemoryChainView::new();
+        let op = OutPoint {
+            txid: Hash256::from_bytes([0xffu8; 32]),
+            vout: 0,
+        };
+        bencher.bench(|| view.get_coin(black_box(&op)).expect("storage error"));
+    }
 
-/// Merkle root over 9,001 leaves — matches Bitcoin Core's `MerkleRoot` bench.
-#[divan::bench]
-fn merkle_root_9001(bencher: divan::Bencher) {
-    // Core uses FastRandomContext (deterministic) to fill the leaves.  We use
-    // a simple deterministic pattern; the hash values don't affect timing.
-    let txids: Vec<Hash256> = (0..9_001usize)
-        .map(|i| {
-            let mut h = [0u8; 32];
-            h[0] = u8::try_from(i & 0xff).unwrap();
-            h[1] = u8::try_from((i >> 8) & 0xff).unwrap();
-            Hash256::from_bytes(h)
-        })
-        .collect();
-    bencher.bench(|| compute_merkle_root(black_box(&txids)));
-}
+    #[divan::bench(args = [1usize, 10, 100])]
+    fn get_coins_batch(bencher: divan::Bencher, n: usize) {
+        let mut view = MemoryChainView::new();
+        let ops: Vec<OutPoint> = (0..n)
+            .map(|i| OutPoint {
+                txid: Hash256::from_bytes([u8::try_from(i).expect("bench index fits u8"); 32]),
+                vout: 0,
+            })
+            .collect();
+        for &op in &ops {
+            view.insert_coin(
+                op,
+                Coin {
+                    value: Satoshi::new(1000),
+                    script_pubkey: vec![].into(),
+                    height: BlockHeight::new(1),
+                    coinbase: false,
+                },
+            );
+        }
+        let mut out = Vec::new();
+        bencher.bench_local(|| {
+            view.get_coins_into(black_box(&ops), &mut out)
+                .expect("storage error");
+        });
+    }
 
-/// Same workload with the reusing variant — measures allocation savings vs
-/// Core's single-allocation path.
-#[divan::bench]
-fn merkle_root_9001_reusing(bencher: divan::Bencher) {
-    let txids: Vec<Hash256> = (0..9_001usize)
-        .map(|i| {
-            let mut h = [0u8; 32];
-            h[0] = u8::try_from(i & 0xff).unwrap();
-            h[1] = u8::try_from((i >> 8) & 0xff).unwrap();
-            Hash256::from_bytes(h)
-        })
-        .collect();
-    let mut buf: Vec<Hash256> = Vec::with_capacity(9_001);
-    bencher.bench_local(|| compute_merkle_root_reusing(black_box(&txids), &mut buf));
-}
-
-#[divan::bench]
-fn chain_view_median_time_past(bencher: divan::Bencher) {
-    let view = build_chain(12);
-    let tip = view.tip();
-    let next_header = BlockHeader::new(4, tip.hash, Hash256::ZERO, 0, EASY_BITS, 0);
-    bencher.bench(|| {
-        view.median_time_past(black_box(&next_header))
-            .expect("median_time_past must succeed on valid chain")
-    });
+    #[divan::bench]
+    fn median_time_past(bencher: divan::Bencher) {
+        let view = build_chain(12);
+        let tip = view.tip();
+        let next_header = BlockHeader::new(4, tip.hash, Hash256::ZERO, 0, EASY_BITS, 0);
+        bencher.bench(|| {
+            view.median_time_past(black_box(&next_header))
+                .expect("median_time_past must succeed on valid chain")
+        });
+    }
 }
