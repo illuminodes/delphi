@@ -1,9 +1,9 @@
 use super::*;
-use mantle::primitives::{OutPoint, Satoshi, Witness};
+use mantle::primitives::{Locktime, OutPoint, Satoshi, Sequence, TxVersion, Witness};
 
 fn make_tx() -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![
             TxIn {
                 previous_output: OutPoint {
@@ -11,7 +11,7 @@ fn make_tx() -> Transaction {
                     vout: 0,
                 },
                 script_sig: vec![0xaa].into(),
-                sequence: 0xffff_fffe,
+                sequence: Sequence::new(0xffff_fffe),
                 witness: Witness::empty(),
             },
             TxIn {
@@ -20,7 +20,7 @@ fn make_tx() -> Transaction {
                     vout: 1,
                 },
                 script_sig: vec![0xbb].into(),
-                sequence: 0xffff_fffd,
+                sequence: Sequence::new(0xffff_fffd),
                 witness: Witness::empty(),
             },
         ],
@@ -34,7 +34,7 @@ fn make_tx() -> Transaction {
                 script_pubkey: vec![0xdd].into(),
             },
         ],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -123,7 +123,7 @@ fn modified_tx_under_sighash_none_drops_outputs_and_seq() {
     let m = build_modified_tx(&tx, 0, &[0x99], SigHashType::NONE);
     assert!(m.outputs.is_empty());
     assert_eq!(m.inputs[0].sequence, tx.inputs[0].sequence);
-    assert_eq!(m.inputs[1].sequence, 0); // zeroed
+    assert_eq!(m.inputs[1].sequence, Sequence::new(0)); // zeroed
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn hash256_from_hex(s: &str) -> Hash256 {
 /// 2f0167faa815988ac11000000
 fn bip143_p2wpkh_tx() -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![
             TxIn {
                 previous_output: OutPoint {
@@ -246,7 +246,7 @@ fn bip143_p2wpkh_tx() -> Transaction {
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_ffee,
+                sequence: Sequence::new(0xffff_ffee),
                 witness: Witness::empty(),
             },
             TxIn {
@@ -257,7 +257,7 @@ fn bip143_p2wpkh_tx() -> Transaction {
                     vout: 1,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::empty(),
             },
         ],
@@ -271,7 +271,7 @@ fn bip143_p2wpkh_tx() -> Transaction {
                 script_pubkey: hex("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac").into(),
             },
         ],
-        locktime: 0x11,
+        locktime: Locktime::new(0x11),
     }
 }
 

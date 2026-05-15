@@ -8,7 +8,9 @@
 //! nSequence bitmask: bit 31 (disable flag), bit 22 (blocks vs. 512-sec units),
 //! and bits 0–15 (the locktime value).
 
-use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, Witness};
+use mantle::primitives::{
+    Hash256, Locktime, OutPoint, Satoshi, Sequence, Transaction, TxIn, TxOut, TxVersion, Witness,
+};
 
 use mantle_consensus::script::{ScriptFlags, verify_script};
 
@@ -53,21 +55,21 @@ fn csv_spk(sequence: i64) -> Vec<u8> {
 
 fn make_tx(version: i32, n_sequence: u32) -> Transaction {
     Transaction {
-        version,
+        version: TxVersion::new(version),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x22; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),
-            sequence: n_sequence,
+            sequence: Sequence::new(n_sequence),
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(1000),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -202,21 +204,21 @@ fn cltv_and_csv_combined_accepts() {
     ];
 
     let tx = Transaction {
-        version: 2,
+        version: TxVersion::new(2),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x33; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),
-            sequence: 5, // 5 blocks
+            sequence: Sequence::new(5), // 5 blocks
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(1000),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 200, // ≥ 100
+        locktime: Locktime::new(200), // ≥ 100
     };
 
     let f = ScriptFlags::P2SH | ScriptFlags::CHECKLOCKTIMEVERIFY | ScriptFlags::CHECKSEQUENCEVERIFY;

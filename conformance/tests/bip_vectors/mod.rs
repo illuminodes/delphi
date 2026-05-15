@@ -4,7 +4,8 @@
 /// data. No runtime file I/O; everything compiles into the test binary.
 use mantle::codec::{Decode, Encode};
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, Hash256, OutPoint, Transaction, TxHash, TxIn, TxOut, Witness,
+    Block, BlockHeader, BlockHeight, Hash256, Locktime, OutPoint, Sequence, Transaction, TxHash,
+    TxIn, TxOut, TxVersion, Witness,
 };
 use std::io::Cursor;
 
@@ -40,7 +41,7 @@ fn coinbase_input(script_sig: Vec<u8>) -> TxIn {
             vout: u32::MAX,
         },
         script_sig: script_sig.into(),
-        sequence: u32::MAX,
+        sequence: Sequence::MAX,
         witness: Witness::empty(),
     }
 }
@@ -58,10 +59,10 @@ fn make_output(value: u64) -> TxOut {
 /// possible target (0x207fffff) so proof-of-work is trivially satisfied.
 fn minimal_block(coinbase_script_sig: Vec<u8>, transactions: Vec<Transaction>) -> Block {
     let coinbase = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![coinbase_input(coinbase_script_sig)],
         outputs: vec![make_output(50_0000_0000)],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
 
     let mut txs = vec![coinbase];

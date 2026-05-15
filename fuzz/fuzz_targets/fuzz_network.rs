@@ -23,10 +23,10 @@ fuzz_target!(|data: &[u8]| {
         let mut buf = Vec::new();
         h.encode(&mut buf).unwrap();
         let h2 = MessageHeader::decode(&mut Cursor::new(buf.as_slice())).unwrap();
-        assert_eq!(h.magic, h2.magic);
-        assert_eq!(h.command, h2.command);
-        assert_eq!(h.length, h2.length);
-        assert_eq!(h.checksum, h2.checksum);
+        assert_eq!(h.magic(), h2.magic());
+        assert_eq!(h.command(), h2.command());
+        assert_eq!(h.length(), h2.length());
+        assert_eq!(h.checksum(), h2.checksum());
     }
     fuzz_roundtrip!(NetworkAddr, data);
     fuzz_roundtrip!(PingMsg, data);

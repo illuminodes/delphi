@@ -127,7 +127,7 @@ mod tests {
     use crate::amount::Satoshi;
     use crate::block::{Block, BlockHeader, BlockRef};
     use crate::codec::Encode;
-    use crate::difficulty::CompactBits;
+    use crate::difficulty::{CompactBits, Locktime, Sequence, TxVersion};
     use crate::hash::Hash256;
     use crate::script::Witness;
     use crate::tx::{OutPoint, Transaction, TxHash, TxIn, TxOut};
@@ -140,7 +140,7 @@ mod tests {
 
     fn make_tx() -> Transaction {
         Transaction {
-            version: 2,
+            version: TxVersion::new(2),
             inputs: vec![
                 TxIn {
                     previous_output: OutPoint {
@@ -148,7 +148,7 @@ mod tests {
                         vout: 1,
                     },
                     script_sig: vec![0x01, 0x02, 0x03].into(),
-                    sequence: 0xffff_fffe,
+                    sequence: Sequence::new(0xffff_fffe),
                     witness: Witness::empty(),
                 },
                 TxIn {
@@ -157,7 +157,7 @@ mod tests {
                         vout: 0,
                     },
                     script_sig: vec![].into(),
-                    sequence: 0,
+                    sequence: Sequence::new(0),
                     witness: Witness::empty(),
                 },
             ],
@@ -171,20 +171,20 @@ mod tests {
                     script_pubkey: vec![].into(),
                 },
             ],
-            locktime: 800_000,
+            locktime: Locktime::new(800_000),
         }
     }
 
     fn make_segwit_tx() -> Transaction {
         Transaction {
-            version: 2,
+            version: TxVersion::new(2),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::from_bytes([0x11u8; 32]),
                     vout: 0,
                 },
                 script_sig: Vec::<u8>::new().into(),
-                sequence: 0xffff_fffe,
+                sequence: Sequence::new(0xffff_fffe),
                 witness: Witness::from_slice(&[
                     &[0xde, 0xad, 0xbe, 0xef][..],
                     &[0x01, 0x02, 0x03, 0x04, 0x05][..],
@@ -194,7 +194,7 @@ mod tests {
                 value: Satoshi::new(99_000),
                 script_pubkey: vec![0x00, 0x14, 0xaa, 0xbb, 0xcc].into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         }
     }
 

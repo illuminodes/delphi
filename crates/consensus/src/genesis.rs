@@ -25,7 +25,7 @@ mod tests {
     use crate::test_helpers::{decode_hex, hash_to_hex};
     use mantle::codec::{Decode, DecodeRef};
     use mantle::hash::Hash256;
-    use mantle::primitives::{Block, BlockHeader};
+    use mantle::primitives::{Block, BlockHeader, TxVersion};
     use std::io::Cursor;
 
     #[test]
@@ -58,7 +58,7 @@ mod tests {
 
         assert_eq!(block.transactions.len(), 1);
         let tx = &block.transactions[0];
-        assert_eq!(tx.version, 1);
+        assert_eq!(tx.version, TxVersion::new(1));
         assert_eq!(tx.inputs.len(), 1);
         assert_eq!(tx.outputs.len(), 1);
         assert_eq!(

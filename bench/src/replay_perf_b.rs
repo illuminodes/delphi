@@ -13,7 +13,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use mantle::primitives::{
-    BlockHeight, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut, Witness,
+    BlockHeight, Hash256, Locktime, OutPoint, Satoshi, Sequence, Transaction, TxHash, TxIn, TxOut,
+    TxVersion, Witness,
 };
 use mantle_consensus::script::ScriptExecutionCache;
 
@@ -47,14 +48,14 @@ fn build_scenario() -> Scenario {
     use mantle::primitives::{Block, BlockHeader};
 
     let fund_cb = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::ZERO,
                 vout: u32::MAX,
             },
             script_sig: vec![0x03, 0x01, 0x00, 0x00].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: (0..N_SPENDS)
@@ -63,7 +64,7 @@ fn build_scenario() -> Scenario {
                 script_pubkey: vec![0x51].into(),
             })
             .collect(),
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let fund_block = make_block(Hash256::ZERO, FUND_H, vec![fund_cb]);
     let fund_txid = fund_block.transactions[0].txid().expect("txid");

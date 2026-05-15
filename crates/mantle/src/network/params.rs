@@ -1,4 +1,4 @@
-use crate::primitives::{BlockHeader, CompactBits, Hash256};
+use crate::primitives::{BlockHeader, Hash256};
 
 use super::magic::Magic;
 
@@ -91,17 +91,42 @@ impl Network {
         Hash256::from_display_hex(display_hex).expect("hardcoded genesis hash must parse")
     }
 
-    /// Decoded genesis block header. Currently mainnet only — the other
-    /// networks return `None` until their hardcoded bytes are added. Callers
-    /// that need a pre-genesis snapshot slot (so block 1's `prev_block` and
-    /// MTP lookups resolve) use this; callers that only need the hash should
-    /// use [`Self::genesis_hash`].
+    /// Decoded genesis block header. Callers that need a pre-genesis snapshot
+    /// slot (so block 1's `prev_block` and MTP lookups resolve) use this;
+    /// callers that only need the hash should use [`Self::genesis_hash`].
+    ///
+    /// # Panics
+    /// Never in practice: parses fixed compile-time hex strings.
     #[must_use]
     pub fn genesis_header(self) -> Option<BlockHeader> {
+        let merkle = |hex| {
+            Hash256::from_display_hex(hex).expect("hardcoded genesis merkle_root must parse")
+        };
         match self {
-            Self::Mainnet => Some(mainnet_genesis_header()),
-            Self::Testnet4 => Some(testnet4_genesis_header()),
-            Self::Signet => Some(signet_genesis_header()),
+            Self::Mainnet => Some(BlockHeader::new(
+                1,
+                Hash256::ZERO,
+                merkle(GENESIS_MERKLE_ROOT),
+                1_231_006_505,
+                crate::difficulty::CompactBits::new(0x1d00_ffff),
+                2_083_236_893,
+            )),
+            Self::Testnet4 => Some(BlockHeader::new(
+                1,
+                Hash256::ZERO,
+                merkle("7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e"),
+                1_714_777_860,
+                crate::difficulty::CompactBits::new(0x1d00_ffff),
+                393_743_547,
+            )),
+            Self::Signet => Some(BlockHeader::new(
+                1,
+                Hash256::ZERO,
+                merkle(GENESIS_MERKLE_ROOT),
+                1_598_918_400,
+                crate::difficulty::CompactBits::new(0x1e03_77ae),
+                52_613_770,
+            )),
             Self::Testnet3 | Self::Regtest => None,
         }
     }
@@ -147,67 +172,9 @@ const SIGNET_SEEDS: &[&str] = &[
     "seed.signet.achownodes.xyz:38333",
 ];
 
-/// The actual mainnet genesis block header. Field values from Bitcoin Core
-/// `chainparams.cpp::CMainParams` (genesis is 2009-01-03 18:15:05 UTC,
-/// `0x1d00ffff` difficulty, nonce `2083236893`). Verified by the
-/// `mainnet_genesis_header_hashes_correctly` unit test against the well-known
-/// mainnet genesis hash.
-fn mainnet_genesis_header() -> BlockHeader {
-    BlockHeader::new(
-        1,
-        Hash256::ZERO,
-        Hash256::from_display_hex(
-            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
-        )
-        .expect("hardcoded genesis merkle_root must parse"),
-        1_231_006_505,
-        CompactBits::new(0x1d00_ffff),
-        2_083_236_893,
-    )
-}
-
-/// The testnet4 (BIP94) genesis block header. Field values from Bitcoin Core
-/// `chainparams.cpp::CTestNet4Params`:
-///   - time   = `1714777860` (2024-05-04 00:11:00 UTC)
-///   - bits   = `0x1d00ffff`
-///   - nonce  = `393_743_547`
-///   - merkle = `7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e`
-///
-/// Verified by the `testnet4_genesis_header_hashes_correctly` unit test
-/// against the well-known testnet4 genesis hash.
-fn testnet4_genesis_header() -> BlockHeader {
-    BlockHeader::new(
-        1,
-        Hash256::ZERO,
-        Hash256::from_display_hex(
-            "7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e",
-        )
-        .expect("hardcoded testnet4 genesis merkle_root must parse"),
-        1_714_777_860,
-        CompactBits::new(0x1d00_ffff),
-        393_743_547,
-    )
-}
-
-/// The default signet (BIP325) genesis block header. Field values from
-/// Bitcoin Core `chainparams.cpp::SigNetParams`:
-///   - time   = `1598918400` (2020-09-01 00:00:00 UTC)
-///   - bits   = `0x1e0377ae`
-///   - nonce  = `52_613_770`
-///   - merkle = same as mainnet (`4a5e1e…da33b`)
-fn signet_genesis_header() -> BlockHeader {
-    BlockHeader::new(
-        1,
-        Hash256::ZERO,
-        Hash256::from_display_hex(
-            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
-        )
-        .expect("hardcoded signet genesis merkle_root must parse"),
-        1_598_918_400,
-        CompactBits::new(0x1e03_77ae),
-        52_613_770,
-    )
-}
+/// Satoshi's coinbase merkle root, shared by mainnet and signet genesis blocks.
+const GENESIS_MERKLE_ROOT: &str =
+    "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b";
 
 #[cfg(test)]
 mod tests {

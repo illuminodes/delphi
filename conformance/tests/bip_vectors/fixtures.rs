@@ -34,14 +34,14 @@ fn genesis_coinbase_decode_roundtrip() {
     let tx = Transaction::decode(&mut Cursor::new(&bytes)).expect("genesis coinbase must decode");
 
     // Basic structure checks.
-    assert_eq!(tx.version, 1);
+    assert_eq!(tx.version, TxVersion::new(1));
     assert_eq!(tx.inputs.len(), 1);
     assert_eq!(tx.outputs.len(), 1);
     assert_eq!(
         tx.outputs[0].value,
         mantle::primitives::Satoshi::new(50_0000_0000)
     );
-    assert_eq!(tx.locktime, 0);
+    assert_eq!(tx.locktime, Locktime::new(0));
 
     // Re-encode must produce identical bytes.
     let mut reencoded = Vec::new();
@@ -83,25 +83,25 @@ fn genesis_coinbase_is_valid_null_outpoint() {
 fn sequence_field_roundtrip() {
     for &seq in &[0u32, 1, 0xffff_fffe, 0xffff_ffff] {
         let tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::from_bytes([0xab; 32]),
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: seq,
+                sequence: Sequence::new(seq),
                 witness: Witness::empty(),
             }],
             outputs: vec![make_output(1000)],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let mut buf = Vec::new();
         tx.encode(&mut buf).expect("Vec<u8> write cannot fail");
         let decoded =
             Transaction::decode(&mut Cursor::new(&buf)).expect("transaction roundtrip must decode");
         assert_eq!(
-            decoded.inputs[0].sequence, seq,
+            decoded.inputs[0].sequence, Sequence::new(seq),
             "sequence {seq:#010x} not preserved"
         );
     }
@@ -263,18 +263,18 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
     let cases: &[(&str, Block)] = &[
         ("first_tx_not_coinbase", {
             let non_cb = Transaction {
-                version: 1,
+                version: TxVersion::new(1),
                 inputs: vec![TxIn {
                     previous_output: OutPoint {
                         txid: Hash256::from_bytes([0xab; 32]),
                         vout: 0,
                     },
                     script_sig: vec![0x51].into(),
-                    sequence: u32::MAX,
+                    sequence: Sequence::MAX,
                     witness: Witness::empty(),
                 }],
                 outputs: vec![make_output(1000)],
-                locktime: 0,
+                locktime: Locktime::new(0),
             };
             let txids = vec![non_cb.txid().expect("txid encoding cannot fail")];
             let merkle_root =
@@ -297,13 +297,13 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
         ),
         ("output_value_overflow", {
             let coinbase = Transaction {
-                version: 1,
+                version: TxVersion::new(1),
                 inputs: vec![coinbase_input(vec![0x03, 0x01, 0x00, 0x00])],
                 outputs: vec![TxOut {
                     value: mantle::primitives::Satoshi::new(u64::MAX),
                     script_pubkey: vec![0x51].into(),
                 }],
-                locktime: 0,
+                locktime: Locktime::new(0),
             };
             let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
             let merkle_root =

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io::{Read, Write};
 
-use crate::codec::{Decode, Encode, Error, VarInt, decode_bytes_limited};
+use crate::codec::{Decode, Encode, Error, VarInt};
 
 // ── WitnessBuf ────────────────────────────────────────────────────────────────
 
@@ -214,7 +214,7 @@ impl<const ITEMS: usize, const BYTES: usize> Decode for WitnessBuf<ITEMS, BYTES>
         for _ in 0..count {
             // Witness stack items have no per-item consensus size limit (unlike
             // script push data). Cap at 4 MiB — the block weight bound.
-            let item = decode_bytes_limited::<{ 4 * 1024 * 1024 }>(r)?;
+            let item = VarInt::decode_bytes_limited::<{ 4 * 1024 * 1024 }>(r)?;
             items.push(item);
         }
         let slices: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();

@@ -11,7 +11,9 @@
 //! CLTV rather than a NOP. Without it the opcode is a no-op and the script
 //! always succeeds; we cover that case explicitly.
 
-use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, Witness};
+use mantle::primitives::{
+    Hash256, Locktime, OutPoint, Satoshi, Sequence, Transaction, TxIn, TxOut, TxVersion, Witness,
+};
 
 use mantle_consensus::script::{ScriptFlags, verify_script};
 
@@ -54,21 +56,21 @@ fn cltv_spk(locktime: i64) -> Vec<u8> {
 
 fn make_tx(tx_locktime: u32, sequence: u32) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),
-            sequence,
+            sequence: Sequence::new(sequence),
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(1000),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: tx_locktime,
+        locktime: Locktime::new(tx_locktime),
     }
 }
 

@@ -14,8 +14,8 @@
 //!   Parametrised by height; fixtures must be present in fixtures/ordinals/.
 
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash,
-    TxIn, TxOut, Witness,
+    Block, BlockHeader, BlockHeight, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence,
+    Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::ScriptExecutionCache;
@@ -37,41 +37,41 @@ const BASE_TIME: u32 = 1_231_006_505;
 fn coinbase_tx(height: u32, value: u64) -> Transaction {
     let h = height.to_le_bytes();
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::ZERO,
                 vout: u32::MAX,
             },
             script_sig: vec![0x03, h[0], h[1], h[2]].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(value),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
 fn spend_tx(prev_txid: Hash256, vout: u32, value: u64) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: prev_txid,
                 vout,
             },
             script_sig: vec![0x51].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(value),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -209,14 +209,14 @@ fn replay_n_spends(bencher: divan::Bencher, n: usize) {
 
     // Fund block at height 1: coinbase with N outputs (one per UTXO to spend).
     let fund_cb = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::ZERO,
                 vout: u32::MAX,
             },
             script_sig: vec![0x03, 0x01, 0x00, 0x00].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: (0..n)
@@ -225,7 +225,7 @@ fn replay_n_spends(bencher: divan::Bencher, n: usize) {
                 script_pubkey: vec![0x51].into(),
             })
             .collect(),
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let fund_block = make_block(Hash256::ZERO, FUND_HEIGHT, vec![fund_cb]);
     let fund_txid = fund_block.transactions[0].txid().expect("txid");

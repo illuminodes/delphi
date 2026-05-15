@@ -1,4 +1,5 @@
 use crate::codec::{DecodeRef, Encode, Error, VarInt};
+use crate::difficulty::{Locktime, TxVersion};
 use crate::hash::{ByteSliceExt, Hash256};
 use crate::script::Witness;
 
@@ -94,8 +95,8 @@ impl<'a> Iterator for TxOutRefIter<'a> {
 /// [`Self::to_owned`]+`Transaction::txid_into`.
 #[derive(Debug, Clone, Copy)]
 pub struct TransactionRef<'a> {
-    pub version: i32,
-    pub locktime: u32,
+    pub version: TxVersion,
+    pub locktime: Locktime,
     /// Complete wire bytes (BIP144 witness form if segwit, otherwise identical
     /// to `non_witness_raw`). Used by `Encode` and `encoded_len`.
     pub raw: &'a [u8],
@@ -468,7 +469,7 @@ impl TxHash for TransactionRef<'_> {
 impl<'a> DecodeRef<'a> for TransactionRef<'a> {
     fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let tx_start = buf;
-        let (version, buf) = i32::decode_ref(buf)?;
+        let (version, buf) = TxVersion::decode_ref(buf)?;
 
         // BIP144: if the byte after version is 0x00 and the one after that is
         // 0x01, this is a segwit transaction. Otherwise 0x00 means 0 inputs
@@ -540,7 +541,7 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
         // Span covering all input witnesses concatenated (BIP144). Empty for legacy.
         let witnesses_buf = &witnesses_start[..witnesses_start.len() - witnesses_end.len()];
 
-        let (locktime, rest) = u32::decode_ref(rest)?;
+        let (locktime, rest) = Locktime::decode_ref(rest)?;
         let raw = &tx_start[..tx_start.len() - rest.len()];
 
         // For legacy transactions `raw` is already the non-witness form, so
@@ -574,6 +575,7 @@ impl<'a> DecodeRef<'a> for TransactionRef<'a> {
 mod tests {
     use crate::amount::Satoshi;
     use crate::codec::{DecodeRef, Encode, Error};
+    use crate::difficulty::{Locktime, Sequence, TxVersion};
     use crate::hash::Hash256;
     use crate::script::Witness;
     use crate::tx::{
@@ -592,7 +594,7 @@ mod tests {
 
     fn make_tx() -> Transaction {
         Transaction {
-            version: 2,
+            version: TxVersion::new(2),
             inputs: vec![
                 TxIn {
                     previous_output: OutPoint {
@@ -600,7 +602,7 @@ mod tests {
                         vout: 1,
                     },
                     script_sig: vec![0x01, 0x02, 0x03].into(),
-                    sequence: 0xffff_fffe,
+                    sequence: Sequence::new(0xffff_fffe),
                     witness: Witness::empty(),
                 },
                 TxIn {
@@ -609,7 +611,7 @@ mod tests {
                         vout: 0,
                     },
                     script_sig: vec![].into(),
-                    sequence: 0,
+                    sequence: Sequence::new(0),
                     witness: Witness::empty(),
                 },
             ],
@@ -623,21 +625,21 @@ mod tests {
                     script_pubkey: vec![].into(),
                 },
             ],
-            locktime: 800_000,
+            locktime: Locktime::new(800_000),
         }
     }
 
     /// Build a small segwit transaction with two witness items on the only input.
     fn make_segwit_tx() -> Transaction {
         Transaction {
-            version: 2,
+            version: TxVersion::new(2),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::from_bytes([0x11u8; 32]),
                     vout: 0,
                 },
                 script_sig: Vec::<u8>::new().into(), // P2WPKH has empty scriptSig
-                sequence: 0xffff_fffe,
+                sequence: Sequence::new(0xffff_fffe),
                 witness: Witness::from_slice(&[
                     &[0xde, 0xad, 0xbe, 0xef][..],
                     &[0x01, 0x02, 0x03, 0x04, 0x05][..],
@@ -647,7 +649,7 @@ mod tests {
                 value: Satoshi::new(99_000),
                 script_pubkey: vec![0x00, 0x14, 0xaa, 0xbb, 0xcc].into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         }
     }
 
@@ -739,10 +741,10 @@ mod tests {
     #[test]
     fn transaction_ref_empty_inputs_outputs() {
         let tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![],
             outputs: vec![],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let bytes = encode(&tx);
         let (tx_ref, tail) = decode_ref::<TransactionRef>(&bytes);

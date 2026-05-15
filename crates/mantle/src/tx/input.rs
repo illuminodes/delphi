@@ -1,4 +1,5 @@
 use crate::codec::{Decode, DecodeRef, Encode, Error};
+use crate::difficulty::Sequence;
 use crate::script::{ScriptSig, Witness};
 
 use super::outpoint::OutPoint;
@@ -9,7 +10,7 @@ use super::outpoint::OutPoint;
 pub struct TxIn {
     pub previous_output: OutPoint,
     pub script_sig: ScriptSig,
-    pub sequence: u32,
+    pub sequence: Sequence,
     /// Witness stack for this input (BIP141). Empty for legacy inputs.
     /// Not included in the non-witness serialisation used for txid.
     pub witness: Witness,
@@ -32,7 +33,7 @@ impl Decode for TxIn {
         Ok(Self {
             previous_output: OutPoint::decode(r)?,
             script_sig: ScriptSig::decode(r)?,
-            sequence: u32::decode(r)?,
+            sequence: Sequence::decode(r)?,
             witness: Witness::empty(),
         })
     }
@@ -43,14 +44,14 @@ impl Decode for TxIn {
 pub struct TxInRef<'a> {
     pub previous_output: OutPoint,
     pub script_sig: &'a [u8],
-    pub sequence: u32,
+    pub sequence: Sequence,
 }
 
 impl<'a> DecodeRef<'a> for TxInRef<'a> {
     fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let (previous_output, buf) = OutPoint::decode_ref(buf)?;
         let (script_sig, buf) = <&'a [u8]>::decode_ref(buf)?;
-        let (sequence, buf) = u32::decode_ref(buf)?;
+        let (sequence, buf) = Sequence::decode_ref(buf)?;
         Ok((
             Self {
                 previous_output,
@@ -67,6 +68,7 @@ mod tests {
     use std::io::Cursor;
 
     use crate::codec::{Decode, DecodeRef, Encode, Error};
+    use crate::difficulty::Sequence;
     use crate::hash::Hash256;
     use crate::script::Witness;
     use crate::tx::{OutPoint, TxIn, TxInRef};
@@ -97,13 +99,13 @@ mod tests {
                 vout: 0,
             },
             script_sig: vec![0x01, 0x02, 0x03].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         };
         let bytes = encode(&txin);
         let (txin_ref, tail) = decode_ref::<TxInRef>(&bytes);
         assert_eq!(txin_ref.script_sig, &[0x01, 0x02, 0x03]);
-        assert_eq!(txin_ref.sequence, u32::MAX);
+        assert_eq!(txin_ref.sequence, Sequence::MAX);
         assert!(tail.is_empty());
         // script_sig borrows directly from bytes
         assert!(std::ptr::eq(
@@ -120,7 +122,7 @@ mod tests {
                 vout: 0,
             },
             script_sig: vec![].into(),
-            sequence: 0,
+            sequence: Sequence::new(0),
             witness: Witness::empty(),
         };
         let bytes = encode(&txin);
@@ -140,7 +142,7 @@ mod tests {
                 vout: 0,
             },
             script_sig: vec![0x01, 0x02, 0x03, 0x04].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         };
         let mut bytes = encode(&txin);

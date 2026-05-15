@@ -60,7 +60,7 @@ use mantle::hash::ByteSliceExt;
 use mantle::primitives::{Hash256, Satoshi};
 
 #[cfg(test)]
-use mantle::primitives::{Transaction, TxIn, TxOut, Witness};
+use mantle::primitives::{Sequence, Transaction, TxIn, TxOut, Witness};
 
 use super::consensus_crypto::Schnorr;
 use crate::tx_view::{InputView, OutputView, TxView};
@@ -465,7 +465,7 @@ fn build_modified_tx(
                     Vec::<u8>::new().into()
                 };
                 let sequence = match mode {
-                    SigHashMode::None | SigHashMode::Single if i != n_in => 0,
+                    SigHashMode::None | SigHashMode::Single if i != n_in => Sequence::new(0),
                     _ => txin.sequence,
                 };
                 TxIn {

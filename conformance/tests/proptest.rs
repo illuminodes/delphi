@@ -6,7 +6,8 @@ use proptest::prelude::*;
 
 use mantle::codec::{Decode, Encode, VarInt};
 use mantle::primitives::{
-    Block, BlockHeader, CompactBits, Hash256, OutPoint, Transaction, TxIn, TxOut, Witness,
+    Block, BlockHeader, CompactBits, Hash256, Locktime, OutPoint, Sequence, Transaction, TxIn,
+    TxOut, TxVersion, Witness,
 };
 use std::io::Cursor;
 
@@ -70,7 +71,7 @@ fn arb_txin() -> impl Strategy<Value = TxIn> {
         .prop_map(|(txid, vout, script_sig, sequence)| TxIn {
             previous_output: OutPoint { txid, vout },
             script_sig: script_sig.into(),
-            sequence,
+            sequence: Sequence::new(sequence),
             witness: Witness::empty(),
         })
 }
@@ -83,10 +84,10 @@ fn arb_transaction() -> impl Strategy<Value = Transaction> {
         any::<u32>(),
     )
         .prop_map(|(version, inputs, outputs, locktime)| Transaction {
-            version,
+            version: TxVersion::new(version),
             inputs,
             outputs,
-            locktime,
+            locktime: Locktime::new(locktime),
         })
 }
 
@@ -232,18 +233,18 @@ proptest! {
         let flags = ScriptFlags::NONE;
         let amount = Satoshi::new(amount);
         let tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
                 script_sig: script_sig.clone().into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: amount,
                 script_pubkey: vec![0x51].into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
 
         let mut cache = ScriptExecutionCache::new(64);

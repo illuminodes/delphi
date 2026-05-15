@@ -343,7 +343,9 @@ mod tests {
     use k256::ecdsa::signature::hazmat::PrehashSigner;
     use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 
-    use mantle::primitives::{Hash256, OutPoint, Transaction, TxIn, TxOut, Witness};
+    use mantle::primitives::{
+        Hash256, Locktime, OutPoint, Sequence, Transaction, TxIn, TxOut, TxVersion, Witness,
+    };
     use ripemd::Ripemd160;
     use sha2::{Digest, Sha256};
 
@@ -381,14 +383,14 @@ mod tests {
     /// The argument is kept so call sites read at the level of intent.
     fn make_tx_p2pkh(_pubkey_hash: &[u8; 20]) -> Transaction {
         Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::from_bytes([0u8; 32]),
                     vout: 0,
                 },
                 script_sig: Vec::<u8>::new().into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
@@ -396,7 +398,7 @@ mod tests {
                 // Arbitrary scriptPubKey for the output; not exercised by sighash here.
                 script_pubkey: vec![0x6a].into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         }
     }
 

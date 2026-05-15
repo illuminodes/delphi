@@ -3,7 +3,9 @@ use super::*;
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 
-use mantle::primitives::{Hash256, OutPoint, Transaction, TxIn, TxOut, Witness};
+use mantle::primitives::{
+    Hash256, Locktime, OutPoint, Sequence, Transaction, TxIn, TxOut, TxVersion, Witness,
+};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 
@@ -36,21 +38,21 @@ fn sign(sk: &SigningKey, sighash: &[u8; 32], hashtype: SigHashType) -> Vec<u8> {
 
 fn make_tx() -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0u8; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),
-            sequence: 0xffff_ffff,
+            sequence: Sequence::new(0xffff_ffff),
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(50_000),
             script_pubkey: vec![0x6a].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -397,14 +399,14 @@ fn segwit_flags() -> ScriptFlags {
 /// Build a tx whose input has `witness` set.
 fn make_witness_tx(witness_items: &[Vec<u8>]) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0u8; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),
-            sequence: 0xffff_ffff,
+            sequence: Sequence::new(0xffff_ffff),
             witness: Witness::from_slice(
                 &witness_items.iter().map(Vec::as_slice).collect::<Vec<_>>(),
             ),
@@ -413,7 +415,7 @@ fn make_witness_tx(witness_items: &[Vec<u8>]) -> Transaction {
             value: Satoshi::new(100_000),
             script_pubkey: vec![0x6a].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 

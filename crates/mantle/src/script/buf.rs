@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io::{Read, Write};
 
-use crate::codec::{Decode, Encode, Error, VarInt, decode_bytes_limited};
+use crate::codec::{Decode, Encode, Error, VarInt};
 
 // ── ScriptBuf ─────────────────────────────────────────────────────────────────
 
@@ -129,7 +129,7 @@ impl<const N: usize> Encode for ScriptBuf<N> {
 
 impl<const N: usize> Decode for ScriptBuf<N> {
     fn decode(r: &mut impl Read) -> Result<Self, Error> {
-        decode_bytes_limited::<10_000>(r).map(Self::from)
+        VarInt::decode_bytes_limited::<10_000>(r).map(Self::from)
     }
 }
 

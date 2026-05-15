@@ -1,7 +1,7 @@
 use mantle::codec::{Decode, DecodeRef, Encode};
 use mantle::primitives::{
-    Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, TxHash, TxIn,
-    TxInRef, TxOut, TxOutRef, Witness,
+    Block, BlockHeader, Hash256, Locktime, OutPoint, Satoshi, Sequence, Transaction,
+    TransactionRef, TxHash, TxIn, TxInRef, TxOut, TxOutRef, TxVersion, Witness,
 };
 use std::hint::black_box;
 use std::io::Cursor;
@@ -29,7 +29,7 @@ fn make_header(i: usize) -> BlockHeader {
 
 fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: (0..n_inputs)
             .map(|i| TxIn {
                 previous_output: OutPoint {
@@ -37,7 +37,7 @@ fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
                     vout: u32::try_from(i).expect("bench index fits u32"),
                 },
                 script_sig: vec![0x51; 20].into(),
-                sequence: u32::MAX,
+                sequence: Sequence::MAX,
                 witness: Witness::empty(),
             })
             .collect(),
@@ -47,7 +47,7 @@ fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
                 script_pubkey: vec![0x76, 0xa9, 0x14].into(),
             })
             .collect(),
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -149,7 +149,7 @@ fn txin_encode() -> Vec<u8> {
             vout: 0,
         },
         script_sig: vec![0x76; 25].into(),
-        sequence: u32::MAX,
+        sequence: Sequence::MAX,
         witness: Witness::empty(),
     })
 }
@@ -162,7 +162,7 @@ fn txin_decode(bencher: divan::Bencher) {
             vout: 0,
         },
         script_sig: vec![0x76; 25].into(),
-        sequence: u32::MAX,
+        sequence: Sequence::MAX,
         witness: Witness::empty(),
     };
     let bytes = encode_bytes(&txin);
@@ -180,7 +180,7 @@ fn txin_decode_ref(bencher: divan::Bencher) {
             vout: 0,
         },
         script_sig: vec![0x76; 25].into(),
-        sequence: u32::MAX,
+        sequence: Sequence::MAX,
         witness: Witness::empty(),
     };
     let bytes = encode_bytes(&txin);
@@ -264,7 +264,7 @@ fn transaction_ref_iter(bencher: divan::Bencher, n: usize) {
     bencher.bench(|| {
         let mut sum = 0u64;
         for r in tx_ref.inputs() {
-            sum += u64::from(r.expect("input decode cannot fail on valid bytes").sequence);
+            sum += u64::from(r.expect("input decode cannot fail on valid bytes").sequence.to_u32());
         }
         for r in tx_ref.outputs() {
             sum += r
@@ -368,7 +368,7 @@ fn block_decode_1000_txs(bencher: divan::Bencher) {
 #[divan::bench]
 fn transaction_decode_p2pkh_btccore(bencher: divan::Bencher) {
     let tx = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0xabu8; 32]),
@@ -379,14 +379,14 @@ fn transaction_decode_p2pkh_btccore(bencher: divan::Bencher) {
                 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0x88, 0xac,
             ]
             .into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(100_000),
             script_pubkey: vec![0x76, 0xa9, 0x14].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let bytes = encode_bytes(&tx);
     bencher.bench(|| {

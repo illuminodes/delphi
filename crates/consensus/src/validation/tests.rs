@@ -6,46 +6,46 @@ use super::*;
 use crate::chain_view::{Coin, ConnectScratch, MemoryChainView};
 use crate::merkle::compute_merkle_root;
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash,
-    TxIn, TxOut, Witness,
+    Block, BlockHeader, BlockHeight, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence,
+    Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 fn coinbase_tx(height: BlockHeight, value: u64) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: NULL_OUTPOINT,
             script_sig: Transaction::bip34_height_script(height).into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(value),
             script_pubkey: vec![0x51].into(), // OP_1
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
 fn regular_tx(prev_txid: Hash256, vout: u32, value: u64) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: prev_txid,
                 vout,
             },
             script_sig: vec![0x00].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(value),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -969,18 +969,18 @@ fn connect_coinbase_reward_exceeds_subsidy_rejected() {
     let (view, _, _) = connect_setup(1);
     // Coinbase claims more than the 50 BTC subsidy at height 1.
     let greedy_cb = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: NULL_OUTPOINT,
             script_sig: Transaction::bip34_height_script(BlockHeight::new(1)).into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(50 * 100_000_000 + 1), // one satoshi over
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let block = make_block(vec![greedy_cb], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();
@@ -1039,18 +1039,18 @@ fn connect_sigops_limit_exceeded() {
     // 1001 × OP_CHECKMULTISIG = 20,020 sigops > 20,000 limit.
     let many_sigops: Vec<u8> = std::iter::repeat_n(0xae_u8, 1001).collect();
     let cb = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: NULL_OUTPOINT,
             script_sig: Transaction::bip34_height_script(BlockHeight::new(1)).into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(block_subsidy(BlockHeight::new(1)).to_u64()),
             script_pubkey: many_sigops.into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let block = make_block(vec![cb], CompactBits::new(0x207f_ffff));
     let mut scratch = Vec::new();

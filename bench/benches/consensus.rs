@@ -1,7 +1,7 @@
 use mantle::codec::Encode;
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash,
-    TxIn, TxOut, Witness,
+    Block, BlockHeader, BlockHeight, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence,
+    Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::{compute_merkle_root, compute_merkle_root_reusing};
@@ -20,38 +20,38 @@ const EASY_BITS: CompactBits = CompactBits::new(0x207f_ffff);
 
 fn coinbase_tx(value: u64) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::ZERO,
                 vout: u32::MAX,
             },
             script_sig: vec![0x03, 0x01, 0x00, 0x00].into(), // BIP34 height=1
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(value),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
 fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint { txid: prev, vout },
             script_sig: vec![0x51].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(value),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -128,7 +128,7 @@ fn txid_regular(bencher: divan::Bencher, n_inputs: usize) {
                     vout: u32::try_from(i).expect("bench index fits u32"),
                 },
                 script_sig: vec![0x51; 20].into(),
-                sequence: u32::MAX,
+                sequence: Sequence::MAX,
                 witness: Witness::empty(),
             })
             .collect(),
@@ -238,21 +238,21 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
     let clock_now = u64::from(parent_time) + 600;
 
     let tx = Transaction {
-        version: 4,
+        version: TxVersion::new(4),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::ZERO,
                 vout: u32::MAX,
             },
             script_sig: vec![0x03, 0x0d, 0x00, 0x00].into(), // height=13
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(5_000_000_000),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let merkle_root = compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
         .expect("single-tx merkle root must exist");

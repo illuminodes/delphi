@@ -4,7 +4,8 @@ use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 use mantle::codec::Encode;
 use mantle::primitives::{
-    Block, BlockHeader, Hash256, OutPoint, Satoshi, Transaction, TxHash, TxIn, TxOut, Witness,
+    Block, BlockHeader, Hash256, Locktime, OutPoint, Satoshi, Sequence, Transaction, TxHash, TxIn,
+    TxOut, TxVersion, Witness,
 };
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::checker::TxSigChecker;
@@ -30,38 +31,38 @@ fn encode<T: Encode>(v: &T) -> Vec<u8> {
 
 fn coinbase(script: Vec<u8>, value: u64) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::ZERO,
                 vout: u32::MAX,
             },
             script_sig: script.into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(value),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
 fn regular(prev: Hash256, vout: u32, value: u64) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint { txid: prev, vout },
             script_sig: vec![0x51; 20].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(value),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -135,7 +136,7 @@ fn main() {
     // ── workload B: txid over a 16-input transaction ─────────────────────────
     {
         let tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: (0..16u8)
                 .map(|i| TxIn {
                     previous_output: OutPoint {
@@ -143,7 +144,7 @@ fn main() {
                         vout: u32::from(i),
                     },
                     script_sig: vec![0x51; 20].into(),
-                    sequence: u32::MAX,
+                    sequence: Sequence::MAX,
                     witness: Witness::empty(),
                 })
                 .collect(),
@@ -151,7 +152,7 @@ fn main() {
                 value: Satoshi::new(1000),
                 script_pubkey: vec![0x51].into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let n = run_for(secs, || {
             black_box(black_box(&tx).txid().expect("txid encoding cannot fail"));
@@ -236,21 +237,21 @@ fn main() {
             | ScriptFlags::WITNESS;
 
         let tmp_tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::ZERO,
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: amount,
                 script_pubkey: spk.clone().into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
@@ -262,21 +263,21 @@ fn main() {
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
 
         let tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::ZERO,
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice()]),
             }],
             outputs: vec![TxOut {
                 value: amount,
                 script_pubkey: spk.clone().into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
 
         let n = run_for(secs, || {
@@ -320,21 +321,21 @@ fn main() {
             | ScriptFlags::WITNESS;
 
         let tmp_tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::ZERO,
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: amount,
                 script_pubkey: spk.clone().into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
@@ -346,21 +347,21 @@ fn main() {
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
 
         let tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::ZERO,
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::from_slice(&[sig_bytes.as_slice(), pk.as_slice()]),
             }],
             outputs: vec![TxOut {
                 value: amount,
                 script_pubkey: spk.clone().into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
 
         let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
@@ -409,21 +410,21 @@ fn main() {
             | ScriptFlags::WITNESS;
 
         let tmp_tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::ZERO,
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: amount,
                 script_pubkey: spk.clone().into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
@@ -435,14 +436,14 @@ fn main() {
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
 
         let tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::ZERO,
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::from_slice(&[
                     sig_bytes.as_slice(),
                     pk.as_slice(),
@@ -453,7 +454,7 @@ fn main() {
                 value: amount,
                 script_pubkey: spk.clone().into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
 
         let n = run_for(secs, || {
@@ -497,21 +498,21 @@ fn main() {
             | ScriptFlags::WITNESS;
 
         let tmp_tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::ZERO,
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: amount,
                 script_pubkey: spk.clone().into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
@@ -523,14 +524,14 @@ fn main() {
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
 
         let tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::ZERO,
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_ffff,
+                sequence: Sequence::new(0xffff_ffff),
                 witness: Witness::from_slice(&[
                     sig_bytes.as_slice(),
                     pk.as_slice(),
@@ -541,7 +542,7 @@ fn main() {
                 value: amount,
                 script_pubkey: spk.clone().into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
 
         let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
@@ -596,21 +597,21 @@ fn main() {
         spk.extend_from_slice(&output_key);
 
         let placeholder = Transaction {
-            version: 2,
+            version: TxVersion::new(2),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::from_bytes([0x55; 32]),
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_fffd,
+                sequence: Sequence::new(0xffff_fffd),
                 witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: amount,
                 script_pubkey: spk.clone().into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let cache = Bip341Cache::new(&placeholder, &[amount], &[spk.as_slice()]);
         let msg = placeholder.bip341_sighash(
@@ -629,21 +630,21 @@ fn main() {
         };
 
         let tx = Transaction {
-            version: 2,
+            version: TxVersion::new(2),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::from_bytes([0x55; 32]),
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_fffd,
+                sequence: Sequence::new(0xffff_fffd),
                 witness: Witness::from_slice(&[sig64.as_slice()]),
             }],
             outputs: vec![TxOut {
                 value: amount,
                 script_pubkey: spk.clone().into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
 
         let flags = ScriptFlags::P2SH | ScriptFlags::WITNESS | ScriptFlags::TAPROOT;
@@ -671,21 +672,21 @@ fn main() {
         let cltv_spk: &[u8] = &[0x01, 0x64, 0xb1, 0x75, 0x51];
         let cltv_flags = ScriptFlags::P2SH | ScriptFlags::CHECKLOCKTIMEVERIFY;
         let cltv_tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::from_bytes([0x33; 32]),
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 0xffff_fffe,
+                sequence: Sequence::new(0xffff_fffe),
                 witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(1000),
                 script_pubkey: vec![0x51].into(),
             }],
-            locktime: 200,
+            locktime: Locktime::new(200),
         };
         let cltv_checker = TxSigChecker::new(&cltv_tx, 0, Satoshi::new(1000), cltv_flags);
         let n = run_for(secs, || {
@@ -700,21 +701,21 @@ fn main() {
         let csv_spk: &[u8] = &[0x01, 0x05, 0xb2, 0x75, 0x51];
         let csv_flags = ScriptFlags::P2SH | ScriptFlags::CHECKSEQUENCEVERIFY;
         let csv_tx = Transaction {
-            version: 2,
+            version: TxVersion::new(2),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::from_bytes([0x44; 32]),
                     vout: 0,
                 },
                 script_sig: vec![].into(),
-                sequence: 10,
+                sequence: Sequence::new(10),
                 witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(1000),
                 script_pubkey: vec![0x51].into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let csv_checker = TxSigChecker::new(&csv_tx, 0, Satoshi::new(1000), csv_flags);
         let n = run_for(secs, || {

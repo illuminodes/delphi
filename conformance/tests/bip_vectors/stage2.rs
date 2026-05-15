@@ -24,10 +24,10 @@ fn stage2_block_for_height(
         s
     };
     let coinbase = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![coinbase_input(script_sig)],
         outputs: vec![make_output(50_0000_0000)],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
@@ -110,10 +110,10 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
         s
     };
     let coinbase = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![coinbase_input(script_sig)],
         outputs: vec![make_output(50_0000_0000)],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
@@ -144,10 +144,10 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
             s
         };
         let coinbase2 = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![coinbase_input(script_sig2)],
             outputs: vec![make_output(50_0000_0000)],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let txids2 = vec![coinbase2.txid().expect("txid encoding cannot fail")];
         let mr2 = compute_merkle_root(&txids2).expect("single-tx merkle root must exist");
@@ -186,10 +186,10 @@ fn stage2_bip34_height_missing_rejected() {
     // coinbase with NO height encoding — just padding bytes.
     let bad_script = vec![0x51, 0x52]; // does not start with encoded height
     let coinbase = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![coinbase_input(bad_script)],
         outputs: vec![make_output(50_0000_0000)],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
@@ -253,10 +253,10 @@ fn stage2_valid_block_accepted() {
         .expect("tip header must exist")
         .time();
     let coinbase = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![coinbase_input(vec![0x51, 0x52])],
         outputs: vec![make_output(50_0000_0000)],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");

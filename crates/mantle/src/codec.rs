@@ -384,7 +384,7 @@ impl Encode for String {
 
 impl Decode for String {
     fn decode(r: &mut impl Read) -> Result<Self, Error> {
-        decode_string_limited::<{ 4 * 1024 * 1024 }>(r)
+        VarInt::decode_string_limited::<{ 4 * 1024 * 1024 }>(r)
     }
 }
 
@@ -397,34 +397,54 @@ impl Encode for Vec<u8> {
 
 impl Decode for Vec<u8> {
     fn decode(r: &mut impl Read) -> Result<Self, Error> {
-        decode_bytes_limited::<{ 4 * 1024 * 1024 }>(r)
+        VarInt::decode_bytes_limited::<{ 4 * 1024 * 1024 }>(r)
     }
 }
 
 // ── Length-limited byte/string helpers ───────────────────────────────────────
 
-/// Decode a `VarInt`-prefixed byte blob, rejecting lengths above `MAX_BYTES`.
-///
-/// # Errors
-/// Returns `LengthOverflow` if the length field exceeds `MAX_BYTES`, or on any I/O error.
-pub fn decode_bytes_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> Result<Vec<u8>, Error> {
-    let VarInt(len) = VarInt::decode(r)?;
-    let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
-    if len > MAX_BYTES {
-        return Err(Error::LengthOverflow(len as u64));
+impl VarInt {
+    /// Decode a `VarInt`-prefixed byte blob, rejecting lengths above `MAX_BYTES`.
+    ///
+    /// # Errors
+    /// Returns `LengthOverflow` if the length field exceeds `MAX_BYTES`, or on any I/O error.
+    pub fn decode_bytes_limited<const MAX_BYTES: usize>(
+        r: &mut impl Read,
+    ) -> Result<Vec<u8>, Error> {
+        let VarInt(len) = VarInt::decode(r)?;
+        let len = usize::try_from(len).map_err(|_| Error::LengthOverflow(len))?;
+        if len > MAX_BYTES {
+            return Err(Error::LengthOverflow(len as u64));
+        }
+        let mut buf = vec![0u8; len];
+        r.read_exact(&mut buf)?;
+        Ok(buf)
     }
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf)?;
-    Ok(buf)
+
+    /// Decode a `VarInt`-prefixed UTF-8 string, rejecting lengths above `MAX_BYTES`.
+    ///
+    /// # Errors
+    /// Returns `LengthOverflow` if the length field exceeds `MAX_BYTES`, or on any I/O error.
+    pub fn decode_string_limited<const MAX_BYTES: usize>(
+        r: &mut impl Read,
+    ) -> Result<String, Error> {
+        let buf = Self::decode_bytes_limited::<MAX_BYTES>(r)?;
+        String::from_utf8(buf).map_err(|e| Error::InvalidUtf8(e.utf8_error()))
+    }
 }
 
-/// Decode a `VarInt`-prefixed UTF-8 string, rejecting lengths above `MAX_BYTES`.
-///
-/// # Errors
-/// Returns `LengthOverflow` if the length field exceeds `MAX_BYTES`, or on any I/O error.
+/// See [`VarInt::decode_bytes_limited`].
+#[allow(clippy::missing_errors_doc)]
+#[inline]
+pub fn decode_bytes_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> Result<Vec<u8>, Error> {
+    VarInt::decode_bytes_limited::<MAX_BYTES>(r)
+}
+
+/// See [`VarInt::decode_string_limited`].
+#[allow(clippy::missing_errors_doc)]
+#[inline]
 pub fn decode_string_limited<const MAX_BYTES: usize>(r: &mut impl Read) -> Result<String, Error> {
-    let buf = decode_bytes_limited::<MAX_BYTES>(r)?;
-    String::from_utf8(buf).map_err(|e| Error::InvalidUtf8(e.utf8_error()))
+    VarInt::decode_string_limited::<MAX_BYTES>(r)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

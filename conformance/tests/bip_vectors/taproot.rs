@@ -14,7 +14,9 @@
 //!    TAPROOT flag disabled (unknown witness version tolerance)
 //!  - Annex: key-path spend with a valid annex item
 
-use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, Witness};
+use mantle::primitives::{
+    Hash256, Locktime, OutPoint, Satoshi, Sequence, Transaction, TxIn, TxOut, TxVersion, Witness,
+};
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 
@@ -29,14 +31,14 @@ fn taproot_flags() -> ScriptFlags {
 
 fn make_taproot_tx(spk: Vec<u8>, _amount: Satoshi, witness_items: &[Vec<u8>]) -> Transaction {
     Transaction {
-        version: 2,
+        version: TxVersion::new(2),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),
-            sequence: 0xffff_fffd,
+            sequence: Sequence::new(0xffff_fffd),
             witness: Witness::from_slice(
                 &witness_items.iter().map(Vec::as_slice).collect::<Vec<_>>(),
             ),
@@ -45,7 +47,7 @@ fn make_taproot_tx(spk: Vec<u8>, _amount: Satoshi, witness_items: &[Vec<u8>]) ->
             value: Satoshi::new(900),
             script_pubkey: spk.into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -421,21 +423,21 @@ fn p2sh_wrapped_taproot_is_rejected() {
     script_sig.extend_from_slice(&taproot_spk_bytes);
 
     let tx = Transaction {
-        version: 2,
+        version: TxVersion::new(2),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: script_sig.clone().into(),
-            sequence: 0xffff_ffff,
+            sequence: Sequence::new(0xffff_ffff),
             witness: Witness::from_slice(&[&[][..]]),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(900),
             script_pubkey: vec![0x6a].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
 
     assert!(
@@ -603,7 +605,7 @@ fn make_two_input_taproot_tx(
     witness1: &[Vec<u8>],
 ) -> Transaction {
     Transaction {
-        version: 2,
+        version: TxVersion::new(2),
         inputs: vec![
             TxIn {
                 previous_output: OutPoint {
@@ -611,7 +613,7 @@ fn make_two_input_taproot_tx(
                     vout: 0,
                 },
                 script_sig: Vec::<u8>::new().into(),
-                sequence: 0xffff_fffd,
+                sequence: Sequence::new(0xffff_fffd),
                 witness: Witness::from_slice(
                     &witness0.iter().map(Vec::as_slice).collect::<Vec<_>>(),
                 ),
@@ -622,7 +624,7 @@ fn make_two_input_taproot_tx(
                     vout: 1,
                 },
                 script_sig: Vec::<u8>::new().into(),
-                sequence: 0xffff_fffd,
+                sequence: Sequence::new(0xffff_fffd),
                 witness: Witness::from_slice(
                     &witness1.iter().map(Vec::as_slice).collect::<Vec<_>>(),
                 ),
@@ -632,7 +634,7 @@ fn make_two_input_taproot_tx(
             value: out_value,
             script_pubkey: out_spk.into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -728,7 +730,7 @@ fn bip341_key_path_two_input_single_anyonecanpay() {
         witness1: &[Vec<u8>],
     ) -> Transaction {
         Transaction {
-            version: 2,
+            version: TxVersion::new(2),
             inputs: vec![
                 TxIn {
                     previous_output: OutPoint {
@@ -736,7 +738,7 @@ fn bip341_key_path_two_input_single_anyonecanpay() {
                         vout: 0,
                     },
                     script_sig: Vec::<u8>::new().into(),
-                    sequence: 0xffff_fffd,
+                    sequence: Sequence::new(0xffff_fffd),
                     witness: Witness::from_slice(
                         &witness0.iter().map(Vec::as_slice).collect::<Vec<_>>(),
                     ),
@@ -747,7 +749,7 @@ fn bip341_key_path_two_input_single_anyonecanpay() {
                         vout: 1,
                     },
                     script_sig: Vec::<u8>::new().into(),
-                    sequence: 0xffff_fffd,
+                    sequence: Sequence::new(0xffff_fffd),
                     witness: Witness::from_slice(
                         &witness1.iter().map(Vec::as_slice).collect::<Vec<_>>(),
                     ),
@@ -763,7 +765,7 @@ fn bip341_key_path_two_input_single_anyonecanpay() {
                     script_pubkey: out1_spk.into(),
                 },
             ],
-            locktime: 0,
+            locktime: Locktime::new(0),
         }
     }
 

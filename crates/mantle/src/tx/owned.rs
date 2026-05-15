@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 
 use crate::codec::{Decode, Encode, Error, VarInt};
-use crate::difficulty::BlockHeight;
+use crate::difficulty::{BlockHeight, Locktime, TxVersion};
 use crate::hash::{ByteSliceExt, Hash256};
 use crate::script::Witness;
 
@@ -14,10 +14,10 @@ use super::output::TxOut;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
-    pub version: i32,
+    pub version: TxVersion,
     pub inputs: Vec<TxIn>,
     pub outputs: Vec<TxOut>,
-    pub locktime: u32,
+    pub locktime: Locktime,
 }
 
 impl TxHash for Transaction {
@@ -157,7 +157,7 @@ impl Transaction {
     pub fn decode_limited<const MAX_INPUTS: usize, const MAX_OUTPUTS: usize>(
         r: &mut impl Read,
     ) -> Result<Self, Error> {
-        let version = i32::decode(r)?;
+        let version = TxVersion::decode(r)?;
 
         // BIP144: read the input-count VarInt byte. If it is 0x00 we may be
         // looking at a segwit transaction (marker=0x00, flag=0x01). Read one
@@ -208,7 +208,7 @@ impl Transaction {
             }
         }
 
-        let locktime = u32::decode(r)?;
+        let locktime = Locktime::decode(r)?;
         Ok(Self {
             version,
             inputs,
@@ -230,6 +230,7 @@ mod tests {
 
     use crate::amount::Satoshi;
     use crate::codec::{Decode, Encode, Error};
+    use crate::difficulty::{Locktime, Sequence, TxVersion};
     use crate::hash::Hash256;
     use crate::script::Witness;
     use crate::tx::{OutPoint, Transaction, TxIn, TxOut};
@@ -251,21 +252,21 @@ mod tests {
     #[test]
     fn transaction_roundtrip() {
         let tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::ZERO,
                     vout: 0xffff_ffff,
                 },
                 script_sig: vec![0x04, 0xff, 0xff, 0x00, 0x1d, 0x01, 0x04].into(),
-                sequence: u32::MAX,
+                sequence: Sequence::MAX,
                 witness: Witness::empty(),
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(5_000_000_000),
                 script_pubkey: vec![0x41, 0xac].into(),
             }],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let bytes = encode(&tx);
         assert_eq!(decode::<Transaction>(&bytes), tx);
@@ -274,10 +275,10 @@ mod tests {
     #[test]
     fn transaction_empty_inputs_outputs() {
         let tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![],
             outputs: vec![],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let bytes = encode(&tx);
         assert_eq!(decode::<Transaction>(&bytes), tx);
@@ -286,10 +287,10 @@ mod tests {
     #[test]
     fn transaction_negative_version() {
         let tx = Transaction {
-            version: -1,
+            version: TxVersion::new(-1),
             inputs: vec![],
             outputs: vec![],
-            locktime: u32::MAX,
+            locktime: Locktime::new(u32::MAX),
         };
         let bytes = encode(&tx);
         assert_eq!(decode::<Transaction>(&bytes), tx);

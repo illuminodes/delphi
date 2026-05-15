@@ -92,7 +92,7 @@ mod tests {
     use crate::amount::Satoshi;
     use crate::block::{Block, BlockHeader};
     use crate::codec::{Decode, Encode, Error};
-    use crate::difficulty::CompactBits;
+    use crate::difficulty::{CompactBits, Locktime, Sequence, TxVersion};
     use crate::hash::Hash256;
     use crate::script::Witness;
     use crate::tx::{OutPoint, Transaction, TxIn, TxOut};
@@ -123,21 +123,21 @@ mod tests {
                 2_083_236_893,
             ),
             transactions: vec![Transaction {
-                version: 1,
+                version: TxVersion::new(1),
                 inputs: vec![TxIn {
                     previous_output: OutPoint {
                         txid: Hash256::ZERO,
                         vout: 0xffff_ffff,
                     },
                     script_sig: vec![0x04].into(),
-                    sequence: u32::MAX,
+                    sequence: Sequence::MAX,
                     witness: Witness::empty(),
                 }],
                 outputs: vec![TxOut {
                     value: Satoshi::new(5_000_000_000),
                     script_pubkey: vec![0xac].into(),
                 }],
-                locktime: 0,
+                locktime: Locktime::new(0),
             }],
         };
         let bytes = encode(&block);
@@ -172,10 +172,10 @@ mod tests {
     fn block_tx_count_varint_3byte_encoding() {
         // Build a block with 253 (0xfd) transactions to force a 3-byte VarInt.
         let dummy_tx = Transaction {
-            version: 1,
+            version: TxVersion::new(1),
             inputs: vec![],
             outputs: vec![],
-            locktime: 0,
+            locktime: Locktime::new(0),
         };
         let block = Block {
             header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),

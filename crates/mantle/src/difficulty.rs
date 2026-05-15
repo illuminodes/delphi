@@ -265,3 +265,148 @@ impl std::ops::Rem<u32> for BlockHeight {
         self.0 % rhs
     }
 }
+
+// ── TxVersion ───────────────────────────────────────────────────────────────
+
+/// Transaction version field (i32, supports BIP68/BIP112/BIP113 version semantics).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct TxVersion(i32);
+
+impl TxVersion {
+    #[inline]
+    #[must_use]
+    pub const fn new(v: i32) -> Self {
+        Self(v)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_i32(self) -> i32 {
+        self.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl Encode for TxVersion {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for TxVersion {
+    #[inline]
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
+        i32::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for TxVersion {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
+        i32::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}
+
+// ── Locktime ────────────────────────────────────────────────────────────────
+
+/// Transaction locktime field (u32). Values below `500_000_000` are block heights;
+/// values at or above are Unix timestamps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Locktime(u32);
+
+impl Locktime {
+    #[inline]
+    #[must_use]
+    pub const fn new(n: u32) -> Self {
+        Self(n)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl Encode for Locktime {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for Locktime {
+    #[inline]
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
+        u32::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for Locktime {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
+        u32::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}
+
+// ── Sequence ────────────────────────────────────────────────────────────────
+
+/// Transaction input sequence number (u32). Encodes relative timelocks (BIP68)
+/// and opt-in replace-by-fee signalling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Sequence(u32);
+
+impl Sequence {
+    pub const MAX: Self = Self(0xFFFF_FFFF);
+
+    #[inline]
+    #[must_use]
+    pub const fn new(n: u32) -> Self {
+        Self(n)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl Encode for Sequence {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for Sequence {
+    #[inline]
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
+        u32::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for Sequence {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
+        u32::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}

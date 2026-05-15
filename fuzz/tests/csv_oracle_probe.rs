@@ -16,7 +16,9 @@
 //! evaluated against a tx with controlled `version` and input `nSequence`.
 
 use mantle::codec::Encode;
-use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut};
+use mantle::primitives::{
+    Hash256, Locktime, OutPoint, Satoshi, Sequence, Transaction, TxIn, TxOut, TxVersion,
+};
 use mantle_conformance::conformance;
 use mantle_consensus::script::{ScriptFlags, verify_script};
 
@@ -43,21 +45,21 @@ fn push_scriptnum(n: i64) -> Vec<u8> {
 
 fn build_tx(version: i32, input_seq: u32) -> Transaction {
     Transaction {
-        version,
+        version: TxVersion::new(version),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([1u8; 32]),
                 vout: 0,
             },
             script_sig: Vec::<u8>::new().into(),
-            sequence: input_seq,
+            sequence: Sequence::new(input_seq),
             witness: mantle::primitives::Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(0),
             script_pubkey: vec![0x51].into(), // OP_1
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 

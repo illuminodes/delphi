@@ -12,7 +12,9 @@
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 use mantle::codec::Encode;
-use mantle::primitives::{Hash256, OutPoint, Satoshi, Transaction, TxIn, TxOut, Witness};
+use mantle::primitives::{
+    Hash256, Locktime, OutPoint, Satoshi, Sequence, Transaction, TxIn, TxOut, TxVersion, Witness,
+};
 use mantle_consensus::script::consensus_crypto::Schnorr;
 use mantle_consensus::script::sighash::{
     Bip143Cache, Bip341Cache, SigHashType, TapHasher, TaprootSigHashType, TxSighash,
@@ -266,21 +268,21 @@ fn segwit_flags() -> ScriptFlags {
 
 fn make_witness_tx(witness_items: &[&[u8]]) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::ZERO,
                 vout: 0,
             },
             script_sig: vec![].into(),
-            sequence: 0xffff_ffff,
+            sequence: Sequence::new(0xffff_ffff),
             witness: Witness::from_slice(witness_items),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(100_000),
             script_pubkey: vec![0x6a].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
@@ -459,21 +461,21 @@ fn verify_taproot_keypath(bencher: divan::Bencher) {
     spk.extend_from_slice(&output_key);
 
     let placeholder = Transaction {
-        version: 2,
+        version: TxVersion::new(2),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
-            sequence: 0xffff_fffd,
+            sequence: Sequence::new(0xffff_fffd),
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: amount,
             script_pubkey: spk.clone().into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
 
     let cache = Bip341Cache::new(&placeholder, &[amount], &[spk.as_slice()]);
@@ -489,21 +491,21 @@ fn verify_taproot_keypath(bencher: divan::Bencher) {
     let sig64 = schnorr_sign(&tweaked_secret, &msg);
 
     let tx = Transaction {
-        version: 2,
+        version: TxVersion::new(2),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
-            sequence: 0xffff_fffd,
+            sequence: Sequence::new(0xffff_fffd),
             witness: Witness::from_slice(&[sig64.as_slice()]),
         }],
         outputs: vec![TxOut {
             value: amount,
             script_pubkey: spk.clone().into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
 
     bencher.bench(|| {
@@ -548,21 +550,21 @@ fn verify_taproot_scriptpath_op1(bencher: divan::Bencher) {
     control_block.extend_from_slice(&internal_key);
 
     let tx = Transaction {
-        version: 2,
+        version: TxVersion::new(2),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x22; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
-            sequence: 0xffff_fffd,
+            sequence: Sequence::new(0xffff_fffd),
             witness: Witness::from_slice(&[leaf_script.as_slice(), control_block.as_slice()]),
         }],
         outputs: vec![TxOut {
             value: amount,
             script_pubkey: spk.clone().into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
 
     bencher.bench(|| {
@@ -590,21 +592,21 @@ fn cltv_opcode_throughput(bencher: divan::Bencher) {
     let spk: &[u8] = &[0x01, 0x64, 0xb1, 0x75, 0x51];
     let flags = ScriptFlags::P2SH | ScriptFlags::CHECKLOCKTIMEVERIFY;
     let tx = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x33; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
-            sequence: 0xffff_fffe,
+            sequence: Sequence::new(0xffff_fffe),
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(1000),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 200,
+        locktime: Locktime::new(200),
     };
     let checker = TxSigChecker::new(&tx, 0, Satoshi::new(1000), flags);
 
@@ -623,21 +625,21 @@ fn csv_opcode_throughput(bencher: divan::Bencher) {
     let spk: &[u8] = &[0x01, 0x05, 0xb2, 0x75, 0x51];
     let flags = ScriptFlags::P2SH | ScriptFlags::CHECKSEQUENCEVERIFY;
     let tx = Transaction {
-        version: 2,
+        version: TxVersion::new(2),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x44; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
-            sequence: 10,
+            sequence: Sequence::new(10),
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(1000),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let checker = TxSigChecker::new(&tx, 0, Satoshi::new(1000), flags);
 
@@ -742,21 +744,21 @@ fn btccore_verify_p2tr_keypath(bencher: divan::Bencher) {
     spk.extend_from_slice(&output_key);
 
     let placeholder = Transaction {
-        version: 2,
+        version: TxVersion::new(2),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
-            sequence: 0xffff_fffd,
+            sequence: Sequence::new(0xffff_fffd),
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: amount,
             script_pubkey: spk.clone().into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
 
     let cache = Bip341Cache::new(&placeholder, &[amount], &[spk.as_slice()]);
@@ -772,21 +774,21 @@ fn btccore_verify_p2tr_keypath(bencher: divan::Bencher) {
     let sig64 = schnorr_sign(&tweaked_secret, &msg);
 
     let tx = Transaction {
-        version: 2,
+        version: TxVersion::new(2),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0x11; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
-            sequence: 0xffff_fffd,
+            sequence: Sequence::new(0xffff_fffd),
             witness: Witness::from_slice(&[sig64.as_slice()]),
         }],
         outputs: vec![TxOut {
             value: amount,
             script_pubkey: spk.clone().into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let tx_wire = encode_tx(&tx);
 

@@ -9,8 +9,8 @@
 use std::time::{Duration, Instant};
 
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, Transaction, TxHash,
-    TxIn, TxOut, Witness,
+    Block, BlockHeader, BlockHeight, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence,
+    Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::ScriptExecutionCache;
@@ -27,41 +27,41 @@ pub const SECS: Duration = Duration::from_secs(5);
 pub fn coinbase_tx(height: u32, value: u64) -> Transaction {
     let h = height.to_le_bytes();
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::ZERO,
                 vout: u32::MAX,
             },
             script_sig: vec![0x03, h[0], h[1], h[2]].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(value),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 
 pub fn spend_tx(prev_txid: Hash256, vout: u32, value: u64) -> Transaction {
     Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: prev_txid,
                 vout,
             },
             script_sig: vec![0x51].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![TxOut {
             value: Satoshi::new(value),
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     }
 }
 

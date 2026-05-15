@@ -194,7 +194,7 @@ impl<'a> InputView for OwnedInputView<'a> {
         self.inner.script_sig.as_slice()
     }
     fn sequence(&self) -> u32 {
-        self.inner.sequence
+        self.inner.sequence.to_u32()
     }
     fn witness(&self) -> Self::Witness {
         OwnedWitnessView {
@@ -238,10 +238,10 @@ impl TxView for Transaction {
     type OutputIter<'a> = OwnedOutputIter<'a>;
 
     fn version(&self) -> i32 {
-        self.version
+        self.version.to_i32()
     }
     fn locktime(&self) -> u32 {
-        self.locktime
+        self.locktime.to_u32()
     }
     fn input_count(&self) -> usize {
         self.inputs.len()
@@ -318,7 +318,7 @@ impl<'a> InputView for RefInputView<'a> {
         self.inner.script_sig
     }
     fn sequence(&self) -> u32 {
-        self.inner.sequence
+        self.inner.sequence.to_u32()
     }
     fn witness(&self) -> Self::Witness {
         RefWitnessView {
@@ -375,10 +375,10 @@ impl<'tx> TxView for TransactionRef<'tx> {
         Self: 'a;
 
     fn version(&self) -> i32 {
-        self.version
+        self.version.to_i32()
     }
     fn locktime(&self) -> u32 {
-        self.locktime
+        self.locktime.to_u32()
     }
     fn input_count(&self) -> usize {
         TransactionRef::input_count(self)
@@ -502,18 +502,18 @@ impl<'a> Iterator for RefOutputIter<'a> {
 mod tests {
     use super::*;
     use mantle::codec::Encode;
-    use mantle::primitives::{Hash256, TxIn, TxOut, Witness};
+    use mantle::primitives::{Hash256, Locktime, Sequence, TxIn, TxOut, TxVersion, Witness};
 
     fn make_segwit_tx() -> Transaction {
         Transaction {
-            version: 2,
+            version: TxVersion::new(2),
             inputs: vec![TxIn {
                 previous_output: OutPoint {
                     txid: Hash256::from_bytes([0x42; 32]),
                     vout: 7,
                 },
                 script_sig: Vec::<u8>::new().into(),
-                sequence: 0xffff_fffe,
+                sequence: Sequence::new(0xffff_fffe),
                 witness: Witness::from_slice(&[
                     &[0xab, 0xcd][..],
                     &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66][..],
@@ -523,7 +523,7 @@ mod tests {
                 value: Satoshi::new(123_456),
                 script_pubkey: vec![0x76, 0xa9, 0x14, 0xff].into(),
             }],
-            locktime: 100_000,
+            locktime: Locktime::new(100_000),
         }
     }
 

@@ -24,18 +24,18 @@ fn stage1_empty_block_rejected() {
 #[test]
 fn stage1_first_tx_not_coinbase_rejected() {
     let non_cb = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![TxIn {
             previous_output: OutPoint {
                 txid: Hash256::from_bytes([0xab; 32]),
                 vout: 0,
             },
             script_sig: vec![].into(),
-            sequence: u32::MAX,
+            sequence: Sequence::MAX,
             witness: Witness::empty(),
         }],
         outputs: vec![make_output(1000)],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let txids = vec![non_cb.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
@@ -65,16 +65,16 @@ fn stage1_non_coinbase_with_null_outpoint_rejected() {
         s
     };
     let fake_cb = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![coinbase_input(vec![0x51, 0x52])], // valid coinbase
         outputs: vec![make_output(50_0000_0000)],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let imposter = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![coinbase_input(vec![0x00, 0x00])], // null outpoint in tx[1]
         outputs: vec![make_output(1000)],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let _ = cb_script;
     let txids = vec![
@@ -141,13 +141,13 @@ fn stage1_coinbase_script_boundary_values_accepted() {
 fn stage1_output_value_over_max_money_rejected() {
     let too_much = mantle::primitives::Satoshi::new(MAX_MONEY.to_u64() + 1);
     let coinbase = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![coinbase_input(vec![0x51, 0x52])],
         outputs: vec![TxOut {
             value: too_much,
             script_pubkey: vec![0x51].into(),
         }],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
@@ -178,29 +178,29 @@ fn stage1_duplicate_inputs_rejected() {
         vout: 1,
     };
     let tx = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![
             TxIn {
                 previous_output: outpoint,
                 script_sig: vec![].into(),
-                sequence: u32::MAX,
+                sequence: Sequence::MAX,
                 witness: Witness::empty(),
             },
             TxIn {
                 previous_output: outpoint,
                 script_sig: vec![].into(),
-                sequence: u32::MAX,
+                sequence: Sequence::MAX,
                 witness: Witness::empty(),
             }, // dup
         ],
         outputs: vec![make_output(1000)],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let coinbase = Transaction {
-        version: 1,
+        version: TxVersion::new(1),
         inputs: vec![coinbase_input(vec![0x51, 0x52])],
         outputs: vec![make_output(50_0000_0000)],
-        locktime: 0,
+        locktime: Locktime::new(0),
     };
     let txids = vec![
         coinbase.txid().expect("txid encoding cannot fail"),

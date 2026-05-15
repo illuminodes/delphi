@@ -3,10 +3,6 @@ use std::io::{self, Read, Write};
 use crate::codec::{Decode, DecodeRef, Encode, Error as CodecError};
 use crate::hash::Hash256;
 
-fn checksum(data: &[u8]) -> [u8; 4] {
-    Hash256::checksum(data)
-}
-
 use super::command::{Command, CommandName};
 use super::magic::Magic;
 
@@ -133,7 +129,7 @@ pub fn encode_message(
         CommandName::from(command),
         u32::try_from(payload.len())
             .map_err(|e| CodecError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?,
-        checksum(payload),
+        Hash256::checksum(payload),
     );
     header.encode(w)?;
     w.write_all(payload).map_err(CodecError::Io)
@@ -231,7 +227,7 @@ mod tests {
             Magic::Mainnet,
             CommandName::new("version"),
             u32::try_from(payload.len()).expect("payload fits u32"),
-            checksum(payload),
+            Hash256::checksum(payload),
         );
         let bytes = encode(&header);
         assert_eq!(bytes.len(), MessageHeader::ENCODED_LEN);
@@ -249,7 +245,7 @@ mod tests {
             Magic::Mainnet,
             CommandName::new("ping"),
             u32::try_from(payload.len()).expect("payload fits u32"),
-            checksum(payload),
+            Hash256::checksum(payload),
         ));
         bytes.push(0xab); // sentinel
         let (h, tail) = decode_ref::<MessageHeader>(&bytes);
@@ -264,7 +260,7 @@ mod tests {
         encode_message(Magic::Mainnet, Command::Ping, payload, &mut buf)
             .expect("encode_message cannot fail writing to Vec");
         let header = decode::<MessageHeader>(&buf[..24]);
-        assert_eq!(header.checksum(), checksum(payload));
+        assert_eq!(header.checksum(), Hash256::checksum(payload));
         assert_eq!(&buf[24..], payload);
     }
 
