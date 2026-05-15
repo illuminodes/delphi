@@ -72,20 +72,8 @@ name = "transport-pprof"
 path = "src/transport/pprof.rs"
 
 [[bin]]
-name = "dhat-profile"
-path = "src/dhat_profile.rs"
-
-[[bin]]
-name = "perf-driver"
-path = "src/perf_driver.rs"
-
-[[bin]]
 name = "replay-dhat"
 path = "src/replay_dhat.rs"
-
-[[bin]]
-name = "replay-perf"
-path = "src/replay_perf.rs"
 
 [[bin]]
 name = "replay-perf-a"

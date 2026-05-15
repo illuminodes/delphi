@@ -94,6 +94,29 @@ pub fn make_snapshot_mid_chain(headers: &[BlockHeader], start: u32) -> HeaderSna
     HeaderSnapshot::new(BlockHeight::new(start), entries).expect("snapshot fits u32")
 }
 
+pub fn make_snapshot(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
+    if start == 1 {
+        make_snapshot_from_genesis(headers)
+    } else {
+        make_snapshot_mid_chain(headers, start)
+    }
+}
+
+pub fn headers_from_blocks(dir: &Path, start: u32, end: u32) -> Vec<BlockHeader> {
+    (start..=end)
+        .map(|h| {
+            let path = dir.join("blocks").join(format!("{h:07}.bin"));
+            let bytes =
+                std::fs::read(&path).unwrap_or_else(|_| panic!("{} not found", path.display()));
+            BlockHeader::from_bytes(
+                bytes[..80]
+                    .try_into()
+                    .expect("block file is at least 80 bytes"),
+            )
+        })
+        .collect()
+}
+
 // ── BenchView ────────────────────────────────────────────────────────────────
 
 /// `ChainView` that falls back to a dummy mature coin for unknown outpoints.

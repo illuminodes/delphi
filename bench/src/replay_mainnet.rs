@@ -18,291 +18,19 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use mantle::codec::Decode;
-use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
-use mantle::primitives::{Block, BlockHeader, BlockHeight, BlockTime, Hash256, OutPoint};
-use mantle_consensus::chain_view::{ChainView, Coin, ConnectScratch, TipInfo};
-use mantle_consensus::error::ChainViewError;
+use mantle::primitives::BlockHeight;
 use mantle_consensus::script::ScriptExecutionCache;
-use mantle_consensus::validation::connect_block;
-use mantle_storage::StorageHandle;
-use mantle_storage::types::{CommitBlockReq, Durability, ReqToken};
-use mantle_validator::prefetched_view::HeaderSnapshot;
+
+#[path = "fixtures_common.rs"]
+mod fixtures_common;
+use fixtures_common::{
+    load_block, load_headers, load_metadata, make_snapshot_from_genesis, make_snapshot_mid_chain,
+    replay_block, tmp_storage,
+};
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
-
-// ── fixture loading ───────────────────────────────────────────────────────────
-
-fn load_metadata(fixtures: &Path) -> u32 {
-    let path = fixtures.join("metadata.bin");
-    match std::fs::read(&path) {
-        Ok(b) if b.len() >= 4 => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-        _ => 1, // no metadata → assume early range starting at block 1
-    }
-}
-
-fn load_headers(fixtures: &Path) -> Vec<BlockHeader> {
-    let bytes = std::fs::read(fixtures.join("headers.bin"))
-        .expect("fixtures/headers.bin not found — run fetch-fixtures first");
-    assert!(
-        bytes.len().is_multiple_of(80),
-        "headers.bin size not a multiple of 80"
-    );
-    bytes
-        .chunks_exact(80)
-        .map(|chunk| BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes")))
-        .collect()
-}
-
-fn load_block(fixtures: &Path, height: u32) -> Block {
-    let path = fixtures.join("blocks").join(format!("{height:07}.bin"));
-    let bytes = std::fs::read(&path)
-        .unwrap_or_else(|_| panic!("{} not found — run fetch-fixtures first", path.display()));
-    Block::decode(&mut std::io::Cursor::new(&bytes))
-        .unwrap_or_else(|e| panic!("decode block {height}: {e}"))
-}
-
-// ── storage helpers ───────────────────────────────────────────────────────────
-
-struct TmpDir(PathBuf);
-impl Drop for TmpDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn tmp_storage() -> (StorageHandle<'static>, TmpDir) {
-    let ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "mantle-replay-mainnet-{}-{}",
-        std::process::id(),
-        ns
-    ));
-    std::fs::create_dir_all(&path).expect("create tmp dir");
-    let handle = StorageHandle::open(&path).expect("StorageHandle::open");
-    (handle, TmpDir(path))
-}
-
-// ── HeaderSnapshot construction ───────────────────────────────────────────────
-
-/// Build a snapshot for ranges starting at block 1 (genesis era).
-/// Inserts a synthetic pre-genesis slot at height 0 so height-1 lookups work.
-fn make_snapshot_from_genesis(headers: &[BlockHeader]) -> HeaderSnapshot {
-    let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(headers.len() + 1);
-    let genesis_hash = headers[0].prev_block();
-    entries.push((genesis_hash, headers[0]));
-    for hdr in headers {
-        entries.push((hdr.hash(), *hdr));
-    }
-    HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
-}
-
-/// Build a snapshot for a mid-chain range.
-/// The snapshot only covers start..=end; header lookups outside this window
-/// return None (which is fine since we skip script and header-context validation).
-fn make_snapshot_mid_chain(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
-    let entries: Vec<(Hash256, BlockHeader)> =
-        headers.iter().map(|hdr| (hdr.hash(), *hdr)).collect();
-    HeaderSnapshot::new(BlockHeight::new(start), entries).expect("snapshot fits u32")
-}
-
-// ── BenchView: PrefetchedView with dummy-coin fallback for mid-chain ──────────
-
-/// A `ChainView` that serves prefetched coins and falls back to a dummy coin
-/// for unknown outpoints. Used when replaying mid-chain blocks where we don't
-/// have the full historical UTXO set — lets us measure throughput on real block
-/// data without a `MissingInput` error stopping the bench.
-struct BenchView<'a> {
-    coins: PrehashedMap<OutPoint, Option<Coin>>,
-    headers: &'a HeaderSnapshot,
-    tip: TipInfo,
-    dummy_on_miss: bool,
-    dummy: Coin,
-}
-
-impl<'a> BenchView<'a> {
-    fn new(
-        coins: PrehashedMap<OutPoint, Option<Coin>>,
-        headers: &'a HeaderSnapshot,
-        tip: TipInfo,
-        dummy_on_miss: bool,
-    ) -> Self {
-        Self {
-            coins,
-            headers,
-            tip,
-            dummy_on_miss,
-            dummy: Coin {
-                value: mantle::primitives::Satoshi::new(2_100_000_000_000_000),
-                script_pubkey: vec![0x51].into(),
-                height: BlockHeight::new(0),
-                coinbase: false,
-            },
-        }
-    }
-}
-
-impl ChainView for BenchView<'_> {
-    fn get_coin(&self, outpoint: &OutPoint) -> Result<Option<&Coin>, ChainViewError> {
-        match self.coins.get(outpoint) {
-            Some(Some(c)) => Ok(Some(c)),
-            Some(None) | None if self.dummy_on_miss => Ok(Some(&self.dummy)),
-            Some(None) => Ok(None),
-            None => Err(ChainViewError::NotFound),
-        }
-    }
-
-    fn get_header(&self, hash: &Hash256) -> Result<Option<BlockHeader>, ChainViewError> {
-        Ok(self.headers.get_header(hash))
-    }
-
-    fn get_header_at(&self, height: BlockHeight) -> Result<Option<BlockHeader>, ChainViewError> {
-        Ok(self.headers.get_header_at(height))
-    }
-
-    fn height_of(&self, hash: &Hash256) -> Result<Option<BlockHeight>, ChainViewError> {
-        Ok(self.headers.height_of(hash))
-    }
-
-    fn median_time_past(&self, header: &BlockHeader) -> Result<BlockTime, ChainViewError> {
-        self.headers
-            .median_time_past(header)
-            .ok_or(ChainViewError::NotFound)
-    }
-
-    fn tip(&self) -> TipInfo {
-        self.tip.clone()
-    }
-}
-
-// ── pipeline (mirrors validate_and_commit but uses BenchView) ─────────────────
-
-fn replay_block(
-    block: &Block,
-    height: BlockHeight,
-    storage: &mut StorageHandle<'static>,
-    snap: &HeaderSnapshot,
-    cache: &mut ScriptExecutionCache,
-    token: u64,
-    dummy_on_miss: bool,
-) {
-    use mantle::collections::PrehashedSet;
-    use mantle::primitives::TxHash as _;
-
-    // Intra-block outputs.
-    let mut spent_set: PrehashedSet<OutPoint> = PrehashedSet::default();
-    for tx in block.transactions.iter().skip(1) {
-        for inp in &tx.inputs {
-            spent_set.insert(inp.previous_output);
-        }
-    }
-    let mut intra: PrehashedMap<OutPoint, Option<Coin>> =
-        PrehashedMap::with_capacity_and_hasher(spent_set.len(), BuildPrehashedHasher);
-    let mut scratch = Vec::new();
-    for (tx_index, tx) in block.transactions.iter().enumerate() {
-        let Ok(txid) = tx.txid_into(&mut scratch) else {
-            continue;
-        };
-        for (vout, output) in tx.outputs.iter().enumerate() {
-            let Ok(vout_u32) = u32::try_from(vout) else {
-                continue;
-            };
-            let op = OutPoint {
-                txid,
-                vout: vout_u32,
-            };
-            if spent_set.contains(&op) {
-                intra.insert(
-                    op,
-                    Some(Coin {
-                        value: output.value,
-                        script_pubkey: output.script_pubkey.clone(),
-                        height: BlockHeight::ZERO,
-                        coinbase: tx_index == 0,
-                    }),
-                );
-            }
-        }
-    }
-
-    // External spend outpoints.
-    let spend_ops: Vec<OutPoint> = block
-        .transactions
-        .iter()
-        .skip(1)
-        .flat_map(|tx| tx.inputs.iter())
-        .map(|inp| inp.previous_output)
-        .filter(|op| !intra.contains_key(op))
-        .collect();
-
-    // BIP30 probes.
-    let spend_op_set: PrehashedSet<OutPoint> = spend_ops.iter().copied().collect();
-    scratch.clear();
-    let bip30_ops: Vec<OutPoint> = block
-        .transactions
-        .iter()
-        .filter_map(|tx| {
-            tx.txid_into(&mut scratch)
-                .ok()
-                .map(|txid| OutPoint { txid, vout: 0 })
-        })
-        .filter(|op| !intra.contains_key(op) && !spend_op_set.contains(op))
-        .collect();
-
-    let mut all_ops = spend_ops;
-    all_ops.extend_from_slice(&bip30_ops);
-
-    let mut lookup = Vec::new();
-    storage
-        .send_lookup_borrowed(&all_ops, &mut lookup)
-        .expect("send_lookup");
-    let hash = block.header.hash();
-    let tip = storage.tip();
-    storage.recv_lookup().expect("recv_lookup");
-
-    let mut coins: PrehashedMap<OutPoint, Option<Coin>> =
-        PrehashedMap::with_capacity_and_hasher(all_ops.len() + intra.len(), BuildPrehashedHasher);
-    for r in lookup.drain(..) {
-        coins.insert(r.outpoint, r.coin);
-    }
-    coins.extend(intra);
-
-    let view = BenchView::new(coins, snap, tip, dummy_on_miss);
-
-    let mut scratch2 = Vec::new();
-    let result = connect_block(
-        block,
-        height,
-        &view,
-        &mut scratch2,
-        &mut ConnectScratch::new(),
-        true,
-        Some(cache),
-        None,
-    )
-    .unwrap_or_else(|e| panic!("connect_block at height {}: {e}", height.to_u32()));
-
-    storage
-        .commit_block_borrowed(CommitBlockReq {
-            token: ReqToken(token),
-            height,
-            hash,
-            prev_hash: block.header.prev_block(),
-            header: block.header,
-            created: &result.created,
-            spent: &result.spent,
-            block_bytes: None,
-            durability: Durability::Memory,
-        })
-        .unwrap_or_else(|e| panic!("commit_block at height {}: {e}", height.to_u32()));
-}
-
-// ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
     let fixtures = fixtures_dir();
@@ -325,12 +53,12 @@ fn main() {
     }
 
     print!("Loading {n_blocks} blocks into memory...");
-    let blocks: Vec<Block> = (start_height..=end_height)
+    let blocks: Vec<_> = (start_height..=end_height)
         .map(|h| load_block(&fixtures, h))
         .collect();
     println!(" done.");
 
-    let (mut storage, _tmp) = tmp_storage();
+    let (mut storage, _tmp) = tmp_storage("replay-mainnet");
     let mut cache = ScriptExecutionCache::new(64 * 1024);
 
     println!("Replaying {n_blocks} blocks...");

@@ -10,12 +10,11 @@
 
 #![allow(clippy::cast_precision_loss)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
+use mantle::primitives::BlockHeight;
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_storage::types::Durability;
-use mantle_validator::prefetched_view::HeaderSnapshot;
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -23,8 +22,8 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 #[path = "fixtures_common.rs"]
 mod fixtures_common;
 use fixtures_common::{
-    BenchReplayBufs, fixtures_dir, load_block_bytes, replay_block_ref, replay_block_ref_reusing,
-    tmp_storage, tmp_storage_robin_hood,
+    BenchReplayBufs, fixtures_dir, headers_from_blocks, load_block_bytes, load_headers,
+    make_snapshot, replay_block_ref, replay_block_ref_reusing, tmp_storage, tmp_storage_robin_hood,
 };
 
 struct Args {
@@ -73,49 +72,6 @@ fn parse_args() -> Args {
     }
 }
 
-fn headers_from_blocks(dir: &Path, start: u32, end: u32) -> Vec<BlockHeader> {
-    (start..=end)
-        .map(|h| {
-            let path = dir.join("blocks").join(format!("{h:07}.bin"));
-            let bytes =
-                std::fs::read(&path).unwrap_or_else(|_| panic!("{} not found", path.display()));
-            BlockHeader::from_bytes(
-                bytes[..80]
-                    .try_into()
-                    .expect("block file is at least 80 bytes"),
-            )
-        })
-        .collect()
-}
-
-fn load_headers_file(dir: &Path) -> Vec<BlockHeader> {
-    let bytes = std::fs::read(dir.join("headers.bin"))
-        .expect("headers.bin not found — run fetch-fixtures first");
-    assert!(
-        bytes.len().is_multiple_of(80),
-        "headers.bin size not a multiple of 80"
-    );
-    bytes
-        .chunks_exact(80)
-        .map(|chunk| BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes")))
-        .collect()
-}
-
-fn make_snapshot(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
-    if start == 1 {
-        let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(headers.len() + 1);
-        let genesis_hash = headers[0].prev_block();
-        entries.push((genesis_hash, headers[0]));
-        for hdr in headers {
-            entries.push((hdr.hash(), *hdr));
-        }
-        HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
-    } else {
-        let entries: Vec<(Hash256, BlockHeader)> =
-            headers.iter().map(|hdr| (hdr.hash(), *hdr)).collect();
-        HeaderSnapshot::new(BlockHeight::new(start), entries).expect("snapshot fits u32")
-    }
-}
 
 #[allow(clippy::too_many_lines)]
 fn main() {
@@ -135,7 +91,7 @@ fn main() {
         "ordinals" => {
             let start = 767_430u32;
             let end = start + total - 1;
-            let headers = load_headers_file(&dir);
+            let headers = load_headers(&dir);
             assert!(
                 headers.len() >= total as usize,
                 "ordinals headers.bin has {} headers, need {}",

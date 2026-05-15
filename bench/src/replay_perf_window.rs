@@ -23,11 +23,11 @@
 
 #![allow(clippy::cast_precision_loss)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap, PrehashedSet};
-use mantle::primitives::{BlockHeader, BlockHeight, BlockRef, Hash256, OutPoint};
+use mantle::primitives::{BlockHeight, BlockRef, Hash256, OutPoint};
 use mantle_consensus::chain_view::{Coin, ConnectScratch};
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_consensus::validation::connect_block;
@@ -37,7 +37,10 @@ use mantle_validator::prefetched_view::HeaderSnapshot;
 
 #[path = "fixtures_common.rs"]
 mod fixtures_common;
-use fixtures_common::{BenchView, fixtures_dir, load_block_bytes, tmp_storage};
+use fixtures_common::{
+    BenchView, fixtures_dir, headers_from_blocks, load_block_bytes, load_headers, make_snapshot,
+    tmp_storage,
+};
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -76,57 +79,6 @@ fn parse_args() -> Args {
         preset,
         blocks,
         skip_script,
-    }
-}
-
-// ── header sourcing ──────────────────────────────────────────────────────────
-
-/// Extract block headers from the block files themselves. Used for the `early`
-/// preset, which has no `headers.bin` of its own (the root `headers.bin` is
-/// for the modern range). Cheap: just reads the first 80 bytes of each file.
-fn headers_from_blocks(dir: &Path, start: u32, end: u32) -> Vec<BlockHeader> {
-    (start..=end)
-        .map(|h| {
-            let path = dir.join("blocks").join(format!("{h:07}.bin"));
-            let bytes =
-                std::fs::read(&path).unwrap_or_else(|_| panic!("{} not found", path.display()));
-            BlockHeader::from_bytes(
-                bytes[..80]
-                    .try_into()
-                    .expect("block file is at least 80 bytes"),
-            )
-        })
-        .collect()
-}
-
-fn load_headers_file(dir: &Path) -> Vec<BlockHeader> {
-    let bytes = std::fs::read(dir.join("headers.bin"))
-        .expect("headers.bin not found — run fetch-fixtures first");
-    assert!(
-        bytes.len().is_multiple_of(80),
-        "headers.bin size not a multiple of 80"
-    );
-    bytes
-        .chunks_exact(80)
-        .map(|chunk| BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes")))
-        .collect()
-}
-
-fn make_snapshot(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
-    if start == 1 {
-        // Genesis-era window. Insert the genesis hash at slot 0 so height-1
-        // lookups for prev_block resolve. (block-1.prev_block == genesis hash.)
-        let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(headers.len() + 1);
-        let genesis_hash = headers[0].prev_block();
-        entries.push((genesis_hash, headers[0]));
-        for hdr in headers {
-            entries.push((hdr.hash(), *hdr));
-        }
-        HeaderSnapshot::new(BlockHeight::new(0), entries).expect("snapshot fits u32")
-    } else {
-        let entries: Vec<(Hash256, BlockHeader)> =
-            headers.iter().map(|hdr| (hdr.hash(), *hdr)).collect();
-        HeaderSnapshot::new(BlockHeight::new(start), entries).expect("snapshot fits u32")
     }
 }
 
@@ -332,7 +284,7 @@ fn main() {
         "ordinals" => {
             let start = 767_430u32;
             let end = start + args.blocks - 1;
-            let headers = load_headers_file(&dir);
+            let headers = load_headers(&dir);
             assert!(
                 headers.len() >= args.blocks as usize,
                 "ordinals headers.bin has {} headers, need {}",
