@@ -17,8 +17,7 @@ use mantle_consensus::script::ScriptExecutionCache;
 use mantle_storage::StorageHandle;
 use mantle_storage::ops::StorageOps;
 use mantle_storage::types::{Durability, ReqToken};
-use mantle_validator::pipeline::validate_and_commit;
-use mantle_validator::prefetched_view::HeaderSnapshot;
+pub use mantle_validator::{HeaderSnapshot, PipelineOpts, ReplayBufs};
 
 pub const EASY_BITS: CompactBits = CompactBits::new(0x207f_ffff);
 pub const BASE_TIME: u32 = 1_231_006_505;
@@ -129,6 +128,7 @@ pub fn tmp_storage() -> (StorageHandle<'static>, TmpDir) {
 }
 
 pub fn commit<S>(
+    bufs: &mut ReplayBufs,
     storage: &mut S,
     block: &Block,
     height: BlockHeight,
@@ -138,15 +138,17 @@ pub fn commit<S>(
 ) where
     S: for<'x> StorageOps<'x>,
 {
-    validate_and_commit(
+    bufs.validate_and_commit(
         block,
         height,
         storage,
         snap,
-        true,
-        Some(cache),
-        Durability::Memory,
-        ReqToken(token),
+        PipelineOpts {
+            skip_script: true,
+            exec_cache: Some(cache),
+            durability: Durability::Memory,
+            token: ReqToken(token),
+        },
     )
     .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.to_u32()));
 }

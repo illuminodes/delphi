@@ -35,8 +35,7 @@ use mantle_consensus::script::ScriptExecutionCache;
 use mantle_consensus::validation::{validate_block_context, validate_block_structure};
 use mantle_storage::StorageHandle;
 use mantle_storage::types::{Durability, ReqToken};
-use mantle_validator::pipeline::validate_and_commit;
-use mantle_validator::prefetched_view::{HeaderSnapshot, PrefetchedView};
+use mantle_validator::{HeaderSnapshot, PipelineOpts, PrefetchedView, ReplayBufs};
 
 use crate::iouring_fetcher::Fetcher;
 use crate::report::Reporter;
@@ -46,6 +45,7 @@ struct ReplayCtx {
     skip_script: bool,
     allow_min_difficulty: bool,
     cache: ScriptExecutionCache,
+    bufs: ReplayBufs,
     token: u64,
 }
 
@@ -419,6 +419,7 @@ fn run(args: &Args) -> Result<(), String> {
         skip_script: args.skip_script,
         allow_min_difficulty,
         cache: ScriptExecutionCache::new(SCRIPT_CACHE_ENTRIES),
+        bufs: ReplayBufs::new(),
         token: u64::from(tip.height.to_u32()).saturating_add(1),
     };
 
@@ -483,17 +484,20 @@ fn replay_one_block(
         Durability::Memory
     };
 
-    validate_and_commit(
-        &block,
-        height,
-        &mut ctx.storage,
-        snapshot,
-        ctx.skip_script,
-        Some(&mut ctx.cache),
-        durability,
-        ReqToken(ctx.token),
-    )
-    .map_err(|e| format!("validate_and_commit at {}: {e}", height.to_u32()))?;
+    ctx.bufs
+        .validate_and_commit(
+            &block,
+            height,
+            &mut ctx.storage,
+            snapshot,
+            PipelineOpts {
+                skip_script: ctx.skip_script,
+                exec_cache: Some(&mut ctx.cache),
+                durability,
+                token: ReqToken(ctx.token),
+            },
+        )
+        .map_err(|e| format!("validate_and_commit at {}: {e}", height.to_u32()))?;
 
     ctx.token = ctx.token.saturating_add(1);
     Ok(())

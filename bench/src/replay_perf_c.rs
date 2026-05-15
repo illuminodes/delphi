@@ -30,6 +30,7 @@ fn main() {
     let n = run_for(SECS, || {
         eprint!("[C] iter={iter_idx} ");
         let (mut storage, _dir) = tmp_storage();
+        let mut bufs = common::ReplayBufs::new();
         let mut cache = ScriptExecutionCache::new(1024);
         for (i, block) in blocks.iter().enumerate() {
             if i % 10 == 0 {
@@ -37,6 +38,7 @@ fn main() {
             }
             let height = BlockHeight::new(u32::try_from(i + 1).expect("fits"));
             commit(
+                &mut bufs,
                 &mut storage,
                 black_box(block),
                 height,

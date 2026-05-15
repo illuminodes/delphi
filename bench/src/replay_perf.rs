@@ -20,8 +20,7 @@ use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::ScriptExecutionCache;
 use mantle_storage::StorageHandle;
 use mantle_storage::types::{Durability, ReqToken};
-use mantle_validator::pipeline::validate_and_commit;
-use mantle_validator::prefetched_view::HeaderSnapshot;
+use mantle_validator::{HeaderSnapshot, PipelineOpts, ReplayBufs};
 
 const EASY_BITS: CompactBits = CompactBits::new(0x207f_ffff);
 const BASE_TIME: u32 = 1_231_006_505;
@@ -132,6 +131,7 @@ fn tmp_storage() -> (StorageHandle<'static>, TmpDir) {
 }
 
 fn commit(
+    bufs: &mut ReplayBufs,
     storage: &mut StorageHandle<'static>,
     block: &Block,
     height: BlockHeight,
@@ -139,15 +139,17 @@ fn commit(
     cache: &mut ScriptExecutionCache,
     token: u64,
 ) {
-    validate_and_commit(
+    bufs.validate_and_commit(
         block,
         height,
         storage,
         snap,
-        true,
-        Some(cache),
-        Durability::Memory,
-        ReqToken(token),
+        PipelineOpts {
+            skip_script: true,
+            exec_cache: Some(cache),
+            durability: Durability::Memory,
+            token: ReqToken(token),
+        },
     )
     .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.to_u32()));
 }
@@ -174,7 +176,9 @@ fn main() {
         let n = run_for(SECS, || {
             let (mut storage, _dir) = tmp_storage();
             let mut cache = ScriptExecutionCache::new(1024);
+            let mut bufs = ReplayBufs::new();
             commit(
+                &mut bufs,
                 &mut storage,
                 black_box(&block),
                 BlockHeight::new(1),
@@ -251,8 +255,10 @@ fn main() {
             eprint!("[B] {iter_idx} ");
             let (mut storage, _dir) = tmp_storage();
             let mut cache = ScriptExecutionCache::new(1024);
+            let mut bufs = ReplayBufs::new();
             eprint!("F ");
             commit(
+                &mut bufs,
                 &mut storage,
                 &fund_block,
                 BlockHeight::new(FUND_H),
@@ -263,6 +269,7 @@ fn main() {
             for (i, b) in filler.iter().enumerate() {
                 eprint!("f{i} ");
                 commit(
+                    &mut bufs,
                     &mut storage,
                     b,
                     BlockHeight::new(2 + u32::try_from(i).expect("fits")),
@@ -273,6 +280,7 @@ fn main() {
             }
             eprint!("S ");
             commit(
+                &mut bufs,
                 &mut storage,
                 black_box(&spend_block),
                 BlockHeight::new(SPEND_H),
@@ -320,9 +328,11 @@ fn main() {
         let n = run_for(SECS, || {
             let (mut storage, _dir) = tmp_storage();
             let mut cache = ScriptExecutionCache::new(1024);
+            let mut bufs = ReplayBufs::new();
             for (i, block) in blocks.iter().enumerate() {
                 let height = BlockHeight::new(u32::try_from(i + 1).expect("fits"));
                 commit(
+                    &mut bufs,
                     &mut storage,
                     black_box(block),
                     height,

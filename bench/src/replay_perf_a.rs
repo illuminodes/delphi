@@ -23,8 +23,10 @@ fn main() {
         eprint!("[A] {iter_idx} ");
         let (mut storage, _dir) = tmp_storage();
         let mut cache = ScriptExecutionCache::new(1024);
+        let mut bufs = common::ReplayBufs::new();
         eprint!("C ");
         commit(
+            &mut bufs,
             &mut storage,
             black_box(&block),
             BlockHeight::new(1),

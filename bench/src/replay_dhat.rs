@@ -16,8 +16,7 @@ use mantle_consensus::script::ScriptExecutionCache;
 use mantle_storage::StorageHandle;
 use mantle_storage::ops::StorageOps;
 use mantle_storage::types::{Durability, ReqToken};
-use mantle_validator::pipeline::validate_and_commit;
-use mantle_validator::prefetched_view::HeaderSnapshot;
+use mantle_validator::{HeaderSnapshot, PipelineOpts, ReplayBufs};
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -130,6 +129,7 @@ fn tmp_storage() -> (StorageHandle<'static>, TmpDir) {
 }
 
 fn commit<S>(
+    bufs: &mut ReplayBufs,
     storage: &mut S,
     block: &Block,
     height: BlockHeight,
@@ -139,15 +139,17 @@ fn commit<S>(
 ) where
     S: for<'x> StorageOps<'x>,
 {
-    validate_and_commit(
+    bufs.validate_and_commit(
         block,
         height,
         storage,
         snap,
-        true,
-        Some(cache),
-        Durability::Memory,
-        ReqToken(token),
+        PipelineOpts {
+            skip_script: true,
+            exec_cache: Some(cache),
+            durability: Durability::Memory,
+            token: ReqToken(token),
+        },
     )
     .unwrap_or_else(|e| panic!("commit at height {}: {e}", height.to_u32()));
 }
@@ -160,6 +162,7 @@ fn main() {
 
 fn scenario_coinbase_only() {
     let (mut storage, _dir) = tmp_storage();
+    let mut bufs = ReplayBufs::new();
     let mut cache = ScriptExecutionCache::new(1024);
     let mut chain: Vec<(Hash256, BlockHeader)> = Vec::new();
     let mut prev_hash = Hash256::ZERO;
@@ -169,6 +172,7 @@ fn scenario_coinbase_only() {
         chain.push((hash, block.header));
         let snap = make_snapshot(&chain);
         commit(
+            &mut bufs,
             &mut storage,
             &block,
             BlockHeight::new(i),
@@ -234,8 +238,10 @@ fn scenario_spend_blocks() {
 
     for _ in 0..ROUNDS {
         let (mut storage, _dir) = tmp_storage();
+        let mut bufs = ReplayBufs::new();
         let mut cache = ScriptExecutionCache::new(1024);
         commit(
+            &mut bufs,
             &mut storage,
             &fund_block,
             BlockHeight::new(FUND_H),
@@ -245,6 +251,7 @@ fn scenario_spend_blocks() {
         );
         for (i, b) in filler.iter().enumerate() {
             commit(
+                &mut bufs,
                 &mut storage,
                 b,
                 BlockHeight::new(2 + u32::try_from(i).expect("fits")),
@@ -254,6 +261,7 @@ fn scenario_spend_blocks() {
             );
         }
         commit(
+            &mut bufs,
             &mut storage,
             &spend_block,
             BlockHeight::new(SPEND_H),

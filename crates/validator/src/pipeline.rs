@@ -9,12 +9,29 @@ use mantle_storage::types::{CommitBlockReq, CommittedResp, Durability, ReqToken,
 
 use crate::prefetched_view::{HeaderSnapshot, PrefetchedView};
 
-/// Reusable per-block working buffers for the replay loop.
+/// Per-block pipeline options: script policy and storage commit parameters.
+pub struct PipelineOpts<'a> {
+    pub skip_script: bool,
+    pub exec_cache: Option<&'a mut ScriptExecutionCache>,
+    pub durability: Durability,
+    pub token: ReqToken,
+}
+
+/// Block-identity fields needed when committing a previously validated result.
+#[derive(Clone, Copy)]
+pub struct BlockId {
+    pub height: BlockHeight,
+    pub hash: Hash256,
+    pub prev_hash: Hash256,
+    pub header: BlockHeader,
+}
+
+/// Reusable per-block working buffers for the validation pipeline.
 ///
-/// Created once before the loop, passed as `&mut` to
-/// [`validate_and_commit_ref_reusing`]. All inner collections are `clear()`'d
-/// at the start of each call but retain their backing capacity, eliminating
-/// the ~5 MB/block allocation churn that dominates the mid-chain profile.
+/// Created once before the replay loop. All inner collections are `clear()`'d
+/// at the start of each method call but retain their backing capacity,
+/// eliminating the ~5 MB/block allocation churn that dominates the mid-chain
+/// profile.
 pub struct ReplayBufs {
     spent_set: PrehashedSet<OutPoint>,
     txids: Vec<Hash256>,
@@ -48,74 +65,28 @@ impl ReplayBufs {
     fn clear(&mut self) {
         self.spent_set.clear();
         self.txids.clear();
-        // hash_scratch / txid_scratch capacity retained; cleared internally on use
         self.intra.clear();
         self.spend_ops.clear();
         self.bip30_ops.clear();
         self.coins.clear();
     }
-}
 
-impl Default for ReplayBufs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Combined error from validation or storage.
-#[derive(Debug)]
-pub enum ValidationOrStorageError {
-    Validation(ValidationError),
-    Storage(StorageError),
-}
-
-impl std::fmt::Display for ValidationOrStorageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Validation(e) => write!(f, "validation: {e}"),
-            Self::Storage(e) => write!(f, "storage: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ValidationOrStorageError {}
-
-impl From<ValidationError> for ValidationOrStorageError {
-    fn from(e: ValidationError) -> Self {
-        Self::Validation(e)
-    }
-}
-
-impl From<StorageError> for ValidationOrStorageError {
-    fn from(e: StorageError) -> Self {
-        Self::Storage(e)
-    }
-}
-
-/// Extension trait for `Block` to collect intra-block UTXO dependencies.
-trait BlockExt {
-    /// Returns a map of outpoint → coin for all outputs created *within* this
-    /// block that are also spent within the same block.
-    fn intra_block_outputs(&self) -> PrehashedMap<OutPoint, Option<Coin>>;
-}
-
-impl BlockExt for Block {
-    fn intra_block_outputs(&self) -> PrehashedMap<OutPoint, Option<Coin>> {
-        let mut spent: PrehashedSet<OutPoint> = PrehashedSet::with_hasher(BuildPrehashedHasher);
-        for tx in self.transactions.iter().skip(1) {
+    /// Collect intra-block outputs and external outpoints from an owned `Block`.
+    ///
+    /// After this call `self.intra` holds intra-block coins, `self.spend_ops`
+    /// holds all outpoints to look up from storage (spend + BIP30).
+    fn collect_outpoints_block(&mut self, block: &Block) {
+        for tx in block.transactions.iter().skip(1) {
             for inp in &tx.inputs {
-                spent.insert(inp.previous_output);
+                self.spent_set.insert(inp.previous_output);
             }
         }
 
-        let mut map: PrehashedMap<OutPoint, Option<Coin>> =
-            PrehashedMap::with_capacity_and_hasher(spent.len(), BuildPrehashedHasher);
-        let mut scratch = Vec::new();
-
-        for (tx_index, tx) in self.transactions.iter().enumerate() {
-            let Ok(txid) = tx.txid_into(&mut scratch) else {
+        for (tx_index, tx) in block.transactions.iter().enumerate() {
+            let Ok(txid) = tx.txid_into(&mut self.hash_scratch) else {
                 continue;
             };
+            self.txids.push(txid);
             for (vout, output) in tx.outputs.iter().enumerate() {
                 let Ok(vout_u32) = u32::try_from(vout) else {
                     continue;
@@ -124,8 +95,8 @@ impl BlockExt for Block {
                     txid,
                     vout: vout_u32,
                 };
-                if spent.contains(&op) {
-                    map.insert(
+                if self.spent_set.contains(&op) {
+                    self.intra.insert(
                         op,
                         Some(Coin {
                             value: output.value,
@@ -138,266 +109,271 @@ impl BlockExt for Block {
             }
         }
 
-        map
+        for tx in block.transactions.iter().skip(1) {
+            for inp in &tx.inputs {
+                if !self.intra.contains_key(&inp.previous_output) {
+                    self.spend_ops.push(inp.previous_output);
+                }
+            }
+        }
+
+        self.spent_set.clear();
+        self.spent_set.extend(self.spend_ops.iter().copied());
+        for &txid in &self.txids {
+            let op = OutPoint { txid, vout: 0 };
+            if !self.intra.contains_key(&op) && !self.spent_set.contains(&op) {
+                self.bip30_ops.push(op);
+            }
+        }
+
+        self.spend_ops.extend_from_slice(&self.bip30_ops);
     }
-}
 
-/// Validate a block and commit it to storage in one call.
-///
-/// 1. Collects all outpoints the block spends (minus intra-block deps).
-/// 2. Batch-fetches them from storage.
-/// 3. Re-inserts intra-block outputs so `connect_block` can look them up.
-/// 4. Calls `connect_block`.
-/// 5. Commits the resulting UTXO delta.
-///
-/// # Errors
-///
-/// Returns `ValidationOrStorageError` on any validation or I/O failure.
-/// Validate a block and commit it to storage in one call.
-///
-/// Works with any `StorageHandle` variant (Arc-backed `'static` or
-/// scoped-borrowed `'req`) via the `StorageOps` trait.
-///
-/// # Errors
-///
-/// Returns `ValidationOrStorageError` on any validation or I/O failure.
-#[allow(clippy::too_many_arguments)]
-pub fn validate_and_commit<'blk, S>(
-    block: &'blk Block,
-    height: BlockHeight,
-    storage: &mut S,
-    headers: &HeaderSnapshot,
-    skip_script: bool,
-    exec_cache: Option<&mut ScriptExecutionCache>,
-    durability: Durability,
-    token: ReqToken,
-) -> Result<CommittedResp, ValidationOrStorageError>
-where
-    S: for<'x> StorageOps<'x>,
-{
-    let intra_block = block.intra_block_outputs();
+    /// Collect intra-block outputs and external outpoints from a zero-copy
+    /// `BlockRef`.
+    fn collect_outpoints_ref(&mut self, block_ref: &BlockRef<'_>) {
+        for tx in block_ref.transactions().skip(1) {
+            for inp in tx.inputs() {
+                let Ok(i) = inp else { continue };
+                self.spent_set.insert(i.previous_output);
+            }
+        }
 
-    let spend_outpoints: Vec<OutPoint> = block
-        .transactions
-        .iter()
-        .skip(1)
-        .flat_map(|tx| tx.inputs.iter())
-        .map(|inp| inp.previous_output)
-        .filter(|op| !intra_block.contains_key(op))
-        .collect();
+        for (tx_index, tx) in block_ref.transactions().enumerate() {
+            let txid = tx
+                .txid_into(&mut self.hash_scratch)
+                .expect("txid hash never fails");
+            self.txids.push(txid);
+            for (vout, output) in tx.outputs().enumerate() {
+                let Ok(out) = output else { continue };
+                let Ok(vout_u32) = u32::try_from(vout) else {
+                    continue;
+                };
+                let op = OutPoint {
+                    txid,
+                    vout: vout_u32,
+                };
+                if self.spent_set.contains(&op) {
+                    self.intra.insert(
+                        op,
+                        Some(Coin {
+                            value: out.value,
+                            script_pubkey: out.script_pubkey.into(),
+                            height: BlockHeight::ZERO,
+                            coinbase: tx_index == 0,
+                        }),
+                    );
+                }
+            }
+        }
 
-    let mut spend_set: PrehashedSet<OutPoint> =
-        PrehashedSet::with_capacity_and_hasher(spend_outpoints.len(), BuildPrehashedHasher);
-    spend_set.extend(spend_outpoints.iter().copied());
-    let mut scratch = Vec::new();
-    let bip30_outpoints: Vec<OutPoint> = block
-        .transactions
-        .iter()
-        .filter_map(|tx| {
-            tx.txid_into(&mut scratch)
-                .ok()
-                .map(|txid| OutPoint { txid, vout: 0 })
+        for tx in block_ref.transactions().skip(1) {
+            for inp in tx.inputs() {
+                let Ok(i) = inp else { continue };
+                if !self.intra.contains_key(&i.previous_output) {
+                    self.spend_ops.push(i.previous_output);
+                }
+            }
+        }
+
+        self.spent_set.clear();
+        self.spent_set.extend(self.spend_ops.iter().copied());
+        for &txid in &self.txids {
+            let op = OutPoint { txid, vout: 0 };
+            if !self.intra.contains_key(&op) && !self.spent_set.contains(&op) {
+                self.bip30_ops.push(op);
+            }
+        }
+
+        self.spend_ops.extend_from_slice(&self.bip30_ops);
+    }
+
+    /// Fetch coins from storage and merge with intra-block outputs into
+    /// `self.coins`. After this call the coin map is ready for building a
+    /// `PrefetchedView`.
+    fn fetch_coins<S>(&mut self, storage: &mut S) -> Result<(), StorageError>
+    where
+        S: for<'x> StorageOps<'x>,
+    {
+        let all_ops_len = self.spend_ops.len();
+        storage.send_lookup(&self.spend_ops, &mut self.lookup)?;
+        storage.recv_lookup()?;
+
+        self.coins.reserve(all_ops_len + self.intra.len());
+        for r in self.lookup.drain(..) {
+            self.coins.insert(r.outpoint, r.coin);
+        }
+        for (k, v) in self.intra.drain() {
+            self.coins.insert(k, v);
+        }
+
+        Ok(())
+    }
+
+    /// Validate an owned `Block` and commit it to storage.
+    ///
+    /// Full pipeline: collect outpoints, batch-fetch from storage, run
+    /// `connect_block`, commit the UTXO delta. Reuses buffer capacity
+    /// across calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PipelineError` on any validation or storage failure.
+    pub fn validate_and_commit<S>(
+        &mut self,
+        block: &Block,
+        height: BlockHeight,
+        storage: &mut S,
+        headers: &HeaderSnapshot,
+        opts: PipelineOpts<'_>,
+    ) -> Result<CommittedResp, PipelineError>
+    where
+        S: for<'x> StorageOps<'x>,
+    {
+        self.clear();
+        self.collect_outpoints_block(block);
+
+        let hash = block.header.hash();
+        self.fetch_coins(storage)?;
+        let tip = storage.tip();
+        let view = PrefetchedView::new(&self.coins, headers, tip);
+
+        let result = connect_block(
+            block,
+            height,
+            &view,
+            &mut self.txid_scratch,
+            &mut self.connect_scratch,
+            opts.skip_script,
+            opts.exec_cache,
+            None,
+        )?;
+
+        let resp = storage.commit_block_borrowed(CommitBlockReq {
+            token: opts.token,
+            height,
+            hash,
+            prev_hash: block.header.prev_block(),
+            header: block.header,
+            created: &result.created,
+            spent: &result.spent,
+            block_bytes: None,
+            durability: opts.durability,
+        })?;
+
+        Ok(resp)
+    }
+
+    /// Prefetch coins, validate, and connect a `BlockRef` against the UTXO set.
+    ///
+    /// Returns a `ConnectResult` whose `NewCoin` entries borrow `script_pubkey`
+    /// directly from the block's wire bytes (zero copy). The caller must pass
+    /// the result to [`commit_connect_result`](Self::commit_connect_result)
+    /// while the wire buffer is still alive.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PipelineError` on any validation, lookup, or I/O failure.
+    pub fn prefetch_and_connect<'blk, S>(
+        &mut self,
+        block_ref: &'blk BlockRef<'blk>,
+        height: BlockHeight,
+        storage: &mut S,
+        headers: &HeaderSnapshot,
+        skip_script: bool,
+        exec_cache: Option<&mut ScriptExecutionCache>,
+    ) -> Result<ConnectResult<'blk>, PipelineError>
+    where
+        S: for<'x> StorageOps<'x>,
+    {
+        self.clear();
+        self.collect_outpoints_ref(block_ref);
+
+        self.fetch_coins(storage)?;
+        let tip = storage.tip();
+        let view = PrefetchedView::new(&self.coins, headers, tip);
+
+        let result = connect_block(
+            block_ref,
+            height,
+            &view,
+            &mut self.txid_scratch,
+            &mut self.connect_scratch,
+            skip_script,
+            exec_cache,
+            Some(&self.txids),
+        )?;
+
+        Ok(result)
+    }
+
+    /// Commit a previously validated block's UTXO delta to storage.
+    ///
+    /// Takes the `ConnectResult` from [`prefetch_and_connect`](Self::prefetch_and_connect)
+    /// and pushes it through the storage ring. Must be called while the wire
+    /// buffer that the `ConnectResult` borrows from is still alive.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` on ring or I/O failure.
+    pub fn commit_connect_result<'blk, S>(
+        &self,
+        result: &'blk ConnectResult<'blk>,
+        block: BlockId,
+        durability: Durability,
+        token: ReqToken,
+        storage: &mut S,
+    ) -> Result<CommittedResp, StorageError>
+    where
+        S: StorageOps<'blk>,
+    {
+        storage.commit_block_borrowed(CommitBlockReq {
+            token,
+            height: block.height,
+            hash: block.hash,
+            prev_hash: block.prev_hash,
+            header: block.header,
+            created: &result.created,
+            spent: &result.spent,
+            block_bytes: None,
+            durability,
         })
-        .filter(|op| !intra_block.contains_key(op) && !spend_set.contains(op))
-        .collect();
-
-    let mut all_outpoints = spend_outpoints;
-    all_outpoints.extend_from_slice(&bip30_outpoints);
-
-    let mut lookup = Vec::new();
-    storage.send_lookup(&all_outpoints, &mut lookup)?;
-    let hash = block.header.hash();
-    let tip = storage.tip();
-    storage.recv_lookup()?;
-
-    let mut coins: PrehashedMap<OutPoint, Option<Coin>> = PrehashedMap::with_capacity_and_hasher(
-        all_outpoints.len() + intra_block.len(),
-        BuildPrehashedHasher,
-    );
-    for r in lookup.drain(..) {
-        coins.insert(r.outpoint, r.coin);
     }
-    coins.extend(intra_block);
-
-    let view = PrefetchedView::new(&coins, headers, tip);
-
-    scratch.clear();
-    let result = connect_block(
-        block,
-        height,
-        &view,
-        &mut scratch,
-        &mut ConnectScratch::new(),
-        skip_script,
-        exec_cache,
-        None,
-    )?;
-
-    let resp = storage.commit_block_borrowed(CommitBlockReq {
-        token,
-        height,
-        hash,
-        prev_hash: block.header.prev_block(),
-        header: block.header,
-        created: &result.created,
-        spent: &result.spent,
-        block_bytes: None,
-        durability,
-    })?;
-
-    Ok(resp)
 }
 
-/// Prefetch coins, validate, and connect a `BlockRef` against the UTXO set.
-///
-/// Returns a `ConnectResult` whose `NewCoin` entries borrow `script_pubkey`
-/// directly from the block's wire bytes — zero copy. The caller is responsible
-/// for passing the result to `commit_connect_result` while the wire buffer
-/// (and therefore `block_ref`) is still alive.
-///
-/// Uses caller-owned `ReplayBufs` so hashmap/vec capacity is reused across blocks.
-///
-/// # Errors
-///
-/// Returns `ValidationOrStorageError` on any validation, lookup, or I/O failure.
-///
-/// # Panics
-///
-/// Panics if a transaction's txid cannot be hashed (infallible in practice).
-#[allow(clippy::too_many_arguments)]
-pub fn prefetch_and_connect<'blk, S>(
-    block_ref: &'blk BlockRef<'blk>,
-    height: BlockHeight,
-    storage: &mut S,
-    headers: &HeaderSnapshot,
-    skip_script: bool,
-    exec_cache: Option<&mut ScriptExecutionCache>,
-    bufs: &mut ReplayBufs,
-) -> Result<ConnectResult<'blk>, ValidationOrStorageError>
-where
-    S: for<'x> StorageOps<'x>,
-{
-    bufs.clear();
-
-    for tx in block_ref.transactions().skip(1) {
-        for inp in tx.inputs() {
-            let Ok(i) = inp else { continue };
-            bufs.spent_set.insert(i.previous_output);
-        }
+impl Default for ReplayBufs {
+    fn default() -> Self {
+        Self::new()
     }
-
-    for tx in block_ref.transactions() {
-        bufs.txids.push(
-            tx.txid_into(&mut bufs.hash_scratch)
-                .expect("txid hash never fails"),
-        );
-    }
-
-    for (tx_index, tx) in block_ref.transactions().enumerate() {
-        let txid = bufs.txids[tx_index];
-        for (vout, output) in tx.outputs().enumerate() {
-            let Ok(out) = output else { continue };
-            let Ok(vout_u32) = u32::try_from(vout) else {
-                continue;
-            };
-            let op = OutPoint {
-                txid,
-                vout: vout_u32,
-            };
-            if bufs.spent_set.contains(&op) {
-                bufs.intra.insert(
-                    op,
-                    Some(Coin {
-                        value: out.value,
-                        script_pubkey: out.script_pubkey.into(),
-                        height: BlockHeight::ZERO,
-                        coinbase: tx_index == 0,
-                    }),
-                );
-            }
-        }
-    }
-
-    for tx in block_ref.transactions().skip(1) {
-        for inp in tx.inputs() {
-            let Ok(i) = inp else { continue };
-            if !bufs.intra.contains_key(&i.previous_output) {
-                bufs.spend_ops.push(i.previous_output);
-            }
-        }
-    }
-
-    bufs.spent_set.clear();
-    bufs.spent_set.extend(bufs.spend_ops.iter().copied());
-    for &txid in &bufs.txids {
-        let op = OutPoint { txid, vout: 0 };
-        if !bufs.intra.contains_key(&op) && !bufs.spent_set.contains(&op) {
-            bufs.bip30_ops.push(op);
-        }
-    }
-
-    let all_ops_len = bufs.spend_ops.len() + bufs.bip30_ops.len();
-    bufs.spend_ops.extend_from_slice(&bufs.bip30_ops);
-
-    storage.send_lookup(&bufs.spend_ops, &mut bufs.lookup)?;
-    let tip = storage.tip();
-    storage.recv_lookup()?;
-
-    bufs.coins.reserve(all_ops_len + bufs.intra.len());
-    for r in bufs.lookup.drain(..) {
-        bufs.coins.insert(r.outpoint, r.coin);
-    }
-    for (k, v) in bufs.intra.drain() {
-        bufs.coins.insert(k, v);
-    }
-
-    let view = PrefetchedView::new(&bufs.coins, headers, tip);
-    let result = connect_block(
-        block_ref,
-        height,
-        &view,
-        &mut bufs.txid_scratch,
-        &mut bufs.connect_scratch,
-        skip_script,
-        exec_cache,
-        Some(&bufs.txids),
-    )?;
-
-    Ok(result)
 }
 
-/// Commit a validated block's UTXO delta to storage.
-///
-/// Takes the `ConnectResult` from [`prefetch_and_connect`] and pushes it
-/// through the storage ring. Must be called while the wire buffer that
-/// the `ConnectResult` borrows from is still alive.
-///
-/// # Errors
-///
-/// Returns `StorageError` on ring or I/O failure.
-#[allow(clippy::too_many_arguments)]
-pub fn commit_connect_result<'blk, S>(
-    result: &'blk ConnectResult<'blk>,
-    height: BlockHeight,
-    hash: Hash256,
-    prev_hash: Hash256,
-    header: BlockHeader,
-    durability: Durability,
-    token: ReqToken,
-    storage: &mut S,
-) -> Result<CommittedResp, StorageError>
-where
-    S: StorageOps<'blk>,
-{
-    storage.commit_block_borrowed(CommitBlockReq {
-        token,
-        height,
-        hash,
-        prev_hash,
-        header,
-        created: &result.created,
-        spent: &result.spent,
-        block_bytes: None,
-        durability,
-    })
+/// Error from the validation pipeline: either a consensus validation failure
+/// or a storage I/O error.
+#[derive(Debug)]
+pub enum PipelineError {
+    Validation(ValidationError),
+    Storage(StorageError),
+}
+
+impl std::fmt::Display for PipelineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Validation(e) => write!(f, "validation: {e}"),
+            Self::Storage(e) => write!(f, "storage: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for PipelineError {}
+
+impl From<ValidationError> for PipelineError {
+    fn from(e: ValidationError) -> Self {
+        Self::Validation(e)
+    }
+}
+
+impl From<StorageError> for PipelineError {
+    fn from(e: StorageError) -> Self {
+        Self::Storage(e)
+    }
 }

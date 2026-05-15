@@ -93,8 +93,10 @@ fn build_scenario() -> Scenario {
 
     eprintln!("[B] building seed storage...");
     let (mut seed_storage, seed_dir) = tmp_storage();
+    let mut bufs = common::ReplayBufs::new();
     let mut cache = ScriptExecutionCache::new(1024);
     commit(
+        &mut bufs,
         &mut seed_storage,
         &fund_block,
         BlockHeight::new(FUND_H),
@@ -104,6 +106,7 @@ fn build_scenario() -> Scenario {
     );
     for (i, b) in filler.iter().enumerate() {
         commit(
+            &mut bufs,
             &mut seed_storage,
             b,
             BlockHeight::new(2 + u32::try_from(i).expect("fits")),
@@ -146,8 +149,10 @@ fn main() {
         let _iter_dir = TmpDir(iter_path.clone());
 
         let mut storage = mantle_storage::StorageHandle::open(&iter_path).expect("open");
+        let mut bufs = common::ReplayBufs::new();
         let mut cache = ScriptExecutionCache::new(1024);
         commit(
+            &mut bufs,
             &mut storage,
             black_box(&spend_block),
             BlockHeight::new(SPEND_H),
