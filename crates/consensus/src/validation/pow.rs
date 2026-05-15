@@ -67,9 +67,12 @@ impl HeaderValidationExt for BlockHeader {
     }
 
     fn check_version(&self, height: BlockHeight) -> Result<(), ValidationError> {
-        let required: i32 = if height >= BlockHeight::new(388_381) {
+        const BIP65_HEIGHT: BlockHeight = BlockHeight::new(388_381);
+        const BIP66_HEIGHT: BlockHeight = BlockHeight::new(363_725);
+
+        let required: i32 = if height >= BIP65_HEIGHT {
             4
-        } else if height >= BlockHeight::new(363_725) {
+        } else if height >= BIP66_HEIGHT {
             3
         } else if height >= BIP34_HEIGHT {
             2
@@ -327,4 +330,148 @@ pub(super) fn scale_target(target: [u8; 32], actual: u64, expected: u64) -> Opti
 
     let pow_limit = U256::from_be_bytes(POW_LIMIT_BITS.to_target()?);
     Some(scaled.min(pow_limit).to_be_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn u256_zero_roundtrip() {
+        let zero = U256::from_be_bytes([0u8; 32]);
+        assert_eq!(zero.to_be_bytes(), [0u8; 32]);
+    }
+
+    #[test]
+    fn u256_one_roundtrip() {
+        let mut bytes = [0u8; 32];
+        bytes[31] = 1;
+        let one = U256::from_be_bytes(bytes);
+        assert_eq!(one.to_be_bytes(), bytes);
+    }
+
+    #[test]
+    fn u256_max_roundtrip() {
+        let bytes = [0xff; 32];
+        let max = U256::from_be_bytes(bytes);
+        assert_eq!(max, U256::MAX);
+        assert_eq!(max.to_be_bytes(), bytes);
+    }
+
+    #[test]
+    fn u256_ordering() {
+        let a = U256::from_be_bytes({
+            let mut b = [0u8; 32];
+            b[31] = 1;
+            b
+        });
+        let b = U256::from_be_bytes({
+            let mut b = [0u8; 32];
+            b[31] = 2;
+            b
+        });
+        assert!(a < b);
+        assert!(b > a);
+        assert_eq!(a, a);
+    }
+
+    #[test]
+    fn u256_ordering_high_limb() {
+        let lo = U256::from_be_bytes({
+            let mut b = [0u8; 32];
+            b[31] = 0xff;
+            b
+        });
+        let hi = U256::from_be_bytes({
+            let mut b = [0u8; 32];
+            b[0] = 1;
+            b
+        });
+        assert!(hi > lo);
+    }
+
+    #[test]
+    fn u256_mul_small() {
+        let mut bytes = [0u8; 32];
+        bytes[31] = 100;
+        let val = U256::from_be_bytes(bytes);
+        let result = val.saturating_mul_u64(3);
+        let mut expected = [0u8; 32];
+        expected[30] = 1;
+        expected[31] = 0x2c; // 300
+        assert_eq!(result.to_be_bytes(), expected);
+    }
+
+    #[test]
+    fn u256_mul_zero() {
+        let val = U256::from_be_bytes([0xff; 32]);
+        assert_eq!(val.saturating_mul_u64(0).to_be_bytes(), [0u8; 32]);
+    }
+
+    #[test]
+    fn u256_mul_one() {
+        let bytes = [0xab; 32];
+        let val = U256::from_be_bytes(bytes);
+        assert_eq!(val.saturating_mul_u64(1).to_be_bytes(), bytes);
+    }
+
+    #[test]
+    fn u256_mul_overflow_saturates() {
+        let result = U256::MAX.saturating_mul_u64(2);
+        assert_eq!(result, U256::MAX);
+    }
+
+    #[test]
+    fn u256_div_small() {
+        let mut bytes = [0u8; 32];
+        bytes[30] = 1;
+        bytes[31] = 0x2c; // 300
+        let val = U256::from_be_bytes(bytes);
+        let result = val.div_u64(3);
+        let mut expected = [0u8; 32];
+        expected[31] = 100;
+        assert_eq!(result.to_be_bytes(), expected);
+    }
+
+    #[test]
+    fn u256_div_one() {
+        let bytes = [0xab; 32];
+        let val = U256::from_be_bytes(bytes);
+        assert_eq!(val.div_u64(1).to_be_bytes(), bytes);
+    }
+
+    #[test]
+    #[should_panic(expected = "division by zero")]
+    fn u256_div_zero_panics() {
+        let val = U256::from_be_bytes([1; 32]);
+        let _ = val.div_u64(0);
+    }
+
+    #[test]
+    fn u256_mul_then_div_roundtrips() {
+        let mut bytes = [0u8; 32];
+        bytes[28] = 0x00;
+        bytes[29] = 0x0f;
+        bytes[30] = 0x42;
+        bytes[31] = 0x40; // 1_000_000
+        let val = U256::from_be_bytes(bytes);
+        let result = val.saturating_mul_u64(TARGET_TIMESPAN).div_u64(TARGET_TIMESPAN);
+        assert_eq!(result.to_be_bytes(), bytes);
+    }
+
+    #[test]
+    fn scale_target_identity() {
+        let target = POW_LIMIT_BITS.to_target().unwrap();
+        let result = scale_target(target, TARGET_TIMESPAN, TARGET_TIMESPAN).unwrap();
+        let result_bits = CompactBits::from_target(result).unwrap();
+        assert_eq!(result_bits, POW_LIMIT_BITS);
+    }
+
+    #[test]
+    fn scale_target_clamps_to_pow_limit() {
+        let target = POW_LIMIT_BITS.to_target().unwrap();
+        let result = scale_target(target, TARGET_TIMESPAN * 4, TARGET_TIMESPAN).unwrap();
+        let result_bits = CompactBits::from_target(result).unwrap();
+        assert_eq!(result_bits, POW_LIMIT_BITS);
+    }
 }

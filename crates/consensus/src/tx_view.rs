@@ -16,8 +16,8 @@
 //! `to_vec` shim keeps existing call sites compiling unchanged.
 
 use mantle::primitives::{
-    Block, BlockHeader, BlockRef, Hash256, OutPoint, Satoshi, Transaction, TransactionRef, Witness,
-    WitnessRef,
+    Block, BlockHeader, BlockRef, Hash256, Locktime, OutPoint, Satoshi, Sequence, Transaction,
+    TransactionRef, TxVersion, Witness, WitnessRef,
 };
 
 /// Whole-block view. Implemented by both [`Block`] (owned) and
@@ -107,9 +107,9 @@ pub trait TxView {
         Self: 'a;
 
     /// `nVersion` (4 LE bytes on the wire).
-    fn version(&self) -> i32;
+    fn version(&self) -> TxVersion;
     /// `nLockTime` (4 LE bytes on the wire).
-    fn locktime(&self) -> u32;
+    fn locktime(&self) -> Locktime;
     /// Number of inputs.
     fn input_count(&self) -> usize;
     /// Number of outputs.
@@ -152,7 +152,7 @@ pub trait InputView {
 
     fn previous_output(&self) -> OutPoint;
     fn script_sig(&self) -> &[u8];
-    fn sequence(&self) -> u32;
+    fn sequence(&self) -> Sequence;
     fn witness(&self) -> Self::Witness;
 }
 
@@ -193,8 +193,8 @@ impl<'a> InputView for OwnedInputView<'a> {
     fn script_sig(&self) -> &[u8] {
         self.inner.script_sig.as_slice()
     }
-    fn sequence(&self) -> u32 {
-        self.inner.sequence.to_u32()
+    fn sequence(&self) -> Sequence {
+        self.inner.sequence
     }
     fn witness(&self) -> Self::Witness {
         OwnedWitnessView {
@@ -237,11 +237,11 @@ impl TxView for Transaction {
     type InputIter<'a> = OwnedInputIter<'a>;
     type OutputIter<'a> = OwnedOutputIter<'a>;
 
-    fn version(&self) -> i32 {
-        self.version.to_i32()
+    fn version(&self) -> TxVersion {
+        self.version
     }
-    fn locktime(&self) -> u32 {
-        self.locktime.to_u32()
+    fn locktime(&self) -> Locktime {
+        self.locktime
     }
     fn input_count(&self) -> usize {
         self.inputs.len()
@@ -317,8 +317,8 @@ impl<'a> InputView for RefInputView<'a> {
     fn script_sig(&self) -> &[u8] {
         self.inner.script_sig
     }
-    fn sequence(&self) -> u32 {
-        self.inner.sequence.to_u32()
+    fn sequence(&self) -> Sequence {
+        self.inner.sequence
     }
     fn witness(&self) -> Self::Witness {
         RefWitnessView {
@@ -374,11 +374,11 @@ impl<'tx> TxView for TransactionRef<'tx> {
     where
         Self: 'a;
 
-    fn version(&self) -> i32 {
-        self.version.to_i32()
+    fn version(&self) -> TxVersion {
+        self.version
     }
-    fn locktime(&self) -> u32 {
-        self.locktime.to_u32()
+    fn locktime(&self) -> Locktime {
+        self.locktime
     }
     fn input_count(&self) -> usize {
         TransactionRef::input_count(self)

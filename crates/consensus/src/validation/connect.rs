@@ -8,8 +8,11 @@ use crate::tx_view::{BlockView, InputView, OutputView, TxView};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const INITIAL_SUBSIDY: u64 = 50 * 100_000_000;
+const INITIAL_SUBSIDY: Satoshi = Satoshi::new(50 * 100_000_000);
 const HALVING_INTERVAL: u32 = 210_000;
+
+/// Coinbase outputs must be at least this many blocks deep before they can be spent.
+const COINBASE_MATURITY: u32 = 100;
 
 /// Maximum legacy sigops per block.
 const MAX_BLOCK_SIGOPS: u32 = 20_000;
@@ -17,7 +20,8 @@ const MAX_BLOCK_SIGOPS: u32 = 20_000;
 /// Heights of the two historical BIP30 exception blocks on mainnet.
 /// These coinbase txids collide with earlier unspent coinbases but were
 /// accepted by Core before BIP30 enforcement began.
-const BIP30_EXCEPTION_HEIGHTS: [u32; 2] = [91_842, 91_880];
+const BIP30_EXCEPTION_HEIGHTS: [BlockHeight; 2] =
+    [BlockHeight::new(91_842), BlockHeight::new(91_880)];
 
 // ── connect_block ─────────────────────────────────────────────────────────────
 
@@ -76,7 +80,7 @@ where
             "precomputed txids length must match block tx count",
         );
     }
-    let is_bip30_exception = BIP30_EXCEPTION_HEIGHTS.contains(&height.to_u32());
+    let is_bip30_exception = BIP30_EXCEPTION_HEIGHTS.contains(&height);
     let subsidy = block_subsidy(height);
     let script_flags = ScriptFlags::for_height(height);
 
@@ -187,7 +191,7 @@ where
             // Coinbase maturity: coinbase outputs must be 100 blocks deep.
             if coin.coinbase {
                 let depth = height.to_u32().saturating_sub(coin.height.to_u32());
-                if depth < 100 {
+                if depth < COINBASE_MATURITY {
                     return Err(ValidationError::CoinbaseMaturityViolation {
                         tx_index,
                         input_index,
@@ -320,7 +324,7 @@ pub(super) fn block_subsidy(height: BlockHeight) -> Satoshi {
     if halvings >= 64 {
         return Satoshi::ZERO;
     }
-    Satoshi::new(INITIAL_SUBSIDY >> halvings)
+    Satoshi::new(INITIAL_SUBSIDY.to_u64() >> halvings)
 }
 
 /// Count legacy sigops (`OP_CHECKSIG` + `OP_CHECKSIGVERIFY` + `OP_CHECKMULTISIG` family)
@@ -379,4 +383,110 @@ pub(super) fn count_legacy_sigops(script: &[u8]) -> u32 {
         i += 1;
     }
     count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sigops_empty_script() {
+        assert_eq!(count_legacy_sigops(&[]), 0);
+    }
+
+    #[test]
+    fn sigops_single_checksig() {
+        assert_eq!(count_legacy_sigops(&[0xac]), 1);
+    }
+
+    #[test]
+    fn sigops_checksigverify() {
+        assert_eq!(count_legacy_sigops(&[0xad]), 1);
+    }
+
+    #[test]
+    fn sigops_checkmultisig_counts_20() {
+        assert_eq!(count_legacy_sigops(&[0xae]), 20);
+    }
+
+    #[test]
+    fn sigops_checkmultisigverify_counts_20() {
+        assert_eq!(count_legacy_sigops(&[0xaf]), 20);
+    }
+
+    #[test]
+    fn sigops_mixed() {
+        // OP_CHECKSIG + OP_CHECKMULTISIG + OP_CHECKSIGVERIFY = 1 + 20 + 1 = 22
+        assert_eq!(count_legacy_sigops(&[0xac, 0xae, 0xad]), 22);
+    }
+
+    #[test]
+    fn sigops_push_skips_data() {
+        // Push 3 bytes (which happen to look like OP_CHECKSIG), then actual OP_CHECKSIG
+        // 0x03 <0xac 0xac 0xac> 0xac → only the trailing one counts
+        assert_eq!(count_legacy_sigops(&[0x03, 0xac, 0xac, 0xac, 0xac]), 1);
+    }
+
+    #[test]
+    fn sigops_pushdata1_skips_data() {
+        // OP_PUSHDATA1 <len=2> <0xac 0xac> 0xac → 1
+        assert_eq!(count_legacy_sigops(&[0x4c, 0x02, 0xac, 0xac, 0xac]), 1);
+    }
+
+    #[test]
+    fn sigops_pushdata2_skips_data() {
+        // OP_PUSHDATA2 <len=1, 0> <0xac> 0xac → 1
+        assert_eq!(
+            count_legacy_sigops(&[0x4d, 0x01, 0x00, 0xac, 0xac]),
+            1
+        );
+    }
+
+    #[test]
+    fn sigops_pushdata4_skips_data() {
+        // OP_PUSHDATA4 <len=1, 0, 0, 0> <0xac> 0xac → 1
+        assert_eq!(
+            count_legacy_sigops(&[0x4e, 0x01, 0x00, 0x00, 0x00, 0xac, 0xac]),
+            1
+        );
+    }
+
+    #[test]
+    fn sigops_truncated_pushdata1_stops() {
+        // OP_PUSHDATA1 at end of script — no length byte → 0
+        assert_eq!(count_legacy_sigops(&[0x4c]), 0);
+    }
+
+    #[test]
+    fn sigops_truncated_pushdata2_stops() {
+        // OP_PUSHDATA2 with only 1 length byte → 0
+        assert_eq!(count_legacy_sigops(&[0x4d, 0x01]), 0);
+    }
+
+    #[test]
+    fn sigops_no_sigops_in_plain_script() {
+        // OP_DUP OP_HASH160 OP_EQUALVERIFY — no sigops
+        assert_eq!(count_legacy_sigops(&[0x76, 0xa9, 0x88]), 0);
+    }
+
+    #[test]
+    fn subsidy_at_genesis() {
+        assert_eq!(block_subsidy(BlockHeight::ZERO), Satoshi::new(50 * 100_000_000));
+    }
+
+    #[test]
+    fn subsidy_first_halving() {
+        assert_eq!(
+            block_subsidy(BlockHeight::new(210_000)),
+            Satoshi::new(25 * 100_000_000)
+        );
+    }
+
+    #[test]
+    fn subsidy_after_64_halvings_is_zero() {
+        assert_eq!(
+            block_subsidy(BlockHeight::new(64 * 210_000)),
+            Satoshi::ZERO
+        );
+    }
 }

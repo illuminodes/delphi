@@ -358,6 +358,29 @@ impl TxVersion {
     pub const fn to_le_bytes(self) -> [u8; 4] {
         self.0.to_le_bytes()
     }
+
+    /// Interpret the version as unsigned (matching Bitcoin Core's `static_cast<uint32_t>`
+    /// in BIP68/112 enforcement).
+    #[inline]
+    #[must_use]
+    #[allow(clippy::cast_sign_loss)]
+    pub const fn to_u32(self) -> u32 {
+        self.0 as u32
+    }
+}
+
+impl PartialOrd for TxVersion {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TxVersion {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
 }
 
 impl Encode for TxVersion {
@@ -389,6 +412,9 @@ impl<'a> DecodeRef<'a> for TxVersion {
 pub struct Locktime(u32);
 
 impl Locktime {
+    /// Threshold separating block-height locktimes from Unix-timestamp locktimes.
+    pub const THRESHOLD: u32 = 500_000_000;
+
     #[inline]
     #[must_use]
     pub const fn new(n: u32) -> Self {
@@ -405,6 +431,51 @@ impl Locktime {
     #[must_use]
     pub const fn to_le_bytes(self) -> [u8; 4] {
         self.0.to_le_bytes()
+    }
+
+    /// `true` if this locktime represents a block height (below the threshold).
+    #[inline]
+    #[must_use]
+    pub const fn is_block_height(self) -> bool {
+        self.0 < Self::THRESHOLD
+    }
+
+    /// `true` if this locktime represents a Unix timestamp (at or above the threshold).
+    #[inline]
+    #[must_use]
+    pub const fn is_time_based(self) -> bool {
+        self.0 >= Self::THRESHOLD
+    }
+
+    /// Check whether a script-level CLTV value (already validated as non-negative
+    /// by the interpreter) is satisfied by this transaction locktime.
+    ///
+    /// Returns `false` if the two values are in different domains (height vs. time)
+    /// or if the script value exceeds this locktime.
+    #[inline]
+    #[must_use]
+    pub const fn satisfies_cltv(self, script_locktime: i64) -> bool {
+        let threshold = Self::THRESHOLD as i64;
+        let tx_lock = self.0 as i64;
+        // Both must be in the same domain.
+        if (script_locktime < threshold) != (tx_lock < threshold) {
+            return false;
+        }
+        script_locktime <= tx_lock
+    }
+}
+
+impl PartialOrd for Locktime {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Locktime {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
     }
 }
 
@@ -439,6 +510,14 @@ pub struct Sequence(u32);
 impl Sequence {
     pub const MAX: Self = Self(0xFFFF_FFFF);
 
+    /// BIP68: when set, `nSequence` is not interpreted as a relative lock-time.
+    const LOCKTIME_DISABLE_FLAG: u32 = 1 << 31;
+    /// BIP68: when set (and disable flag clear), the lock-time is in 512-second
+    /// units rather than blocks.
+    const LOCKTIME_TYPE_FLAG: u32 = 1 << 22;
+    /// BIP68: mask for the lock-time value (lower 16 bits).
+    const LOCKTIME_MASK: u32 = 0x0000_ffff;
+
     #[inline]
     #[must_use]
     pub const fn new(n: u32) -> Self {
@@ -455,6 +534,68 @@ impl Sequence {
     #[must_use]
     pub const fn to_le_bytes(self) -> [u8; 4] {
         self.0.to_le_bytes()
+    }
+
+    /// `true` if the disable flag (bit 31) is set — relative lock-time is ignored.
+    #[inline]
+    #[must_use]
+    pub const fn is_locktime_disabled(self) -> bool {
+        self.0 & Self::LOCKTIME_DISABLE_FLAG != 0
+    }
+
+    /// `true` if the type flag (bit 22) is set — lock-time is in 512-second units.
+    /// Only meaningful when `!is_locktime_disabled()`.
+    #[inline]
+    #[must_use]
+    pub const fn is_time_based(self) -> bool {
+        self.0 & Self::LOCKTIME_TYPE_FLAG != 0
+    }
+
+    /// The masked lock-time value (lower 16 bits) with the type flag preserved.
+    /// Used for same-domain comparison in BIP112 CSV enforcement.
+    #[inline]
+    #[must_use]
+    pub const fn locktime_value(self) -> u32 {
+        self.0 & (Self::LOCKTIME_TYPE_FLAG | Self::LOCKTIME_MASK)
+    }
+
+    /// Check whether a script-level CSV value (already validated as non-negative
+    /// by the interpreter, disable-flag already checked by caller) is satisfied
+    /// by this input's sequence number.
+    ///
+    /// Returns `false` if the input's disable flag is set, or the two values
+    /// are in different domains (blocks vs. time), or the script value exceeds
+    /// the input's masked value.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub const fn satisfies_csv(self, script_sequence: i64) -> bool {
+        if self.is_locktime_disabled() {
+            return false;
+        }
+        let script_masked =
+            script_sequence as u32 & (Self::LOCKTIME_TYPE_FLAG | Self::LOCKTIME_MASK);
+        let tx_masked = self.locktime_value();
+        // Both must be in the same domain (blocks vs. 512-second units).
+        let script_is_time = script_masked & Self::LOCKTIME_TYPE_FLAG != 0;
+        let tx_is_time = tx_masked & Self::LOCKTIME_TYPE_FLAG != 0;
+        if script_is_time != tx_is_time {
+            return false;
+        }
+        script_masked <= tx_masked
+    }
+}
+
+impl PartialOrd for Sequence {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Sequence {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
     }
 }
 

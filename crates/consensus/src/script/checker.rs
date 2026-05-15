@@ -10,7 +10,7 @@
 
 use std::sync::OnceLock;
 
-use mantle::primitives::Satoshi;
+use mantle::primitives::{Satoshi, Sequence};
 
 use super::consensus_crypto::{Ecdsa, Schnorr};
 use super::flags::ScriptFlags;
@@ -83,10 +83,11 @@ pub trait SignatureChecker {
 /// from it.
 #[derive(Debug)]
 pub struct TxSigChecker<'a, T: TxView> {
-    pub tx: &'a T,
-    pub n_in: usize,
-    pub amount: Satoshi,
-    pub script_flags: ScriptFlags,
+    tx: &'a T,
+    n_in: usize,
+    amount: Satoshi,
+    #[allow(dead_code)]
+    script_flags: ScriptFlags,
     /// Lazy BIP143 shared hash fields. Empty until the first witness-v0
     /// signature check on this checker; populated in place on first use.
     /// Pre-segwit txs (the bulk of early mainnet) never allocate this.
@@ -216,83 +217,28 @@ impl<T: TxView> SignatureChecker for TxSigChecker<'_, T> {
     }
 
     fn check_lock_time(&self, locktime: i64) -> bool {
-        // BIP65: locktime semantics. The interpreter has already verified
-        // `locktime >= 0` and decoded it as a 5-byte ScriptNum. Here we
-        // compare to `tx.locktime` and `nSequence` of the spending input.
-        //
-        // Rule 1: both `locktime` and `tx.locktime` must be in the same
-        // range — block-height (< LOCKTIME_THRESHOLD) or median-time-past
-        // (>= LOCKTIME_THRESHOLD). Mixing them is rejected.
-        //
-        // Rule 2: `locktime > tx.locktime` rejects. The script's locktime
-        // requires the tx's claimed locktime to be at least that high.
-        //
-        // Rule 3: a `nSequence` of `0xffffffff` on this input would disable
-        // tx-level locktime entirely; if this CLTV opcode runs against
-        // such an input, it can't enforce anything → reject.
-        const LOCKTIME_THRESHOLD: i64 = 500_000_000;
-        let tx_lock = i64::from(self.tx.locktime());
-        if (locktime < LOCKTIME_THRESHOLD) != (tx_lock < LOCKTIME_THRESHOLD) {
+        if !self.tx.locktime().satisfies_cltv(locktime) {
             return false;
         }
-        if locktime > tx_lock {
-            return false;
-        }
-        // Caller-provided `n_in` is in range — `verify_script` is only
-        // reached for valid inputs.
-        let seq = self.tx.input(self.n_in).sequence();
-        seq != u32::MAX
+        self.tx.input(self.n_in).sequence() != Sequence::MAX
     }
 
     fn check_sequence(&self, sequence: i64) -> bool {
-        // BIP112: relative-locktime via nSequence. The script-level value
-        // and the input's nSequence are compared after both have been
-        // pre-validated by the interpreter.
-        const SEQUENCE_LOCKTIME_DISABLE_FLAG: i64 = 1 << 31;
-        const SEQUENCE_LOCKTIME_TYPE_FLAG: i64 = 1 << 22;
-        const SEQUENCE_LOCKTIME_MASK: i64 = 0x0000_ffff;
-
         // BIP112: if the *stack* value has the disable flag set, CSV is a
-        // NOP-pass regardless of tx version. Checked by the caller (the
-        // opcode handler peeks; we only see the value). Implemented above.
-        if sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG != 0 {
+        // NOP-pass regardless of tx version.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let script_disable = (sequence as u32) & (1 << 31) != 0;
+        if script_disable {
             return true;
         }
 
-        // BIP68 only applies to txs whose version (treated as **unsigned**,
-        // per Core) is ≥ 2. Pre-v2 txs disable BIP112 relative locktime
-        // enforcement, but with the stack disable bit *clear* the rule
-        // says CSV must fail (the spec treats this as "transaction can't
-        // satisfy CSV without opting in").
-        //
-        // Probed via fuzz/tests/csv_oracle_probe.rs — Core uses u32 here,
-        // so a negative i32 with high-byte 0xfd reads as a huge positive
-        // u32 and CSV proceeds normally.
-        #[allow(clippy::cast_sign_loss)] // intentional u32 reinterpretation
-        let version_u32 = self.tx.version() as u32;
-        if version_u32 < 2 {
+        // BIP68 only applies to txs whose version (treated as unsigned,
+        // per Core) is >= 2.
+        if self.tx.version().to_u32() < 2 {
             return false;
         }
 
-        let tx_seq = i64::from(self.tx.input(self.n_in).sequence());
-
-        // If the disable bit is set on the *input's* nSequence, the
-        // opcode can't enforce anything against it — reject.
-        if tx_seq & SEQUENCE_LOCKTIME_DISABLE_FLAG != 0 {
-            return false;
-        }
-
-        // The two values must be in the same locktime "type" (blocks vs.
-        // 512-second units), encoded in bit 22.
-        let masked_script = sequence & (SEQUENCE_LOCKTIME_TYPE_FLAG | SEQUENCE_LOCKTIME_MASK);
-        let masked_tx = tx_seq & (SEQUENCE_LOCKTIME_TYPE_FLAG | SEQUENCE_LOCKTIME_MASK);
-        if (masked_script < SEQUENCE_LOCKTIME_TYPE_FLAG)
-            != (masked_tx < SEQUENCE_LOCKTIME_TYPE_FLAG)
-        {
-            return false;
-        }
-
-        masked_script <= masked_tx
+        self.tx.input(self.n_in).sequence().satisfies_csv(sequence)
     }
 }
 

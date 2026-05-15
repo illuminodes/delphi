@@ -175,7 +175,7 @@ pub trait ChainView {
 #[derive(Debug, Default)]
 pub struct MemoryChainView {
     /// The block height of `headers[0]`.
-    height_base: u32,
+    height_base: BlockHeight,
     /// Headers in insertion order. `headers[0]` is at height `height_base`.
     headers: Vec<BlockHeader>,
     /// Hash → absolute height on the canonical chain.
@@ -196,7 +196,7 @@ impl MemoryChainView {
     #[must_use]
     pub fn with_height_base(base_height: BlockHeight) -> Self {
         Self {
-            height_base: base_height.to_u32(),
+            height_base: base_height,
             ..Self::default()
         }
     }
@@ -208,6 +208,7 @@ impl MemoryChainView {
     pub fn push_header(&mut self, header: BlockHeader) {
         let height = BlockHeight::new(
             self.height_base
+                .to_u32()
                 .checked_add(u32::try_from(self.headers.len()).expect("chain height exceeds u32"))
                 .expect("chain height exceeds u32"),
         );
@@ -236,7 +237,7 @@ impl ChainView for MemoryChainView {
         Ok(self
             .header_index
             .get(hash)
-            .and_then(|h| h.to_u32().checked_sub(self.height_base))
+            .and_then(|h| h.to_u32().checked_sub(self.height_base.to_u32()))
             .and_then(|i| self.headers.get(i as usize))
             .copied())
     }
@@ -244,7 +245,7 @@ impl ChainView for MemoryChainView {
     fn get_header_at(&self, height: BlockHeight) -> Result<Option<BlockHeader>, ChainViewError> {
         let idx = height
             .to_u32()
-            .checked_sub(self.height_base)
+            .checked_sub(self.height_base.to_u32())
             .map(|i| i as usize);
         Ok(idx.and_then(|i| self.headers.get(i)).copied())
     }
@@ -270,7 +271,7 @@ impl ChainView for MemoryChainView {
 
         // Convert absolute height to Vec index.
         let ph_abs = parent_height.to_u32();
-        let ph_idx = ph_abs.saturating_sub(self.height_base) as usize;
+        let ph_idx = ph_abs.saturating_sub(self.height_base.to_u32()) as usize;
 
         // Window of up to 11, but capped by how many headers we actually have.
         let count = (ph_idx + 1).min(11);
@@ -292,7 +293,7 @@ impl ChainView for MemoryChainView {
             },
             Some(h) => {
                 let idx = u32::try_from(self.headers.len() - 1).expect("chain height exceeds u32");
-                let height = BlockHeight::new(self.height_base.saturating_add(idx));
+                let height = BlockHeight::new(self.height_base.to_u32().saturating_add(idx));
                 TipInfo {
                     hash: h.hash(),
                     height,

@@ -57,10 +57,10 @@ use std::cell::RefCell;
 
 use mantle::codec::{Encode, VarInt};
 use mantle::hash::ByteSliceExt;
-use mantle::primitives::{Hash256, Satoshi};
+use mantle::primitives::{Hash256, Satoshi, Sequence};
 
 #[cfg(test)]
-use mantle::primitives::{Sequence, Transaction, TxIn, TxOut, Witness};
+use mantle::primitives::{Transaction, TxIn, TxOut, Witness};
 
 use super::consensus_crypto::Schnorr;
 use crate::tx_view::{InputView, OutputView, TxView};
@@ -387,7 +387,7 @@ fn encode_legacy_preimage<T: TxView>(
             // Under SIGHASH_NONE / SIGHASH_SINGLE, every *other* input's
             // sequence is zeroed so those inputs cannot block re-signing.
             let sequence = match mode {
-                SigHashMode::None | SigHashMode::Single if i != n_in => 0,
+                SigHashMode::None | SigHashMode::Single if i != n_in => Sequence::new(0),
                 _ => input.sequence(),
             };
             buf.extend_from_slice(&sequence.to_le_bytes());

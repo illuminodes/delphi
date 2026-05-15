@@ -63,20 +63,14 @@ fn reduce_in_place(row: &mut Vec<Hash256>) -> Hash256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::decode_hex;
 
     fn h(byte: u8) -> Hash256 {
         Hash256::from_bytes([byte; 32])
     }
 
     fn txid_from_hex(s: &str) -> Hash256 {
-        let bytes: Vec<u8> = (0..s.len())
-            .step_by(2)
-            .map(|i| {
-                u8::from_str_radix(&s[i..i + 2], 16)
-                    .unwrap_or_else(|_| panic!("invalid hex at offset {i}"))
-            })
-            .collect();
-        // txids are stored internally in byte order (not display-reversed)
+        let bytes = decode_hex(s);
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes);
         Hash256::from_bytes(arr)
