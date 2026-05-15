@@ -16,11 +16,7 @@ name = "hash"
 harness = false
 
 [[bench]]
-name = "network"
-harness = false
-
-[[bench]]
-name = "primitives"
+name = "mantle"
 harness = false
 
 [[bench]]
