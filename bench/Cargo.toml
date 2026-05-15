@@ -32,6 +32,10 @@ name = "storage"
 harness = false
 
 [[bench]]
+name = "transport"
+harness = false
+
+[[bench]]
 name = "replay"
 harness = false
 
@@ -58,6 +62,14 @@ path = "src/storage/dhat.rs"
 [[bin]]
 name = "storage-pprof"
 path = "src/storage/pprof.rs"
+
+[[bin]]
+name = "transport-dhat"
+path = "src/transport/dhat.rs"
+
+[[bin]]
+name = "transport-pprof"
+path = "src/transport/pprof.rs"
 
 [[bin]]
 name = "dhat-profile"
@@ -115,6 +127,7 @@ path = "src/replay_dhat_window.rs"
 mantle = { path = "../crates/mantle" }
 mantle-consensus = { path = "../crates/consensus" }
 mantle-storage = { path = "../crates/storage" }
+mantle-transport = { path = "../crates/transport" }
 mantle-validator = { path = "../crates/validator" }
 ququmatz.workspace = true
 dhat = "0.3"

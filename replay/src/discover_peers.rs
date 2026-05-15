@@ -169,7 +169,8 @@ fn run(args: &Args) -> Result<(), String> {
     let mut peers: PeerPool<(), MAX_PEERS> = PeerPool::new();
 
     let connect_timeout = Timespec::from_millis(CONNECT_TIMEOUT_SECS * 1_000);
-    let version_payload = encode_version("/mantle-discover:0.1.0/");
+    let mut version_payload = Vec::new();
+    encode_version("/mantle-discover:0.1.0/", &mut version_payload);
     let mut next_addr_idx = 0usize;
     let mut state = DiscoverState {
         harvest: BTreeSet::new(),
@@ -360,7 +361,8 @@ fn run(args: &Args) -> Result<(), String> {
             let _ = slot;
         }
 
-        for slot in peers.dead_slots() {
+        let dead: Vec<u16> = peers.dead_slots().to_vec();
+        for slot in dead {
             peers.remove(slot);
             if (slot as usize) < state.asked.len() {
                 state.asked[slot as usize] = false;

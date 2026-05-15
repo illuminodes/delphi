@@ -672,6 +672,7 @@ dependencies = [
  "mantle",
  "mantle-consensus",
  "mantle-storage",
+ "mantle-transport",
  "mantle-validator",
  "pprof",
  "ququmatz",

@@ -387,7 +387,8 @@ impl Fetcher {
         let phase_deadline = Instant::now() + Duration::from_secs(HEADERS_PHASE_DEADLINE_SECS);
         let payload = getheaders_payload(locator);
         let mut elected: Option<(u16, Instant)> = None;
-        let version_payload = encode_version("/mantle-replay-iouring:0.1.0/");
+        let mut version_payload = Vec::new();
+        encode_version("/mantle-replay-iouring:0.1.0/", &mut version_payload);
         let mut last_status = Instant::now();
 
         loop {
@@ -550,7 +551,8 @@ impl Fetcher {
                 elected = None;
             }
 
-            for slot in self.peers.dead_slots() {
+            let dead: Vec<u16> = self.peers.dead_slots().to_vec();
+            for slot in dead {
                 self.peers.remove(slot);
                 if let Some(peer) = self.dial_next_inner(slot)? {
                     self.peers.insert(slot, peer);
@@ -637,7 +639,8 @@ impl Fetcher {
         let mut last_log = Instant::now();
         let mut saved_at_last_log = 0usize;
         let log_interval = Duration::from_secs(2);
-        let version_payload = encode_version("/mantle-replay-iouring:0.1.0/");
+        let mut version_payload = Vec::new();
+        encode_version("/mantle-replay-iouring:0.1.0/", &mut version_payload);
 
         loop {
             self.ring.push_tick(Duration::from_secs(1))?;
@@ -794,7 +797,8 @@ impl Fetcher {
                 }
             }
 
-            for slot in self.peers.dead_slots() {
+            let dead: Vec<u16> = self.peers.dead_slots().to_vec();
+            for slot in dead {
                 if let Some(p) = self.peers.remove(slot) {
                     for (h, _) in p.app.in_flight {
                         if let Some(info) = in_flight.get_mut(&h) {

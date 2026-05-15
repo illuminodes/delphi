@@ -30,6 +30,7 @@ pub struct Peer<T> {
 
 pub struct PeerPool<T, const MAX: usize> {
     slots: [Option<Peer<T>>; MAX],
+    dead_buf: Vec<u16>,
 }
 
 impl<T, const MAX: usize> PeerPool<T, MAX> {
@@ -37,6 +38,7 @@ impl<T, const MAX: usize> PeerPool<T, MAX> {
     pub fn new() -> Self {
         Self {
             slots: std::array::from_fn(|_| None),
+            dead_buf: Vec::with_capacity(MAX),
         }
     }
 
@@ -94,15 +96,14 @@ impl<T, const MAX: usize> PeerPool<T, MAX> {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    pub fn dead_slots(&self) -> Vec<u16> {
-        self.slots
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| {
-                s.as_ref()
-                    .and_then(|p| (p.state == PeerState::Dead).then_some(i as u16))
-            })
-            .collect()
+    pub fn dead_slots(&mut self) -> &[u16] {
+        self.dead_buf.clear();
+        for (i, s) in self.slots.iter().enumerate() {
+            if s.as_ref().is_some_and(|p| p.state == PeerState::Dead) {
+                self.dead_buf.push(i as u16);
+            }
+        }
+        &self.dead_buf
     }
 }
 

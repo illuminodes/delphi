@@ -130,10 +130,9 @@ pub fn consume_handshake_frames<T>(
     Ok(())
 }
 
-pub fn encode_version(user_agent: &str) -> Vec<u8> {
-    let mut buf = Vec::new();
+pub fn encode_version(user_agent: &str, buf: &mut Vec<u8>) {
+    buf.clear();
     our_version(user_agent)
-        .encode(&mut buf)
+        .encode(buf)
         .expect("Vec<u8> Write is infallible");
-    buf
 }
