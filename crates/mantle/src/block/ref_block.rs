@@ -46,7 +46,8 @@ impl<'a> BlockRef<'a> {
 
         let (header, rest) = BlockHeader::decode_ref(wire)?;
         let (vi, mut rest) = VarInt::decode_ref(rest)?;
-        let tx_count = vi.to_usize()
+        let tx_count = vi
+            .to_usize()
             .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e.to_string())))?;
 
         arena.reserve(rest.len());
@@ -124,12 +125,12 @@ impl<'a> BlockRef<'a> {
 #[cfg(test)]
 mod tests {
     use crate::amount::Satoshi;
+    use crate::block::{Block, BlockHeader, BlockRef};
     use crate::codec::Encode;
     use crate::difficulty::CompactBits;
     use crate::hash::Hash256;
     use crate::script::Witness;
-    use crate::block::{BlockHeader, Block, BlockRef};
-    use crate::tx::{OutPoint, TxIn, TxOut, Transaction, TxHash};
+    use crate::tx::{OutPoint, Transaction, TxHash, TxIn, TxOut};
 
     fn encode<T: Encode>(val: &T) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -202,14 +203,14 @@ mod tests {
         let legacy = make_tx();
         let segwit = make_segwit_tx();
         let block = Block {
-            header: BlockHeader {
-                version: 1,
-                prev_block: Hash256::ZERO,
-                merkle_root: Hash256::ZERO,
-                time: 1_700_000_000,
-                bits: CompactBits::new(0x1d00_ffff),
-                nonce: 0,
-            },
+            header: BlockHeader::new(
+                1,
+                Hash256::ZERO,
+                Hash256::ZERO,
+                1_700_000_000,
+                CompactBits::new(0x1d00_ffff),
+                0,
+            ),
             transactions: vec![legacy.clone(), segwit.clone()],
         };
         let bytes = encode(&block);
@@ -242,14 +243,14 @@ mod tests {
     fn block_ref_arena_reuse_clears_between_calls() {
         let segwit = make_segwit_tx();
         let block = Block {
-            header: BlockHeader {
-                version: 1,
-                prev_block: Hash256::ZERO,
-                merkle_root: Hash256::ZERO,
-                time: 0,
-                bits: CompactBits::new(0x1d00_ffff),
-                nonce: 0,
-            },
+            header: BlockHeader::new(
+                1,
+                Hash256::ZERO,
+                Hash256::ZERO,
+                0,
+                CompactBits::new(0x1d00_ffff),
+                0,
+            ),
             transactions: vec![segwit.clone()],
         };
         let bytes = encode(&block);

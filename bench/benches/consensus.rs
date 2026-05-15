@@ -58,11 +58,11 @@ fn regular_tx(prev: Hash256, vout: u32, value: u64) -> Transaction {
 fn mine_block(mut block: Block) -> Block {
     let target = block
         .header
-        .bits
+        .bits()
         .to_target()
         .expect("EASY_BITS must produce a valid target");
     for nonce in 0..=u32::MAX {
-        block.header.nonce = nonce;
+        block.header.set_nonce(nonce);
         let raw = *Hash256::hash(&block.header.to_bytes()).as_bytes();
         let mut be = raw;
         be.reverse();
@@ -81,14 +81,7 @@ fn make_valid_block(txs: Vec<Transaction>) -> Block {
     let merkle_root =
         compute_merkle_root(&txids).expect("non-empty tx list must have a merkle root");
     let block = Block {
-        header: BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
-            merkle_root,
-            time: 1_231_006_505,
-            bits: EASY_BITS,
-            nonce: 0,
-        },
+        header: BlockHeader::new(1, Hash256::ZERO, merkle_root, 1_231_006_505, EASY_BITS, 0),
         transactions: txs,
     };
     mine_block(block)
@@ -98,14 +91,14 @@ fn build_chain(len: u32) -> MemoryChainView {
     let mut view = MemoryChainView::new();
     let mut prev = Hash256::ZERO;
     for i in 0..len {
-        let h = BlockHeader {
-            version: 4,
-            prev_block: prev,
-            merkle_root: Hash256::ZERO,
-            time: 1_296_688_602 + i * 600,
-            bits: EASY_BITS,
-            nonce: 0,
-        };
+        let h = BlockHeader::new(
+            4,
+            prev,
+            Hash256::ZERO,
+            1_296_688_602 + i * 600,
+            EASY_BITS,
+            0,
+        );
         prev = h.hash();
         view.push_header(h);
     }
@@ -241,7 +234,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
         .get_header_at(tip.height)
         .expect("storage error")
         .expect("tip header must exist")
-        .time;
+        .time();
     let clock_now = u64::from(parent_time) + 600;
 
     let tx = Transaction {
@@ -264,24 +257,17 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
     let merkle_root = compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
         .expect("single-tx merkle root must exist");
     let mtp = view
-        .median_time_past(&BlockHeader {
-            version: 4,
-            prev_block: tip.hash,
-            merkle_root: Hash256::ZERO,
-            time: 0,
-            bits: EASY_BITS,
-            nonce: 0,
-        })
+        .median_time_past(&BlockHeader::new(
+            4,
+            tip.hash,
+            Hash256::ZERO,
+            0,
+            EASY_BITS,
+            0,
+        ))
         .expect("median_time_past must succeed on valid chain");
     let block = Block {
-        header: BlockHeader {
-            version: 4,
-            prev_block: tip.hash,
-            merkle_root,
-            time: mtp + 1,
-            bits: EASY_BITS,
-            nonce: 0,
-        },
+        header: BlockHeader::new(4, tip.hash, merkle_root, mtp + 1, EASY_BITS, 0),
         transactions: vec![tx],
     };
     let clock = FixedClock(clock_now + 3600);
@@ -424,14 +410,7 @@ fn merkle_root_9001_reusing(bencher: divan::Bencher) {
 fn chain_view_median_time_past(bencher: divan::Bencher) {
     let view = build_chain(12);
     let tip = view.tip();
-    let next_header = BlockHeader {
-        version: 4,
-        prev_block: tip.hash,
-        merkle_root: Hash256::ZERO,
-        time: 0,
-        bits: EASY_BITS,
-        nonce: 0,
-    };
+    let next_header = BlockHeader::new(4, tip.hash, Hash256::ZERO, 0, EASY_BITS, 0);
     bencher.bench(|| {
         view.median_time_past(black_box(&next_header))
             .expect("median_time_past must succeed on valid chain")

@@ -131,13 +131,7 @@ impl Iterator for BlockHeaderIter<'_> {
                 return Some(Err(e));
             }
         };
-        let header = match BlockHeader::from_bytes(arr) {
-            Ok(h) => h,
-            Err(e) => {
-                self.left = 0;
-                return Some(Err(e));
-            }
-        };
+        let header = BlockHeader::from_bytes(arr);
         // Consume the tx_count VarInt stub that follows every header.
         match VarInt::decode_ref(tail) {
             Ok((_tx_count, rest)) => {
@@ -294,14 +288,14 @@ mod tests {
 
     #[test]
     fn headers_msg_roundtrip() {
-        let header = BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
-            merkle_root: Hash256::ZERO,
-            time: 1_231_006_505,
-            bits: CompactBits::new(0x1d00_ffff),
-            nonce: 2_083_236_893,
-        };
+        let header = BlockHeader::new(
+            1,
+            Hash256::ZERO,
+            Hash256::ZERO,
+            1_231_006_505,
+            CompactBits::new(0x1d00_ffff),
+            2_083_236_893,
+        );
         let msg = HeadersMsg(vec![header]);
         let bytes = encode(&msg);
         let decoded = decode::<HeadersMsg>(&bytes);
@@ -317,14 +311,14 @@ mod tests {
 
     #[test]
     fn headers_msg_nonzero_tx_count_placeholder() {
-        let header = BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
-            merkle_root: Hash256::ZERO,
-            time: 0,
-            bits: CompactBits::new(0x1d00_ffff),
-            nonce: 0,
-        };
+        let header = BlockHeader::new(
+            1,
+            Hash256::ZERO,
+            Hash256::ZERO,
+            0,
+            CompactBits::new(0x1d00_ffff),
+            0,
+        );
         // Manually encode with tx_count = 5 instead of 0.
         let mut buf = Vec::new();
         crate::codec::VarInt::from(1u64)
@@ -341,14 +335,7 @@ mod tests {
 
     #[test]
     fn headers_msg_truncated_header() {
-        let header = BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
-            merkle_root: Hash256::ZERO,
-            time: 0,
-            bits: CompactBits::new(0),
-            nonce: 0,
-        };
+        let header = BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0);
         let mut bytes = encode(&HeadersMsg(vec![header]));
         bytes.truncate(bytes.len() - 5); // truncate inside the header
         let e = decode_err::<HeadersMsg>(&bytes);
@@ -358,14 +345,14 @@ mod tests {
     // ── HeadersMsg iterator and reuse paths ───────────────────────────────────
 
     fn sample_header(nonce: u32) -> BlockHeader {
-        BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
-            merkle_root: Hash256::ZERO,
-            time: 0,
-            bits: CompactBits::new(0x1d00_ffff),
+        BlockHeader::new(
+            1,
+            Hash256::ZERO,
+            Hash256::ZERO,
+            0,
+            CompactBits::new(0x1d00_ffff),
             nonce,
-        }
+        )
     }
 
     #[test]

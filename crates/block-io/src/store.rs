@@ -205,8 +205,7 @@ impl HeaderStore {
         let mut headers = Vec::with_capacity(count);
         for (i, chunk) in data.chunks_exact(HEADER_RECORD_SIZE).enumerate() {
             let arr: &[u8; 80] = chunk.try_into().unwrap();
-            let hdr = BlockHeader::from_bytes(arr)
-                .map_err(|e| io::Error::other(format!("cached header {i} decode: {e}")))?;
+            let hdr = BlockHeader::from_slice(arr);
             headers.push((BlockHeight::new(start.to_u32() + i as u32), hdr));
         }
         Ok(headers)

@@ -577,8 +577,7 @@ mod tests {
     use crate::hash::Hash256;
     use crate::script::Witness;
     use crate::tx::{
-        OutPoint, TxIn, TxOut, Transaction, TransactionRef, TxHash,
-        transaction_ref_with_arena,
+        OutPoint, Transaction, TransactionRef, TxHash, TxIn, TxOut, transaction_ref_with_arena,
     };
 
     fn encode<T: Encode>(val: &T) -> Vec<u8> {

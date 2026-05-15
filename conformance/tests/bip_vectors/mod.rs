@@ -75,14 +75,14 @@ fn minimal_block(coinbase_script_sig: Vec<u8>, transactions: Vec<Transaction>) -
     let merkle_root = compute_merkle_root(&txids).expect("non-empty tx list must have merkle root");
 
     Block {
-        header: BlockHeader {
-            version: 4,
-            prev_block: Hash256::ZERO,
+        header: BlockHeader::new(
+            4,
+            Hash256::ZERO,
             merkle_root,
-            time: 1_231_006_505,
-            bits: mantle::primitives::CompactBits::new(0x207f_ffff), // regtest easiest target
-            nonce: 0,
-        },
+            1_231_006_505,
+            mantle::primitives::CompactBits::new(0x207f_ffff), // regtest easiest target
+            0,
+        ),
         transactions: txs,
     }
 }
@@ -93,14 +93,7 @@ fn build_chain(n: u32, bits: mantle::primitives::CompactBits, base_time: u32) ->
     let mut view = MemoryChainView::new();
     let mut prev = Hash256::ZERO;
     for i in 0..n {
-        let h = BlockHeader {
-            version: 4,
-            prev_block: prev,
-            merkle_root: Hash256::ZERO,
-            time: base_time + i * 600,
-            bits,
-            nonce: 0,
-        };
+        let h = BlockHeader::new(4, prev, Hash256::ZERO, base_time + i * 600, bits, 0);
         prev = h.hash();
         view.push_header(h);
     }
@@ -119,14 +112,14 @@ fn build_chain_at(
     let mut view = MemoryChainView::with_height_base(BlockHeight::new(start));
     let mut prev = Hash256::ZERO;
     for i in 0..window {
-        let h = BlockHeader {
-            version: 4,
-            prev_block: prev,
-            merkle_root: Hash256::ZERO,
-            time: base_time + (start + i) * 600,
+        let h = BlockHeader::new(
+            4,
+            prev,
+            Hash256::ZERO,
+            base_time + (start + i) * 600,
             bits,
-            nonce: 0,
-        };
+            0,
+        );
         prev = h.hash();
         view.push_header(h);
     }

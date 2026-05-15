@@ -5,14 +5,14 @@ use super::*;
 #[test]
 fn stage1_empty_block_rejected() {
     let block = Block {
-        header: BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
-            merkle_root: Hash256::ZERO,
-            time: 0,
-            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
-            nonce: 0,
-        },
+        header: BlockHeader::new(
+            1,
+            Hash256::ZERO,
+            Hash256::ZERO,
+            0,
+            mantle::primitives::CompactBits::new(0x207f_ffff),
+            0,
+        ),
         transactions: vec![],
     };
     assert_eq!(
@@ -40,14 +40,14 @@ fn stage1_first_tx_not_coinbase_rejected() {
     let txids = vec![non_cb.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
-        header: BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
+        header: BlockHeader::new(
+            1,
+            Hash256::ZERO,
             merkle_root,
-            time: 0,
-            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
-            nonce: 0,
-        },
+            0,
+            mantle::primitives::CompactBits::new(0x207f_ffff),
+            0,
+        ),
         transactions: vec![non_cb],
     };
     assert_eq!(
@@ -83,14 +83,14 @@ fn stage1_non_coinbase_with_null_outpoint_rejected() {
     ];
     let merkle_root = compute_merkle_root(&txids).expect("two-tx merkle root must exist");
     let block = Block {
-        header: BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
+        header: BlockHeader::new(
+            1,
+            Hash256::ZERO,
             merkle_root,
-            time: 0,
-            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
-            nonce: 0,
-        },
+            0,
+            mantle::primitives::CompactBits::new(0x207f_ffff),
+            0,
+        ),
         transactions: vec![fake_cb, imposter],
     };
     assert_eq!(
@@ -152,14 +152,14 @@ fn stage1_output_value_over_max_money_rejected() {
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
-        header: BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
+        header: BlockHeader::new(
+            1,
+            Hash256::ZERO,
             merkle_root,
-            time: 0,
-            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
-            nonce: 0,
-        },
+            0,
+            mantle::primitives::CompactBits::new(0x207f_ffff),
+            0,
+        ),
         transactions: vec![coinbase],
     };
     assert_eq!(
@@ -208,14 +208,14 @@ fn stage1_duplicate_inputs_rejected() {
     ];
     let merkle_root = compute_merkle_root(&txids).expect("two-tx merkle root must exist");
     let block = Block {
-        header: BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
+        header: BlockHeader::new(
+            1,
+            Hash256::ZERO,
             merkle_root,
-            time: 0,
-            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
-            nonce: 0,
-        },
+            0,
+            mantle::primitives::CompactBits::new(0x207f_ffff),
+            0,
+        ),
         transactions: vec![coinbase, tx],
     };
     assert_eq!(
@@ -228,7 +228,9 @@ fn stage1_duplicate_inputs_rejected() {
 fn stage1_merkle_mismatch_rejected() {
     let mut block = minimal_block(vec![0x51, 0x52], vec![]);
     // Corrupt the merkle root.
-    block.header.merkle_root = Hash256::from_bytes([0xff; 32]);
+    block
+        .header
+        .set_merkle_root(Hash256::from_bytes([0xff; 32]));
     assert_eq!(
         validate_block_structure(&block),
         Err(ValidationError::MerkleRootMismatch)
@@ -238,7 +240,9 @@ fn stage1_merkle_mismatch_rejected() {
 #[test]
 fn stage1_invalid_bits_rejected() {
     let mut block = minimal_block(vec![0x51, 0x52], vec![]);
-    block.header.bits = mantle::primitives::CompactBits::new(0); // zero nBits is always invalid
+    block
+        .header
+        .set_bits(mantle::primitives::CompactBits::new(0)); // zero nBits is always invalid
     // Also recompute merkle (header bits don't affect merkle root — this is fine).
     assert_eq!(
         validate_block_structure(&block),
@@ -252,7 +256,9 @@ fn stage1_insufficient_pow_rejected() {
     // requires the hash to be almost zero). The block header nonce is 0 so
     // the hash is effectively random and almost certainly fails this target.
     let mut block = minimal_block(vec![0x51, 0x52], vec![]);
-    block.header.bits = mantle::primitives::CompactBits::new(0x1900_0001); // very hard target
+    block
+        .header
+        .set_bits(mantle::primitives::CompactBits::new(0x1900_0001)); // very hard target
     // Recompute the hash check — the actual hash won't satisfy target 0x0001…
     // Note: we don't update merkle root for the bits field (it only appears in
     // the header, not in tx data). So we need to rebuild:
@@ -263,7 +269,7 @@ fn stage1_insufficient_pow_rejected() {
         .collect::<Result<Vec<_>, _>>()
         .expect("txid encoding cannot fail");
     let merkle_root = compute_merkle_root(&txids).expect("non-empty tx list must have merkle root");
-    block.header.merkle_root = merkle_root;
+    block.header.set_merkle_root(merkle_root);
     assert_eq!(
         validate_block_structure(&block),
         Err(ValidationError::InsufficientProofOfWork),

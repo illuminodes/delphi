@@ -70,14 +70,14 @@ fn build_chain(len: u32) -> MemoryChainView {
     let mut view = MemoryChainView::new();
     let mut prev = Hash256::ZERO;
     for i in 0..len {
-        let h = BlockHeader {
-            version: 4,
-            prev_block: prev,
-            merkle_root: Hash256::ZERO,
-            time: 1_296_688_602 + i * 600,
-            bits: CompactBits::new(0x207f_ffff),
-            nonce: 0,
-        };
+        let h = BlockHeader::new(
+            4,
+            prev,
+            Hash256::ZERO,
+            1_296_688_602 + i * 600,
+            CompactBits::new(0x207f_ffff),
+            0,
+        );
         prev = h.hash();
         view.push_header(h);
     }
@@ -87,11 +87,11 @@ fn build_chain(len: u32) -> MemoryChainView {
 fn mine_block(mut block: Block) -> Block {
     let target = block
         .header
-        .bits
+        .bits()
         .to_target()
         .expect("mine_block called with invalid nBits");
     for nonce in 0..=u32::MAX {
-        block.header.nonce = nonce;
+        block.header.set_nonce(nonce);
         let raw = *Hash256::hash(&block.header.to_bytes()).as_bytes();
         let mut be = raw;
         be.reverse();
@@ -110,14 +110,14 @@ fn make_valid_block(txs: Vec<Transaction>) -> Block {
         .expect("txid encoding cannot fail");
     let merkle_root = merkle_root_owned(txids).expect("non-empty tx list always has a merkle root");
     let block = Block {
-        header: BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
+        header: BlockHeader::new(
+            1,
+            Hash256::ZERO,
             merkle_root,
-            time: 1_231_006_505,
-            bits: CompactBits::new(0x207f_ffff),
-            nonce: 0,
-        },
+            1_231_006_505,
+            CompactBits::new(0x207f_ffff),
+            0,
+        ),
         transactions: txs,
     };
     mine_block(block)
@@ -308,7 +308,9 @@ fn main() {
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
-        let sig: EcdsaSig = sk.sign_prehash(digest.as_bytes()).expect("signing cannot fail");
+        let sig: EcdsaSig = sk
+            .sign_prehash(digest.as_bytes())
+            .expect("signing cannot fail");
         let sig = sig.normalize_s();
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
@@ -382,7 +384,9 @@ fn main() {
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
-        let sig: EcdsaSig = sk.sign_prehash(digest.as_bytes()).expect("signing cannot fail");
+        let sig: EcdsaSig = sk
+            .sign_prehash(digest.as_bytes())
+            .expect("signing cannot fail");
         let sig = sig.normalize_s();
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
@@ -459,7 +463,9 @@ fn main() {
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
-        let sig: EcdsaSig = sk.sign_prehash(digest.as_bytes()).expect("signing cannot fail");
+        let sig: EcdsaSig = sk
+            .sign_prehash(digest.as_bytes())
+            .expect("signing cannot fail");
         let sig = sig.normalize_s();
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));
@@ -535,7 +541,9 @@ fn main() {
         };
         let cache = Bip143Cache::new(&tmp_tx);
         let digest = tmp_tx.bip143_sighash(0, &witness_script, amount, SigHashType::ALL, &cache);
-        let sig: EcdsaSig = sk.sign_prehash(digest.as_bytes()).expect("signing cannot fail");
+        let sig: EcdsaSig = sk
+            .sign_prehash(digest.as_bytes())
+            .expect("signing cannot fail");
         let sig = sig.normalize_s();
         let mut sig_bytes = sig.to_der().as_bytes().to_vec();
         sig_bytes.push(u8::try_from(SigHashType::ALL.0 & 0xff).expect("hashtype fits u8"));

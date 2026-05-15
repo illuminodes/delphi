@@ -341,12 +341,15 @@ fn run(args: &Args) -> Result<(), String> {
     if start_height < next_to_validate {
         return Err(format!(
             "--start-height {} precedes storage tip + 1 ({}); refusing to overwrite",
-            start_height.to_u32(), next_to_validate.to_u32()
+            start_height.to_u32(),
+            next_to_validate.to_u32()
         ));
     }
     eprintln!(
         "  storage tip = {} ({:?}); validating from height {}",
-        tip.height.to_u32(), tip.hash, start_height.to_u32(),
+        tip.height.to_u32(),
+        tip.hash,
+        start_height.to_u32(),
     );
 
     // ── Peers ────────────────────────────────────────────────────────────────

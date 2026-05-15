@@ -17,14 +17,14 @@ fn encode_bytes<T: Encode>(val: &T) -> Vec<u8> {
 }
 
 fn make_header(i: usize) -> BlockHeader {
-    BlockHeader {
-        version: 1,
-        prev_block: Hash256::from_bytes([u8::try_from(i).expect("bench index fits u8"); 32]),
-        merkle_root: Hash256::ZERO,
-        time: u32::try_from(i).expect("bench index fits u32"),
-        bits: mantle::primitives::CompactBits::new(0x1d00_ffff),
-        nonce: u32::try_from(i).expect("bench index fits u32"),
-    }
+    BlockHeader::new(
+        1,
+        Hash256::from_bytes([u8::try_from(i).expect("bench index fits u8"); 32]),
+        Hash256::ZERO,
+        u32::try_from(i).expect("bench index fits u32"),
+        mantle::primitives::CompactBits::new(0x1d00_ffff),
+        u32::try_from(i).expect("bench index fits u32"),
+    )
 }
 
 fn make_tx(n_inputs: usize, n_outputs: usize) -> Transaction {
@@ -79,7 +79,7 @@ fn block_header_to_bytes() -> [u8; 80] {
 #[divan::bench]
 fn block_header_from_bytes(bencher: divan::Bencher) {
     let bytes = make_header(42).to_bytes();
-    bencher.bench(|| BlockHeader::from_bytes(&bytes));
+    bencher.bench(|| BlockHeader::from_bytes(bytes));
 }
 
 #[divan::bench]
@@ -267,7 +267,10 @@ fn transaction_ref_iter(bencher: divan::Bencher, n: usize) {
             sum += u64::from(r.expect("input decode cannot fail on valid bytes").sequence);
         }
         for r in tx_ref.outputs() {
-            sum += r.expect("output decode cannot fail on valid bytes").value.to_u64();
+            sum += r
+                .expect("output decode cannot fail on valid bytes")
+                .value
+                .to_u64();
         }
         black_box(sum)
     });

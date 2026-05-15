@@ -37,16 +37,16 @@ fn arb_block_header() -> impl Strategy<Value = BlockHeader> {
         any::<u32>(),
         any::<u32>(),
     )
-        .prop_map(
-            |(version, prev_block, merkle_root, time, bits, nonce)| BlockHeader {
+        .prop_map(|(version, prev_block, merkle_root, time, bits, nonce)| {
+            BlockHeader::new(
                 version,
                 prev_block,
                 merkle_root,
                 time,
-                bits: CompactBits::new(bits),
+                CompactBits::new(bits),
                 nonce,
-            },
-        )
+            )
+        })
 }
 
 fn arb_txout() -> impl Strategy<Value = TxOut> {
@@ -162,8 +162,7 @@ proptest! {
 
         let from_encode = BlockHeader::decode(&mut Cursor::new(&via_encode))
             .expect("BlockHeader from_encode must decode");
-        let from_bytes = BlockHeader::from_bytes(&via_to_bytes)
-            .expect("BlockHeader from_bytes must decode");
+        let from_bytes = BlockHeader::from_bytes(via_to_bytes);
         prop_assert_eq!(from_encode, from_bytes);
     }
 }

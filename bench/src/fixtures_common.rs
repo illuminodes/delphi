@@ -53,10 +53,7 @@ pub fn load_headers(fixtures: &Path) -> Vec<BlockHeader> {
     );
     bytes
         .chunks_exact(80)
-        .map(|chunk| {
-            BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes"))
-                .expect("valid header bytes")
-        })
+        .map(|chunk| BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes")))
         .collect()
 }
 
@@ -82,7 +79,7 @@ pub fn load_all_blocks(fixtures: &Path, start: u32, end: u32) -> Vec<Block> {
 
 pub fn make_snapshot_from_genesis(headers: &[BlockHeader]) -> HeaderSnapshot {
     let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(headers.len() + 1);
-    let genesis_hash = headers[0].prev_block;
+    let genesis_hash = headers[0].prev_block();
     entries.push((genesis_hash, headers[0]));
     for hdr in headers {
         entries.push((hdr.hash(), *hdr));
@@ -272,7 +269,7 @@ pub fn replay_block(
             token: ReqToken(token),
             height,
             hash,
-            prev_hash: block.header.prev_block,
+            prev_hash: block.header.prev_block(),
             header: block.header,
             created: &result.created,
             spent: &result.spent,
@@ -312,7 +309,7 @@ pub fn replay_block_ref(
         .send_lookup_borrowed(&all_ops, &mut lookup)
         .expect("send_lookup");
     let hash = block_ref.header.hash();
-    let prev_hash = block_ref.header.prev_block;
+    let prev_hash = block_ref.header.prev_block();
     let tip = storage.tip();
     storage.recv_lookup().expect("recv_lookup");
 
@@ -576,7 +573,7 @@ pub fn replay_block_ref_reusing(
         .send_lookup_borrowed(&bufs.spend_ops, &mut bufs.lookup)
         .expect("send_lookup");
     let hash = block_ref.header.hash();
-    let prev_hash = block_ref.header.prev_block;
+    let prev_hash = block_ref.header.prev_block();
     let tip = storage.tip();
     storage.recv_lookup().expect("recv_lookup");
 

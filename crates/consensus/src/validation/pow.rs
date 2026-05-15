@@ -50,7 +50,10 @@ pub trait HeaderValidationExt {
 
 impl HeaderValidationExt for BlockHeader {
     fn check_pow(&self) -> Result<(), ValidationError> {
-        let target = self.bits.to_target().ok_or(ValidationError::InvalidBits)?;
+        let target = self
+            .bits()
+            .to_target()
+            .ok_or(ValidationError::InvalidBits)?;
 
         // Header hash in big-endian (reversed from internal storage).
         let header_hash = Hash256::hash(&self.to_bytes());
@@ -74,9 +77,9 @@ impl HeaderValidationExt for BlockHeader {
             1
         };
 
-        if self.version < required {
+        if self.version() < required {
             return Err(ValidationError::BlockVersionTooLow {
-                version: self.version,
+                version: self.version(),
                 required,
             });
         }
@@ -136,37 +139,37 @@ pub(super) fn expected_nbits(
             .ok_or(ValidationError::UnknownParent)?;
 
         let actual_timespan =
-            u64::from(parent.time).saturating_sub(u64::from(retarget_header.time));
+            u64::from(parent.time()).saturating_sub(u64::from(retarget_header.time()));
         let clamped = actual_timespan.clamp(MIN_TIMESPAN, MAX_TIMESPAN);
 
         return parent
-            .bits
+            .bits()
             .retarget(clamped, TARGET_TIMESPAN, POW_LIMIT_BITS)
             .ok_or(ValidationError::InvalidBits);
     }
 
     // Testnet 20-minute reset: if the block timestamp exceeds the parent
     // by more than 2× the target spacing, allow minimum difficulty.
-    if allow_min_difficulty && block_time > parent.time + TESTNET_RESET_SECONDS {
+    if allow_min_difficulty && block_time > parent.time() + TESTNET_RESET_SECONDS {
         return Ok(POW_LIMIT_BITS);
     }
 
     // No retarget — carry parent's bits. On testnets, if the parent was a
     // min-difficulty block but we're back within 20 min, walk back to find
     // the last non-min-difficulty block's nBits.
-    if allow_min_difficulty && parent.bits == POW_LIMIT_BITS {
+    if allow_min_difficulty && parent.bits() == POW_LIMIT_BITS {
         let mut h = parent_height;
         let mut hdr = parent;
-        while h > BlockHeight::ZERO && h % RETARGET_INTERVAL != 0 && hdr.bits == POW_LIMIT_BITS {
+        while h > BlockHeight::ZERO && h % RETARGET_INTERVAL != 0 && hdr.bits() == POW_LIMIT_BITS {
             h = h.saturating_sub(1);
             hdr = view
                 .get_header_at(h)?
                 .ok_or(ValidationError::UnknownParent)?;
         }
-        return Ok(hdr.bits);
+        return Ok(hdr.bits());
     }
 
-    Ok(parent.bits)
+    Ok(parent.bits())
 }
 
 // ── U256 ──────────────────────────────────────────────────────────────────────

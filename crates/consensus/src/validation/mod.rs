@@ -66,10 +66,10 @@ pub fn validate_block_context_with_clock(
 
     // Parent must exist on the canonical chain.
     let parent = view
-        .get_header(&header.prev_block)?
+        .get_header(&header.prev_block())?
         .ok_or(ValidationError::UnknownParent)?;
     let parent_height = view
-        .height_of(&header.prev_block)?
+        .height_of(&header.prev_block())?
         .ok_or(ValidationError::UnknownParent)?;
     let this_height = parent_height + 1;
 
@@ -78,21 +78,21 @@ pub fn validate_block_context_with_clock(
         parent_height,
         parent,
         view,
-        header.time,
+        header.time(),
         allow_min_difficulty,
     )?;
-    if header.bits != expected_bits {
+    if header.bits() != expected_bits {
         return Err(ValidationError::UnexpectedDifficulty);
     }
 
     // Timestamp > MTP (BIP113).
     let mtp = view.median_time_past(header)?;
-    if header.time <= mtp {
+    if header.time() <= mtp {
         return Err(ValidationError::TimestampTooEarly);
     }
 
     // Timestamp ≤ now + 2h.
-    if u64::from(header.time) > clock.now_secs() + MAX_FUTURE_BLOCK_TIME {
+    if u64::from(header.time()) > clock.now_secs() + MAX_FUTURE_BLOCK_TIME {
         return Err(ValidationError::TimestampTooFarFuture);
     }
 

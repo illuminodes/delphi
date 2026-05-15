@@ -71,11 +71,11 @@ fn spend_tx(prev_txid: Hash256, vout: u32, value: u64) -> Transaction {
 fn mine(mut block: Block) -> Block {
     let target = block
         .header
-        .bits
+        .bits()
         .to_target()
         .expect("EASY_BITS always valid");
     for nonce in 0..=u32::MAX {
-        block.header.nonce = nonce;
+        block.header.set_nonce(nonce);
         let mut hash = *Hash256::hash(&block.header.to_bytes()).as_bytes();
         hash.reverse();
         if hash <= target {
@@ -89,27 +89,20 @@ fn make_block(prev_hash: Hash256, height: u32, txs: Vec<Transaction>) -> Block {
     let txids: Vec<Hash256> = txs.iter().map(|tx| tx.txid().expect("txid")).collect();
     let merkle_root = compute_merkle_root(&txids).expect("non-empty list has merkle root");
     mine(Block {
-        header: BlockHeader {
-            version: 4,
-            prev_block: prev_hash,
+        header: BlockHeader::new(
+            4,
+            prev_hash,
             merkle_root,
-            time: BASE_TIME + height * 600,
-            bits: EASY_BITS,
-            nonce: 0,
-        },
+            BASE_TIME + height * 600,
+            EASY_BITS,
+            0,
+        ),
         transactions: txs,
     })
 }
 
 fn pre_genesis_header() -> BlockHeader {
-    BlockHeader {
-        version: 1,
-        prev_block: Hash256::ZERO,
-        merkle_root: Hash256::ZERO,
-        time: BASE_TIME,
-        bits: EASY_BITS,
-        nonce: 0,
-    }
+    BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, BASE_TIME, EASY_BITS, 0)
 }
 
 fn make_snapshot(chain: &[(Hash256, BlockHeader)]) -> HeaderSnapshot {

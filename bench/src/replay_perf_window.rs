@@ -95,7 +95,6 @@ fn headers_from_blocks(dir: &Path, start: u32, end: u32) -> Vec<BlockHeader> {
                     .try_into()
                     .expect("block file is at least 80 bytes"),
             )
-            .expect("valid header bytes")
         })
         .collect()
 }
@@ -109,10 +108,7 @@ fn load_headers_file(dir: &Path) -> Vec<BlockHeader> {
     );
     bytes
         .chunks_exact(80)
-        .map(|chunk| {
-            BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes"))
-                .expect("valid header bytes")
-        })
+        .map(|chunk| BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes")))
         .collect()
 }
 
@@ -121,7 +117,7 @@ fn make_snapshot(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
         // Genesis-era window. Insert the genesis hash at slot 0 so height-1
         // lookups for prev_block resolve. (block-1.prev_block == genesis hash.)
         let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(headers.len() + 1);
-        let genesis_hash = headers[0].prev_block;
+        let genesis_hash = headers[0].prev_block();
         entries.push((genesis_hash, headers[0]));
         for hdr in headers {
             entries.push((hdr.hash(), *hdr));
@@ -264,7 +260,7 @@ fn replay_block_timed(
         .send_lookup_borrowed(&all_ops, &mut lookup_results)
         .expect("send_lookup");
     let hash = block_ref.header.hash();
-    let prev_hash = block_ref.header.prev_block;
+    let prev_hash = block_ref.header.prev_block();
     let tip = storage.tip();
     storage.recv_lookup().expect("recv_lookup");
     let lookup = t0.elapsed();

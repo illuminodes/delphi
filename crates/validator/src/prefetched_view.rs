@@ -98,12 +98,12 @@ impl HeaderSnapshot {
 
     #[must_use]
     pub fn median_time_past(&self, header: &BlockHeader) -> Option<u32> {
-        let parent_height = *self.by_hash.get(&header.prev_block)?;
+        let parent_height = *self.by_hash.get(&header.prev_block())?;
         let ph_idx = parent_height.checked_sub(self.base)? as usize;
         let start = (ph_idx + 1).saturating_sub(11);
         let mut times: Vec<u32> = self.headers[start..=ph_idx]
             .iter()
-            .map(|(_, h)| h.time)
+            .map(|(_, h)| h.time())
             .collect();
         times.sort_unstable();
         Some(times[times.len() / 2])

@@ -205,14 +205,14 @@ fn wire_agrees_with_owned_on_valid_block() {
 fn wire_empty_block_rejected() {
     // Header + VarInt(0) — no transactions.
     let block = Block {
-        header: BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
-            merkle_root: Hash256::ZERO,
-            time: 0,
-            bits: mantle::primitives::CompactBits::new(0x207f_ffff),
-            nonce: 0,
-        },
+        header: BlockHeader::new(
+            1,
+            Hash256::ZERO,
+            Hash256::ZERO,
+            0,
+            mantle::primitives::CompactBits::new(0x207f_ffff),
+            0,
+        ),
         transactions: vec![],
     };
     let mut bytes = Vec::new();
@@ -227,7 +227,9 @@ fn wire_empty_block_rejected() {
 #[test]
 fn wire_merkle_mismatch_rejected() {
     let mut block = minimal_block(vec![0x03, 0x01, 0x00, 0x00], vec![]);
-    block.header.merkle_root = Hash256::from_bytes([0xff; 32]); // corrupt the root
+    block
+        .header
+        .set_merkle_root(Hash256::from_bytes([0xff; 32])); // corrupt the root
     let mut bytes = Vec::new();
     block.encode(&mut bytes).expect("Vec<u8> write cannot fail");
     let (mut t, mut mb, mut si, mut st) = wire_scratch();
@@ -278,14 +280,14 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
             let merkle_root =
                 compute_merkle_root(&txids).expect("single-tx merkle root must exist");
             Block {
-                header: BlockHeader {
-                    version: 4,
-                    prev_block: Hash256::ZERO,
+                header: BlockHeader::new(
+                    4,
+                    Hash256::ZERO,
                     merkle_root,
-                    time: 1_231_006_505,
-                    bits: mantle::primitives::CompactBits::new(0x207f_ffff),
-                    nonce: 0,
-                },
+                    1_231_006_505,
+                    mantle::primitives::CompactBits::new(0x207f_ffff),
+                    0,
+                ),
                 transactions: vec![non_cb],
             }
         }),
@@ -307,14 +309,14 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
             let merkle_root =
                 compute_merkle_root(&txids).expect("single-tx merkle root must exist");
             Block {
-                header: BlockHeader {
-                    version: 4,
-                    prev_block: Hash256::ZERO,
+                header: BlockHeader::new(
+                    4,
+                    Hash256::ZERO,
                     merkle_root,
-                    time: 1_231_006_505,
-                    bits: mantle::primitives::CompactBits::new(0x207f_ffff),
-                    nonce: 0,
-                },
+                    1_231_006_505,
+                    mantle::primitives::CompactBits::new(0x207f_ffff),
+                    0,
+                ),
                 transactions: vec![coinbase],
             }
         }),

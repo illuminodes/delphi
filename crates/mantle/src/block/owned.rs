@@ -59,7 +59,8 @@ impl Block {
         r: &mut impl Read,
     ) -> Result<Self, Error> {
         let header = BlockHeader::decode(r)?;
-        let tx_count = VarInt::decode(r)?.to_usize()
+        let tx_count = VarInt::decode(r)?
+            .to_usize()
             .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e.to_string())))?;
         if tx_count > MAX_TXS {
             return Err(Error::Io(io::Error::new(
@@ -89,12 +90,12 @@ mod tests {
     use std::io::Cursor;
 
     use crate::amount::Satoshi;
+    use crate::block::{Block, BlockHeader};
     use crate::codec::{Decode, Encode, Error};
     use crate::difficulty::CompactBits;
     use crate::hash::Hash256;
     use crate::script::Witness;
-    use crate::block::{BlockHeader, Block};
-    use crate::tx::{OutPoint, TxIn, TxOut, Transaction};
+    use crate::tx::{OutPoint, Transaction, TxIn, TxOut};
 
     fn encode<T: Encode>(val: &T) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -113,14 +114,14 @@ mod tests {
     #[test]
     fn block_roundtrip() {
         let block = Block {
-            header: BlockHeader {
-                version: 1,
-                prev_block: Hash256::ZERO,
-                merkle_root: Hash256::ZERO,
-                time: 1_231_006_505,
-                bits: CompactBits::new(0x1d00_ffff),
-                nonce: 2_083_236_893,
-            },
+            header: BlockHeader::new(
+                1,
+                Hash256::ZERO,
+                Hash256::ZERO,
+                1_231_006_505,
+                CompactBits::new(0x1d00_ffff),
+                2_083_236_893,
+            ),
             transactions: vec![Transaction {
                 version: 1,
                 inputs: vec![TxIn {
@@ -146,14 +147,7 @@ mod tests {
     #[test]
     fn block_zero_transactions() {
         let block = Block {
-            header: BlockHeader {
-                version: 1,
-                prev_block: Hash256::ZERO,
-                merkle_root: Hash256::ZERO,
-                time: 0,
-                bits: CompactBits::new(0),
-                nonce: 0,
-            },
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
             transactions: vec![],
         };
         let bytes = encode(&block);
@@ -163,14 +157,7 @@ mod tests {
     #[test]
     fn block_truncated_after_tx_count() {
         let block = Block {
-            header: BlockHeader {
-                version: 1,
-                prev_block: Hash256::ZERO,
-                merkle_root: Hash256::ZERO,
-                time: 0,
-                bits: CompactBits::new(0),
-                nonce: 0,
-            },
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
             transactions: vec![],
         };
         let mut bytes = encode(&block);
@@ -191,14 +178,7 @@ mod tests {
             locktime: 0,
         };
         let block = Block {
-            header: BlockHeader {
-                version: 1,
-                prev_block: Hash256::ZERO,
-                merkle_root: Hash256::ZERO,
-                time: 0,
-                bits: CompactBits::new(0),
-                nonce: 0,
-            },
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
             transactions: vec![dummy_tx; 253],
         };
         let bytes = encode(&block);

@@ -14,7 +14,7 @@ fn stage2_block_for_height(
         .get_header_at(tip.height)
         .expect("storage error")
         .expect("tip header must exist")
-        .bits;
+        .bits();
     let script_sig = {
         let mut s = Transaction::bip34_height_script(this_height);
         // Ensure minimum length of 2 even if bip34_script produced 1 byte.
@@ -38,28 +38,32 @@ fn stage2_block_for_height(
         .get_header_at(tip.height)
         .expect("storage error")
         .expect("tip header must exist")
-        .time;
+        .time();
     let time = parent_time + 600;
 
     Block {
-        header: BlockHeader {
+        header: BlockHeader::new(
             version,
-            prev_block: tip.hash,
+            tip.hash,
             merkle_root,
             time,
-            bits: parent_bits, // same difficulty (non-retarget height)
-            nonce: 0,
-        },
+            parent_bits, // same difficulty (non-retarget height)
+            0,
+        ),
         transactions: vec![coinbase],
     }
 }
 
 #[test]
 fn stage2_unknown_parent_rejected() {
-    let view = build_chain(10, mantle::primitives::CompactBits::new(0x207f_ffff), 1_000_000);
+    let view = build_chain(
+        10,
+        mantle::primitives::CompactBits::new(0x207f_ffff),
+        1_000_000,
+    );
     let mut block = stage2_block_for_height(&view, BlockHeight::new(10), 4);
     // Point to an unknown parent.
-    block.header.prev_block = Hash256::from_bytes([0xde; 32]);
+    block.header.set_prev_block(Hash256::from_bytes([0xde; 32]));
     assert_eq!(
         validate_block_context(&block, &view, false),
         Err(ValidationError::UnknownParent),
@@ -68,10 +72,16 @@ fn stage2_unknown_parent_rejected() {
 
 #[test]
 fn stage2_unexpected_difficulty_rejected() {
-    let view = build_chain(10, mantle::primitives::CompactBits::new(0x207f_ffff), 1_000_000);
+    let view = build_chain(
+        10,
+        mantle::primitives::CompactBits::new(0x207f_ffff),
+        1_000_000,
+    );
     let mut block = stage2_block_for_height(&view, BlockHeight::new(10), 4);
     // Change the nBits to something different from the parent (non-retarget block).
-    block.header.bits = mantle::primitives::CompactBits::new(0x1d00_ffff);
+    block
+        .header
+        .set_bits(mantle::primitives::CompactBits::new(0x1d00_ffff));
     assert_eq!(
         validate_block_context(&block, &view, false),
         Err(ValidationError::UnexpectedDifficulty),
@@ -80,13 +90,17 @@ fn stage2_unexpected_difficulty_rejected() {
 
 #[test]
 fn stage2_timestamp_not_greater_than_mtp_rejected() {
-    let view = build_chain(12, mantle::primitives::CompactBits::new(0x207f_ffff), 1_000_000);
+    let view = build_chain(
+        12,
+        mantle::primitives::CompactBits::new(0x207f_ffff),
+        1_000_000,
+    );
     let tip = view.tip();
     let parent_bits = view
         .get_header_at(tip.height)
         .expect("storage error")
         .expect("tip header must exist")
-        .bits;
+        .bits();
     let this_height = tip.height + 1;
     let script_sig = {
         let mut s = Transaction::bip34_height_script(this_height);
@@ -109,14 +123,14 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
     // Median of 11 = the 6th = 1_003_600. We set time = 1_003_600 (not strictly greater).
     let mtp = 1_003_600_u32; // median of heights 1..=11
     let _ = Block {
-        header: BlockHeader {
-            version: 4,
-            prev_block: tip.hash,
+        header: BlockHeader::new(
+            4,
+            tip.hash,
             merkle_root,
-            time: mtp, // equal to MTP — must be *greater*
-            bits: parent_bits,
-            nonce: 0,
-        },
+            mtp, // equal to MTP — must be *greater*
+            parent_bits,
+            0,
+        ),
         transactions: vec![coinbase],
     };
 
@@ -138,14 +152,7 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
         let txids2 = vec![coinbase2.txid().expect("txid encoding cannot fail")];
         let mr2 = compute_merkle_root(&txids2).expect("single-tx merkle root must exist");
         Block {
-            header: BlockHeader {
-                version: 4,
-                prev_block: tip.hash,
-                merkle_root: mr2,
-                time: mtp,
-                bits: parent_bits,
-                nonce: 0,
-            },
+            header: BlockHeader::new(4, tip.hash, mr2, mtp, parent_bits, 0),
             transactions: vec![coinbase2],
         }
     };
@@ -169,12 +176,12 @@ fn stage2_bip34_height_missing_rejected() {
         .get_header_at(tip.height)
         .expect("storage error")
         .expect("tip header must exist")
-        .bits;
+        .bits();
     let parent_time = view
         .get_header_at(tip.height)
         .expect("storage error")
         .expect("tip header must exist")
-        .time;
+        .time();
 
     // coinbase with NO height encoding — just padding bytes.
     let bad_script = vec![0x51, 0x52]; // does not start with encoded height
@@ -187,14 +194,7 @@ fn stage2_bip34_height_missing_rejected() {
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
-        header: BlockHeader {
-            version: 4,
-            prev_block: tip.hash,
-            merkle_root,
-            time: parent_time + 600,
-            bits: parent_bits,
-            nonce: 0,
-        },
+        header: BlockHeader::new(4, tip.hash, merkle_root, parent_time + 600, parent_bits, 0),
         transactions: vec![coinbase],
     };
     assert_eq!(
@@ -236,18 +236,22 @@ fn stage2_block_version_too_low_rejected() {
 #[test]
 fn stage2_valid_block_accepted() {
     // Small chain, pre-BIP34: no height encoding required, version 1 is fine.
-    let view = build_chain(5, mantle::primitives::CompactBits::new(0x207f_ffff), 1_000_000);
+    let view = build_chain(
+        5,
+        mantle::primitives::CompactBits::new(0x207f_ffff),
+        1_000_000,
+    );
     let tip = view.tip();
     let parent_bits = view
         .get_header_at(tip.height)
         .expect("storage error")
         .expect("tip header must exist")
-        .bits;
+        .bits();
     let parent_time = view
         .get_header_at(tip.height)
         .expect("storage error")
         .expect("tip header must exist")
-        .time;
+        .time();
     let coinbase = Transaction {
         version: 1,
         inputs: vec![coinbase_input(vec![0x51, 0x52])],
@@ -257,14 +261,7 @@ fn stage2_valid_block_accepted() {
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
-        header: BlockHeader {
-            version: 1,
-            prev_block: tip.hash,
-            merkle_root,
-            time: parent_time + 600,
-            bits: parent_bits,
-            nonce: 0,
-        },
+        header: BlockHeader::new(1, tip.hash, merkle_root, parent_time + 600, parent_bits, 0),
         transactions: vec![coinbase],
     };
     validate_block_context(&block, &view, false).expect("minimal valid block must pass Stage 2");

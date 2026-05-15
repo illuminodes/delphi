@@ -217,7 +217,10 @@ mod tests {
 
     #[test]
     fn for_height_genesis_is_none() {
-        assert_eq!(ScriptFlags::for_height(BlockHeight::new(0)), ScriptFlags::NONE);
+        assert_eq!(
+            ScriptFlags::for_height(BlockHeight::new(0)),
+            ScriptFlags::NONE
+        );
     }
 
     #[test]

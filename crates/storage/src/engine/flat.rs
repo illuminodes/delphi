@@ -182,7 +182,8 @@ impl Engine for FlatEngine {
         // Persist the full header so `read_header*` round-trips. MTP and
         // retarget lookups during incremental replay need every field.
         debug_assert_eq!(
-            req.header.prev_block, req.prev_hash,
+            req.header.prev_block(),
+            req.prev_hash,
             "CommitBlockReq.header.prev_block must match req.prev_hash"
         );
         self.header_write_len = write_header_record(
@@ -480,17 +481,20 @@ fn write_header_record(
     // Layout: hash(32) ‖ version(4) ‖ prev(32) ‖ merkle(32) ‖
     //         time(4) ‖ bits(4) ‖ nonce(4) ‖ height(4) = 116 bytes.
     f.write_all(hash.as_bytes()).map_err(|e| io_err(&e))?;
-    f.write_all(&header.version.to_le_bytes())
+    f.write_all(&header.version().to_le_bytes())
         .map_err(|e| io_err(&e))?;
-    f.write_all(header.prev_block.as_bytes()).map_err(|e| io_err(&e))?;
-    f.write_all(header.merkle_root.as_bytes()).map_err(|e| io_err(&e))?;
-    f.write_all(&header.time.to_le_bytes())
+    f.write_all(header.prev_block().as_bytes())
         .map_err(|e| io_err(&e))?;
-    f.write_all(&header.bits.to_le_bytes())
+    f.write_all(header.merkle_root().as_bytes())
         .map_err(|e| io_err(&e))?;
-    f.write_all(&header.nonce.to_le_bytes())
+    f.write_all(&header.time().to_le_bytes())
         .map_err(|e| io_err(&e))?;
-    f.write_all(&h.to_u32().to_le_bytes()).map_err(|e| io_err(&e))?;
+    f.write_all(&header.bits().to_le_bytes())
+        .map_err(|e| io_err(&e))?;
+    f.write_all(&header.nonce().to_le_bytes())
+        .map_err(|e| io_err(&e))?;
+    f.write_all(&h.to_u32().to_le_bytes())
+        .map_err(|e| io_err(&e))?;
     Ok(new_len + HEADER_RECORD_SIZE as u64)
 }
 
@@ -504,14 +508,14 @@ fn read_header_record(f: &mut File) -> Result<BlockHeader, EngineError> {
 fn parse_header_record(buf: &[u8; HEADER_RECORD_SIZE]) -> BlockHeader {
     // Mirror of `write_header_record`. Offsets must stay in lockstep
     // because existing data dirs are read by this exact scheme.
-    BlockHeader {
-        version: buf.read_u32_le(32) as i32,
-        prev_block: Hash256::from_bytes(buf.read_hash(36)),
-        merkle_root: Hash256::from_bytes(buf.read_hash(68)),
-        time: buf.read_u32_le(100),
-        bits: mantle::primitives::CompactBits::new(buf.read_u32_le(104)),
-        nonce: buf.read_u32_le(108),
-    }
+    BlockHeader::new(
+        buf.read_u32_le(32) as i32,
+        Hash256::from_bytes(buf.read_hash(36)),
+        Hash256::from_bytes(buf.read_hash(68)),
+        buf.read_u32_le(100),
+        mantle::primitives::CompactBits::new(buf.read_u32_le(104)),
+        buf.read_u32_le(108),
+    )
 }
 
 fn open_append(path: &Path) -> Result<File, EngineError> {
@@ -567,36 +571,36 @@ mod tests {
     }
 
     fn make_header(time: u32) -> BlockHeader {
-        BlockHeader {
-            version: 1,
-            prev_block: Hash256::ZERO,
-            merkle_root: Hash256::ZERO,
+        BlockHeader::new(
+            1,
+            Hash256::ZERO,
+            Hash256::ZERO,
             time,
-            bits: CompactBits::new(0x1d00_ffff),
-            nonce: 0,
-        }
+            CompactBits::new(0x1d00_ffff),
+            0,
+        )
     }
 
     #[test]
     fn write_and_read_header_roundtrips_every_field() {
         let dir = tmp();
         let mut eng = FlatEngine::open(dir.path()).unwrap();
-        let h = BlockHeader {
-            version: 0x2000_0007,
-            prev_block: Hash256::from_bytes([0x11; 32]),
-            merkle_root: Hash256::from_bytes([0x22; 32]),
-            time: 12_345,
-            bits: CompactBits::new(0x1d00_ffff),
-            nonce: 0xdead_beef,
-        };
+        let h = BlockHeader::new(
+            0x2000_0007_i32,
+            Hash256::from_bytes([0x11; 32]),
+            Hash256::from_bytes([0x22; 32]),
+            12_345,
+            CompactBits::new(0x1d00_ffff),
+            0xdead_beef,
+        );
         eng.write_header(BlockHeight::new(0), &h).unwrap();
         let got = eng.read_header_at(BlockHeight::new(0)).unwrap().unwrap();
-        assert_eq!(got.version, h.version);
-        assert_eq!(got.prev_block, h.prev_block);
-        assert_eq!(got.merkle_root, h.merkle_root);
-        assert_eq!(got.time, h.time);
-        assert_eq!(got.bits.to_u32(), h.bits.to_u32());
-        assert_eq!(got.nonce, h.nonce);
+        assert_eq!(got.version(), h.version());
+        assert_eq!(got.prev_block(), h.prev_block());
+        assert_eq!(got.merkle_root(), h.merkle_root());
+        assert_eq!(got.time(), h.time());
+        assert_eq!(got.bits().to_u32(), h.bits().to_u32());
+        assert_eq!(got.nonce(), h.nonce());
     }
 
     #[test]
@@ -665,9 +669,10 @@ mod tests {
             height: BlockHeight::new(11),
             hash: Hash256::from_bytes([5u8; 32]),
             prev_hash: Hash256::from_bytes([4u8; 32]),
-            header: BlockHeader {
-                prev_block: Hash256::from_bytes([4u8; 32]),
-                ..make_header(0)
+            header: {
+                let mut h = make_header(0);
+                h.set_prev_block(Hash256::from_bytes([4u8; 32]));
+                h
             },
             created: &[],
             spent: &[op],

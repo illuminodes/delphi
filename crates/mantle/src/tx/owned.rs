@@ -232,7 +232,7 @@ mod tests {
     use crate::codec::{Decode, Encode, Error};
     use crate::hash::Hash256;
     use crate::script::Witness;
-    use crate::tx::{OutPoint, TxIn, TxOut, Transaction};
+    use crate::tx::{OutPoint, Transaction, TxIn, TxOut};
 
     fn encode<T: Encode>(val: &T) -> Vec<u8> {
         let mut buf = Vec::new();

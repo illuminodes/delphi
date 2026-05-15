@@ -16,7 +16,10 @@ fn genesis_decode_and_stage1_pass() {
 fn genesis_hash_matches_known_constant() {
     let bytes = decode_hex(GENESIS_BLOCK_HEX);
     let raw = *Hash256::hash(&bytes[..BlockHeader::ENCODED_LEN]).as_bytes();
-    assert_eq!(hash_to_hex_display(Hash256::from_bytes(raw)), GENESIS_BLOCK_HASH);
+    assert_eq!(
+        hash_to_hex_display(Hash256::from_bytes(raw)),
+        GENESIS_BLOCK_HASH
+    );
 }
 
 #[test]
@@ -31,5 +34,5 @@ fn genesis_txid_matches_merkle_root() {
     let computed_txid = Hash256::hash(&tx_bytes);
 
     // Genesis has one tx — merkle root equals the txid (no pair hashing).
-    assert_eq!(block.header.merkle_root, computed_txid);
+    assert_eq!(block.header.merkle_root(), computed_txid);
 }

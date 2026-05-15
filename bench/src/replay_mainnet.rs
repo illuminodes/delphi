@@ -52,10 +52,7 @@ fn load_headers(fixtures: &Path) -> Vec<BlockHeader> {
     );
     bytes
         .chunks_exact(80)
-        .map(|chunk| {
-            BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes"))
-                .expect("valid header bytes")
-        })
+        .map(|chunk| BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes")))
         .collect()
 }
 
@@ -97,7 +94,7 @@ fn tmp_storage() -> (StorageHandle<'static>, TmpDir) {
 /// Inserts a synthetic pre-genesis slot at height 0 so height-1 lookups work.
 fn make_snapshot_from_genesis(headers: &[BlockHeader]) -> HeaderSnapshot {
     let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(headers.len() + 1);
-    let genesis_hash = headers[0].prev_block;
+    let genesis_hash = headers[0].prev_block();
     entries.push((genesis_hash, headers[0]));
     for hdr in headers {
         entries.push((hdr.hash(), *hdr));
@@ -295,7 +292,7 @@ fn replay_block(
             token: ReqToken(token),
             height,
             hash,
-            prev_hash: block.header.prev_block,
+            prev_hash: block.header.prev_block(),
             header: block.header,
             created: &result.created,
             spent: &result.spent,

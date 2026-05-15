@@ -75,8 +75,8 @@ pub type PongMsg = PingMsg;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::envelope::services;
+    use super::*;
     use std::io::Cursor;
 
     fn encode<T: Encode>(val: &T) -> Vec<u8> {

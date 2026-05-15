@@ -265,8 +265,8 @@ impl Decode for AddrV2Msg {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::envelope::services;
+    use super::*;
     use std::io::Cursor;
 
     fn decode<T: Decode>(bytes: &[u8]) -> T {

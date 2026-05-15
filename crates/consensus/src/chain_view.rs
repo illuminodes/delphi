@@ -240,7 +240,10 @@ impl ChainView for MemoryChainView {
     }
 
     fn get_header_at(&self, height: BlockHeight) -> Result<Option<BlockHeader>, ChainViewError> {
-        let idx = height.to_u32().checked_sub(self.height_base).map(|i| i as usize);
+        let idx = height
+            .to_u32()
+            .checked_sub(self.height_base)
+            .map(|i| i as usize);
         Ok(idx.and_then(|i| self.headers.get(i)).copied())
     }
 
@@ -251,11 +254,11 @@ impl ChainView for MemoryChainView {
     fn median_time_past(&self, header: &BlockHeader) -> Result<u32, ChainViewError> {
         // Find the height of the parent of `header`, then collect up to 11
         // ancestor timestamps ending at that parent.
-        let parent_height = match self.header_index.get(&header.prev_block) {
+        let parent_height = match self.header_index.get(&header.prev_block()) {
             Some(&h) => h,
-            None if header.prev_block == Hash256::ZERO => {
+            None if header.prev_block() == Hash256::ZERO => {
                 // Genesis parent — MTP of genesis is genesis timestamp itself.
-                return Ok(self.headers.first().map_or(0, |h| h.time));
+                return Ok(self.headers.first().map_or(0, BlockHeader::time));
             }
             None => return Err(ChainViewError::NotFound),
         };
@@ -269,7 +272,7 @@ impl ChainView for MemoryChainView {
         let start = (ph_idx + 1).saturating_sub(11);
         let mut times: Vec<u32> = self.headers[start..=ph_idx]
             .iter()
-            .map(|h| h.time)
+            .map(BlockHeader::time)
             .collect();
         debug_assert_eq!(times.len(), count);
         times.sort_unstable();
@@ -301,14 +304,14 @@ mod tests {
     use super::*;
 
     fn header(time: u32, prev: Hash256) -> BlockHeader {
-        BlockHeader {
-            version: 1,
-            prev_block: prev,
-            merkle_root: Hash256::ZERO,
+        BlockHeader::new(
+            1,
+            prev,
+            Hash256::ZERO,
             time,
-            bits: mantle::primitives::CompactBits::new(0x1d00_ffff),
-            nonce: 0,
-        }
+            mantle::primitives::CompactBits::new(0x1d00_ffff),
+            0,
+        )
     }
 
     fn push_chain(view: &mut MemoryChainView, times: &[u32]) {
@@ -336,14 +339,14 @@ mod tests {
             view.get_header_at(BlockHeight::new(0))
                 .expect("no error")
                 .expect("height 0 exists")
-                .time,
+                .time(),
             1_000
         );
         assert_eq!(
             view.get_header_at(BlockHeight::new(2))
                 .expect("no error")
                 .expect("height 2 exists")
-                .time,
+                .time(),
             3_000
         );
         assert!(
@@ -363,7 +366,7 @@ mod tests {
             view.get_header(&hash)
                 .expect("no error")
                 .expect("header exists")
-                .time,
+                .time(),
             9_999
         );
         assert!(view.get_header(&Hash256::ZERO).expect("no error").is_none());

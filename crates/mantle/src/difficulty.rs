@@ -3,6 +3,102 @@ use std::io::{Read, Write};
 
 use crate::codec::{Decode, DecodeRef, Encode, Error};
 
+// ── BlockVersion ─────────────────────────────────────────────────────────────
+
+/// Block header version field (i32, supports BIP9 version bits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct BlockVersion(i32);
+
+impl BlockVersion {
+    #[inline]
+    #[must_use]
+    pub const fn new(v: i32) -> Self {
+        Self(v)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_i32(self) -> i32 {
+        self.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl Encode for BlockVersion {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for BlockVersion {
+    #[inline]
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
+        i32::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for BlockVersion {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
+        i32::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}
+
+// ── Nonce ────────────────────────────────────────────────────────────────────
+
+/// Block header nonce field (u32, iterated during proof-of-work mining).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Nonce(u32);
+
+impl Nonce {
+    #[inline]
+    #[must_use]
+    pub const fn new(n: u32) -> Self {
+        Self(n)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl Encode for Nonce {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for Nonce {
+    #[inline]
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
+        u32::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for Nonce {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
+        u32::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}
+
+// ── CompactBits ──────────────────────────────────────────────────────────────
+
 /// The `nBits` compact-format difficulty target stored in a block header.
 ///
 /// Wraps a `u32` to make difficulty fields type-distinct from plain integers.

@@ -84,7 +84,6 @@ fn headers_from_blocks(dir: &Path, start: u32, end: u32) -> Vec<BlockHeader> {
                     .try_into()
                     .expect("block file is at least 80 bytes"),
             )
-            .expect("valid header bytes")
         })
         .collect()
 }
@@ -98,17 +97,14 @@ fn load_headers_file(dir: &Path) -> Vec<BlockHeader> {
     );
     bytes
         .chunks_exact(80)
-        .map(|chunk| {
-            BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes"))
-                .expect("valid header bytes")
-        })
+        .map(|chunk| BlockHeader::from_bytes(chunk.try_into().expect("chunk is 80 bytes")))
         .collect()
 }
 
 fn make_snapshot(headers: &[BlockHeader], start: u32) -> HeaderSnapshot {
     if start == 1 {
         let mut entries: Vec<(Hash256, BlockHeader)> = Vec::with_capacity(headers.len() + 1);
-        let genesis_hash = headers[0].prev_block;
+        let genesis_hash = headers[0].prev_block();
         entries.push((genesis_hash, headers[0]));
         for hdr in headers {
             entries.push((hdr.hash(), *hdr));

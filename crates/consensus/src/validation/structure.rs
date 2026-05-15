@@ -142,7 +142,7 @@ where
 
     let computed_root =
         compute_merkle_root_reusing(txids, merkle_buf).expect("non-empty; checked above");
-    if computed_root != block.header.merkle_root {
+    if computed_root != block.header.merkle_root() {
         return Err(ValidationError::MerkleRootMismatch);
     }
 
@@ -231,7 +231,7 @@ where
 
     let computed_root =
         compute_merkle_root_reusing(txids, merkle_buf).expect("non-empty; checked above");
-    if computed_root != header.merkle_root {
+    if computed_root != header.merkle_root() {
         return Err(ValidationError::MerkleRootMismatch);
     }
 
@@ -264,8 +264,9 @@ where
     let (_, buf) = i32::decode_ref(wire).map_err(malformed)?; // version
 
     let (vi, mut buf) = VarInt::decode_ref(buf).map_err(malformed)?;
-    let input_count =
-        vi.to_usize().map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
+    let input_count = vi
+        .to_usize()
+        .map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
     if input_count == 0 {
         return Err(ValidationError::EmptyInputs { tx_index });
     }
@@ -309,8 +310,9 @@ where
     }
 
     let (vi, mut buf) = VarInt::decode_ref(buf).map_err(malformed)?;
-    let output_count =
-        vi.to_usize().map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
+    let output_count = vi
+        .to_usize()
+        .map_err(|_| ValidationError::MalformedTransaction { tx_index })?;
     if output_count == 0 {
         return Err(ValidationError::EmptyOutputs { tx_index });
     }

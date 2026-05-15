@@ -47,7 +47,8 @@ impl Reporter {
         let elapsed = now.duration_since(self.start).as_secs_f64().max(1e-9);
         #[allow(clippy::cast_precision_loss)]
         let bps_overall = self.total_committed as f64 / elapsed;
-        let remaining = u64::from(self.target_height.to_u32()).saturating_sub(u64::from(height.to_u32()));
+        let remaining =
+            u64::from(self.target_height.to_u32()).saturating_sub(u64::from(height.to_u32()));
         let eta_secs = if bps_window > 0.0 {
             #[allow(
                 clippy::cast_precision_loss,

@@ -232,7 +232,10 @@ mod tests {
         let data = b"hello";
         let full = Hash256::hash(data);
         let bytes = full.as_bytes();
-        assert_eq!(Hash256::checksum(data), [bytes[0], bytes[1], bytes[2], bytes[3]]);
+        assert_eq!(
+            Hash256::checksum(data),
+            [bytes[0], bytes[1], bytes[2], bytes[3]]
+        );
     }
 
     // ── Hash256 tests ─────────────────────────────────────────────────────────
