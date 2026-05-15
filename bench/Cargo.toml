@@ -36,6 +36,10 @@ name = "transport"
 harness = false
 
 [[bench]]
+name = "validator"
+harness = false
+
+[[bench]]
 name = "replay"
 harness = false
 
@@ -70,6 +74,14 @@ path = "src/transport/dhat.rs"
 [[bin]]
 name = "transport-pprof"
 path = "src/transport/pprof.rs"
+
+[[bin]]
+name = "validator-dhat"
+path = "src/validator/dhat.rs"
+
+[[bin]]
+name = "validator-pprof"
+path = "src/validator/pprof.rs"
 
 [[bin]]
 name = "parity-dhat"

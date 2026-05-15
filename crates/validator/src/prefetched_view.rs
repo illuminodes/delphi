@@ -1,4 +1,4 @@
-use mantle::collections::PrehashedMap;
+use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
 use mantle::primitives::{BlockHeader, BlockHeight, BlockTime, Hash256, OutPoint};
 use mantle_consensus::chain_view::{ChainView, Coin, TipInfo};
 use mantle_consensus::error::ChainViewError;
@@ -45,7 +45,7 @@ impl HeaderSnapshot {
             .to_u32()
             .checked_add(len)
             .ok_or(HeaderSnapshotOverflow)?;
-        let mut by_hash = PrehashedMap::default();
+        let mut by_hash = PrehashedMap::with_capacity_and_hasher(entries.len(), BuildPrehashedHasher);
         for (i, (hash, _)) in entries.iter().enumerate() {
             // i < len, and len fits in u32 per the check above.
             let h = base_height.to_u32() + u32::try_from(i).expect("i < len which fits u32");
