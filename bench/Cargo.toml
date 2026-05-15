@@ -72,34 +72,6 @@ name = "transport-pprof"
 path = "src/transport/pprof.rs"
 
 [[bin]]
-name = "replay-dhat"
-path = "src/replay_dhat.rs"
-
-[[bin]]
-name = "replay-perf-a"
-path = "src/replay_perf_a.rs"
-
-[[bin]]
-name = "replay-perf-b"
-path = "src/replay_perf_b.rs"
-
-[[bin]]
-name = "replay-perf-c"
-path = "src/replay_perf_c.rs"
-
-[[bin]]
-name = "replay-mainnet"
-path = "src/replay_mainnet.rs"
-
-[[bin]]
-name = "replay-perf-ordinals"
-path = "src/replay_perf_ordinals.rs"
-
-[[bin]]
-name = "replay-dhat-ordinals"
-path = "src/replay_dhat_ordinals.rs"
-
-[[bin]]
 name = "parity-dhat"
 path = "src/parity_dhat.rs"
 
