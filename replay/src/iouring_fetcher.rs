@@ -225,7 +225,6 @@ impl Fetcher {
             SocketFlags::NONBLOCK,
         )
         .map_err(|e| FetchError::UringErr(format!("socket: {e:?}")))?;
-        let fd = sock.into_fd();
         let sockaddr = Box::new(SockAddrIn {
             sin_family: u16::try_from(AddressFamily::Inet.as_raw()).expect("AF_INET fits u16"),
             sin_port: addr.port().to_be(),
@@ -233,9 +232,10 @@ impl Fetcher {
             sin_zero: [0; 8],
         });
 
+        let fd = sock.fd();
         let peer = FPeer {
             addr,
-            fd: Some(fd),
+            sock: Some(sock),
             sockaddr,
             state: PeerState::Connecting,
             recv_buf: Vec::with_capacity(RECV_BUF_CAPACITY),
@@ -372,12 +372,12 @@ impl Fetcher {
             if !peer.recv_armed
                 && peer.state != PeerState::Dead
                 && peer.state != PeerState::Connecting
-                && peer.fd.is_some()
+                && peer.fd().is_some()
             {
                 self.ring.push_recv_multishot(
                     slot,
                     peer.generation,
-                    peer.fd.ok_or(FetchError::NoPeers)?,
+                    peer.fd().ok_or(FetchError::NoPeers)?,
                     PROVIDED_BUF_GROUP_ID,
                 )?;
                 peer.recv_armed = true;
@@ -582,7 +582,7 @@ impl Fetcher {
                     &payload,
                     slot,
                     peer.generation,
-                    peer.fd.ok_or(FetchError::NoPeers)?,
+                    peer.fd().ok_or(FetchError::NoPeers)?,
                 )?;
                 peer.pending_send_seqs.push(seq);
                 peer.app.waiting_headers = true;
@@ -594,12 +594,12 @@ impl Fetcher {
                 if !peer.recv_armed
                     && peer.state != PeerState::Dead
                     && peer.state != PeerState::Connecting
-                    && peer.fd.is_some()
+                    && peer.fd().is_some()
                 {
                     self.ring.push_recv_multishot(
                         slot,
                         peer.generation,
-                        peer.fd.ok_or(FetchError::NoPeers)?,
+                        peer.fd().ok_or(FetchError::NoPeers)?,
                         PROVIDED_BUF_GROUP_ID,
                     )?;
                     peer.recv_armed = true;
@@ -844,7 +844,7 @@ impl Fetcher {
                         &pl,
                         slot,
                         peer.generation,
-                        peer.fd.ok_or(FetchError::NoPeers)?,
+                        peer.fd().ok_or(FetchError::NoPeers)?,
                     )?;
                     peer.pending_send_seqs.push(seq);
                     peer.app.in_flight.push((hash, now));
@@ -873,7 +873,7 @@ impl Fetcher {
                         &pl,
                         slot,
                         peer.generation,
-                        peer.fd.ok_or(FetchError::NoPeers)?,
+                        peer.fd().ok_or(FetchError::NoPeers)?,
                     )?;
                     peer.pending_send_seqs.push(seq);
                     peer.app.in_flight.push((hash, now));
@@ -894,12 +894,12 @@ impl Fetcher {
                 if !peer.recv_armed
                     && peer.state != PeerState::Dead
                     && peer.state != PeerState::Connecting
-                    && peer.fd.is_some()
+                    && peer.fd().is_some()
                 {
                     self.ring.push_recv_multishot(
                         slot,
                         peer.generation,
-                        peer.fd.ok_or(FetchError::NoPeers)?,
+                        peer.fd().ok_or(FetchError::NoPeers)?,
                         PROVIDED_BUF_GROUP_ID,
                     )?;
                     peer.recv_armed = true;
@@ -965,7 +965,7 @@ fn handle_connect_or_recv(
             ring.push_recv_multishot(
                 slot,
                 peer.generation,
-                peer.fd.ok_or(FetchError::NoPeers)?,
+                peer.fd().ok_or(FetchError::NoPeers)?,
                 PROVIDED_BUF_GROUP_ID,
             )?;
             peer.recv_armed = true;
@@ -976,7 +976,7 @@ fn handle_connect_or_recv(
                 version_payload,
                 slot,
                 peer.generation,
-                peer.fd.ok_or(FetchError::NoPeers)?,
+                peer.fd().ok_or(FetchError::NoPeers)?,
             )?;
             peer.pending_send_seqs.push(seq);
             peer.state = PeerState::HandshakeVersionSent;
@@ -1034,7 +1034,7 @@ fn consume_block_frames(
                     &[],
                     slot,
                     peer.generation,
-                    peer.fd.ok_or(FetchError::NoPeers)?,
+                    peer.fd().ok_or(FetchError::NoPeers)?,
                 )?;
                 peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::HandshakeRecving;
@@ -1075,7 +1075,7 @@ fn consume_block_frames(
                     &nonce[..copy_len],
                     slot,
                     peer.generation,
-                    peer.fd.ok_or(FetchError::NoPeers)?,
+                    peer.fd().ok_or(FetchError::NoPeers)?,
                 )?;
                 peer.pending_send_seqs.push(seq);
             }

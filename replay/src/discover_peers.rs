@@ -242,7 +242,7 @@ fn run(args: &Args) -> Result<(), String> {
                         ring.push_recv_multishot(
                             cqd.slot,
                             peer.generation,
-                            peer.fd.ok_or("no fd on connect")?,
+                            peer.fd().ok_or("no fd on connect")?,
                             PROVIDED_BUF_GROUP_ID,
                         )
                         .map_err(|e| format!("push_recv: {e}"))?;
@@ -254,7 +254,7 @@ fn run(args: &Args) -> Result<(), String> {
                             &version_payload,
                             cqd.slot,
                             peer.generation,
-                            peer.fd.ok_or("no fd on connect")?,
+                            peer.fd().ok_or("no fd on connect")?,
                         )
                         .map_err(|e| format!("push_send version: {e}"))?;
                         peer.pending_send_seqs.push(seq);
@@ -296,7 +296,7 @@ fn run(args: &Args) -> Result<(), String> {
 
             if peer.state == PeerState::Ready && !state.asked[slot as usize] {
                 state.asked[slot as usize] = true;
-                if let Some(fd) = peer.fd {
+                if let Some(fd) = peer.fd() {
                     if let Ok(seq) = ring.push_send(
                         &mut send_arena,
                         args.network,
@@ -325,7 +325,7 @@ fn run(args: &Args) -> Result<(), String> {
             if !peer.recv_armed
                 && peer.state != PeerState::Dead
                 && peer.state != PeerState::Connecting
-                && let Some(fd) = peer.fd
+                && let Some(fd) = peer.fd()
             {
                 let _ = ring.push_recv_multishot(
                     slot,
@@ -462,7 +462,6 @@ fn dial_next(
         SocketFlags::NONBLOCK,
     )
     .map_err(|e| format!("socket: {e:?}"))?;
-    let fd = sock.into_fd();
     let sockaddr = Box::new(SockAddrIn {
         sin_family: u16::try_from(AddressFamily::Inet.as_raw()).expect("AF_INET fits u16"),
         sin_port: addr.port().to_be(),
@@ -470,9 +469,10 @@ fn dial_next(
         sin_zero: [0; 8],
     });
 
+    let fd = sock.fd();
     let peer = Peer {
         addr,
-        fd: Some(fd),
+        sock: Some(sock),
         sockaddr,
         state: PeerState::Connecting,
         recv_buf: Vec::with_capacity(RECV_BUF_CAPACITY),

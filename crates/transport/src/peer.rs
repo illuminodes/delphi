@@ -1,6 +1,7 @@
 use std::net::SocketAddrV4;
 use std::time::Instant;
 
+use ququmatz::Socket;
 use ququmatz::types::{RawFd, SockAddrIn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,10 +15,9 @@ pub enum PeerState {
 
 pub const PEER_SEND_OUTSTANDING_CAP: usize = 8;
 
-#[derive(Debug)]
 pub struct Peer<T> {
     pub addr: SocketAddrV4,
-    pub fd: Option<RawFd>,
+    pub sock: Option<Socket>,
     pub sockaddr: Box<SockAddrIn>,
     pub state: PeerState,
     pub recv_buf: Vec<u8>,
@@ -26,6 +26,29 @@ pub struct Peer<T> {
     pub generation: u16,
     pub pending_send_seqs: Vec<u16>,
     pub app: T,
+}
+
+impl<T> Peer<T> {
+    #[must_use]
+    pub fn fd(&self) -> Option<RawFd> {
+        self.sock.as_ref().map(Socket::fd)
+    }
+}
+
+impl<T> std::fmt::Debug for Peer<T>
+where
+    T: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Peer")
+            .field("addr", &self.addr)
+            .field("fd", &self.fd())
+            .field("state", &self.state)
+            .field("recv_armed", &self.recv_armed)
+            .field("generation", &self.generation)
+            .field("app", &self.app)
+            .finish_non_exhaustive()
+    }
 }
 
 pub struct PeerPool<T, const MAX: usize> {

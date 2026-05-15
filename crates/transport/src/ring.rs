@@ -63,18 +63,9 @@ impl IoUringExt for IoUring {
         sockaddr: &SockAddrIn,
         timeout: &Timespec,
     ) -> Result<(), io::Error> {
-        // SAFETY: sockaddr is a Box<SockAddrIn> owned by the Peer and remains valid
-        // until the connect CQE completes (peer is not freed while Connecting).
-        #[allow(clippy::cast_possible_truncation)]
-        let sqe = unsafe {
-            Sqe::connect_ptr(
-                fd,
-                std::ptr::from_ref::<SockAddrIn>(sockaddr).cast(),
-                std::mem::size_of::<SockAddrIn>() as u32, // 16 bytes, always fits
-            )
-        }
-        .user_data(CqeData::encode(slot, g, Op::Connect))
-        .flags(SqeFlags::IO_LINK);
+        let sqe = Sqe::connect(fd, &sockaddr.to_bytes())
+            .user_data(CqeData::encode(slot, g, Op::Connect))
+            .flags(SqeFlags::IO_LINK);
         self.push(sqe).map_err(uring_err)?;
         self.push(
             Sqe::link_timeout(timeout, TimeoutFlags::default()).user_data(CqeData::encode(
@@ -106,13 +97,9 @@ impl IoUringExt for IoUring {
                     SendArena::slot_count()
                 ))
             })?;
-        let bytes = arena.slice(send_seq);
-        // SAFETY: the arena slot stays allocated until the send CQE comes back
-        // and pending_send_seqs releases it. send_ptr avoids a fake 'static borrow.
-        #[allow(clippy::cast_possible_truncation)]
-        let sqe =
-            unsafe { Sqe::send_ptr(fd, bytes.as_ptr(), bytes.len() as u32, MsgFlags::default()) }
-                .user_data(CqeData::encode_send(slot, g, send_seq));
+        let handle = arena.handle(send_seq);
+        let sqe = Sqe::send(fd, handle.as_slice(), MsgFlags::default())
+            .user_data(CqeData::encode_send(slot, g, send_seq));
         let r = self.push(sqe).map_err(uring_err);
         match r {
             Ok(()) => Ok(send_seq),
@@ -153,7 +140,8 @@ impl<T> Peer<T> {
         for seq in self.pending_send_seqs.drain(..) {
             send_arena.release(seq);
         }
-        if let Some(fd) = self.fd.take() {
+        if let Some(sock) = self.sock.take() {
+            let fd = sock.fd();
             if let Err(e) = ring.push(
                 Sqe::cancel(CqeData::encode(0, self.generation, Op::Recv)).user_data(
                     CqeData::encode(0, self.generation, Op::Close),
@@ -161,15 +149,17 @@ impl<T> Peer<T> {
             ) {
                 eprintln!("  transport: close cancel-recv push failed for fd={fd:?}: {e:?}");
             }
-            if let Err(e) =
-                ring.push(Sqe::close(fd).user_data(CqeData::encode(0, self.generation, Op::Close)))
+            if ring
+                .push(Sqe::close(fd).user_data(CqeData::encode(0, self.generation, Op::Close)))
+                .is_ok()
             {
-                // SAFETY: fd is valid and we own it — close SQE push failed so
-                // we must close synchronously to avoid leaking the descriptor.
-                drop(unsafe { ququmatz::Socket::from_fd(fd) });
+                // Async close SQE accepted — the kernel owns the fd now.
+                // Prevent Socket::drop from closing it synchronously.
+                let _ = sock.into_fd();
+            } else {
+                // Ring full — Socket::drop will close synchronously.
                 eprintln!(
-                    "  transport: close push failed for fd={fd:?}: {e:?} \
-                     (closed synchronously)"
+                    "  transport: close push failed for fd={fd:?} (closed synchronously)"
                 );
             }
         }

@@ -97,7 +97,7 @@ pub fn consume_handshake_frames<T>(
                     &[],
                     slot,
                     peer.generation,
-                    peer.fd.ok_or_else(|| io::Error::other("no fd"))?,
+                    peer.fd().ok_or_else(|| io::Error::other("no fd"))?,
                 )?;
                 peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::HandshakeRecving;
@@ -116,7 +116,7 @@ pub fn consume_handshake_frames<T>(
                     &nonce[..copy_len],
                     slot,
                     peer.generation,
-                    peer.fd.ok_or_else(|| io::Error::other("no fd"))?,
+                    peer.fd().ok_or_else(|| io::Error::other("no fd"))?,
                 )?;
                 peer.pending_send_seqs.push(seq);
             }

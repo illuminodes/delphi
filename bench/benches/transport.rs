@@ -112,7 +112,7 @@ fn arena_burst_alloc_then_release(bencher: divan::Bencher) {
 fn make_peer(slot: u16) -> Peer<()> {
     Peer {
         addr: SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 8333),
-        fd: None,
+        sock: None,
         sockaddr: Box::new(SockAddrIn {
             sin_family: 2, // AF_INET
             sin_port: 8333u16.to_be(),
