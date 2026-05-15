@@ -152,7 +152,14 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
         let txids2 = vec![coinbase2.txid().expect("txid encoding cannot fail")];
         let mr2 = compute_merkle_root(&txids2).expect("single-tx merkle root must exist");
         Block {
-            header: BlockHeader::new(BlockVersion::new(4), tip.hash, mr2, BlockTime::new(mtp), parent_bits, Nonce::new(0)),
+            header: BlockHeader::new(
+                BlockVersion::new(4),
+                tip.hash,
+                mr2,
+                BlockTime::new(mtp),
+                parent_bits,
+                Nonce::new(0),
+            ),
             transactions: vec![coinbase2],
         }
     };
@@ -194,7 +201,14 @@ fn stage2_bip34_height_missing_rejected() {
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
-        header: BlockHeader::new(BlockVersion::new(4), tip.hash, merkle_root, parent_time + 600, parent_bits, Nonce::new(0)),
+        header: BlockHeader::new(
+            BlockVersion::new(4),
+            tip.hash,
+            merkle_root,
+            parent_time + 600,
+            parent_bits,
+            Nonce::new(0),
+        ),
         transactions: vec![coinbase],
     };
     assert_eq!(
@@ -261,7 +275,14 @@ fn stage2_valid_block_accepted() {
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
-        header: BlockHeader::new(BlockVersion::new(1), tip.hash, merkle_root, parent_time + 600, parent_bits, Nonce::new(0)),
+        header: BlockHeader::new(
+            BlockVersion::new(1),
+            tip.hash,
+            merkle_root,
+            parent_time + 600,
+            parent_bits,
+            Nonce::new(0),
+        ),
         transactions: vec![coinbase],
     };
     validate_block_context(&block, &view, false).expect("minimal valid block must pass Stage 2");

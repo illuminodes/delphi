@@ -337,7 +337,14 @@ mod tests {
 
     #[test]
     fn headers_msg_truncated_header() {
-        let header = BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0));
+        let header = BlockHeader::new(
+            BlockVersion::new(1),
+            Hash256::ZERO,
+            Hash256::ZERO,
+            BlockTime::new(0),
+            CompactBits::new(0),
+            Nonce::new(0),
+        );
         let mut bytes = encode(&HeadersMsg(vec![header]));
         bytes.truncate(bytes.len() - 5); // truncate inside the header
         let e = decode_err::<HeadersMsg>(&bytes);

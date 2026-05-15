@@ -81,7 +81,10 @@ pub enum ValidationError {
     /// (required after BIP34 activation height 227,931).
     Bip34HeightMissing,
     /// Block version is below the minimum required for the current deployment state.
-    BlockVersionTooLow { version: BlockVersion, required: BlockVersion },
+    BlockVersionTooLow {
+        version: BlockVersion,
+        required: BlockVersion,
+    },
     /// The requested block's parent is not in the chain view.
     UnknownParent,
     /// `ChainView` returned an error.

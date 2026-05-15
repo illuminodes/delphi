@@ -94,7 +94,14 @@ fn build_chain(n: u32, bits: mantle::primitives::CompactBits, base_time: u32) ->
     let mut view = MemoryChainView::new();
     let mut prev = Hash256::ZERO;
     for i in 0..n {
-        let h = BlockHeader::new(BlockVersion::new(4), prev, Hash256::ZERO, BlockTime::new(base_time + i * 600), bits, Nonce::new(0));
+        let h = BlockHeader::new(
+            BlockVersion::new(4),
+            prev,
+            Hash256::ZERO,
+            BlockTime::new(base_time + i * 600),
+            bits,
+            Nonce::new(0),
+        );
         prev = h.hash();
         view.push_header(h);
     }

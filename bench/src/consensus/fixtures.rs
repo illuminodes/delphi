@@ -6,11 +6,11 @@ use mantle::primitives::{
     Satoshi, Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 use mantle_consensus::merkle::merkle_root_owned;
+use mantle_consensus::script::ScriptFlags;
+use mantle_consensus::script::consensus_crypto::Schnorr;
 use mantle_consensus::script::sighash::{
     Bip143Cache, Bip341Cache, SigHashType, TapHasher, TaprootSigHashType, TxSighash,
 };
-use mantle_consensus::script::ScriptFlags;
-use mantle_consensus::script::consensus_crypto::Schnorr;
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
 
@@ -95,7 +95,14 @@ pub fn make_valid_block(txs: Vec<Transaction>) -> Block {
         .expect("txid encoding cannot fail");
     let merkle_root = merkle_root_owned(txids).expect("non-empty tx list always has a merkle root");
     let block = Block {
-        header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, merkle_root, BlockTime::new(1_231_006_505), EASY_BITS, Nonce::new(0)),
+        header: BlockHeader::new(
+            BlockVersion::new(1),
+            Hash256::ZERO,
+            merkle_root,
+            BlockTime::new(1_231_006_505),
+            EASY_BITS,
+            Nonce::new(0),
+        ),
         transactions: txs,
     };
     mine_block(block)

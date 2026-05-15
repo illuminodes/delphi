@@ -424,7 +424,10 @@ mod tests {
         let tip_hash = view.tip().hash;
         let next = header(99, tip_hash);
         // Median of [1..=11] = 6.
-        assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), BlockTime::new(6));
+        assert_eq!(
+            view.median_time_past(&next).expect("mtp must succeed"),
+            BlockTime::new(6)
+        );
     }
 
     #[test]
@@ -438,7 +441,10 @@ mod tests {
         );
         let tip_hash = view.tip().hash;
         let next = header(99, tip_hash);
-        assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), BlockTime::new(10));
+        assert_eq!(
+            view.median_time_past(&next).expect("mtp must succeed"),
+            BlockTime::new(10)
+        );
     }
 
     #[test]

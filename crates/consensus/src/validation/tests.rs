@@ -6,8 +6,8 @@ use super::*;
 use crate::chain_view::{Coin, ConnectScratch, MemoryChainView};
 use crate::merkle::compute_merkle_root;
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, BlockTime, BlockVersion, CompactBits, Hash256, Locktime, Nonce,
-    OutPoint, Satoshi, Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
+    Block, BlockHeader, BlockHeight, BlockTime, BlockVersion, CompactBits, Hash256, Locktime,
+    Nonce, OutPoint, Satoshi, Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -58,7 +58,14 @@ fn make_block(txs: Vec<Transaction>, bits: CompactBits) -> Block {
     let merkle_root =
         compute_merkle_root(&txids).expect("non-empty tx list always has a merkle root");
     Block {
-        header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, merkle_root, BlockTime::new(1_231_006_505), bits, Nonce::new(0)),
+        header: BlockHeader::new(
+            BlockVersion::new(1),
+            Hash256::ZERO,
+            merkle_root,
+            BlockTime::new(1_231_006_505),
+            bits,
+            Nonce::new(0),
+        ),
         transactions: txs,
     }
 }

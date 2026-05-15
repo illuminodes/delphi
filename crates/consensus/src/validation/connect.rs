@@ -436,10 +436,7 @@ mod tests {
     #[test]
     fn sigops_pushdata2_skips_data() {
         // OP_PUSHDATA2 <len=1, 0> <0xac> 0xac → 1
-        assert_eq!(
-            count_legacy_sigops(&[0x4d, 0x01, 0x00, 0xac, 0xac]),
-            1
-        );
+        assert_eq!(count_legacy_sigops(&[0x4d, 0x01, 0x00, 0xac, 0xac]), 1);
     }
 
     #[test]
@@ -471,7 +468,10 @@ mod tests {
 
     #[test]
     fn subsidy_at_genesis() {
-        assert_eq!(block_subsidy(BlockHeight::ZERO), Satoshi::new(50 * 100_000_000));
+        assert_eq!(
+            block_subsidy(BlockHeight::ZERO),
+            Satoshi::new(50 * 100_000_000)
+        );
     }
 
     #[test]
@@ -484,9 +484,6 @@ mod tests {
 
     #[test]
     fn subsidy_after_64_halvings_is_zero() {
-        assert_eq!(
-            block_subsidy(BlockHeight::new(64 * 210_000)),
-            Satoshi::ZERO
-        );
+        assert_eq!(block_subsidy(BlockHeight::new(64 * 210_000)), Satoshi::ZERO);
     }
 }

@@ -11,8 +11,8 @@
 mod fixtures;
 
 use fixtures::{
-    encode, make_n_tx_block, make_p2wpkh, make_p2wsh, make_taproot_keypath, segwit_flags,
-    taproot_flags, ITERS_LARGE, ITERS_MEDIUM, ITERS_SMALL,
+    ITERS_LARGE, ITERS_MEDIUM, ITERS_SMALL, encode, make_n_tx_block, make_p2wpkh, make_p2wsh,
+    make_taproot_keypath, segwit_flags, taproot_flags,
 };
 use mantle::primitives::{BlockHeight, Hash256, OutPoint, Satoshi};
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
@@ -62,8 +62,14 @@ fn main() {
         let mut seen_in: HashSet<OutPoint> = HashSet::new();
         let mut seen_tx: HashSet<Hash256> = HashSet::new();
         for _ in 0..ITERS_SMALL {
-            validate_block_wire(&wire, &mut txids, &mut merkle_buf, &mut seen_in, &mut seen_tx)
-                .expect("valid wire");
+            validate_block_wire(
+                &wire,
+                &mut txids,
+                &mut merkle_buf,
+                &mut seen_in,
+                &mut seen_tx,
+            )
+            .expect("valid wire");
         }
         eprintln!("stage1_wire: {ITERS_SMALL} iters done");
     }
@@ -129,8 +135,7 @@ fn main() {
         let fix = make_p2wpkh();
         let flags = segwit_flags();
         let verifier = ScriptVerifier::new(&fix.tx, 0, fix.amount, flags);
-        let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) =
-            (Vec::new(), Vec::new());
+        let mut bufs: (Vec<InterpStackElement>, Vec<InterpStackElement>) = (Vec::new(), Vec::new());
         for _ in 0..ITERS_MEDIUM {
             let (r, b) = verifier.verify_with_bufs(&[], &fix.spk, bufs);
             r.expect("p2wpkh");

@@ -101,7 +101,14 @@ fn make_block(prev_hash: Hash256, height: u32, txs: Vec<Transaction>) -> Block {
 }
 
 fn pre_genesis_header() -> BlockHeader {
-    BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(BASE_TIME), EASY_BITS, Nonce::new(0))
+    BlockHeader::new(
+        BlockVersion::new(1),
+        Hash256::ZERO,
+        Hash256::ZERO,
+        BlockTime::new(BASE_TIME),
+        EASY_BITS,
+        Nonce::new(0),
+    )
 }
 
 fn make_snapshot(chain: &[(Hash256, BlockHeader)]) -> HeaderSnapshot {

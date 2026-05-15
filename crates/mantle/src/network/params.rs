@@ -99,9 +99,8 @@ impl Network {
     /// Never in practice: parses fixed compile-time hex strings.
     #[must_use]
     pub fn genesis_header(self) -> Option<BlockHeader> {
-        let merkle = |hex| {
-            Hash256::from_display_hex(hex).expect("hardcoded genesis merkle_root must parse")
-        };
+        let merkle =
+            |hex| Hash256::from_display_hex(hex).expect("hardcoded genesis merkle_root must parse");
         match self {
             Self::Mainnet => Some(BlockHeader::new(
                 BlockVersion::new(1),

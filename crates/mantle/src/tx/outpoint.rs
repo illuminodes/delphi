@@ -103,9 +103,6 @@ mod tests {
 
     #[test]
     fn outpoint_size_eq_encoded_len() {
-        assert_eq!(
-            std::mem::size_of::<OutPoint>(),
-            OutPoint::ENCODED_LEN,
-        );
+        assert_eq!(std::mem::size_of::<OutPoint>(), OutPoint::ENCODED_LEN,);
     }
 }

@@ -88,7 +88,11 @@ impl<'a> ScriptReader<'a> {
             _ => &[],
         };
 
-        Ok(Some(Step { opcode, flags: Opcode::flags_for_byte(op_byte), data }))
+        Ok(Some(Step {
+            opcode,
+            flags: Opcode::flags_for_byte(op_byte),
+            data,
+        }))
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8], ScriptError> {

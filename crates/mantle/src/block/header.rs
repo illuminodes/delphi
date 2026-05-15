@@ -318,7 +318,14 @@ mod tests {
 
     #[test]
     fn set_then_get_roundtrip() {
-        let mut h = BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0));
+        let mut h = BlockHeader::new(
+            BlockVersion::new(1),
+            Hash256::ZERO,
+            Hash256::ZERO,
+            BlockTime::new(0),
+            CompactBits::new(0),
+            Nonce::new(0),
+        );
         h.set_version(BlockVersion::new(3));
         h.set_nonce(Nonce::new(999));
         h.set_bits(CompactBits::new(0x1234_5678));

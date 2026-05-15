@@ -81,7 +81,14 @@ fn make_valid_block(txs: Vec<Transaction>) -> Block {
     let merkle_root =
         compute_merkle_root(&txids).expect("non-empty tx list must have a merkle root");
     let block = Block {
-        header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, merkle_root, BlockTime::new(1_231_006_505), EASY_BITS, Nonce::new(0)),
+        header: BlockHeader::new(
+            BlockVersion::new(1),
+            Hash256::ZERO,
+            merkle_root,
+            BlockTime::new(1_231_006_505),
+            EASY_BITS,
+            Nonce::new(0),
+        ),
         transactions: txs,
     };
     mine_block(block)
@@ -120,7 +127,10 @@ fn make_n_tx_block(n: usize) -> Block {
 // ── txid ────────────────────────────────────────────────────────────────────
 
 mod txid {
-    use super::{black_box, TxHash, coinbase_tx, regular_tx, Hash256, Transaction, TxIn, OutPoint, Sequence, Witness};
+    use super::{
+        Hash256, OutPoint, Sequence, Transaction, TxHash, TxIn, Witness, black_box, coinbase_tx,
+        regular_tx,
+    };
 
     #[divan::bench]
     fn coinbase() {
@@ -157,7 +167,7 @@ mod txid {
 // ── merkle_root ─────────────────────────────────────────────────────────────
 
 mod merkle_root {
-    use super::{Hash256, compute_merkle_root, black_box, compute_merkle_root_reusing};
+    use super::{Hash256, black_box, compute_merkle_root, compute_merkle_root_reusing};
 
     fn make_txids(n: usize) -> Vec<Hash256> {
         (0..n)
@@ -213,7 +223,9 @@ mod merkle_root {
 // ── validate_block_structure (Stage 1) ──────────────────────────────────────
 
 mod stage1_structure {
-    use super::{make_valid_block, coinbase_tx, validate_block_structure, black_box, make_n_tx_block};
+    use super::{
+        black_box, coinbase_tx, make_n_tx_block, make_valid_block, validate_block_structure,
+    };
 
     #[divan::bench]
     fn single_coinbase(bencher: divan::Bencher) {
@@ -237,7 +249,9 @@ mod stage1_structure {
 // ── validate_block_wire (Stage 1, zero-copy) ────────────────────────────────
 
 mod stage1_wire {
-    use super::{make_valid_block, coinbase_tx, Encode, validate_block_wire, black_box, make_n_tx_block};
+    use super::{
+        Encode, black_box, coinbase_tx, make_n_tx_block, make_valid_block, validate_block_wire,
+    };
 
     #[divan::bench]
     fn single_coinbase(bencher: divan::Bencher) {
@@ -273,7 +287,11 @@ mod stage1_wire {
 // ── validate_block_context (Stage 2) ────────────────────────────────────────
 
 mod stage2_context {
-    use super::{build_chain, ChainView, Transaction, TxVersion, TxIn, OutPoint, Hash256, Sequence, Witness, TxOut, Satoshi, Locktime, compute_merkle_root, TxHash, BlockHeader, BlockVersion, BlockTime, Nonce, EASY_BITS, Block, FixedClock, validate_block_context_with_clock, black_box};
+    use super::{
+        Block, BlockHeader, BlockTime, BlockVersion, ChainView, EASY_BITS, FixedClock, Hash256,
+        Locktime, Nonce, OutPoint, Satoshi, Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion,
+        Witness, black_box, build_chain, compute_merkle_root, validate_block_context_with_clock,
+    };
 
     #[divan::bench]
     fn chain_12(bencher: divan::Bencher) {
@@ -316,7 +334,14 @@ mod stage2_context {
             ))
             .expect("median_time_past must succeed on valid chain");
         let block = Block {
-            header: BlockHeader::new(BlockVersion::new(4), tip.hash, merkle_root, BlockTime::new((mtp + 1).to_u32()), EASY_BITS, Nonce::new(0)),
+            header: BlockHeader::new(
+                BlockVersion::new(4),
+                tip.hash,
+                merkle_root,
+                BlockTime::new((mtp + 1).to_u32()),
+                EASY_BITS,
+                Nonce::new(0),
+            ),
             transactions: vec![tx],
         };
         let clock = FixedClock(clock_now + 3600);
@@ -330,7 +355,10 @@ mod stage2_context {
 // ── MemoryChainView lookups ─────────────────────────────────────────────────
 
 mod chain_view {
-    use super::{build_chain, ChainView, black_box, BlockHeight, BlockVersion, BlockTime, Nonce, MemoryChainView, OutPoint, Hash256, Coin, Satoshi, BlockHeader, EASY_BITS};
+    use super::{
+        BlockHeader, BlockHeight, BlockTime, BlockVersion, ChainView, Coin, EASY_BITS, Hash256,
+        MemoryChainView, Nonce, OutPoint, Satoshi, black_box, build_chain,
+    };
 
     #[divan::bench]
     fn get_header_by_hash(bencher: divan::Bencher) {
@@ -424,7 +452,14 @@ mod chain_view {
     fn median_time_past(bencher: divan::Bencher) {
         let view = build_chain(12);
         let tip = view.tip();
-        let next_header = BlockHeader::new(BlockVersion::new(4), tip.hash, Hash256::ZERO, BlockTime::new(0), EASY_BITS, Nonce::new(0));
+        let next_header = BlockHeader::new(
+            BlockVersion::new(4),
+            tip.hash,
+            Hash256::ZERO,
+            BlockTime::new(0),
+            EASY_BITS,
+            Nonce::new(0),
+        );
         bencher.bench(|| {
             view.median_time_past(black_box(&next_header))
                 .expect("median_time_past must succeed on valid chain")

@@ -570,8 +570,7 @@ impl RobinHoodTable {
                 break;
             }
 
-            ring.submit_and_wait(submitted)
-                .map_err(uring_err)?;
+            ring.submit_and_wait(submitted).map_err(uring_err)?;
 
             let mut writes: Vec<u64> = Vec::new();
             let mut write_cursor: usize = 0;
@@ -657,8 +656,7 @@ impl RobinHoodTable {
             }
 
             if write_count > 0 {
-                ring.submit_and_wait(write_count)
-                    .map_err(uring_err)?;
+                ring.submit_and_wait(write_count).map_err(uring_err)?;
                 while ring.complete().is_some() {}
             }
         }
@@ -740,8 +738,7 @@ impl RobinHoodTable {
                 break;
             }
 
-            ring.submit_and_wait(submitted)
-                .map_err(uring_err)?;
+            ring.submit_and_wait(submitted).map_err(uring_err)?;
 
             let mut need_reprobe = false;
             while let Some(cqe) = ring.complete() {
@@ -836,8 +833,7 @@ impl RobinHoodTable {
                 break;
             }
 
-            ring.submit_and_wait(submitted)
-                .map_err(uring_err)?;
+            ring.submit_and_wait(submitted).map_err(uring_err)?;
 
             // Collect write decisions; (slot_to_write, chain_index, is_blank).
             let mut write_ops: Vec<(u64, usize, bool)> = Vec::new();
@@ -899,8 +895,7 @@ impl RobinHoodTable {
             }
 
             if write_count > 0 {
-                ring.submit_and_wait(write_count)
-                    .map_err(uring_err)?;
+                ring.submit_and_wait(write_count).map_err(uring_err)?;
                 while ring.complete().is_some() {}
             }
 
@@ -985,8 +980,7 @@ impl RobinHoodTable {
                 break;
             }
 
-            ring.submit_and_wait(submitted)
-                .map_err(uring_err)?;
+            ring.submit_and_wait(submitted).map_err(uring_err)?;
 
             // Process completions.
             let mut need_reprobe = false;
@@ -1464,8 +1458,12 @@ fn append_overflow(file: &mut File, spk: &[u8]) -> io::Result<u64> {
 fn read_overflow(file: &File, offset: u64) -> io::Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     pread_exact(file, &mut len_buf, offset)?;
-    let len = usize::try_from(u32::from_le_bytes(len_buf))
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "overflow script length exceeds usize"))?;
+    let len = usize::try_from(u32::from_le_bytes(len_buf)).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "overflow script length exceeds usize",
+        )
+    })?;
     let mut buf = vec![0u8; len];
     pread_exact(file, &mut buf, offset + 4)?;
     Ok(buf)
@@ -1508,12 +1506,10 @@ fn flush_if_full(
             Ok(())
         }
         Err(ququmatz::Error::Submit(ququmatz::SubmitError::QueueFull)) => {
-            ring.submit_and_wait(*submitted)
-                .map_err(uring_err)?;
+            ring.submit_and_wait(*submitted).map_err(uring_err)?;
             while ring.complete().is_some() {}
             *submitted = 0;
-            ring.push(copy)
-                .map_err(uring_err)?;
+            ring.push(copy).map_err(uring_err)?;
             *submitted += 1;
             Ok(())
         }

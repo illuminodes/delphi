@@ -640,7 +640,9 @@ mod tests {
     #[test]
     fn compact_bits_genesis_target() {
         let bits = CompactBits::new(0x1d00_ffff);
-        let target = bits.to_target().expect("genesis bits must produce a target");
+        let target = bits
+            .to_target()
+            .expect("genesis bits must produce a target");
         // The genesis target: 0x00000000FFFF0000...0000 (difficulty-1 target)
         // exponent = 0x1d = 29, mantissa = 0x00ffff
         // target = 0x00ffff * 2^(8*(29-3)) = 0x00ffff * 2^208
@@ -700,7 +702,9 @@ mod tests {
         let bits = CompactBits::new(0x1d00_ffff);
         let target = bits.to_target().expect("genesis bits must have a target");
         let recovered = CompactBits::from_target(target).expect("non-zero target must roundtrip");
-        let target2 = recovered.to_target().expect("recovered bits must have a target");
+        let target2 = recovered
+            .to_target()
+            .expect("recovered bits must have a target");
         assert_eq!(target, target2);
     }
 

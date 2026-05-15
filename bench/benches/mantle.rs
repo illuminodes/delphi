@@ -28,7 +28,7 @@ fn encode_bytes<T: Encode>(val: &T) -> Vec<u8> {
 // ── Newtype codec ────────────────────────────────────────────────────────────
 
 mod newtypes {
-    use super::{Satoshi, DecodeRef, BlockTime, Services, ProtocolVersion, PeerNonce, Timestamp};
+    use super::{BlockTime, DecodeRef, PeerNonce, ProtocolVersion, Satoshi, Services, Timestamp};
 
     #[divan::bench]
     fn satoshi_decode_ref() -> (Satoshi, &'static [u8]) {
@@ -70,7 +70,7 @@ mod newtypes {
 // ── Hash256 ──────────────────────────────────────────────────────────────────
 
 mod hash256 {
-    use super::{encode_bytes, Hash256, Decode, Cursor, DecodeRef};
+    use super::{Cursor, Decode, DecodeRef, Hash256, encode_bytes};
 
     #[divan::bench]
     fn encode() -> Vec<u8> {
@@ -103,7 +103,7 @@ fn make_header(i: usize) -> BlockHeader {
 }
 
 mod block_header {
-    use super::{make_header, BlockHeader, encode_bytes, Decode, Cursor, DecodeRef};
+    use super::{BlockHeader, Cursor, Decode, DecodeRef, encode_bytes, make_header};
 
     #[divan::bench]
     fn to_bytes() -> [u8; 80] {
@@ -143,7 +143,7 @@ mod block_header {
 // ── OutPoint ─────────────────────────────────────────────────────────────────
 
 mod outpoint {
-    use super::{encode_bytes, OutPoint, Hash256, Decode, Cursor, DecodeRef};
+    use super::{Cursor, Decode, DecodeRef, Hash256, OutPoint, encode_bytes};
 
     #[divan::bench]
     fn encode() -> Vec<u8> {
@@ -181,7 +181,10 @@ mod outpoint {
 // ── TxIn / TxInRef ───────────────────────────────────────────────────────────
 
 mod txin {
-    use super::{TxIn, OutPoint, Hash256, Sequence, Witness, encode_bytes, Decode, Cursor, TxInRef, DecodeRef, black_box};
+    use super::{
+        Cursor, Decode, DecodeRef, Hash256, OutPoint, Sequence, TxIn, TxInRef, Witness, black_box,
+        encode_bytes,
+    };
 
     fn sample() -> TxIn {
         TxIn {
@@ -223,7 +226,7 @@ mod txin {
 // ── TxOut / TxOutRef ─────────────────────────────────────────────────────────
 
 mod txout {
-    use super::{TxOut, Satoshi, encode_bytes, Decode, Cursor, TxOutRef, DecodeRef, black_box};
+    use super::{Cursor, Decode, DecodeRef, Satoshi, TxOut, TxOutRef, black_box, encode_bytes};
 
     fn sample() -> TxOut {
         TxOut {
@@ -304,7 +307,10 @@ fn make_segwit_tx() -> Transaction {
 }
 
 mod transaction {
-    use super::{make_tx, encode_bytes, Transaction, Decode, Cursor, TransactionRef, DecodeRef, black_box, TxHash, make_segwit_tx, transaction_ref_with_arena};
+    use super::{
+        Cursor, Decode, DecodeRef, Transaction, TransactionRef, TxHash, black_box, encode_bytes,
+        make_segwit_tx, make_tx, transaction_ref_with_arena,
+    };
 
     #[divan::bench(args = [1usize, 4, 16])]
     fn encode(bencher: divan::Bencher, n: usize) {
@@ -405,7 +411,11 @@ mod transaction {
 // ── Block / BlockRef ─────────────────────────────────────────────────────────
 
 mod block {
-    use super::{Block, make_header, make_tx, encode_bytes, Decode, Cursor, BlockRef, black_box, Transaction, TxVersion, TxIn, OutPoint, Hash256, Sequence, Witness, TxOut, Satoshi, Locktime};
+    use super::{
+        Block, BlockRef, Cursor, Decode, Hash256, Locktime, OutPoint, Satoshi, Sequence,
+        Transaction, TxIn, TxOut, TxVersion, Witness, black_box, encode_bytes, make_header,
+        make_tx,
+    };
 
     #[divan::bench(args = [1usize, 10, 100])]
     fn encode(bencher: divan::Bencher, n: usize) {
@@ -508,7 +518,10 @@ mod block {
 // ── MessageHeader ────────────────────────────────────────────────────────────
 
 mod message_header {
-    use super::{MessageHeader, Magic, CommandName, Hash256, encode_bytes, Decode, Cursor, DecodeRef, encode_message, Command};
+    use super::{
+        Command, CommandName, Cursor, Decode, DecodeRef, Hash256, Magic, MessageHeader,
+        encode_bytes, encode_message,
+    };
 
     #[divan::bench]
     fn to_bytes() -> [u8; 24] {
@@ -599,7 +612,9 @@ fn make_version_msg() -> VersionMsg {
 }
 
 mod version_msg {
-    use super::{make_version_msg, encode_bytes, VersionMsg, Decode, Cursor, VersionMsgRef, DecodeRef};
+    use super::{
+        Cursor, Decode, DecodeRef, VersionMsg, VersionMsgRef, encode_bytes, make_version_msg,
+    };
 
     #[divan::bench]
     fn encode(bencher: divan::Bencher) {
@@ -629,7 +644,7 @@ mod version_msg {
 // ── PingMsg ──────────────────────────────────────────────────────────────────
 
 mod ping_msg {
-    use super::{encode_bytes, PingMsg, PeerNonce, Decode, Cursor};
+    use super::{Cursor, Decode, PeerNonce, PingMsg, encode_bytes};
 
     #[divan::bench]
     fn encode() -> Vec<u8> {
@@ -653,7 +668,9 @@ mod ping_msg {
 // ── InvMsg ───────────────────────────────────────────────────────────────────
 
 mod inv_msg {
-    use super::{InvMsg, InvEntry, InvType, Hash256, encode_bytes, Decode, Cursor, black_box, DecodeRef};
+    use super::{
+        Cursor, Decode, DecodeRef, Hash256, InvEntry, InvMsg, InvType, black_box, encode_bytes,
+    };
 
     fn make(n: usize) -> InvMsg {
         InvMsg(
@@ -726,7 +743,7 @@ mod inv_msg {
 // ── AddrMsg ──────────────────────────────────────────────────────────────────
 
 mod addr_msg {
-    use super::{Encode, VarInt, AddrMsg, Decode, Cursor, black_box, AddrEntry, DecodeRef};
+    use super::{AddrEntry, AddrMsg, Cursor, Decode, DecodeRef, Encode, VarInt, black_box};
 
     fn make_payload(n: usize) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -800,8 +817,7 @@ mod addr_msg {
             .expect("one entry");
         let bytes = entry.to_bytes();
         bencher.bench(|| {
-            AddrEntry::decode_ref(&bytes)
-                .expect("AddrEntry decode_ref cannot fail on valid bytes")
+            AddrEntry::decode_ref(&bytes).expect("AddrEntry decode_ref cannot fail on valid bytes")
         });
     }
 }
@@ -809,7 +825,7 @@ mod addr_msg {
 // ── HeadersMsg ───────────────────────────────────────────────────────────────
 
 mod headers_msg {
-    use super::{HeadersMsg, make_header, encode_bytes, Decode, Cursor, black_box};
+    use super::{Cursor, Decode, HeadersMsg, black_box, encode_bytes, make_header};
 
     #[divan::bench(args = [1usize, 100, 2000])]
     fn encode(bencher: divan::Bencher, n: usize) {
@@ -856,7 +872,7 @@ mod headers_msg {
 // ── GetHeadersMsg ────────────────────────────────────────────────────────────
 
 mod getheaders_msg {
-    use super::{GetHeadersMsg, ProtocolVersion, Hash256, encode_bytes, Decode, Cursor};
+    use super::{Cursor, Decode, GetHeadersMsg, Hash256, ProtocolVersion, encode_bytes};
 
     fn sample() -> GetHeadersMsg {
         GetHeadersMsg {

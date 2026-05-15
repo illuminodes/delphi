@@ -92,7 +92,9 @@ mod tests {
     use crate::amount::Satoshi;
     use crate::block::{Block, BlockHeader};
     use crate::codec::{Decode, Encode, Error};
-    use crate::difficulty::{BlockTime, BlockVersion, CompactBits, Locktime, Nonce, Sequence, TxVersion};
+    use crate::difficulty::{
+        BlockTime, BlockVersion, CompactBits, Locktime, Nonce, Sequence, TxVersion,
+    };
     use crate::hash::Hash256;
     use crate::script::Witness;
     use crate::tx::{OutPoint, Transaction, TxIn, TxOut};
@@ -147,7 +149,14 @@ mod tests {
     #[test]
     fn block_zero_transactions() {
         let block = Block {
-            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
+            header: BlockHeader::new(
+                BlockVersion::new(1),
+                Hash256::ZERO,
+                Hash256::ZERO,
+                BlockTime::new(0),
+                CompactBits::new(0),
+                Nonce::new(0),
+            ),
             transactions: vec![],
         };
         let bytes = encode(&block);
@@ -157,7 +166,14 @@ mod tests {
     #[test]
     fn block_truncated_after_tx_count() {
         let block = Block {
-            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
+            header: BlockHeader::new(
+                BlockVersion::new(1),
+                Hash256::ZERO,
+                Hash256::ZERO,
+                BlockTime::new(0),
+                CompactBits::new(0),
+                Nonce::new(0),
+            ),
             transactions: vec![],
         };
         let mut bytes = encode(&block);
@@ -177,7 +193,14 @@ mod tests {
             locktime: Locktime::new(0),
         };
         let block = Block {
-            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
+            header: BlockHeader::new(
+                BlockVersion::new(1),
+                Hash256::ZERO,
+                Hash256::ZERO,
+                BlockTime::new(0),
+                CompactBits::new(0),
+                Nonce::new(0),
+            ),
             transactions: vec![dummy_tx; 253],
         };
         let bytes = encode(&block);
@@ -188,11 +211,21 @@ mod tests {
     #[test]
     fn block_with_segwit_tx_roundtrips() {
         let block = Block {
-            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
+            header: BlockHeader::new(
+                BlockVersion::new(1),
+                Hash256::ZERO,
+                Hash256::ZERO,
+                BlockTime::new(0),
+                CompactBits::new(0),
+                Nonce::new(0),
+            ),
             transactions: vec![Transaction {
                 version: TxVersion::new(2),
                 inputs: vec![TxIn {
-                    previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                    previous_output: OutPoint {
+                        txid: Hash256::ZERO,
+                        vout: 0,
+                    },
                     script_sig: Vec::<u8>::new().into(),
                     sequence: Sequence::MAX,
                     witness: Witness::from_slice(&[&[0xab; 72][..], &[0xcd; 33][..]]),
@@ -211,7 +244,14 @@ mod tests {
     #[test]
     fn block_weight_legacy_only() {
         let block = Block {
-            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
+            header: BlockHeader::new(
+                BlockVersion::new(1),
+                Hash256::ZERO,
+                Hash256::ZERO,
+                BlockTime::new(0),
+                CompactBits::new(0),
+                Nonce::new(0),
+            ),
             transactions: vec![Transaction {
                 version: TxVersion::new(1),
                 inputs: vec![],
@@ -226,11 +266,21 @@ mod tests {
     #[test]
     fn block_weight_segwit_less_than_4x_total() {
         let block = Block {
-            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
+            header: BlockHeader::new(
+                BlockVersion::new(1),
+                Hash256::ZERO,
+                Hash256::ZERO,
+                BlockTime::new(0),
+                CompactBits::new(0),
+                Nonce::new(0),
+            ),
             transactions: vec![Transaction {
                 version: TxVersion::new(2),
                 inputs: vec![TxIn {
-                    previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                    previous_output: OutPoint {
+                        txid: Hash256::ZERO,
+                        vout: 0,
+                    },
                     script_sig: Vec::<u8>::new().into(),
                     sequence: Sequence::MAX,
                     witness: Witness::from_slice(&[&[0xab; 72][..], &[0xcd; 33][..]]),
@@ -250,7 +300,14 @@ mod tests {
     #[test]
     fn decode_limited_rejects_too_many_txs() {
         let block = Block {
-            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
+            header: BlockHeader::new(
+                BlockVersion::new(1),
+                Hash256::ZERO,
+                Hash256::ZERO,
+                BlockTime::new(0),
+                CompactBits::new(0),
+                Nonce::new(0),
+            ),
             transactions: vec![
                 Transaction {
                     version: TxVersion::new(1),
@@ -262,9 +319,7 @@ mod tests {
             ],
         };
         let bytes = encode(&block);
-        let err = Block::decode_limited::<3, 10_000, 10_000>(
-            &mut std::io::Cursor::new(&bytes),
-        );
+        let err = Block::decode_limited::<3, 10_000, 10_000>(&mut std::io::Cursor::new(&bytes));
         assert!(err.is_err());
     }
 

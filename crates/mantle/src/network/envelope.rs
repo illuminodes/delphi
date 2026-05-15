@@ -122,7 +122,8 @@ impl<'a> DecodeRef<'a> for MessageHeader {
             return Err(CodecError::UnexpectedEof);
         }
         let (head, tail) = buf.split_at(Self::ENCODED_LEN);
-        let arr: &[u8; Self::ENCODED_LEN] = head.try_into().map_err(|_| CodecError::UnexpectedEof)?;
+        let arr: &[u8; Self::ENCODED_LEN] =
+            head.try_into().map_err(|_| CodecError::UnexpectedEof)?;
         Ok((Self::from_bytes(arr), tail))
     }
 }

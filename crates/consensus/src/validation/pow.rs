@@ -455,7 +455,9 @@ mod tests {
         bytes[30] = 0x42;
         bytes[31] = 0x40; // 1_000_000
         let val = U256::from_be_bytes(bytes);
-        let result = val.saturating_mul_u64(TARGET_TIMESPAN).div_u64(TARGET_TIMESPAN);
+        let result = val
+            .saturating_mul_u64(TARGET_TIMESPAN)
+            .div_u64(TARGET_TIMESPAN);
         assert_eq!(result.to_be_bytes(), bytes);
     }
 

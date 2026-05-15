@@ -101,7 +101,8 @@ fn sequence_field_roundtrip() {
         let decoded =
             Transaction::decode(&mut Cursor::new(&buf)).expect("transaction roundtrip must decode");
         assert_eq!(
-            decoded.inputs[0].sequence, Sequence::new(seq),
+            decoded.inputs[0].sequence,
+            Sequence::new(seq),
             "sequence {seq:#010x} not preserved"
         );
     }

@@ -125,7 +125,8 @@ impl<'a> DecodeRef<'a> for AddrEntry {
             return Err(CodecError::UnexpectedEof);
         }
         let (head, tail) = buf.split_at(Self::ENCODED_LEN);
-        let arr: &[u8; Self::ENCODED_LEN] = head.try_into().map_err(|_| CodecError::UnexpectedEof)?;
+        let arr: &[u8; Self::ENCODED_LEN] =
+            head.try_into().map_err(|_| CodecError::UnexpectedEof)?;
         Ok((Self::from_bytes(arr), tail))
     }
 }
@@ -565,10 +566,7 @@ mod tests {
 
     #[test]
     fn addr_entry_size_eq_encoded_len() {
-        assert_eq!(
-            std::mem::size_of::<AddrEntry>(),
-            AddrEntry::ENCODED_LEN,
-        );
+        assert_eq!(std::mem::size_of::<AddrEntry>(), AddrEntry::ENCODED_LEN,);
     }
 
     // ── AddrMsg iter_entries / decode_into ────────────────────────────────────
@@ -634,19 +632,13 @@ mod tests {
     fn addr_decode_into_reuses_capacity() {
         let payload = make_addr_payload(5);
         let mut buf: Vec<AddrEntry> = Vec::new();
-        AddrMsg::decode_into_limited::<1000>(
-            &mut std::io::Cursor::new(&payload),
-            &mut buf,
-        )
-        .expect("must succeed");
+        AddrMsg::decode_into_limited::<1000>(&mut std::io::Cursor::new(&payload), &mut buf)
+            .expect("must succeed");
         assert_eq!(buf.len(), 5);
         let cap = buf.capacity();
 
-        AddrMsg::decode_into_limited::<1000>(
-            &mut std::io::Cursor::new(&payload),
-            &mut buf,
-        )
-        .expect("must succeed");
+        AddrMsg::decode_into_limited::<1000>(&mut std::io::Cursor::new(&payload), &mut buf)
+            .expect("must succeed");
         assert_eq!(buf.len(), 5);
         assert!(buf.capacity() >= cap);
     }
@@ -712,7 +704,10 @@ mod tests {
         assert_eq!(msg.0.len(), 1);
         assert!(matches!(
             msg.0[0].addr,
-            AddrV2Addr::Unknown { network_id: 0xff, .. }
+            AddrV2Addr::Unknown {
+                network_id: 0xff,
+                ..
+            }
         ));
     }
 

@@ -323,10 +323,7 @@ mod tests {
                 },
                 script_sig: Vec::<u8>::new().into(),
                 sequence: Sequence::new(0xffff_fffe),
-                witness: Witness::from_slice(&[
-                    &[0xde, 0xad, 0xbe, 0xef][..],
-                    &[0x01; 33][..],
-                ]),
+                witness: Witness::from_slice(&[&[0xde, 0xad, 0xbe, 0xef][..], &[0x01; 33][..]]),
             }],
             outputs: vec![TxOut {
                 value: Satoshi::new(99_000),
@@ -345,7 +342,10 @@ mod tests {
         let tx = Transaction {
             version: TxVersion::new(2),
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: Vec::<u8>::new().into(),
                 sequence: Sequence::MAX,
                 witness: Witness::from_slice(&[&[0xab; 72][..], &[0xcd; 33][..]]),
@@ -367,7 +367,10 @@ mod tests {
         let tx = Transaction {
             version: TxVersion::new(2),
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: Vec::<u8>::new().into(),
                 sequence: Sequence::MAX,
                 witness: Witness::from_slice(&[&[0xab; 72][..], &[0xcd; 33][..]]),
@@ -388,7 +391,10 @@ mod tests {
         let tx = Transaction {
             version: TxVersion::new(1),
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0,
+                },
                 script_sig: vec![0x51].into(),
                 sequence: Sequence::MAX,
                 witness: Witness::empty(),
@@ -402,7 +408,10 @@ mod tests {
 
     #[test]
     fn bip34_height_script_zero() {
-        assert_eq!(Transaction::bip34_height_script(BlockHeight::ZERO), vec![0x00]);
+        assert_eq!(
+            Transaction::bip34_height_script(BlockHeight::ZERO),
+            vec![0x00]
+        );
     }
 
     #[test]
@@ -427,7 +436,10 @@ mod tests {
         let tx = Transaction {
             version: TxVersion::new(1),
             inputs: vec![TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: u32::MAX,
+                },
                 script_sig: script_sig.into(),
                 sequence: Sequence::MAX,
                 witness: Witness::empty(),
@@ -446,19 +458,22 @@ mod tests {
     fn decode_limited_rejects_too_many_inputs() {
         let tx = Transaction {
             version: TxVersion::new(1),
-            inputs: (0..5).map(|i| TxIn {
-                previous_output: OutPoint { txid: Hash256::ZERO, vout: i },
-                script_sig: vec![].into(),
-                sequence: Sequence::MAX,
-                witness: Witness::empty(),
-            }).collect(),
+            inputs: (0..5)
+                .map(|i| TxIn {
+                    previous_output: OutPoint {
+                        txid: Hash256::ZERO,
+                        vout: i,
+                    },
+                    script_sig: vec![].into(),
+                    sequence: Sequence::MAX,
+                    witness: Witness::empty(),
+                })
+                .collect(),
             outputs: vec![],
             locktime: Locktime::new(0),
         };
         let bytes = encode(&tx);
-        let err = Transaction::decode_limited::<3, 10_000>(
-            &mut std::io::Cursor::new(&bytes),
-        );
+        let err = Transaction::decode_limited::<3, 10_000>(&mut std::io::Cursor::new(&bytes));
         assert!(err.is_err());
     }
 }

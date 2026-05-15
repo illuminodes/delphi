@@ -237,10 +237,7 @@ impl Engine for FlatEngine {
     fn flush(&mut self, d: Durability) -> Result<(), EngineError> {
         if d == Durability::Synced {
             self.utxo_file.flush().map_err(io_err)?;
-            self.utxo_file
-                .get_ref()
-                .sync_all()
-                .map_err(io_err)?;
+            self.utxo_file.get_ref().sync_all().map_err(io_err)?;
             self.utxo_flushed_pos = self.utxo_write_pos;
             self.header_file.flush().map_err(io_err)?;
             self.header_file.sync_all().map_err(io_err)?;
@@ -256,10 +253,7 @@ impl Engine for FlatEngine {
 
     fn recover(&mut self) -> Result<TipInfo, EngineError> {
         let mut cp_buf = [0u8; 4];
-        let n = self
-            .checkpoint_file
-            .read(&mut cp_buf)
-            .map_err(io_err)?;
+        let n = self.checkpoint_file.read(&mut cp_buf).map_err(io_err)?;
         let checkpoint_height = if n == 4 {
             u32::from_le_bytes(cp_buf)
         } else {
@@ -342,16 +336,13 @@ impl Engine for FlatEngine {
 fn write_coin_record<W: Write>(f: &mut W, nc: &NewCoin) -> Result<(), EngineError> {
     write_outpoint(f, &nc.outpoint)?;
     f.write_all(&[1u8]).map_err(io_err)?;
-    f.write_all(&nc.value.to_le_bytes())
-        .map_err(io_err)?;
+    f.write_all(&nc.value.to_le_bytes()).map_err(io_err)?;
     f.write_all(&nc.height.to_u32().to_le_bytes())
         .map_err(io_err)?;
-    f.write_all(&[u8::from(nc.coinbase)])
-        .map_err(io_err)?;
+    f.write_all(&[u8::from(nc.coinbase)]).map_err(io_err)?;
     let spk = nc.script_pubkey;
     let spk_len = u32::try_from(spk.len()).map_err(|_| EngineError::ScriptPubKeyTooLarge)?;
-    f.write_all(&spk_len.to_le_bytes())
-        .map_err(io_err)?;
+    f.write_all(&spk_len.to_le_bytes()).map_err(io_err)?;
     f.write_all(spk).map_err(io_err)?;
     Ok(())
 }
@@ -364,8 +355,7 @@ fn write_spend_record<W: Write>(f: &mut W, op: &OutPoint) -> Result<(), EngineEr
 
 fn write_outpoint<W: Write>(f: &mut W, op: &OutPoint) -> Result<(), EngineError> {
     f.write_all(op.txid.as_bytes()).map_err(io_err)?;
-    f.write_all(&op.vout.to_le_bytes())
-        .map_err(io_err)?;
+    f.write_all(&op.vout.to_le_bytes()).map_err(io_err)?;
     Ok(())
 }
 
@@ -487,14 +477,10 @@ fn write_header_record(
         .map_err(io_err)?;
     f.write_all(header.merkle_root().as_bytes())
         .map_err(io_err)?;
-    f.write_all(&header.time().to_le_bytes())
-        .map_err(io_err)?;
-    f.write_all(&header.bits().to_le_bytes())
-        .map_err(io_err)?;
-    f.write_all(&header.nonce().to_le_bytes())
-        .map_err(io_err)?;
-    f.write_all(&h.to_u32().to_le_bytes())
-        .map_err(io_err)?;
+    f.write_all(&header.time().to_le_bytes()).map_err(io_err)?;
+    f.write_all(&header.bits().to_le_bytes()).map_err(io_err)?;
+    f.write_all(&header.nonce().to_le_bytes()).map_err(io_err)?;
+    f.write_all(&h.to_u32().to_le_bytes()).map_err(io_err)?;
     Ok(new_len + HEADER_RECORD_SIZE as u64)
 }
 
@@ -527,10 +513,7 @@ fn open_append(path: &Path) -> Result<File, EngineError> {
 }
 
 fn open_read(path: &Path) -> Result<File, EngineError> {
-    OpenOptions::new()
-        .read(true)
-        .open(path)
-        .map_err(io_err)
+    OpenOptions::new().read(true).open(path).map_err(io_err)
 }
 
 fn io_err(e: impl Into<io::Error>) -> EngineError {

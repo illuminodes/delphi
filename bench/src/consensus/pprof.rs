@@ -167,8 +167,7 @@ fn run_verify_p2wpkh_reuse() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut iters = 0u64;
     while Instant::now() < deadline {
-        let (r, b) =
-            verifier.verify_with_bufs(black_box(&[]), black_box(&fix.spk), bufs);
+        let (r, b) = verifier.verify_with_bufs(black_box(&[]), black_box(&fix.spk), bufs);
         r.expect("p2wpkh");
         bufs = b;
         iters += 1;
