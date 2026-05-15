@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(msg_ref.nonce, msg.nonce);
         assert_eq!(msg_ref.user_agent, "/mantle:0.1.0/");
         assert_eq!(msg_ref.start_height, msg.start_height);
-        assert_eq!(msg_ref.relay, true);
+        assert!(msg_ref.relay);
     }
 
     #[test]

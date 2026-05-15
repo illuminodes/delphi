@@ -578,7 +578,7 @@ mod tests {
         let mut payload = Vec::new();
         crate::codec::VarInt::from(n).encode(&mut payload).unwrap();
         for i in 0..n {
-            payload.extend_from_slice(&(i as u32).to_le_bytes());
+            payload.extend_from_slice(&u32::try_from(i).unwrap().to_le_bytes());
             payload.extend_from_slice(&Services::NODE_NETWORK.to_le_bytes());
             payload.extend_from_slice(&[0u8; 16]);
             payload.extend_from_slice(&8333u16.to_be_bytes());

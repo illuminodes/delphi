@@ -40,6 +40,14 @@ name = "replay_parity_ordinals"
 harness = false
 
 [[bin]]
+name = "consensus-dhat"
+path = "src/consensus/dhat.rs"
+
+[[bin]]
+name = "consensus-pprof"
+path = "src/consensus/pprof.rs"
+
+[[bin]]
 name = "dhat-profile"
 path = "src/dhat_profile.rs"
 
@@ -98,6 +106,7 @@ mantle-storage = { path = "../crates/storage" }
 mantle-validator = { path = "../crates/validator" }
 ququmatz.workspace = true
 dhat = "0.3"
+pprof = { version = "0.14", features = ["flamegraph"] }
 k256 = { workspace = true, features = ["ecdsa", "arithmetic"] }
 sha2 = { workspace = true }
 ripemd = { workspace = true }

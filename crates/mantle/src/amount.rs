@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "overflow")]
     fn add_overflow_panics() {
         let _ = Satoshi::new(u64::MAX) + Satoshi::new(1);
     }
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "underflow")]
     fn sub_underflow_panics() {
         let _ = Satoshi::new(10) - Satoshi::new(20);
     }
@@ -213,8 +213,8 @@ mod tests {
 
     #[test]
     fn to_le_bytes_matches_u64_encoding() {
-        let val = Satoshi::new(0x0102030405060708);
-        assert_eq!(val.to_le_bytes(), 0x0102030405060708u64.to_le_bytes());
+        let val = Satoshi::new(0x0102_0304_0506_0708);
+        assert_eq!(val.to_le_bytes(), 0x0102_0304_0506_0708_u64.to_le_bytes());
     }
 
     #[test]

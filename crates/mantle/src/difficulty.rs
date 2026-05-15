@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn compact_bits_genesis_target() {
-        let bits = CompactBits::new(0x1d00ffff);
+        let bits = CompactBits::new(0x1d00_ffff);
         let target = bits.to_target().expect("genesis bits must produce a target");
         // The genesis target: 0x00000000FFFF0000...0000 (difficulty-1 target)
         // exponent = 0x1d = 29, mantissa = 0x00ffff
@@ -661,21 +661,21 @@ mod tests {
     #[test]
     fn compact_bits_zero_mantissa_returns_none() {
         // exponent = 0x1d, mantissa = 0 -> target would be zero, should return None
-        let bits = CompactBits::new(0x1d000000);
+        let bits = CompactBits::new(0x1d00_0000);
         assert!(bits.to_target().is_none());
     }
 
     #[test]
     fn compact_bits_negative_mantissa_returns_none() {
         // bit 23 set -> negative flag in Bitcoin compact format
-        let bits = CompactBits::new(0x01800001);
+        let bits = CompactBits::new(0x0180_0001);
         assert!(bits.to_target().is_none());
     }
 
     #[test]
     fn compact_bits_exponent_zero() {
         // exponent = 0, mantissa = 1 -> value would be shifted by 8*(0-3) = negative shift
-        let bits = CompactBits::new(0x00000001);
+        let bits = CompactBits::new(0x0000_0001);
         // With exponent 0, the mantissa is right-shifted so far it becomes zero
         // Result should be None (zero target) or a valid all-zero-ish target
         // Either way it should not panic
@@ -685,7 +685,7 @@ mod tests {
     #[test]
     fn compact_bits_exponent_too_large_returns_none() {
         // exponent > 34 should not fit in 32 bytes
-        let bits = CompactBits::new(0x23000001); // exponent = 0x23 = 35
+        let bits = CompactBits::new(0x2300_0001); // exponent = 0x23 = 35
         assert!(bits.to_target().is_none());
     }
 
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn from_target_to_target_roundtrip_genesis() {
-        let bits = CompactBits::new(0x1d00ffff);
+        let bits = CompactBits::new(0x1d00_ffff);
         let target = bits.to_target().expect("genesis bits must have a target");
         let recovered = CompactBits::from_target(target).expect("non-zero target must roundtrip");
         let target2 = recovered.to_target().expect("recovered bits must have a target");
@@ -718,7 +718,7 @@ mod tests {
 
     #[test]
     fn compact_bits_encode_decode_roundtrip() {
-        let original = CompactBits::new(0x1d00ffff);
+        let original = CompactBits::new(0x1d00_ffff);
         let bytes = encode_val(&original);
         let decoded: CompactBits = decode_val(&bytes);
         assert_eq!(original, decoded);
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn compact_bits_decode_ref_trailing() {
-        let original = CompactBits::new(0x1d00ffff);
+        let original = CompactBits::new(0x1d00_ffff);
         let mut bytes = encode_val(&original);
         bytes.extend_from_slice(&[0xDE, 0xAD]);
         let (decoded, rest) = CompactBits::decode_ref(&bytes).expect("decode_ref must succeed");
@@ -766,13 +766,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "BlockHeight overflow")]
     fn block_height_add_overflow_panics() {
         let _ = BlockHeight::new(u32::MAX) + 1u32;
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "BlockHeight underflow")]
     fn block_height_sub_underflow_panics() {
         let _ = BlockHeight::new(0) - 1u32;
     }
@@ -790,13 +790,13 @@ mod tests {
     #[test]
     fn block_height_display() {
         let h = BlockHeight::new(840_000);
-        assert_eq!(format!("{}", h), "840000");
+        assert_eq!(format!("{h}"), "840000");
     }
 
     // ── BlockTime ────────────────────────────────────────────────────────
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "BlockTime overflow")]
     fn block_time_add_overflow_panics() {
         let _ = BlockTime::new(u32::MAX) + 1u32;
     }
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn block_version_encode_decode_roundtrip() {
-        let original = BlockVersion::new(0x20000000);
+        let original = BlockVersion::new(0x2000_0000);
         let bytes = encode_val(&original);
         let decoded: BlockVersion = decode_val(&bytes);
         assert_eq!(original, decoded);
@@ -848,15 +848,15 @@ mod tests {
 
     #[test]
     fn block_version_to_le_bytes() {
-        let v = BlockVersion::new(0x20000000);
-        assert_eq!(v.to_le_bytes(), 0x20000000i32.to_le_bytes());
+        let v = BlockVersion::new(0x2000_0000);
+        assert_eq!(v.to_le_bytes(), 0x2000_0000_i32.to_le_bytes());
     }
 
     // ── Nonce ────────────────────────────────────────────────────────────
 
     #[test]
     fn nonce_encode_decode_roundtrip() {
-        let original = Nonce::new(0xDEADBEEF);
+        let original = Nonce::new(0xDEAD_BEEF);
         let bytes = encode_val(&original);
         let decoded: Nonce = decode_val(&bytes);
         assert_eq!(original, decoded);
@@ -874,8 +874,8 @@ mod tests {
 
     #[test]
     fn nonce_to_le_bytes() {
-        let n = Nonce::new(0xDEADBEEF);
-        assert_eq!(n.to_le_bytes(), 0xDEADBEEFu32.to_le_bytes());
+        let n = Nonce::new(0xDEAD_BEEF);
+        assert_eq!(n.to_le_bytes(), 0xDEAD_BEEF_u32.to_le_bytes());
     }
 
     // ── TxVersion ────────────────────────────────────────────────────────
@@ -939,7 +939,7 @@ mod tests {
 
     #[test]
     fn sequence_encode_decode_roundtrip() {
-        let original = Sequence::new(0xFFFFFFFE);
+        let original = Sequence::new(0xFFFF_FFFE);
         let bytes = encode_val(&original);
         let decoded: Sequence = decode_val(&bytes);
         assert_eq!(original, decoded);
@@ -957,7 +957,7 @@ mod tests {
 
     #[test]
     fn sequence_to_le_bytes() {
-        let s = Sequence::new(0xFFFFFFFE);
-        assert_eq!(s.to_le_bytes(), 0xFFFFFFFEu32.to_le_bytes());
+        let s = Sequence::new(0xFFFF_FFFE);
+        assert_eq!(s.to_le_bytes(), 0xFFFF_FFFE_u32.to_le_bytes());
     }
 }

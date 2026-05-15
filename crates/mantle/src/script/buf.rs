@@ -287,7 +287,7 @@ mod tests {
     fn deref_to_slice() {
         let data = [7u8, 8, 9];
         let s = ScriptSig::from_slice(&data);
-        let slice: &[u8] = &*s;
+        let slice: &[u8] = &s;
         assert_eq!(slice, &data);
     }
 

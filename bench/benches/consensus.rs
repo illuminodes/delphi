@@ -120,7 +120,7 @@ fn make_n_tx_block(n: usize) -> Block {
 // ── txid ────────────────────────────────────────────────────────────────────
 
 mod txid {
-    use super::*;
+    use super::{black_box, TxHash, coinbase_tx, regular_tx, Hash256, Transaction, TxIn, OutPoint, Sequence, Witness};
 
     #[divan::bench]
     fn coinbase() {
@@ -157,7 +157,7 @@ mod txid {
 // ── merkle_root ─────────────────────────────────────────────────────────────
 
 mod merkle_root {
-    use super::*;
+    use super::{Hash256, compute_merkle_root, black_box, compute_merkle_root_reusing};
 
     fn make_txids(n: usize) -> Vec<Hash256> {
         (0..n)
@@ -179,7 +179,7 @@ mod merkle_root {
     }
 
     /// 9,001 leaves — matches Bitcoin Core's `MerkleRoot` bench
-    /// (src/bench/merkle_root.cpp).
+    /// (`src/bench/merkle_root.cpp`).
     #[divan::bench]
     fn core_parity_9001(bencher: divan::Bencher) {
         let txids: Vec<Hash256> = (0..9_001usize)
@@ -213,7 +213,7 @@ mod merkle_root {
 // ── validate_block_structure (Stage 1) ──────────────────────────────────────
 
 mod stage1_structure {
-    use super::*;
+    use super::{make_valid_block, coinbase_tx, validate_block_structure, black_box, make_n_tx_block};
 
     #[divan::bench]
     fn single_coinbase(bencher: divan::Bencher) {
@@ -237,7 +237,7 @@ mod stage1_structure {
 // ── validate_block_wire (Stage 1, zero-copy) ────────────────────────────────
 
 mod stage1_wire {
-    use super::*;
+    use super::{make_valid_block, coinbase_tx, Encode, validate_block_wire, black_box, make_n_tx_block};
 
     #[divan::bench]
     fn single_coinbase(bencher: divan::Bencher) {
@@ -273,7 +273,7 @@ mod stage1_wire {
 // ── validate_block_context (Stage 2) ────────────────────────────────────────
 
 mod stage2_context {
-    use super::*;
+    use super::{build_chain, ChainView, Transaction, TxVersion, TxIn, OutPoint, Hash256, Sequence, Witness, TxOut, Satoshi, Locktime, compute_merkle_root, TxHash, BlockHeader, EASY_BITS, Block, FixedClock, validate_block_context_with_clock, black_box};
 
     #[divan::bench]
     fn chain_12(bencher: divan::Bencher) {
@@ -330,7 +330,7 @@ mod stage2_context {
 // ── MemoryChainView lookups ─────────────────────────────────────────────────
 
 mod chain_view {
-    use super::*;
+    use super::{build_chain, ChainView, black_box, BlockHeight, MemoryChainView, OutPoint, Hash256, Coin, Satoshi, BlockHeader, EASY_BITS};
 
     #[divan::bench]
     fn get_header_by_hash(bencher: divan::Bencher) {

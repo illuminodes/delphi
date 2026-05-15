@@ -27,7 +27,7 @@ fn encode_bytes<T: Encode>(val: &T) -> Vec<u8> {
 // ── Newtype codec ────────────────────────────────────────────────────────────
 
 mod newtypes {
-    use super::*;
+    use super::{Satoshi, DecodeRef, BlockTime, Services, ProtocolVersion, PeerNonce, Timestamp};
 
     #[divan::bench]
     fn satoshi_decode_ref() -> (Satoshi, &'static [u8]) {
@@ -69,7 +69,7 @@ mod newtypes {
 // ── Hash256 ──────────────────────────────────────────────────────────────────
 
 mod hash256 {
-    use super::*;
+    use super::{encode_bytes, Hash256, Decode, Cursor, DecodeRef};
 
     #[divan::bench]
     fn encode() -> Vec<u8> {
@@ -102,7 +102,7 @@ fn make_header(i: usize) -> BlockHeader {
 }
 
 mod block_header {
-    use super::*;
+    use super::{make_header, BlockHeader, encode_bytes, Decode, Cursor, DecodeRef};
 
     #[divan::bench]
     fn to_bytes() -> [u8; 80] {
@@ -142,7 +142,7 @@ mod block_header {
 // ── OutPoint ─────────────────────────────────────────────────────────────────
 
 mod outpoint {
-    use super::*;
+    use super::{encode_bytes, OutPoint, Hash256, Decode, Cursor, DecodeRef};
 
     #[divan::bench]
     fn encode() -> Vec<u8> {
@@ -180,7 +180,7 @@ mod outpoint {
 // ── TxIn / TxInRef ───────────────────────────────────────────────────────────
 
 mod txin {
-    use super::*;
+    use super::{TxIn, OutPoint, Hash256, Sequence, Witness, encode_bytes, Decode, Cursor, TxInRef, DecodeRef, black_box};
 
     fn sample() -> TxIn {
         TxIn {
@@ -222,7 +222,7 @@ mod txin {
 // ── TxOut / TxOutRef ─────────────────────────────────────────────────────────
 
 mod txout {
-    use super::*;
+    use super::{TxOut, Satoshi, encode_bytes, Decode, Cursor, TxOutRef, DecodeRef, black_box};
 
     fn sample() -> TxOut {
         TxOut {
@@ -303,7 +303,7 @@ fn make_segwit_tx() -> Transaction {
 }
 
 mod transaction {
-    use super::*;
+    use super::{make_tx, encode_bytes, Transaction, Decode, Cursor, TransactionRef, DecodeRef, black_box, TxHash, make_segwit_tx, transaction_ref_with_arena};
 
     #[divan::bench(args = [1usize, 4, 16])]
     fn encode(bencher: divan::Bencher, n: usize) {
@@ -404,7 +404,7 @@ mod transaction {
 // ── Block / BlockRef ─────────────────────────────────────────────────────────
 
 mod block {
-    use super::*;
+    use super::{Block, make_header, make_tx, encode_bytes, Decode, Cursor, BlockRef, black_box, Transaction, TxVersion, TxIn, OutPoint, Hash256, Sequence, Witness, TxOut, Satoshi, Locktime};
 
     #[divan::bench(args = [1usize, 10, 100])]
     fn encode(bencher: divan::Bencher, n: usize) {
@@ -507,7 +507,7 @@ mod block {
 // ── MessageHeader ────────────────────────────────────────────────────────────
 
 mod message_header {
-    use super::*;
+    use super::{MessageHeader, Magic, CommandName, Hash256, encode_bytes, Decode, Cursor, DecodeRef, encode_message, Command};
 
     #[divan::bench]
     fn to_bytes() -> [u8; 24] {
@@ -598,7 +598,7 @@ fn make_version_msg() -> VersionMsg {
 }
 
 mod version_msg {
-    use super::*;
+    use super::{make_version_msg, encode_bytes, VersionMsg, Decode, Cursor, VersionMsgRef, DecodeRef};
 
     #[divan::bench]
     fn encode(bencher: divan::Bencher) {
@@ -628,7 +628,7 @@ mod version_msg {
 // ── PingMsg ──────────────────────────────────────────────────────────────────
 
 mod ping_msg {
-    use super::*;
+    use super::{encode_bytes, PingMsg, PeerNonce, Decode, Cursor};
 
     #[divan::bench]
     fn encode() -> Vec<u8> {
@@ -652,7 +652,7 @@ mod ping_msg {
 // ── InvMsg ───────────────────────────────────────────────────────────────────
 
 mod inv_msg {
-    use super::*;
+    use super::{InvMsg, InvEntry, InvType, Hash256, encode_bytes, Decode, Cursor, black_box, DecodeRef};
 
     fn make(n: usize) -> InvMsg {
         InvMsg(
@@ -725,7 +725,7 @@ mod inv_msg {
 // ── AddrMsg ──────────────────────────────────────────────────────────────────
 
 mod addr_msg {
-    use super::*;
+    use super::{Encode, VarInt, AddrMsg, Decode, Cursor, black_box, AddrEntry, DecodeRef};
 
     fn make_payload(n: usize) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -733,7 +733,7 @@ mod addr_msg {
             .encode(&mut buf)
             .expect("Vec write cannot fail");
         for i in 0..n {
-            buf.extend_from_slice(&(i as u32).to_le_bytes()); // time
+            buf.extend_from_slice(&u32::try_from(i).unwrap().to_le_bytes()); // time
             buf.extend_from_slice(&1u64.to_le_bytes()); // services
             buf.extend_from_slice(&[0u8; 16]); // ip
             buf.extend_from_slice(&8333u16.to_be_bytes()); // port
@@ -808,7 +808,7 @@ mod addr_msg {
 // ── HeadersMsg ───────────────────────────────────────────────────────────────
 
 mod headers_msg {
-    use super::*;
+    use super::{HeadersMsg, make_header, encode_bytes, Decode, Cursor, black_box};
 
     #[divan::bench(args = [1usize, 100, 2000])]
     fn encode(bencher: divan::Bencher, n: usize) {
@@ -855,7 +855,7 @@ mod headers_msg {
 // ── GetHeadersMsg ────────────────────────────────────────────────────────────
 
 mod getheaders_msg {
-    use super::*;
+    use super::{GetHeadersMsg, ProtocolVersion, Hash256, encode_bytes, Decode, Cursor};
 
     fn sample() -> GetHeadersMsg {
         GetHeadersMsg {

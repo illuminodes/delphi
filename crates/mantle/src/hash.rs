@@ -343,7 +343,7 @@ mod tests {
         data[1] = 0x02;
         data[2] = 0x03;
         data[3] = 0x04;
-        assert_eq!(data.read_u32_le(0), 0x04030201);
+        assert_eq!(data.read_u32_le(0), 0x0403_0201);
         let h = data.read_hash(4);
         assert_eq!(h, [0xaa; 32]);
     }

@@ -350,8 +350,8 @@ mod tests {
 
     #[test]
     fn encode_decode_heap_witness() {
-        let items: Vec<Vec<u8>> = (0..5).map(|i| vec![i as u8; 20]).collect();
-        let slices: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
+        let items: Vec<Vec<u8>> = (0u8..5).map(|i| vec![i; 20]).collect();
+        let slices: Vec<&[u8]> = items.iter().map(std::vec::Vec::as_slice).collect();
         let w = Witness::from_slice(&slices);
         assert!(matches!(w, WitnessBuf::Heap(_)));
         let bytes = encode_val(&w);
@@ -408,8 +408,8 @@ mod tests {
 
     #[test]
     fn encoded_len_matches_actual_heap() {
-        let items: Vec<Vec<u8>> = (0..5).map(|i| vec![i as u8; 20]).collect();
-        let slices: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
+        let items: Vec<Vec<u8>> = (0u8..5).map(|i| vec![i; 20]).collect();
+        let slices: Vec<&[u8]> = items.iter().map(std::vec::Vec::as_slice).collect();
         let w = Witness::from_slice(&slices);
         let bytes = encode_val(&w);
         assert_eq!(w.encoded_len(), bytes.len());
