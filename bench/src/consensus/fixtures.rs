@@ -2,8 +2,8 @@ use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 use mantle::codec::Encode;
 use mantle::primitives::{
-    Block, BlockHeader, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence, Transaction,
-    TxHash, TxIn, TxOut, TxVersion, Witness,
+    Block, BlockHeader, BlockTime, BlockVersion, CompactBits, Hash256, Locktime, Nonce, OutPoint,
+    Satoshi, Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 use mantle_consensus::merkle::merkle_root_owned;
 use mantle_consensus::script::sighash::{
@@ -76,7 +76,7 @@ pub fn mine_block(mut block: Block) -> Block {
         .to_target()
         .expect("mine_block called with invalid nBits");
     for nonce in 0..=u32::MAX {
-        block.header.set_nonce(nonce);
+        block.header.set_nonce(Nonce::new(nonce));
         let raw = *Hash256::hash(&block.header.to_bytes()).as_bytes();
         let mut be = raw;
         be.reverse();
@@ -95,7 +95,7 @@ pub fn make_valid_block(txs: Vec<Transaction>) -> Block {
         .expect("txid encoding cannot fail");
     let merkle_root = merkle_root_owned(txids).expect("non-empty tx list always has a merkle root");
     let block = Block {
-        header: BlockHeader::new(1, Hash256::ZERO, merkle_root, 1_231_006_505, EASY_BITS, 0),
+        header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, merkle_root, BlockTime::new(1_231_006_505), EASY_BITS, Nonce::new(0)),
         transactions: txs,
     };
     mine_block(block)

@@ -8,8 +8,8 @@
 //! Open it at <https://nnethercote.github.io/dh_view/dh_view.html>.
 
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence,
-    Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
+    Block, BlockHeader, BlockHeight, BlockTime, BlockVersion, CompactBits, Hash256, Locktime,
+    Nonce, OutPoint, Satoshi, Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::ScriptExecutionCache;
@@ -72,7 +72,7 @@ fn mine(mut block: Block) -> Block {
         .to_target()
         .expect("EASY_BITS always valid");
     for nonce in 0..=u32::MAX {
-        block.header.set_nonce(nonce);
+        block.header.set_nonce(Nonce::new(nonce));
         let mut hash = *Hash256::hash(&block.header.to_bytes()).as_bytes();
         hash.reverse();
         if hash <= target {
@@ -87,19 +87,19 @@ fn make_block(prev_hash: Hash256, height: u32, txs: Vec<Transaction>) -> Block {
     let merkle_root = compute_merkle_root(&txids).expect("non-empty list has merkle root");
     mine(Block {
         header: BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             prev_hash,
             merkle_root,
-            BASE_TIME + height * 600,
+            BlockTime::new(BASE_TIME + height * 600),
             EASY_BITS,
-            0,
+            Nonce::new(0),
         ),
         transactions: txs,
     })
 }
 
 fn pre_genesis_header() -> BlockHeader {
-    BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, BASE_TIME, EASY_BITS, 0)
+    BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(BASE_TIME), EASY_BITS, Nonce::new(0))
 }
 
 fn make_snapshot(chain: &[(Hash256, BlockHeader)]) -> HeaderSnapshot {

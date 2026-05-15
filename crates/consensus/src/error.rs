@@ -1,3 +1,5 @@
+use mantle::primitives::BlockVersion;
+
 use crate::script::ScriptError;
 
 /// All consensus validation failure modes.
@@ -79,7 +81,7 @@ pub enum ValidationError {
     /// (required after BIP34 activation height 227,931).
     Bip34HeightMissing,
     /// Block version is below the minimum required for the current deployment state.
-    BlockVersionTooLow { version: i32, required: i32 },
+    BlockVersionTooLow { version: BlockVersion, required: BlockVersion },
     /// The requested block's parent is not in the chain view.
     UnknownParent,
     /// `ChainView` returned an error.

@@ -1,4 +1,4 @@
-use crate::primitives::{BlockHeader, Hash256};
+use crate::primitives::{BlockHeader, BlockTime, BlockVersion, Hash256, Nonce};
 
 use super::magic::Magic;
 
@@ -104,28 +104,28 @@ impl Network {
         };
         match self {
             Self::Mainnet => Some(BlockHeader::new(
-                1,
+                BlockVersion::new(1),
                 Hash256::ZERO,
                 merkle(GENESIS_MERKLE_ROOT),
-                1_231_006_505,
+                BlockTime::new(1_231_006_505),
                 crate::difficulty::CompactBits::new(0x1d00_ffff),
-                2_083_236_893,
+                Nonce::new(2_083_236_893),
             )),
             Self::Testnet4 => Some(BlockHeader::new(
-                1,
+                BlockVersion::new(1),
                 Hash256::ZERO,
                 merkle("7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e"),
-                1_714_777_860,
+                BlockTime::new(1_714_777_860),
                 crate::difficulty::CompactBits::new(0x1d00_ffff),
-                393_743_547,
+                Nonce::new(393_743_547),
             )),
             Self::Signet => Some(BlockHeader::new(
-                1,
+                BlockVersion::new(1),
                 Hash256::ZERO,
                 merkle(GENESIS_MERKLE_ROOT),
-                1_598_918_400,
+                BlockTime::new(1_598_918_400),
                 crate::difficulty::CompactBits::new(0x1e03_77ae),
-                52_613_770,
+                Nonce::new(52_613_770),
             )),
             Self::Testnet3 | Self::Regtest => None,
         }

@@ -6,12 +6,12 @@ use super::*;
 fn stage1_empty_block_rejected() {
     let block = Block {
         header: BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             Hash256::ZERO,
-            0,
+            BlockTime::new(0),
             mantle::primitives::CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![],
     };
@@ -41,12 +41,12 @@ fn stage1_first_tx_not_coinbase_rejected() {
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
         header: BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             merkle_root,
-            0,
+            BlockTime::new(0),
             mantle::primitives::CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![non_cb],
     };
@@ -84,12 +84,12 @@ fn stage1_non_coinbase_with_null_outpoint_rejected() {
     let merkle_root = compute_merkle_root(&txids).expect("two-tx merkle root must exist");
     let block = Block {
         header: BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             merkle_root,
-            0,
+            BlockTime::new(0),
             mantle::primitives::CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![fake_cb, imposter],
     };
@@ -153,12 +153,12 @@ fn stage1_output_value_over_max_money_rejected() {
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
         header: BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             merkle_root,
-            0,
+            BlockTime::new(0),
             mantle::primitives::CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![coinbase],
     };
@@ -209,12 +209,12 @@ fn stage1_duplicate_inputs_rejected() {
     let merkle_root = compute_merkle_root(&txids).expect("two-tx merkle root must exist");
     let block = Block {
         header: BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             merkle_root,
-            0,
+            BlockTime::new(0),
             mantle::primitives::CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![coinbase, tx],
     };

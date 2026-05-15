@@ -206,12 +206,12 @@ fn wire_empty_block_rejected() {
     // Header + VarInt(0) — no transactions.
     let block = Block {
         header: BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             Hash256::ZERO,
-            0,
+            BlockTime::new(0),
             mantle::primitives::CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![],
     };
@@ -281,12 +281,12 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
                 compute_merkle_root(&txids).expect("single-tx merkle root must exist");
             Block {
                 header: BlockHeader::new(
-                    4,
+                    BlockVersion::new(4),
                     Hash256::ZERO,
                     merkle_root,
-                    1_231_006_505,
+                    BlockTime::new(1_231_006_505),
                     mantle::primitives::CompactBits::new(0x207f_ffff),
-                    0,
+                    Nonce::new(0),
                 ),
                 transactions: vec![non_cb],
             }
@@ -310,12 +310,12 @@ fn wire_agrees_with_owned_on_all_stage1_errors() {
                 compute_merkle_root(&txids).expect("single-tx merkle root must exist");
             Block {
                 header: BlockHeader::new(
-                    4,
+                    BlockVersion::new(4),
                     Hash256::ZERO,
                     merkle_root,
-                    1_231_006_505,
+                    BlockTime::new(1_231_006_505),
                     mantle::primitives::CompactBits::new(0x207f_ffff),
-                    0,
+                    Nonce::new(0),
                 ),
                 transactions: vec![coinbase],
             }

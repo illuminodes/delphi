@@ -236,7 +236,7 @@ impl Decode for HeadersMsg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::CompactBits;
+    use crate::primitives::{BlockTime, BlockVersion, CompactBits, Nonce};
     use std::io::Cursor;
 
     fn encode<T: Encode>(val: &T) -> Vec<u8> {
@@ -291,12 +291,12 @@ mod tests {
     #[test]
     fn headers_msg_roundtrip() {
         let header = BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             Hash256::ZERO,
-            1_231_006_505,
+            BlockTime::new(1_231_006_505),
             CompactBits::new(0x1d00_ffff),
-            2_083_236_893,
+            Nonce::new(2_083_236_893),
         );
         let msg = HeadersMsg(vec![header]);
         let bytes = encode(&msg);
@@ -314,12 +314,12 @@ mod tests {
     #[test]
     fn headers_msg_nonzero_tx_count_placeholder() {
         let header = BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             Hash256::ZERO,
-            0,
+            BlockTime::new(0),
             CompactBits::new(0x1d00_ffff),
-            0,
+            Nonce::new(0),
         );
         // Manually encode with tx_count = 5 instead of 0.
         let mut buf = Vec::new();
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn headers_msg_truncated_header() {
-        let header = BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0);
+        let header = BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0));
         let mut bytes = encode(&HeadersMsg(vec![header]));
         bytes.truncate(bytes.len() - 5); // truncate inside the header
         let e = decode_err::<HeadersMsg>(&bytes);
@@ -348,12 +348,12 @@ mod tests {
 
     fn sample_header(nonce: u32) -> BlockHeader {
         BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             Hash256::ZERO,
-            0,
+            BlockTime::new(0),
             CompactBits::new(0x1d00_ffff),
-            nonce,
+            Nonce::new(nonce),
         )
     }
 

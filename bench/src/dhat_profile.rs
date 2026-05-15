@@ -2,8 +2,8 @@ use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature as EcdsaSig, SigningKey};
 use mantle::codec::Encode;
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence,
-    Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
+    Block, BlockHeader, BlockHeight, BlockTime, BlockVersion, CompactBits, Hash256, Locktime,
+    Nonce, OutPoint, Satoshi, Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::{compute_merkle_root_reusing, merkle_root_owned};
@@ -71,12 +71,12 @@ fn build_chain(len: u32) -> MemoryChainView {
     let mut prev = Hash256::ZERO;
     for i in 0..len {
         let h = BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             prev,
             Hash256::ZERO,
-            1_296_688_602 + i * 600,
+            BlockTime::new(1_296_688_602 + i * 600),
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         );
         prev = h.hash();
         view.push_header(h);
@@ -91,7 +91,7 @@ fn mine_block(mut block: Block) -> Block {
         .to_target()
         .expect("mine_block called with invalid nBits");
     for nonce in 0..=u32::MAX {
-        block.header.set_nonce(nonce);
+        block.header.set_nonce(Nonce::new(nonce));
         let raw = *Hash256::hash(&block.header.to_bytes()).as_bytes();
         let mut be = raw;
         be.reverse();
@@ -111,12 +111,12 @@ fn make_valid_block(txs: Vec<Transaction>) -> Block {
     let merkle_root = merkle_root_owned(txids).expect("non-empty tx list always has a merkle root");
     let block = Block {
         header: BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             merkle_root,
-            1_231_006_505,
+            BlockTime::new(1_231_006_505),
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: txs,
     };

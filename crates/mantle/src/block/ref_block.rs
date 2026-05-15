@@ -115,7 +115,7 @@ mod tests {
     use crate::amount::Satoshi;
     use crate::block::{Block, BlockHeader, BlockRef};
     use crate::codec::Encode;
-    use crate::difficulty::{CompactBits, Locktime, Sequence, TxVersion};
+    use crate::difficulty::{BlockTime, BlockVersion, CompactBits, Locktime, Nonce, Sequence, TxVersion};
     use crate::hash::Hash256;
     use crate::script::Witness;
     use crate::tx::{OutPoint, Transaction, TxHash, TxIn, TxOut};
@@ -192,12 +192,12 @@ mod tests {
         let segwit = make_segwit_tx();
         let block = Block {
             header: BlockHeader::new(
-                1,
+                BlockVersion::new(1),
                 Hash256::ZERO,
                 Hash256::ZERO,
-                1_700_000_000,
+                BlockTime::new(1_700_000_000),
                 CompactBits::new(0x1d00_ffff),
-                0,
+                Nonce::new(0),
             ),
             transactions: vec![legacy.clone(), segwit.clone()],
         };
@@ -232,12 +232,12 @@ mod tests {
         let segwit = make_segwit_tx();
         let block = Block {
             header: BlockHeader::new(
-                1,
+                BlockVersion::new(1),
                 Hash256::ZERO,
                 Hash256::ZERO,
-                0,
+                BlockTime::new(0),
                 CompactBits::new(0x1d00_ffff),
-                0,
+                Nonce::new(0),
             ),
             transactions: vec![segwit.clone()],
         };
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn block_ref_zero_transactions() {
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![],
         };
         let bytes = encode(&block);
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn block_ref_truncated_wire_fails() {
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![make_tx()],
         };
         let bytes = encode(&block);
@@ -322,7 +322,7 @@ mod tests {
             locktime: Locktime::new(0),
         };
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![make_tx(), segwit1.clone(), segwit2.clone(), make_tx()],
         };
         let bytes = encode(&block);
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn block_ref_raw_spans_full_wire() {
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![make_tx(), make_segwit_tx()],
         };
         let bytes = encode(&block);

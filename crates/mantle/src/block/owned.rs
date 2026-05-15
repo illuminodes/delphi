@@ -92,7 +92,7 @@ mod tests {
     use crate::amount::Satoshi;
     use crate::block::{Block, BlockHeader};
     use crate::codec::{Decode, Encode, Error};
-    use crate::difficulty::{CompactBits, Locktime, Sequence, TxVersion};
+    use crate::difficulty::{BlockTime, BlockVersion, CompactBits, Locktime, Nonce, Sequence, TxVersion};
     use crate::hash::Hash256;
     use crate::script::Witness;
     use crate::tx::{OutPoint, Transaction, TxIn, TxOut};
@@ -115,12 +115,12 @@ mod tests {
     fn block_roundtrip() {
         let block = Block {
             header: BlockHeader::new(
-                1,
+                BlockVersion::new(1),
                 Hash256::ZERO,
                 Hash256::ZERO,
-                1_231_006_505,
+                BlockTime::new(1_231_006_505),
                 CompactBits::new(0x1d00_ffff),
-                2_083_236_893,
+                Nonce::new(2_083_236_893),
             ),
             transactions: vec![Transaction {
                 version: TxVersion::new(1),
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn block_zero_transactions() {
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![],
         };
         let bytes = encode(&block);
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn block_truncated_after_tx_count() {
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![],
         };
         let mut bytes = encode(&block);
@@ -177,7 +177,7 @@ mod tests {
             locktime: Locktime::new(0),
         };
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![dummy_tx; 253],
         };
         let bytes = encode(&block);
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn block_with_segwit_tx_roundtrips() {
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![Transaction {
                 version: TxVersion::new(2),
                 inputs: vec![TxIn {
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn block_weight_legacy_only() {
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![Transaction {
                 version: TxVersion::new(1),
                 inputs: vec![],
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn block_weight_segwit_less_than_4x_total() {
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![Transaction {
                 version: TxVersion::new(2),
                 inputs: vec![TxIn {
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn decode_limited_rejects_too_many_txs() {
         let block = Block {
-            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0)),
             transactions: vec![
                 Transaction {
                     version: TxVersion::new(1),

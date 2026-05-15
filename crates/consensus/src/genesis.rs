@@ -25,7 +25,7 @@ mod tests {
     use crate::test_helpers::{decode_hex, hash_to_hex};
     use mantle::codec::{Decode, DecodeRef};
     use mantle::hash::Hash256;
-    use mantle::primitives::{Block, BlockHeader, TxVersion};
+    use mantle::primitives::{Block, BlockHeader, BlockVersion, Nonce, TxVersion};
     use std::io::Cursor;
 
     #[test]
@@ -34,13 +34,13 @@ mod tests {
         let (header, _) =
             BlockHeader::decode_ref(&bytes).expect("genesis block header must decode");
 
-        assert_eq!(header.version(), 1);
+        assert_eq!(header.version(), BlockVersion::new(1));
         assert_eq!(header.time(), mantle::primitives::BlockTime::new(1_231_006_505));
         assert_eq!(
             header.bits(),
             mantle::primitives::CompactBits::new(0x1d00_ffff)
         );
-        assert_eq!(header.nonce(), 2_083_236_893);
+        assert_eq!(header.nonce(), Nonce::new(2_083_236_893));
         assert_eq!(header.prev_block(), mantle::primitives::Hash256::ZERO);
     }
 

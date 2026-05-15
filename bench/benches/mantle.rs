@@ -7,8 +7,9 @@ use mantle::network::{
     Timestamp, VersionMsg, VersionMsgRef, encode_message,
 };
 use mantle::primitives::{
-    Block, BlockHeader, BlockTime, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence,
-    Transaction, TransactionRef, TxHash, TxIn, TxInRef, TxOut, TxOutRef, TxVersion, Witness,
+    Block, BlockHeader, BlockTime, BlockVersion, CompactBits, Hash256, Locktime, Nonce, OutPoint,
+    Satoshi, Sequence, Transaction, TransactionRef, TxHash, TxIn, TxInRef, TxOut, TxOutRef,
+    TxVersion, Witness,
 };
 use mantle::tx::transaction_ref_with_arena;
 use std::hint::black_box;
@@ -92,12 +93,12 @@ mod hash256 {
 
 fn make_header(i: usize) -> BlockHeader {
     BlockHeader::new(
-        1,
+        BlockVersion::new(1),
         Hash256::from_bytes([u8::try_from(i & 0xff).unwrap(); 32]),
         Hash256::ZERO,
-        u32::try_from(i).unwrap_or(0),
+        BlockTime::new(u32::try_from(i).unwrap_or(0)),
         CompactBits::new(0x1d00_ffff),
-        u32::try_from(i).unwrap_or(0),
+        Nonce::new(u32::try_from(i).unwrap_or(0)),
     )
 }
 

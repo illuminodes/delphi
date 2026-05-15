@@ -32,9 +32,10 @@ impl<
         while let Some(req) = self.req_rx.pop_block() {
             let shutdown = matches!(req, StorageReq::Shutdown);
             let resp = self.dispatch(req);
-            if self.resp_tx.push(resp).is_err() {
-                eprintln!("[w] BUG: resp ring full!");
-            }
+            assert!(
+                self.resp_tx.push(resp).is_ok(),
+                "BUG: resp ring full — storage thread would deadlock",
+            );
             if shutdown {
                 return;
             }

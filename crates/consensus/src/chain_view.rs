@@ -308,16 +308,16 @@ impl ChainView for MemoryChainView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mantle::primitives::BlockTime;
+    use mantle::primitives::{BlockTime, BlockVersion, Nonce};
 
     fn header(time: u32, prev: Hash256) -> BlockHeader {
         BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             prev,
             Hash256::ZERO,
-            time,
+            BlockTime::new(time),
             mantle::primitives::CompactBits::new(0x1d00_ffff),
-            0,
+            Nonce::new(0),
         )
     }
 

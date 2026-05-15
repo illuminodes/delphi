@@ -39,16 +39,16 @@ fn stage2_block_for_height(
         .expect("storage error")
         .expect("tip header must exist")
         .time();
-    let time = (parent_time + 600).to_u32();
+    let time = parent_time + 600;
 
     Block {
         header: BlockHeader::new(
-            version,
+            BlockVersion::new(version),
             tip.hash,
             merkle_root,
             time,
             parent_bits, // same difficulty (non-retarget height)
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![coinbase],
     }
@@ -124,12 +124,12 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
     let mtp = 1_003_600_u32; // median of heights 1..=11
     let _ = Block {
         header: BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             tip.hash,
             merkle_root,
-            mtp, // equal to MTP — must be *greater*
+            BlockTime::new(mtp), // equal to MTP — must be *greater*
             parent_bits,
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![coinbase],
     };
@@ -152,7 +152,7 @@ fn stage2_timestamp_not_greater_than_mtp_rejected() {
         let txids2 = vec![coinbase2.txid().expect("txid encoding cannot fail")];
         let mr2 = compute_merkle_root(&txids2).expect("single-tx merkle root must exist");
         Block {
-            header: BlockHeader::new(4, tip.hash, mr2, mtp, parent_bits, 0),
+            header: BlockHeader::new(BlockVersion::new(4), tip.hash, mr2, BlockTime::new(mtp), parent_bits, Nonce::new(0)),
             transactions: vec![coinbase2],
         }
     };
@@ -194,7 +194,7 @@ fn stage2_bip34_height_missing_rejected() {
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
-        header: BlockHeader::new(4, tip.hash, merkle_root, (parent_time + 600).to_u32(), parent_bits, 0),
+        header: BlockHeader::new(BlockVersion::new(4), tip.hash, merkle_root, parent_time + 600, parent_bits, Nonce::new(0)),
         transactions: vec![coinbase],
     };
     assert_eq!(
@@ -227,8 +227,8 @@ fn stage2_block_version_too_low_rejected() {
     assert_eq!(
         validate_block_context(&block, &view, false),
         Err(ValidationError::BlockVersionTooLow {
-            version: 3,
-            required: 4
+            version: BlockVersion::new(3),
+            required: BlockVersion::new(4),
         }),
     );
 }
@@ -261,7 +261,7 @@ fn stage2_valid_block_accepted() {
     let txids = vec![coinbase.txid().expect("txid encoding cannot fail")];
     let merkle_root = compute_merkle_root(&txids).expect("single-tx merkle root must exist");
     let block = Block {
-        header: BlockHeader::new(1, tip.hash, merkle_root, (parent_time + 600).to_u32(), parent_bits, 0),
+        header: BlockHeader::new(BlockVersion::new(1), tip.hash, merkle_root, parent_time + 600, parent_bits, Nonce::new(0)),
         transactions: vec![coinbase],
     };
     validate_block_context(&block, &view, false).expect("minimal valid block must pass Stage 2");

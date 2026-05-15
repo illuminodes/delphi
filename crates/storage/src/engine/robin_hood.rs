@@ -571,7 +571,7 @@ impl RobinHoodTable {
             }
 
             ring.submit_and_wait(submitted)
-                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                .map_err(uring_err)?;
 
             let mut writes: Vec<u64> = Vec::new();
             let mut write_cursor: usize = 0;
@@ -658,7 +658,7 @@ impl RobinHoodTable {
 
             if write_count > 0 {
                 ring.submit_and_wait(write_count)
-                    .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                    .map_err(uring_err)?;
                 while ring.complete().is_some() {}
             }
         }
@@ -741,7 +741,7 @@ impl RobinHoodTable {
             }
 
             ring.submit_and_wait(submitted)
-                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                .map_err(uring_err)?;
 
             let mut need_reprobe = false;
             while let Some(cqe) = ring.complete() {
@@ -837,7 +837,7 @@ impl RobinHoodTable {
             }
 
             ring.submit_and_wait(submitted)
-                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                .map_err(uring_err)?;
 
             // Collect write decisions; (slot_to_write, chain_index, is_blank).
             let mut write_ops: Vec<(u64, usize, bool)> = Vec::new();
@@ -900,7 +900,7 @@ impl RobinHoodTable {
 
             if write_count > 0 {
                 ring.submit_and_wait(write_count)
-                    .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                    .map_err(uring_err)?;
                 while ring.complete().is_some() {}
             }
 
@@ -986,7 +986,7 @@ impl RobinHoodTable {
             }
 
             ring.submit_and_wait(submitted)
-                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                .map_err(uring_err)?;
 
             // Process completions.
             let mut need_reprobe = false;
@@ -1108,7 +1108,7 @@ impl RobinHoodEngine {
             .map_err(io_err)?;
 
         let ring = ququmatz::IoUring::new(STORAGE_RING_ENTRIES)
-            .map_err(|e| EngineError::Io(io::Error::other(format!("{e:?}"))))?;
+            .map_err(|e| EngineError::Io(uring_err(e)))?;
 
         let mut engine = Self {
             data_dir: data_dir.to_owned(),
@@ -1423,13 +1423,14 @@ fn write_header_record(
 
 #[allow(clippy::cast_possible_wrap)]
 fn decode_header_record(buf: &[u8; HEADER_RECORD_SIZE]) -> BlockHeader {
+    use mantle::primitives::{BlockTime, BlockVersion, Nonce};
     BlockHeader::new(
-        buf.read_u32_le(32) as i32,
+        BlockVersion::new(buf.read_u32_le(32) as i32),
         Hash256::from_bytes(buf.read_hash(36)),
         Hash256::from_bytes(buf.read_hash(68)),
-        buf.read_u32_le(100),
+        BlockTime::new(buf.read_u32_le(100)),
         CompactBits::new(buf.read_u32_le(104)),
-        buf.read_u32_le(108),
+        Nonce::new(buf.read_u32_le(108)),
     )
 }
 
@@ -1463,7 +1464,8 @@ fn append_overflow(file: &mut File, spk: &[u8]) -> io::Result<u64> {
 fn read_overflow(file: &File, offset: u64) -> io::Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     pread_exact(file, &mut len_buf, offset)?;
-    let len = u32::from_le_bytes(len_buf) as usize;
+    let len = usize::try_from(u32::from_le_bytes(len_buf))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "overflow script length exceeds usize"))?;
     let mut buf = vec![0u8; len];
     pread_exact(file, &mut buf, offset + 4)?;
     Ok(buf)
@@ -1471,6 +1473,10 @@ fn read_overflow(file: &File, offset: u64) -> io::Result<Vec<u8>> {
 
 fn io_err(e: impl Into<io::Error>) -> EngineError {
     EngineError::Io(e.into())
+}
+
+fn uring_err(e: impl std::fmt::Debug) -> io::Error {
+    io::Error::other(format!("{e:?}"))
 }
 
 // ── pread/pwrite helpers ─────────────────────────────────────────────────────
@@ -1503,15 +1509,15 @@ fn flush_if_full(
         }
         Err(ququmatz::Error::Submit(ququmatz::SubmitError::QueueFull)) => {
             ring.submit_and_wait(*submitted)
-                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                .map_err(uring_err)?;
             while ring.complete().is_some() {}
             *submitted = 0;
             ring.push(copy)
-                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                .map_err(uring_err)?;
             *submitted += 1;
             Ok(())
         }
-        Err(e) => Err(io::Error::other(format!("{e:?}"))),
+        Err(e) => Err(uring_err(e)),
     }
 }
 
@@ -1520,6 +1526,7 @@ fn flush_if_full(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mantle::primitives::{BlockTime, BlockVersion, Nonce};
 
     struct TmpFile(PathBuf);
     impl TmpFile {
@@ -1937,12 +1944,12 @@ mod tests {
 
     fn make_header(time: u32) -> BlockHeader {
         BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             Hash256::ZERO,
-            time,
+            BlockTime::new(time),
             CompactBits::new(0x1d00_ffff),
-            0,
+            Nonce::new(0),
         )
     }
 
@@ -2035,12 +2042,12 @@ mod tests {
         let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
 
         let h = BlockHeader::new(
-            0x2000_0007_i32,
+            BlockVersion::new(0x2000_0007_i32),
             Hash256::from_bytes([0x11; 32]),
             Hash256::from_bytes([0x22; 32]),
-            12_345,
+            BlockTime::new(12_345),
             CompactBits::new(0x1d00_ffff),
-            0xdead_beef,
+            Nonce::new(0xdead_beef),
         );
         eng.write_header(BlockHeight::new(0), &h).unwrap();
         let got = eng.read_header_at(BlockHeight::new(0)).unwrap().unwrap();

@@ -6,8 +6,8 @@ use super::*;
 use crate::chain_view::{Coin, ConnectScratch, MemoryChainView};
 use crate::merkle::compute_merkle_root;
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence,
-    Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
+    Block, BlockHeader, BlockHeight, BlockTime, BlockVersion, CompactBits, Hash256, Locktime, Nonce,
+    OutPoint, Satoshi, Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ fn make_block(txs: Vec<Transaction>, bits: CompactBits) -> Block {
     let merkle_root =
         compute_merkle_root(&txids).expect("non-empty tx list always has a merkle root");
     Block {
-        header: BlockHeader::new(1, Hash256::ZERO, merkle_root, 1_231_006_505, bits, 0),
+        header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, merkle_root, BlockTime::new(1_231_006_505), bits, Nonce::new(0)),
         transactions: txs,
     }
 }
@@ -72,7 +72,7 @@ fn mine_block(mut block: Block) -> Block {
         .to_target()
         .expect("mine_block called with invalid nBits");
     for nonce in 0..=u32::MAX {
-        block.header.set_nonce(nonce);
+        block.header.set_nonce(Nonce::new(nonce));
         let header_hash = Hash256::hash(&block.header.to_bytes());
         let mut be = *header_hash.as_bytes();
         be.reverse();
@@ -89,12 +89,12 @@ fn mine_block(mut block: Block) -> Block {
 fn empty_block_rejected() {
     let block = Block {
         header: BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             Hash256::ZERO,
-            0,
+            BlockTime::new(0),
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![],
     };
@@ -265,12 +265,12 @@ fn build_view_with_chain(len: u32) -> MemoryChainView {
     let mut prev = Hash256::ZERO;
     for i in 0..len {
         let h = BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             prev,
             Hash256::ZERO,
-            1_296_688_602 + i * 600,
+            BlockTime::new(1_296_688_602 + i * 600),
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         );
         prev = h.hash();
         view.push_header(h);
@@ -288,12 +288,12 @@ fn build_view_at_height(tip_height: BlockHeight) -> MemoryChainView {
     let mut prev = Hash256::ZERO;
     for i in 0..window {
         let h = BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             prev,
             Hash256::ZERO,
-            1_296_688_602 + (start + i) * 600,
+            BlockTime::new(1_296_688_602 + (start + i) * 600),
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         );
         prev = h.hash();
         view.push_header(h);
@@ -307,13 +307,13 @@ fn unknown_parent_rejected() {
     let tx = coinbase_tx(BlockHeight::new(1), 5_000_000_000);
     let block = Block {
         header: BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             Hash256::from_bytes([0xff; 32]), // unknown
             compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
-            1_296_688_602 + 600,
+            BlockTime::new(1_296_688_602 + 600),
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![tx],
     };
@@ -334,23 +334,23 @@ fn timestamp_too_early_rejected() {
     let tx = coinbase_tx(tip.height + 1, 5_000_000_000);
     let mtp = view
         .median_time_past(&BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             tip.hash,
             Hash256::ZERO,
-            0,
+            BlockTime::new(0),
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ))
         .expect("median_time_past must succeed for a populated chain");
     let block = Block {
         header: BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             tip.hash,
             compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
-            mtp.to_u32(), // exactly MTP — must be > MTP
+            BlockTime::new(mtp.to_u32()), // exactly MTP — must be > MTP
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![tx],
     };
@@ -381,13 +381,13 @@ fn timestamp_too_far_future_rejected() {
 
     let block = Block {
         header: BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             tip.hash,
             compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
-            u32::try_from(block_time).expect("test block_time fits in u32"),
+            BlockTime::new(u32::try_from(block_time).expect("test block_time fits in u32")),
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![tx],
     };
@@ -406,13 +406,13 @@ fn bip34_missing_rejected() {
     tx.inputs[0].script_sig = vec![0x02, 0x00, 0x00].into();
     let block = Block {
         header: BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             tip.hash,
             compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
-            1_296_688_602 + BIP34_HEIGHT.to_u32() * 600 + 600,
+            BlockTime::new(1_296_688_602 + BIP34_HEIGHT.to_u32() * 600 + 600),
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         ),
         transactions: vec![tx],
     };
@@ -620,12 +620,12 @@ fn connect_setup(height: u32) -> (MemoryChainView, Block, Hash256) {
     let mut prev = Hash256::ZERO;
     for i in 0..height {
         let h = BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             prev,
             Hash256::ZERO,
-            1_231_006_505 + i * 600,
+            BlockTime::new(1_231_006_505 + i * 600),
             CompactBits::new(0x207f_ffff),
-            0,
+            Nonce::new(0),
         );
         prev = h.hash();
         view.push_header(h);

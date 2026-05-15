@@ -1,4 +1,4 @@
-use mantle::primitives::{BlockHeader, BlockHeight, BlockTime, CompactBits, Hash256};
+use mantle::primitives::{BlockHeader, BlockHeight, BlockTime, BlockVersion, CompactBits, Hash256};
 
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
@@ -70,7 +70,7 @@ impl HeaderValidationExt for BlockHeader {
         const BIP65_HEIGHT: BlockHeight = BlockHeight::new(388_381);
         const BIP66_HEIGHT: BlockHeight = BlockHeight::new(363_725);
 
-        let required: i32 = if height >= BIP65_HEIGHT {
+        let required = BlockVersion::new(if height >= BIP65_HEIGHT {
             4
         } else if height >= BIP66_HEIGHT {
             3
@@ -78,7 +78,7 @@ impl HeaderValidationExt for BlockHeader {
             2
         } else {
             1
-        };
+        });
 
         if self.version() < required {
             return Err(ValidationError::BlockVersionTooLow {

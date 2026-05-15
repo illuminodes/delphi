@@ -26,20 +26,20 @@ impl BlockHeader {
 
     #[must_use]
     pub fn new(
-        version: i32,
+        version: BlockVersion,
         prev_block: Hash256,
         merkle_root: Hash256,
-        time: u32,
+        time: BlockTime,
         bits: CompactBits,
-        nonce: u32,
+        nonce: Nonce,
     ) -> Self {
         Self {
-            version: BlockVersion::new(version),
+            version,
             prev_block,
             merkle_root,
-            time: BlockTime::new(time),
+            time,
             bits,
-            nonce: Nonce::new(nonce),
+            nonce,
         }
     }
 
@@ -99,8 +99,8 @@ impl BlockHeader {
 
     #[inline]
     #[must_use]
-    pub fn version(&self) -> i32 {
-        self.version.to_i32()
+    pub fn version(&self) -> BlockVersion {
+        self.version
     }
 
     #[inline]
@@ -129,13 +129,13 @@ impl BlockHeader {
 
     #[inline]
     #[must_use]
-    pub fn nonce(&self) -> u32 {
-        self.nonce.to_u32()
+    pub fn nonce(&self) -> Nonce {
+        self.nonce
     }
 
     #[inline]
-    pub fn set_version(&mut self, v: i32) {
-        self.version = BlockVersion::new(v);
+    pub fn set_version(&mut self, v: BlockVersion) {
+        self.version = v;
     }
 
     #[inline]
@@ -159,8 +159,8 @@ impl BlockHeader {
     }
 
     #[inline]
-    pub fn set_nonce(&mut self, n: u32) {
-        self.nonce = Nonce::new(n);
+    pub fn set_nonce(&mut self, n: Nonce) {
+        self.nonce = n;
     }
 }
 
@@ -210,7 +210,7 @@ mod tests {
     use std::io::Cursor;
 
     use crate::codec::{Decode, DecodeRef, Encode, Error};
-    use crate::difficulty::{BlockTime, CompactBits};
+    use crate::difficulty::{BlockTime, BlockVersion, CompactBits, Nonce};
     use crate::hash::Hash256;
 
     use super::BlockHeader;
@@ -236,12 +236,12 @@ mod tests {
     #[test]
     fn block_header_roundtrip() {
         let header = BlockHeader::new(
-            1,
+            BlockVersion::new(1),
             Hash256::ZERO,
             Hash256::ZERO,
-            1_231_006_505,
+            BlockTime::new(1_231_006_505),
             CompactBits::new(0x1d00_ffff),
-            2_083_236_893,
+            Nonce::new(2_083_236_893),
         );
         let bytes = encode(&header);
         assert_eq!(bytes.len(), BlockHeader::ENCODED_LEN);
@@ -251,12 +251,12 @@ mod tests {
     #[test]
     fn block_header_decode_ref() {
         let header = BlockHeader::new(
-            2,
+            BlockVersion::new(2),
             Hash256::ZERO,
             Hash256::ZERO,
-            1000,
+            BlockTime::new(1000),
             CompactBits::new(0x1d00_ffff),
-            42,
+            Nonce::new(42),
         );
         let mut bytes = encode(&header);
         bytes.push(0xff);
@@ -286,12 +286,12 @@ mod tests {
     #[test]
     fn block_header_extreme_fields() {
         let h = BlockHeader::new(
-            i32::MIN,
+            BlockVersion::new(i32::MIN),
             Hash256::from_bytes([0xff; 32]),
             Hash256::from_bytes([0xab; 32]),
-            u32::MAX,
+            BlockTime::new(u32::MAX),
             CompactBits::new(u32::MAX),
-            u32::MAX,
+            Nonce::new(u32::MAX),
         );
         let bytes = encode(&h);
         assert_eq!(bytes.len(), BlockHeader::ENCODED_LEN);
@@ -301,29 +301,29 @@ mod tests {
     #[test]
     fn field_accessors_match_constructor() {
         let h = BlockHeader::new(
-            0x0200_0000,
+            BlockVersion::new(0x0200_0000),
             Hash256::from_bytes([0xaa; 32]),
             Hash256::from_bytes([0xbb; 32]),
-            1_700_000_000,
+            BlockTime::new(1_700_000_000),
             CompactBits::new(0x1d00_ffff),
-            42,
+            Nonce::new(42),
         );
-        assert_eq!(h.version(), 0x0200_0000);
+        assert_eq!(h.version(), BlockVersion::new(0x0200_0000));
         assert_eq!(h.prev_block(), Hash256::from_bytes([0xaa; 32]));
         assert_eq!(h.merkle_root(), Hash256::from_bytes([0xbb; 32]));
         assert_eq!(h.time(), BlockTime::new(1_700_000_000));
         assert_eq!(h.bits(), CompactBits::new(0x1d00_ffff));
-        assert_eq!(h.nonce(), 42);
+        assert_eq!(h.nonce(), Nonce::new(42));
     }
 
     #[test]
     fn set_then_get_roundtrip() {
-        let mut h = BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0);
-        h.set_version(3);
-        h.set_nonce(999);
+        let mut h = BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO, BlockTime::new(0), CompactBits::new(0), Nonce::new(0));
+        h.set_version(BlockVersion::new(3));
+        h.set_nonce(Nonce::new(999));
         h.set_bits(CompactBits::new(0x1234_5678));
-        assert_eq!(h.version(), 3);
-        assert_eq!(h.nonce(), 999);
+        assert_eq!(h.version(), BlockVersion::new(3));
+        assert_eq!(h.nonce(), Nonce::new(999));
         assert_eq!(h.bits(), CompactBits::new(0x1234_5678));
     }
 

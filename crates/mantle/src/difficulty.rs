@@ -6,7 +6,7 @@ use crate::codec::{Decode, DecodeRef, Encode, Error};
 // ── BlockVersion ─────────────────────────────────────────────────────────────
 
 /// Block header version field (i32, supports BIP9 version bits).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct BlockVersion(i32);
 
 impl BlockVersion {
@@ -53,7 +53,7 @@ impl<'a> DecodeRef<'a> for BlockVersion {
 // ── Nonce ────────────────────────────────────────────────────────────────────
 
 /// Block header nonce field (u32, iterated during proof-of-work mining).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Nonce(u32);
 
 impl Nonce {

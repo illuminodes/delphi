@@ -1,7 +1,7 @@
 use mantle::codec::Encode;
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence,
-    Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
+    Block, BlockHeader, BlockHeight, BlockTime, BlockVersion, CompactBits, Hash256, Locktime,
+    Nonce, OutPoint, Satoshi, Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 use mantle_consensus::chain_view::{ChainView, Coin, MemoryChainView};
 use mantle_consensus::merkle::{compute_merkle_root, compute_merkle_root_reusing};
@@ -62,7 +62,7 @@ fn mine_block(mut block: Block) -> Block {
         .to_target()
         .expect("EASY_BITS must produce a valid target");
     for nonce in 0..=u32::MAX {
-        block.header.set_nonce(nonce);
+        block.header.set_nonce(Nonce::new(nonce));
         let raw = *Hash256::hash(&block.header.to_bytes()).as_bytes();
         let mut be = raw;
         be.reverse();
@@ -81,7 +81,7 @@ fn make_valid_block(txs: Vec<Transaction>) -> Block {
     let merkle_root =
         compute_merkle_root(&txids).expect("non-empty tx list must have a merkle root");
     let block = Block {
-        header: BlockHeader::new(1, Hash256::ZERO, merkle_root, 1_231_006_505, EASY_BITS, 0),
+        header: BlockHeader::new(BlockVersion::new(1), Hash256::ZERO, merkle_root, BlockTime::new(1_231_006_505), EASY_BITS, Nonce::new(0)),
         transactions: txs,
     };
     mine_block(block)
@@ -92,12 +92,12 @@ fn build_chain(len: u32) -> MemoryChainView {
     let mut prev = Hash256::ZERO;
     for i in 0..len {
         let h = BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             prev,
             Hash256::ZERO,
-            1_296_688_602 + i * 600,
+            BlockTime::new(1_296_688_602 + i * 600),
             EASY_BITS,
-            0,
+            Nonce::new(0),
         );
         prev = h.hash();
         view.push_header(h);
@@ -273,7 +273,7 @@ mod stage1_wire {
 // ── validate_block_context (Stage 2) ────────────────────────────────────────
 
 mod stage2_context {
-    use super::{build_chain, ChainView, Transaction, TxVersion, TxIn, OutPoint, Hash256, Sequence, Witness, TxOut, Satoshi, Locktime, compute_merkle_root, TxHash, BlockHeader, EASY_BITS, Block, FixedClock, validate_block_context_with_clock, black_box};
+    use super::{build_chain, ChainView, Transaction, TxVersion, TxIn, OutPoint, Hash256, Sequence, Witness, TxOut, Satoshi, Locktime, compute_merkle_root, TxHash, BlockHeader, BlockVersion, BlockTime, Nonce, EASY_BITS, Block, FixedClock, validate_block_context_with_clock, black_box};
 
     #[divan::bench]
     fn chain_12(bencher: divan::Bencher) {
@@ -307,16 +307,16 @@ mod stage2_context {
             .expect("single-tx merkle root must exist");
         let mtp = view
             .median_time_past(&BlockHeader::new(
-                4,
+                BlockVersion::new(4),
                 tip.hash,
                 Hash256::ZERO,
-                0,
+                BlockTime::new(0),
                 EASY_BITS,
-                0,
+                Nonce::new(0),
             ))
             .expect("median_time_past must succeed on valid chain");
         let block = Block {
-            header: BlockHeader::new(4, tip.hash, merkle_root, (mtp + 1).to_u32(), EASY_BITS, 0),
+            header: BlockHeader::new(BlockVersion::new(4), tip.hash, merkle_root, BlockTime::new((mtp + 1).to_u32()), EASY_BITS, Nonce::new(0)),
             transactions: vec![tx],
         };
         let clock = FixedClock(clock_now + 3600);
@@ -330,7 +330,7 @@ mod stage2_context {
 // ── MemoryChainView lookups ─────────────────────────────────────────────────
 
 mod chain_view {
-    use super::{build_chain, ChainView, black_box, BlockHeight, MemoryChainView, OutPoint, Hash256, Coin, Satoshi, BlockHeader, EASY_BITS};
+    use super::{build_chain, ChainView, black_box, BlockHeight, BlockVersion, BlockTime, Nonce, MemoryChainView, OutPoint, Hash256, Coin, Satoshi, BlockHeader, EASY_BITS};
 
     #[divan::bench]
     fn get_header_by_hash(bencher: divan::Bencher) {
@@ -424,7 +424,7 @@ mod chain_view {
     fn median_time_past(bencher: divan::Bencher) {
         let view = build_chain(12);
         let tip = view.tip();
-        let next_header = BlockHeader::new(4, tip.hash, Hash256::ZERO, 0, EASY_BITS, 0);
+        let next_header = BlockHeader::new(BlockVersion::new(4), tip.hash, Hash256::ZERO, BlockTime::new(0), EASY_BITS, Nonce::new(0));
         bencher.bench(|| {
             view.median_time_past(black_box(&next_header))
                 .expect("median_time_past must succeed on valid chain")

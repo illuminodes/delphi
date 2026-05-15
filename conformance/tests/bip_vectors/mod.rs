@@ -4,8 +4,8 @@
 /// data. No runtime file I/O; everything compiles into the test binary.
 use mantle::codec::{Decode, Encode};
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, Hash256, Locktime, OutPoint, Sequence, Transaction, TxHash,
-    TxIn, TxOut, TxVersion, Witness,
+    Block, BlockHeader, BlockHeight, BlockTime, BlockVersion, Hash256, Locktime, Nonce, OutPoint,
+    Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 use std::io::Cursor;
 
@@ -77,12 +77,12 @@ fn minimal_block(coinbase_script_sig: Vec<u8>, transactions: Vec<Transaction>) -
 
     Block {
         header: BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             Hash256::ZERO,
             merkle_root,
-            1_231_006_505,
+            BlockTime::new(1_231_006_505),
             mantle::primitives::CompactBits::new(0x207f_ffff), // regtest easiest target
-            0,
+            Nonce::new(0),
         ),
         transactions: txs,
     }
@@ -94,7 +94,7 @@ fn build_chain(n: u32, bits: mantle::primitives::CompactBits, base_time: u32) ->
     let mut view = MemoryChainView::new();
     let mut prev = Hash256::ZERO;
     for i in 0..n {
-        let h = BlockHeader::new(4, prev, Hash256::ZERO, base_time + i * 600, bits, 0);
+        let h = BlockHeader::new(BlockVersion::new(4), prev, Hash256::ZERO, BlockTime::new(base_time + i * 600), bits, Nonce::new(0));
         prev = h.hash();
         view.push_header(h);
     }
@@ -114,12 +114,12 @@ fn build_chain_at(
     let mut prev = Hash256::ZERO;
     for i in 0..window {
         let h = BlockHeader::new(
-            4,
+            BlockVersion::new(4),
             prev,
             Hash256::ZERO,
-            base_time + (start + i) * 600,
+            BlockTime::new(base_time + (start + i) * 600),
             bits,
-            0,
+            Nonce::new(0),
         );
         prev = h.hash();
         view.push_header(h);

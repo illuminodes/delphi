@@ -6,8 +6,8 @@ use proptest::prelude::*;
 
 use mantle::codec::{Decode, Encode, VarInt};
 use mantle::primitives::{
-    Block, BlockHeader, CompactBits, Hash256, Locktime, OutPoint, Sequence, Transaction, TxIn,
-    TxOut, TxVersion, Witness,
+    Block, BlockHeader, BlockTime, BlockVersion, CompactBits, Hash256, Locktime, Nonce, OutPoint,
+    Sequence, Transaction, TxIn, TxOut, TxVersion, Witness,
 };
 use std::io::Cursor;
 
@@ -40,12 +40,12 @@ fn arb_block_header() -> impl Strategy<Value = BlockHeader> {
     )
         .prop_map(|(version, prev_block, merkle_root, time, bits, nonce)| {
             BlockHeader::new(
-                version,
+                BlockVersion::new(version),
                 prev_block,
                 merkle_root,
-                time,
+                BlockTime::new(time),
                 CompactBits::new(bits),
-                nonce,
+                Nonce::new(nonce),
             )
         })
 }
