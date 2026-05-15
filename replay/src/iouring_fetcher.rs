@@ -17,10 +17,8 @@ use mantle::network::{
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
 use mantle_block_io::FileIoHandle;
 use mantle_transport::{
-    OP_CLOSE, OP_CONNECT, OP_LINK_TIMEOUT, OP_RECV, OP_SEND, OP_TICK, Peer, PeerPool, PeerState,
-    SendArena, close_peer, consume_handshake_frames, decode_send_seq, decode_user_data,
-    encode_version, ingest_recv_cqe, make_ring, push_connect, push_recv_multishot, push_send,
-    push_tick,
+    CqeData, IoUringExt, Op, Peer, PeerPool, PeerState, SendArena, consume_handshake_frames,
+    encode_version, make_ring,
 };
 use ququmatz::IoUring;
 use ququmatz::types::{AddressFamily, SockAddrIn, SocketFlags, SocketType, Timespec};
@@ -248,8 +246,7 @@ impl Fetcher {
             app: FetcherExt::new(),
         };
 
-        push_connect(
-            &mut self.ring,
+        self.ring.push_connect(
             slot,
             peer.generation,
             fd,
@@ -377,8 +374,7 @@ impl Fetcher {
                 && peer.state != PeerState::Connecting
                 && peer.fd.is_some()
             {
-                push_recv_multishot(
-                    &mut self.ring,
+                self.ring.push_recv_multishot(
                     slot,
                     peer.generation,
                     peer.fd.ok_or(FetchError::NoPeers)?,
@@ -395,7 +391,7 @@ impl Fetcher {
         let mut last_status = Instant::now();
 
         loop {
-            push_tick(&mut self.ring, Duration::from_secs(1))?;
+            self.ring.push_tick(Duration::from_secs(1))?;
             self.ring.submit_and_wait(1).map_err(uring_err)?;
 
             let mut drained = 0usize;
@@ -404,25 +400,25 @@ impl Fetcher {
                     break;
                 };
                 drained += 1;
-                let (slot, op, g) = decode_user_data(cqe.user_data);
-                if op == OP_TICK {
+                let cqd = CqeData::decode(cqe.user_data);
+                if cqd.op == Op::Tick {
                     continue;
                 }
-                if op == OP_SEND {
-                    let send_seq = decode_send_seq(cqe.user_data);
+                if cqd.op == Op::Send {
+                    let send_seq = CqeData::decode_send_seq(cqe.user_data);
                     self.send_arena.release(send_seq);
-                    if let Some(p) = self.peers.get_mut(slot) {
+                    if let Some(p) = self.peers.get_mut(cqd.slot) {
                         p.pending_send_seqs.retain(|s| *s != send_seq);
                     }
                 }
-                if op == OP_LINK_TIMEOUT || op == OP_CLOSE {
+                if cqd.op == Op::LinkTimeout || cqd.op == Op::Close {
                     continue;
                 }
                 let res = cqe.result;
-                let Some(peer) = self.peers.get_mut(slot) else {
+                let Some(peer) = self.peers.get_mut(cqd.slot) else {
                     continue;
                 };
-                if peer.generation != g {
+                if peer.generation != cqd.generation {
                     continue;
                 }
                 handle_connect_or_recv(
@@ -430,9 +426,9 @@ impl Fetcher {
                     &mut self.pbr,
                     &mut self.send_arena,
                     self.network,
-                    slot,
+                    cqd.slot,
                     peer,
-                    op,
+                    cqd.op,
                     res,
                     cqe.flags,
                     &version_payload,
@@ -496,7 +492,7 @@ impl Fetcher {
                     .filter(|p| {
                         matches!(
                             p.state,
-                            PeerState::HandshakeSendVersion | PeerState::HandshakeRecving
+                            PeerState::HandshakeVersionSent | PeerState::HandshakeRecving
                         )
                     })
                     .count();
@@ -527,16 +523,16 @@ impl Fetcher {
                     && now.duration_since(peer.connected_at)
                         > Duration::from_secs(CONNECT_TIMEOUT_SECS + 2)
                 {
-                    close_peer(&mut self.ring, &mut self.send_arena, peer);
+                    peer.close(&mut self.ring, &mut self.send_arena);
                     peer.state = PeerState::Dead;
                 }
                 if matches!(
                     peer.state,
-                    PeerState::HandshakeSendVersion | PeerState::HandshakeRecving
+                    PeerState::HandshakeVersionSent | PeerState::HandshakeRecving
                 ) && now.duration_since(peer.connected_at)
                     > Duration::from_secs(HANDSHAKE_TIMEOUT_SECS)
                 {
-                    close_peer(&mut self.ring, &mut self.send_arena, peer);
+                    peer.close(&mut self.ring, &mut self.send_arena);
                     peer.state = PeerState::Dead;
                 }
             }
@@ -547,7 +543,7 @@ impl Fetcher {
             {
                 eprintln!("  iouring-fetcher: elected peer {slot} headers-timeout, demoting");
                 if let Some(peer) = self.peers.get_mut(slot) {
-                    close_peer(&mut self.ring, &mut self.send_arena, peer);
+                    peer.close(&mut self.ring, &mut self.send_arena);
                     peer.state = PeerState::Dead;
                     peer.app.waiting_headers = false;
                 }
@@ -577,8 +573,7 @@ impl Fetcher {
                     .iter_mut()
                     .find(|(_, p)| p.state == PeerState::Ready && !p.app.waiting_headers)
             {
-                let seq = push_send(
-                    &mut self.ring,
+                let seq = self.ring.push_send(
                     &mut self.send_arena,
                     self.network,
                     Command::GetHeaders,
@@ -599,8 +594,7 @@ impl Fetcher {
                     && peer.state != PeerState::Connecting
                     && peer.fd.is_some()
                 {
-                    push_recv_multishot(
-                        &mut self.ring,
+                    self.ring.push_recv_multishot(
                         slot,
                         peer.generation,
                         peer.fd.ok_or(FetchError::NoPeers)?,
@@ -646,7 +640,7 @@ impl Fetcher {
         let version_payload = encode_version("/mantle-replay-iouring:0.1.0/");
 
         loop {
-            push_tick(&mut self.ring, Duration::from_secs(1))?;
+            self.ring.push_tick(Duration::from_secs(1))?;
             self.ring.submit_and_wait(1).map_err(uring_err)?;
 
             let mut got_block_hashes: Vec<Hash256> = Vec::new();
@@ -656,20 +650,20 @@ impl Fetcher {
                     break;
                 };
                 drained += 1;
-                let (slot, op, g) = decode_user_data(cqe.user_data);
-                if op == OP_TICK {
+                let cqd = CqeData::decode(cqe.user_data);
+                if cqd.op == Op::Tick {
                     continue;
                 }
-                if op == OP_SEND {
-                    self.send_arena.release(decode_send_seq(cqe.user_data));
+                if cqd.op == Op::Send {
+                    self.send_arena.release(CqeData::decode_send_seq(cqe.user_data));
                 }
-                if op == OP_LINK_TIMEOUT || op == OP_CLOSE {
+                if cqd.op == Op::LinkTimeout || cqd.op == Op::Close {
                     continue;
                 }
-                let Some(peer) = self.peers.get_mut(slot) else {
+                let Some(peer) = self.peers.get_mut(cqd.slot) else {
                     continue;
                 };
-                if peer.generation != g {
+                if peer.generation != cqd.generation {
                     continue;
                 }
                 handle_connect_or_recv(
@@ -677,9 +671,9 @@ impl Fetcher {
                     &mut self.pbr,
                     &mut self.send_arena,
                     self.network,
-                    slot,
+                    cqd.slot,
                     peer,
-                    op,
+                    cqd.op,
                     cqe.result,
                     cqe.flags,
                     &version_payload,
@@ -780,7 +774,7 @@ impl Fetcher {
                     && now.duration_since(peer.connected_at)
                         > Duration::from_secs(CONNECT_TIMEOUT_SECS + 2)
                 {
-                    close_peer(&mut self.ring, &mut self.send_arena, peer);
+                    peer.close(&mut self.ring, &mut self.send_arena);
                     peer.state = PeerState::Dead;
                     continue;
                 }
@@ -795,7 +789,7 @@ impl Fetcher {
                          (assigned={} delivered=0 grace={}s) — evicting",
                         peer.addr, peer.app.assigned_count, BLACK_HOLE_GRACE_SECS,
                     );
-                    close_peer(&mut self.ring, &mut self.send_arena, peer);
+                    peer.close(&mut self.ring, &mut self.send_arena);
                     peer.state = PeerState::Dead;
                 }
             }
@@ -839,8 +833,7 @@ impl Fetcher {
                 });
                 if let Some((slot, peer)) = pick {
                     let pl = encode_getdata(&[hash]);
-                    let seq = push_send(
-                        &mut self.ring,
+                    let seq = self.ring.push_send(
                         &mut self.send_arena,
                         self.network,
                         Command::GetData,
@@ -869,8 +862,7 @@ impl Fetcher {
                         break;
                     };
                     let pl = encode_getdata(&[hash]);
-                    let seq = push_send(
-                        &mut self.ring,
+                    let seq = self.ring.push_send(
                         &mut self.send_arena,
                         self.network,
                         Command::GetData,
@@ -900,8 +892,7 @@ impl Fetcher {
                     && peer.state != PeerState::Connecting
                     && peer.fd.is_some()
                 {
-                    push_recv_multishot(
-                        &mut self.ring,
+                    self.ring.push_recv_multishot(
                         slot,
                         peer.generation,
                         peer.fd.ok_or(FetchError::NoPeers)?,
@@ -955,28 +946,26 @@ fn handle_connect_or_recv(
     network: Network,
     slot: u16,
     peer: &mut FPeer,
-    op: u8,
+    op: Op,
     res: i32,
     cqe_flags: ququmatz::types::CqeFlags,
     version_payload: &[u8],
 ) -> Result<(), FetchError> {
     match op {
-        OP_CONNECT => {
+        Op::Connect => {
             if res < 0 {
                 peer.state = PeerState::Dead;
-                close_peer(ring, send_arena, peer);
+                peer.close(ring, send_arena);
                 return Ok(());
             }
-            push_recv_multishot(
-                ring,
+            ring.push_recv_multishot(
                 slot,
                 peer.generation,
                 peer.fd.ok_or(FetchError::NoPeers)?,
                 PROVIDED_BUF_GROUP_ID,
             )?;
             peer.recv_armed = true;
-            let seq = push_send(
-                ring,
+            let seq = ring.push_send(
                 send_arena,
                 network,
                 Command::Version,
@@ -986,16 +975,16 @@ fn handle_connect_or_recv(
                 peer.fd.ok_or(FetchError::NoPeers)?,
             )?;
             peer.pending_send_seqs.push(seq);
-            peer.state = PeerState::HandshakeSendVersion;
+            peer.state = PeerState::HandshakeVersionSent;
             Ok(())
         }
-        OP_SEND if res < 0 => {
+        Op::Send if res < 0 => {
             peer.state = PeerState::Dead;
-            close_peer(ring, send_arena, peer);
+            peer.close(ring, send_arena);
             Ok(())
         }
-        OP_RECV => {
-            ingest_recv_cqe(pbr, send_arena, peer, cqe_flags, res, ring);
+        Op::Recv => {
+            peer.ingest_recv_cqe(pbr, send_arena, cqe_flags, res, ring);
             Ok(())
         }
         _ => Ok(()),
@@ -1027,15 +1016,14 @@ fn consume_block_frames(
         let payload_slice = &peer.recv_buf[MessageHeader::ENCODED_LEN..total];
         if Hash256::checksum(payload_slice) != header.checksum() {
             peer.state = PeerState::Dead;
-            close_peer(ring, send_arena, peer);
+            peer.close(ring, send_arena);
             return Ok(());
         }
         let command = header.command();
         let cmd = command.as_str();
         match (peer.state, cmd) {
-            (PeerState::HandshakeSendVersion | PeerState::HandshakeRecving, "version") => {
-                let seq = push_send(
-                    ring,
+            (PeerState::HandshakeVersionSent | PeerState::HandshakeRecving, "version") => {
+                let seq = ring.push_send(
                     send_arena,
                     network,
                     Command::Verack,
@@ -1047,7 +1035,7 @@ fn consume_block_frames(
                 peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::HandshakeRecving;
             }
-            (PeerState::HandshakeRecving | PeerState::HandshakeSendVersion, "verack") => {
+            (PeerState::HandshakeRecving | PeerState::HandshakeVersionSent, "verack") => {
                 peer.state = PeerState::Ready;
             }
             (PeerState::Ready, "block") => {
@@ -1067,17 +1055,16 @@ fn consume_block_frames(
             }
             (_, "ping") => {
                 if peer.pending_send_seqs.len()
-                    >= mantle_transport::PEER_SEND_OUTSTANDING_CAP as usize
+                    >= mantle_transport::PEER_SEND_OUTSTANDING_CAP
                 {
                     peer.state = PeerState::Dead;
-                    close_peer(ring, send_arena, peer);
+                    peer.close(ring, send_arena);
                     return Ok(());
                 }
                 let mut nonce = [0u8; 8];
                 let copy_len = payload_slice.len().min(8);
                 nonce[..copy_len].copy_from_slice(&payload_slice[..copy_len]);
-                let seq = push_send(
-                    ring,
+                let seq = ring.push_send(
                     send_arena,
                     network,
                     Command::Pong,

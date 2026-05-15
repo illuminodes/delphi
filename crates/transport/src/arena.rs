@@ -85,3 +85,64 @@ impl Default for SendArena {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alloc_and_release() {
+        let mut arena = SendArena::new();
+        assert_eq!(arena.free_count(), SendArena::slot_count() as usize);
+
+        let seq = arena
+            .frame_into(Magic::Mainnet, Command::Verack, &[])
+            .expect("should allocate");
+        assert_eq!(arena.free_count(), SendArena::slot_count() as usize - 1);
+        assert!(!arena.slice(seq).is_empty());
+
+        arena.release(seq);
+        assert_eq!(arena.free_count(), SendArena::slot_count() as usize);
+    }
+
+    #[test]
+    fn double_release_is_noop() {
+        let mut arena = SendArena::new();
+        let seq = arena
+            .frame_into(Magic::Mainnet, Command::Verack, &[])
+            .expect("should allocate");
+        arena.release(seq);
+        let before = arena.free_count();
+        arena.release(seq);
+        assert_eq!(arena.free_count(), before);
+    }
+
+    #[test]
+    fn exhaust_slots() {
+        let mut arena = SendArena::new();
+        let mut seqs = Vec::new();
+        for _ in 0..SendArena::slot_count() {
+            let seq = arena
+                .frame_into(Magic::Mainnet, Command::Verack, &[])
+                .expect("should allocate");
+            seqs.push(seq);
+        }
+        assert_eq!(arena.free_count(), 0);
+        assert!(arena
+            .frame_into(Magic::Mainnet, Command::Verack, &[])
+            .is_none());
+
+        arena.release(seqs[0]);
+        assert_eq!(arena.free_count(), 1);
+        assert!(arena
+            .frame_into(Magic::Mainnet, Command::Verack, &[])
+            .is_some());
+    }
+
+    #[test]
+    fn release_out_of_bounds_is_noop() {
+        let mut arena = SendArena::new();
+        arena.release(u16::MAX);
+        assert_eq!(arena.free_count(), SendArena::slot_count() as usize);
+    }
+}

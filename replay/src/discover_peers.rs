@@ -21,10 +21,8 @@ use std::time::{Duration, Instant};
 
 use mantle::network::{AddrMsg, AddrV2Addr, AddrV2Msg, Command, CommandName, Network};
 use mantle_transport::{
-    OP_CLOSE, OP_CONNECT, OP_LINK_TIMEOUT, OP_RECV, OP_SEND, OP_TICK, Peer, PeerPool, PeerState,
-    SendArena, close_peer, consume_handshake_frames, decode_send_seq, decode_user_data,
-    encode_version, ingest_recv_cqe, make_ring, push_connect, push_recv_multishot, push_send,
-    push_tick,
+    CqeData, IoUringExt, Op, Peer, PeerPool, PeerState, SendArena, consume_handshake_frames,
+    encode_version, make_ring,
 };
 use ququmatz::types::{AddressFamily, SockAddrIn, SocketFlags, SocketType, Timespec};
 
@@ -202,7 +200,7 @@ fn run(args: &Args) -> Result<(), String> {
             break;
         }
 
-        push_tick(&mut ring, Duration::from_secs(1)).map_err(|e| format!("push_tick: {e}"))?;
+        ring.push_tick(Duration::from_secs(1)).map_err(|e| format!("push_tick: {e}"))?;
         ring.submit_and_wait(1)
             .map_err(|e| format!("submit_and_wait: {e:?}"))?;
 
@@ -210,66 +208,64 @@ fn run(args: &Args) -> Result<(), String> {
         while drained < 1024 {
             let Some(cqe) = ring.complete() else { break };
             drained += 1;
-            let (slot, op, g) = decode_user_data(cqe.user_data);
+            let cqd = CqeData::decode(cqe.user_data);
 
-            if op == OP_TICK {
+            if cqd.op == Op::Tick {
                 continue;
             }
-            if op == OP_SEND {
-                let send_seq = decode_send_seq(cqe.user_data);
+            if cqd.op == Op::Send {
+                let send_seq = CqeData::decode_send_seq(cqe.user_data);
                 send_arena.release(send_seq);
-                if let Some(p) = peers.get_mut(slot) {
+                if let Some(p) = peers.get_mut(cqd.slot) {
                     p.pending_send_seqs.retain(|s| *s != send_seq);
                 }
             }
-            if op == OP_LINK_TIMEOUT || op == OP_CLOSE {
+            if cqd.op == Op::LinkTimeout || cqd.op == Op::Close {
                 continue;
             }
 
             let res = cqe.result;
-            let Some(peer) = peers.get_mut(slot) else {
+            let Some(peer) = peers.get_mut(cqd.slot) else {
                 continue;
             };
-            if peer.generation != g {
+            if peer.generation != cqd.generation {
                 continue;
             }
 
-            match op {
-                OP_CONNECT => {
+            match cqd.op {
+                Op::Connect => {
                     if res < 0 {
                         peer.state = PeerState::Dead;
-                        close_peer(&mut ring, &mut send_arena, peer);
+                        peer.close(&mut ring, &mut send_arena);
                     } else {
-                        push_recv_multishot(
-                            &mut ring,
-                            slot,
+                        ring.push_recv_multishot(
+                            cqd.slot,
                             peer.generation,
                             peer.fd.ok_or("no fd on connect")?,
                             PROVIDED_BUF_GROUP_ID,
                         )
                         .map_err(|e| format!("push_recv: {e}"))?;
                         peer.recv_armed = true;
-                        let seq = push_send(
-                            &mut ring,
+                        let seq = ring.push_send(
                             &mut send_arena,
                             args.network,
                             Command::Version,
                             &version_payload,
-                            slot,
+                            cqd.slot,
                             peer.generation,
                             peer.fd.ok_or("no fd on connect")?,
                         )
                         .map_err(|e| format!("push_send version: {e}"))?;
                         peer.pending_send_seqs.push(seq);
-                        peer.state = PeerState::HandshakeSendVersion;
+                        peer.state = PeerState::HandshakeVersionSent;
                     }
                 }
-                OP_RECV => {
-                    ingest_recv_cqe(&mut pbr, &mut send_arena, peer, cqe.flags, res, &mut ring);
+                Op::Recv => {
+                    peer.ingest_recv_cqe(&mut pbr, &mut send_arena, cqe.flags, res, &mut ring);
                 }
-                OP_SEND if res < 0 => {
+                Op::Send if res < 0 => {
                     peer.state = PeerState::Dead;
-                    close_peer(&mut ring, &mut send_arena, peer);
+                    peer.close(&mut ring, &mut send_arena);
                 }
                 _ => {}
             }
@@ -300,8 +296,7 @@ fn run(args: &Args) -> Result<(), String> {
             if peer.state == PeerState::Ready && !state.asked[slot as usize] {
                 state.asked[slot as usize] = true;
                 if let Some(fd) = peer.fd {
-                    if let Ok(seq) = push_send(
-                        &mut ring,
+                    if let Ok(seq) = ring.push_send(
                         &mut send_arena,
                         args.network,
                         Command::SendAddrV2,
@@ -312,8 +307,7 @@ fn run(args: &Args) -> Result<(), String> {
                     ) {
                         peer.pending_send_seqs.push(seq);
                     }
-                    if let Ok(seq) = push_send(
-                        &mut ring,
+                    if let Ok(seq) = ring.push_send(
                         &mut send_arena,
                         args.network,
                         Command::GetAddr,
@@ -332,8 +326,7 @@ fn run(args: &Args) -> Result<(), String> {
                 && peer.state != PeerState::Connecting
                 && let Some(fd) = peer.fd
             {
-                let _ = push_recv_multishot(
-                    &mut ring,
+                let _ = ring.push_recv_multishot(
                     slot,
                     peer.generation,
                     fd,
@@ -352,16 +345,16 @@ fn run(args: &Args) -> Result<(), String> {
                 && now2.duration_since(peer.connected_at)
                     > Duration::from_secs(CONNECT_TIMEOUT_SECS + 2)
             {
-                close_peer(&mut ring, &mut send_arena, peer);
+                peer.close(&mut ring, &mut send_arena);
                 peer.state = PeerState::Dead;
             }
             if matches!(
                 peer.state,
-                PeerState::HandshakeSendVersion | PeerState::HandshakeRecving
+                PeerState::HandshakeVersionSent | PeerState::HandshakeRecving
             ) && now2.duration_since(peer.connected_at)
                 > Duration::from_secs(HANDSHAKE_TIMEOUT_SECS)
             {
-                close_peer(&mut ring, &mut send_arena, peer);
+                peer.close(&mut ring, &mut send_arena);
                 peer.state = PeerState::Dead;
             }
             let _ = slot;
@@ -488,7 +481,7 @@ fn dial_next(
         app: (),
     };
 
-    push_connect(ring, slot, peer.generation, fd, &peer.sockaddr, timeout)
+    ring.push_connect(slot, peer.generation, fd, &peer.sockaddr, timeout)
         .map_err(|e| format!("push_connect: {e}"))?;
 
     Ok(Some(peer))

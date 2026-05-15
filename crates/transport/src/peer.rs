@@ -6,13 +6,13 @@ use ququmatz::types::{RawFd, SockAddrIn};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerState {
     Connecting,
-    HandshakeSendVersion,
+    HandshakeVersionSent,
     HandshakeRecving,
     Ready,
     Dead,
 }
 
-pub const PEER_SEND_OUTSTANDING_CAP: u32 = 8;
+pub const PEER_SEND_OUTSTANDING_CAP: usize = 8;
 
 #[derive(Debug)]
 pub struct Peer<T> {
@@ -29,7 +29,7 @@ pub struct Peer<T> {
 }
 
 pub struct PeerPool<T, const MAX: usize> {
-    pub slots: [Option<Peer<T>>; MAX],
+    slots: [Option<Peer<T>>; MAX],
 }
 
 impl<T, const MAX: usize> PeerPool<T, MAX> {

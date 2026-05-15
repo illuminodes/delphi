@@ -12,7 +12,9 @@ use ququmatz::IoUring;
 
 use crate::arena::SendArena;
 use crate::peer::{PEER_SEND_OUTSTANDING_CAP, Peer, PeerState};
-use crate::ring::{close_peer, push_send};
+use crate::ring::IoUringExt;
+
+const MAX_PAYLOAD_LEN: u32 = 32 * 1024 * 1024;
 
 #[must_use]
 pub fn our_version(user_agent: &str) -> VersionMsg {
@@ -55,6 +57,11 @@ pub fn consume_handshake_frames<T>(
         )) else {
             break;
         };
+        if header.length() > MAX_PAYLOAD_LEN {
+            peer.state = PeerState::Dead;
+            peer.close(ring, send_arena);
+            return Ok(());
+        }
         let total = MessageHeader::ENCODED_LEN + header.length() as usize;
         if peer.recv_buf.len() < total {
             break;
@@ -62,7 +69,7 @@ pub fn consume_handshake_frames<T>(
         let payload_slice = &peer.recv_buf[MessageHeader::ENCODED_LEN..total];
         if Hash256::checksum(payload_slice) != header.checksum() {
             peer.state = PeerState::Dead;
-            close_peer(ring, send_arena, peer);
+            peer.close(ring, send_arena);
             return Ok(());
         }
         let command = header.command();
@@ -71,20 +78,19 @@ pub fn consume_handshake_frames<T>(
         let needs_send = matches!(
             (peer.state, cmd),
             (
-                PeerState::HandshakeSendVersion | PeerState::HandshakeRecving,
+                PeerState::HandshakeVersionSent | PeerState::HandshakeRecving,
                 "version"
             ) | (PeerState::Ready, "ping")
         );
-        if needs_send && peer.pending_send_seqs.len() >= PEER_SEND_OUTSTANDING_CAP as usize {
+        if needs_send && peer.pending_send_seqs.len() >= PEER_SEND_OUTSTANDING_CAP {
             peer.state = PeerState::Dead;
-            close_peer(ring, send_arena, peer);
+            peer.close(ring, send_arena);
             return Ok(());
         }
 
         match (peer.state, cmd) {
-            (PeerState::HandshakeSendVersion | PeerState::HandshakeRecving, "version") => {
-                let seq = push_send(
-                    ring,
+            (PeerState::HandshakeVersionSent | PeerState::HandshakeRecving, "version") => {
+                let seq = ring.push_send(
                     send_arena,
                     network,
                     Command::Verack,
@@ -96,15 +102,14 @@ pub fn consume_handshake_frames<T>(
                 peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::HandshakeRecving;
             }
-            (PeerState::HandshakeRecving | PeerState::HandshakeSendVersion, "verack") => {
+            (PeerState::HandshakeRecving | PeerState::HandshakeVersionSent, "verack") => {
                 peer.state = PeerState::Ready;
             }
             (PeerState::Ready, "ping") => {
                 let mut nonce = [0u8; 8];
                 let copy_len = payload_slice.len().min(8);
                 nonce[..copy_len].copy_from_slice(&payload_slice[..copy_len]);
-                let seq = push_send(
-                    ring,
+                let seq = ring.push_send(
                     send_arena,
                     network,
                     Command::Pong,
