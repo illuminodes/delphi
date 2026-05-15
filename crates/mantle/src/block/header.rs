@@ -44,25 +44,44 @@ impl BlockHeader {
     }
 
     /// The raw 80-byte wire representation.
-    #[inline]
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::ENCODED_LEN] {
-        // SAFETY: #[repr(C)] guarantees layout matches wire format.
-        // All fields are little-endian primitives or [u8] arrays.
-        unsafe { std::ptr::read(std::ptr::from_ref(self).cast()) }
+        let mut buf = [0u8; Self::ENCODED_LEN];
+        buf[0..4].copy_from_slice(&self.version.to_le_bytes());
+        buf[4..36].copy_from_slice(self.prev_block.as_bytes());
+        buf[36..68].copy_from_slice(self.merkle_root.as_bytes());
+        buf[68..72].copy_from_slice(&self.time.to_le_bytes());
+        buf[72..76].copy_from_slice(&self.bits.to_le_bytes());
+        buf[76..80].copy_from_slice(&self.nonce.to_le_bytes());
+        buf
     }
 
     /// The raw 80-byte wire representation as a slice.
     #[inline]
     #[must_use]
-    pub fn as_bytes(&self) -> &[u8; Self::ENCODED_LEN] {
-        unsafe { &*std::ptr::from_ref(self).cast() }
+    pub fn as_bytes(&self) -> [u8; Self::ENCODED_LEN] {
+        self.to_bytes()
     }
 
     /// Construct from raw 80-byte wire representation.
     #[must_use]
     pub fn from_bytes(b: [u8; Self::ENCODED_LEN]) -> Self {
-        unsafe { std::ptr::read(b.as_ptr().cast()) }
+        Self {
+            version: BlockVersion::new(i32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+            prev_block: Hash256::from_bytes({
+                let mut h = [0u8; 32];
+                h.copy_from_slice(&b[4..36]);
+                h
+            }),
+            merkle_root: Hash256::from_bytes({
+                let mut h = [0u8; 32];
+                h.copy_from_slice(&b[36..68]);
+                h
+            }),
+            time: BlockTime::new(u32::from_le_bytes([b[68], b[69], b[70], b[71]])),
+            bits: CompactBits::new(u32::from_le_bytes([b[72], b[73], b[74], b[75]])),
+            nonce: Nonce::new(u32::from_le_bytes([b[76], b[77], b[78], b[79]])),
+        }
     }
 
     /// Construct from a byte slice reference.
@@ -75,7 +94,7 @@ impl BlockHeader {
     #[inline]
     #[must_use]
     pub fn hash(&self) -> Hash256 {
-        Hash256::hash(self.as_bytes())
+        Hash256::hash(&self.as_bytes())
     }
 
     #[inline]
@@ -161,7 +180,7 @@ impl std::fmt::Debug for BlockHeader {
 impl Encode for BlockHeader {
     #[inline]
     fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
-        w.write_all(self.as_bytes()).map_err(Error::Io)
+        w.write_all(&self.as_bytes()).map_err(Error::Io)
     }
 }
 
@@ -181,8 +200,7 @@ impl<'a> DecodeRef<'a> for BlockHeader {
             return Err(Error::UnexpectedEof);
         }
         let (head, tail) = buf.split_at(Self::ENCODED_LEN);
-        let mut arr = [0u8; Self::ENCODED_LEN];
-        arr.copy_from_slice(head);
+        let arr: [u8; Self::ENCODED_LEN] = head.try_into().map_err(|_| Error::UnexpectedEof)?;
         Ok((Self::from_bytes(arr), tail))
     }
 }

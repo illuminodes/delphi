@@ -129,13 +129,8 @@ impl<'a> DecodeRef<'a> for InvEntry {
             return Err(CodecError::UnexpectedEof);
         }
         let (head, tail) = buf.split_at(Self::ENCODED_LEN);
-        Ok((
-            Self::from_bytes(
-                head.try_into()
-                    .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))?,
-            ),
-            tail,
-        ))
+        let arr: &[u8; Self::ENCODED_LEN] = head.try_into().map_err(|_| CodecError::UnexpectedEof)?;
+        Ok((Self::from_bytes(arr), tail))
     }
 }
 
@@ -181,8 +176,8 @@ impl Iterator for InvEntryIter<'_> {
         self.left -= 1;
         Some(
             head.try_into()
-                .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))
-                .map(InvEntry::from_bytes),
+                .map(InvEntry::from_bytes)
+                .map_err(|_| CodecError::UnexpectedEof),
         )
     }
 
@@ -241,7 +236,7 @@ impl InvMsg {
                 chunk
                     .try_into()
                     .map(InvEntry::from_bytes)
-                    .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))
+                    .map_err(|_| CodecError::UnexpectedEof)
             })
             .collect::<Result<Vec<_>, CodecError>>()?;
         Ok(Self(entries))
@@ -267,23 +262,13 @@ impl InvMsg {
             )));
         }
         let byte_len = count * InvEntry::ENCODED_LEN;
-        // Reuse a scratch buffer stored temporarily on the stack for small messages,
-        // or heap for large ones. We don't store it across calls here — the caller
-        // owns `out`, not a byte scratch buffer. Use a thread-local would over-
-        // engineer; just allocate the byte buf once and decode in-place.
         let mut buf = vec![0u8; byte_len];
         r.read_exact(&mut buf).map_err(CodecError::Io)?;
-        let entries = buf
-            .chunks_exact(InvEntry::ENCODED_LEN)
-            .map(|chunk| {
-                chunk
-                    .try_into()
-                    .map(InvEntry::from_bytes)
-                    .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))
-            })
-            .collect::<Result<Vec<_>, CodecError>>()?;
         out.clear();
-        out.extend(entries);
+        out.extend(buf.chunks_exact(InvEntry::ENCODED_LEN).map(|chunk| {
+            let arr: &[u8; InvEntry::ENCODED_LEN] = chunk.try_into().unwrap();
+            InvEntry::from_bytes(arr)
+        }));
         Ok(())
     }
 }

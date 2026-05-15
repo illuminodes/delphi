@@ -1,6 +1,9 @@
 use std::io::{self, Read};
 
-use crate::codec::{Decode, Error as CodecError, VarInt};
+use crate::codec::{Decode, DecodeRef, Encode, Error as CodecError, VarInt};
+use crate::difficulty::BlockTime;
+
+use super::envelope::{Port, Services};
 
 // ── Addr / AddrV2 ─────────────────────────────────────────────────────────────
 
@@ -26,14 +29,14 @@ impl AddrEntry {
 
     #[inline]
     #[must_use]
-    pub fn time(&self) -> u32 {
-        u32::from_le_bytes(self.time_le)
+    pub fn time(&self) -> BlockTime {
+        BlockTime::new(u32::from_le_bytes(self.time_le))
     }
 
     #[inline]
     #[must_use]
-    pub fn services(&self) -> u64 {
-        u64::from_le_bytes(self.services_le)
+    pub fn services(&self) -> Services {
+        Services::new(u64::from_le_bytes(self.services_le))
     }
 
     #[inline]
@@ -54,8 +57,36 @@ impl AddrEntry {
 
     #[inline]
     #[must_use]
-    pub fn port(&self) -> u16 {
-        u16::from_be_bytes(self.port_be)
+    pub fn port(&self) -> Port {
+        Port::from_be_bytes(self.port_be)
+    }
+
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::ENCODED_LEN] {
+        let mut buf = [0u8; Self::ENCODED_LEN];
+        buf[0..4].copy_from_slice(&self.time_le);
+        buf[4..12].copy_from_slice(&self.services_le);
+        buf[12..28].copy_from_slice(&self.ip);
+        buf[28..30].copy_from_slice(&self.port_be);
+        buf
+    }
+
+    #[must_use]
+    pub fn from_bytes(b: &[u8; Self::ENCODED_LEN]) -> Self {
+        let mut time_le = [0u8; 4];
+        time_le.copy_from_slice(&b[0..4]);
+        let mut services_le = [0u8; 8];
+        services_le.copy_from_slice(&b[4..12]);
+        let mut ip = [0u8; 16];
+        ip.copy_from_slice(&b[12..28]);
+        let mut port_be = [0u8; 2];
+        port_be.copy_from_slice(&b[28..30]);
+        Self {
+            time_le,
+            services_le,
+            ip,
+            port_be,
+        }
     }
 }
 
@@ -71,19 +102,31 @@ impl std::fmt::Debug for AddrEntry {
     }
 }
 
+impl Encode for AddrEntry {
+    #[inline]
+    fn encode(&self, w: &mut impl std::io::Write) -> Result<(), CodecError> {
+        w.write_all(&self.to_bytes()).map_err(CodecError::Io)
+    }
+}
+
 impl Decode for AddrEntry {
+    #[inline]
     fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
-        let time_le = <[u8; 4]>::decode(r)?;
-        let services_le = <[u8; 8]>::decode(r)?;
-        let ip = <[u8; 16]>::decode(r)?;
-        let mut port_be = [0u8; 2];
-        r.read_exact(&mut port_be).map_err(CodecError::Io)?;
-        Ok(Self {
-            time_le,
-            services_le,
-            ip,
-            port_be,
-        })
+        let mut buf = [0u8; Self::ENCODED_LEN];
+        r.read_exact(&mut buf).map_err(CodecError::Io)?;
+        Ok(Self::from_bytes(&buf))
+    }
+}
+
+impl<'a> DecodeRef<'a> for AddrEntry {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
+        if buf.len() < Self::ENCODED_LEN {
+            return Err(CodecError::UnexpectedEof);
+        }
+        let (head, tail) = buf.split_at(Self::ENCODED_LEN);
+        let arr: &[u8; Self::ENCODED_LEN] = head.try_into().map_err(|_| CodecError::UnexpectedEof)?;
+        Ok((Self::from_bytes(arr), tail))
     }
 }
 
@@ -94,13 +137,79 @@ impl Decode for AddrEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddrMsg(pub Vec<AddrEntry>);
 
+/// Zero-alloc lazy iterator over `AddrEntry` values parsed from a raw byte slice.
+///
+/// Created by [`AddrMsg::iter_entries`]. Yields `Result<AddrEntry, CodecError>` so
+/// the caller can handle truncation errors entry-by-entry.
+#[derive(Debug)]
+pub struct AddrEntryIter<'a> {
+    remaining: &'a [u8],
+    left: usize,
+}
+
+impl Iterator for AddrEntryIter<'_> {
+    type Item = Result<AddrEntry, CodecError>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.left == 0 {
+            return None;
+        }
+        if self.remaining.len() < AddrEntry::ENCODED_LEN {
+            self.left = 0;
+            return Some(Err(CodecError::UnexpectedEof));
+        }
+        let (head, tail) = self.remaining.split_at(AddrEntry::ENCODED_LEN);
+        self.remaining = tail;
+        self.left -= 1;
+        Some(
+            head.try_into()
+                .map(AddrEntry::from_bytes)
+                .map_err(|_| CodecError::UnexpectedEof),
+        )
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left, Some(self.left))
+    }
+}
+
+impl ExactSizeIterator for AddrEntryIter<'_> {}
+
 impl AddrMsg {
     /// Bitcoin Core's `MAX_ADDR_TO_SEND`. Any incoming `addr` larger than
     /// this is rejected as malformed.
     pub const MAX_ENTRIES: usize = 1000;
 
+    /// Return a zero-allocation iterator over entries in a raw `addr` payload.
+    ///
+    /// `buf` must start immediately after the message framing (i.e. be the raw payload).
+    /// The `VarInt` count is read from the front of `buf`; no heap allocation occurs.
+    ///
     /// # Errors
-    /// `InvalidData` if the entry count exceeds [`Self::MAX_ENTRIES`], or on I/O error.
+    /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES` or if the `VarInt`
+    /// cannot be decoded. Individual entries surface truncation errors as `Err` items.
+    pub fn iter_entries<const MAX_ENTRIES: usize>(
+        buf: &[u8],
+    ) -> Result<AddrEntryIter<'_>, CodecError> {
+        let (varint, rest) = VarInt::decode_ref(buf)?;
+        let count = varint.to_usize()?;
+        if count > MAX_ENTRIES {
+            return Err(CodecError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "addr entry count exceeds limit",
+            )));
+        }
+        Ok(AddrEntryIter {
+            remaining: rest,
+            left: count,
+        })
+    }
+
+    /// # Errors
+    /// `InvalidData` if the entry count exceeds `MAX_ENTRIES`, or on I/O error.
+    #[allow(clippy::missing_panics_doc)]
     pub fn decode_limited(r: &mut impl Read) -> Result<Self, CodecError> {
         let count = VarInt::decode(r)?.to_usize()?;
         if count > Self::MAX_ENTRIES {
@@ -109,11 +218,49 @@ impl AddrMsg {
                 "addr entry count exceeds MAX_ADDR_TO_SEND",
             )));
         }
-        let mut entries = Vec::with_capacity(count);
-        for _ in 0..count {
-            entries.push(AddrEntry::decode(r)?);
-        }
+        let byte_len = count * AddrEntry::ENCODED_LEN;
+        let mut buf = vec![0u8; byte_len];
+        r.read_exact(&mut buf).map_err(CodecError::Io)?;
+        let entries = buf
+            .chunks_exact(AddrEntry::ENCODED_LEN)
+            .map(|chunk| {
+                chunk
+                    .try_into()
+                    .map(AddrEntry::from_bytes)
+                    .map_err(|_| CodecError::UnexpectedEof)
+            })
+            .collect::<Result<Vec<_>, CodecError>>()?;
         Ok(Self(entries))
+    }
+
+    /// Decode into a caller-supplied buffer, clearing it first.
+    ///
+    /// On the second and subsequent calls the `Vec` already has capacity, so no
+    /// heap allocation occurs. Equivalent to `decode_limited` but reuses storage.
+    ///
+    /// # Errors
+    /// Returns `InvalidData` if the entry count exceeds `MAX_ENTRIES`, or on any I/O error.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn decode_into_limited<const MAX_ENTRIES: usize>(
+        r: &mut impl Read,
+        out: &mut Vec<AddrEntry>,
+    ) -> Result<(), CodecError> {
+        let count = VarInt::decode(r)?.to_usize()?;
+        if count > MAX_ENTRIES {
+            return Err(CodecError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "addr entry count exceeds limit",
+            )));
+        }
+        let byte_len = count * AddrEntry::ENCODED_LEN;
+        let mut buf = vec![0u8; byte_len];
+        r.read_exact(&mut buf).map_err(CodecError::Io)?;
+        out.clear();
+        out.extend(buf.chunks_exact(AddrEntry::ENCODED_LEN).map(|chunk| {
+            let arr: &[u8; AddrEntry::ENCODED_LEN] = chunk.try_into().unwrap();
+            AddrEntry::from_bytes(arr)
+        }));
+        Ok(())
     }
 }
 
@@ -244,10 +391,10 @@ impl AddrV2Addr {
 /// addr(VarInt-len + bytes) || port(2 BE)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddrV2Entry {
-    pub time: u32,
-    pub services: u64,
+    pub time: BlockTime,
+    pub services: Services,
     pub addr: AddrV2Addr,
-    pub port: u16,
+    pub port: Port,
 }
 
 impl AddrV2Entry {
@@ -258,7 +405,7 @@ impl AddrV2Entry {
         match self.addr {
             AddrV2Addr::Ipv4(octets) => {
                 let ip = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
-                Some(std::net::SocketAddrV4::new(ip, self.port))
+                Some(std::net::SocketAddrV4::new(ip, self.port.to_u16()))
             }
             _ => None,
         }
@@ -267,8 +414,8 @@ impl AddrV2Entry {
 
 impl Decode for AddrV2Entry {
     fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
-        let time = u32::decode(r)?;
-        let services = VarInt::decode(r)?.to_u64();
+        let time = BlockTime::new(u32::decode(r)?);
+        let services = Services::new(VarInt::decode(r)?.to_u64());
         let addr = AddrV2Addr::decode(r)?;
         let mut port_bytes = [0u8; 2];
         r.read_exact(&mut port_bytes).map_err(CodecError::Io)?;
@@ -276,7 +423,7 @@ impl Decode for AddrV2Entry {
             time,
             services,
             addr,
-            port: u16::from_be_bytes(port_bytes),
+            port: Port::from_be_bytes(port_bytes),
         })
     }
 }
@@ -315,7 +462,7 @@ impl Decode for AddrV2Msg {
 
 #[cfg(test)]
 mod tests {
-    use super::super::envelope::services;
+    use super::super::envelope::Services;
     use super::*;
     use std::io::Cursor;
 
@@ -329,20 +476,20 @@ mod tests {
         let mut bytes = vec![0x02];
         // entry 0: time=1, services=NODE_NETWORK, ip=::ffff:1.2.3.4, port=18333
         bytes.extend_from_slice(&1u32.to_le_bytes());
-        bytes.extend_from_slice(&services::NODE_NETWORK.to_le_bytes());
+        bytes.extend_from_slice(&Services::NODE_NETWORK.to_le_bytes());
         bytes.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4]);
         bytes.extend_from_slice(&18_333u16.to_be_bytes());
         // entry 1: same shape, different ip/port
         bytes.extend_from_slice(&2u32.to_le_bytes());
-        bytes.extend_from_slice(&services::NODE_NETWORK.to_le_bytes());
+        bytes.extend_from_slice(&Services::NODE_NETWORK.to_le_bytes());
         bytes.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0, 5, 6, 7, 8]);
         bytes.extend_from_slice(&8333u16.to_be_bytes());
 
         let msg = decode::<AddrMsg>(&bytes);
         assert_eq!(msg.0.len(), 2);
-        assert_eq!(msg.0[0].port(), 18_333);
+        assert_eq!(msg.0[0].port(), Port::new(18_333));
         assert_eq!(msg.0[0].ip()[12..], [1, 2, 3, 4]);
-        assert_eq!(msg.0[1].port(), 8333);
+        assert_eq!(msg.0[1].port(), Port::new(8333));
     }
 
     #[test]

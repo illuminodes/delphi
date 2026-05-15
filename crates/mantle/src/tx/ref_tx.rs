@@ -272,21 +272,10 @@ pub fn transaction_ref_with_arena<'a>(
     // locktime (4 bytes) — the last 4 bytes of `raw`.
     arena.extend_from_slice(&raw[raw.len() - 4..]);
 
-    // Sanity: the slices we used were inside `raw`.
     debug_assert!(inputs_buf_start >= raw_start);
     debug_assert!(outputs_buf_start >= raw_start);
 
-    // SAFETY: `arena` outlives `'a` (caller passes `&'a mut Vec<u8>`); we
-    // borrow the freshly-appended span as `&'a [u8]` so the returned
-    // TransactionRef can refer to it for its full lifetime.
-    let arena_slice = {
-        let ptr = arena.as_ptr();
-        let len = arena.len();
-        // Bound the slice to the bytes we just wrote.
-        // SAFETY: ptr is valid for `len` bytes; we only expose `[arena_start..len]`.
-        unsafe { std::slice::from_raw_parts(ptr.add(arena_start), len - arena_start) }
-    };
-    tx.non_witness_raw = arena_slice;
+    tx.non_witness_raw = &arena[arena_start..];
     Ok((tx, rest))
 }
 

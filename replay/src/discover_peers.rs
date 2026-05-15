@@ -424,7 +424,7 @@ fn handle_app_frame(command: CommandName, payload: &[u8], harvest: &mut BTreeSet
                 for entry in msg.0 {
                     if let Some(octets) = entry.ip_v4() {
                         let v4 = std::net::Ipv4Addr::from(octets);
-                        harvest.insert(SocketAddrV4::new(v4, entry.port()));
+                        harvest.insert(SocketAddrV4::new(v4, entry.port().to_u16()));
                     }
                 }
             }

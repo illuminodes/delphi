@@ -55,49 +55,37 @@ impl<'a> BlockRef<'a> {
         let txs = txs_buf;
         txs.reserve(tx_count.saturating_sub(txs.capacity()));
 
-        // SAFETY: each segwit tx appends to `arena` and stores a slice into
-        // it. We must not realloc the arena between writes (would invalidate
-        // earlier slices). The `reserve(rest.len())` above gives capacity
-        // ≥ everything we will ever append (non-witness ≤ wire size), so no
-        // realloc occurs. We hand out `&'a [u8]` slices from the arena via a
-        // raw pointer because the borrow checker conservatively rejects the
-        // mut/immut interleaving of the loop. Soundness rests on: (a) no
-        // realloc, (b) we never read or mutate prior arena bytes after they
-        // are committed to a TransactionRef, (c) the arena outlives `'a`.
-        let arena_ptr: *mut Vec<u8> = arena;
+        // Pass 1: decode all transactions and append non-witness preimages
+        // for segwit txs into the arena. Record (start, end) offsets so we
+        // can patch `non_witness_raw` in a second pass once the arena is
+        // immutably borrowed.
+        let mut segwit_spans: Vec<(usize, usize, usize)> = Vec::new();
 
-        for _ in 0..tx_count {
-            let (mut tx, after) = TransactionRef::decode_ref(rest)?;
+        for i in 0..tx_count {
+            let (tx, after) = TransactionRef::decode_ref(rest)?;
 
             if tx.is_segwit {
-                let arena_start;
-                let arena_end;
-                #[allow(unsafe_code)]
-                unsafe {
-                    let arena_mut = &mut *arena_ptr;
-                    arena_start = arena_mut.len();
-                    let raw = tx.raw;
-                    let inputs_region_start = 4 + 2;
-                    let witnesses_start_offset = if tx.witnesses_buf.is_empty() {
-                        raw.len() - 4
-                    } else {
-                        (tx.witnesses_buf.as_ptr() as usize) - (raw.as_ptr() as usize)
-                    };
-                    arena_mut.extend_from_slice(&raw[..4]);
-                    arena_mut.extend_from_slice(&raw[inputs_region_start..witnesses_start_offset]);
-                    arena_mut.extend_from_slice(&raw[raw.len() - 4..]);
-                    arena_end = arena_mut.len();
-                }
-                #[allow(unsafe_code)]
-                let slice: &'a [u8] = unsafe {
-                    let base = (*arena_ptr).as_ptr();
-                    std::slice::from_raw_parts(base.add(arena_start), arena_end - arena_start)
+                let arena_start = arena.len();
+                let raw = tx.raw;
+                let inputs_region_start = 4 + 2;
+                let witnesses_start_offset = if tx.witnesses_buf.is_empty() {
+                    raw.len() - 4
+                } else {
+                    (tx.witnesses_buf.as_ptr() as usize) - (raw.as_ptr() as usize)
                 };
-                tx.non_witness_raw = slice;
+                arena.extend_from_slice(&raw[..4]);
+                arena.extend_from_slice(&raw[inputs_region_start..witnesses_start_offset]);
+                arena.extend_from_slice(&raw[raw.len() - 4..]);
+                segwit_spans.push((i, arena_start, arena.len()));
             }
 
             txs.push(tx);
             rest = after;
+        }
+
+        // Pass 2: patch non_witness_raw for segwit txs using safe arena slices.
+        for &(idx, start, end) in &segwit_spans {
+            txs[idx].non_witness_raw = &arena[start..end];
         }
 
         let raw_consumed = wire.len() - rest.len();

@@ -3,10 +3,12 @@ use std::io::{self, Read, Write};
 use crate::codec::{Decode, DecodeRef, Encode, Error as CodecError, VarInt};
 use crate::primitives::{BlockHeader, Hash256};
 
+use super::envelope::ProtocolVersion;
+
 /// `getheaders` — request headers from a peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetHeadersMsg {
-    pub version: u32,
+    pub version: ProtocolVersion,
     pub locator_hashes: Vec<Hash256>,
     pub stop_hash: Hash256,
 }
@@ -32,7 +34,7 @@ impl GetHeadersMsg {
     #[must_use]
     pub fn single_locator(locator: Hash256) -> Self {
         Self {
-            version: 70015,
+            version: ProtocolVersion::CURRENT,
             locator_hashes: vec![locator],
             stop_hash: Hash256::ZERO,
         }
@@ -55,7 +57,7 @@ impl GetHeadersMsg {
     pub fn decode_limited<const MAX_LOCATORS: usize>(
         r: &mut impl Read,
     ) -> Result<Self, CodecError> {
-        let version = u32::decode(r)?;
+        let version = ProtocolVersion::decode(r)?;
         let count = VarInt::decode(r)?.to_usize()?;
         if count > MAX_LOCATORS {
             return Err(CodecError::Io(io::Error::new(
@@ -254,7 +256,7 @@ mod tests {
     #[test]
     fn getheaders_roundtrip() {
         let msg = GetHeadersMsg {
-            version: 70015,
+            version: ProtocolVersion::CURRENT,
             locator_hashes: vec![Hash256::ZERO, Hash256::ZERO],
             stop_hash: Hash256::ZERO,
         };
@@ -265,7 +267,7 @@ mod tests {
     #[test]
     fn getheaders_empty_locator() {
         let msg = GetHeadersMsg {
-            version: 70015,
+            version: ProtocolVersion::CURRENT,
             locator_hashes: vec![],
             stop_hash: Hash256::ZERO,
         };
@@ -276,7 +278,7 @@ mod tests {
     #[test]
     fn getheaders_truncated_stop_hash() {
         let msg = GetHeadersMsg {
-            version: 70015,
+            version: ProtocolVersion::CURRENT,
             locator_hashes: vec![],
             stop_hash: Hash256::ZERO,
         };

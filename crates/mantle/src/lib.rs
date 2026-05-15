@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod amount;
 pub mod block;
 pub mod codec;

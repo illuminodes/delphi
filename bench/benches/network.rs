@@ -1,7 +1,9 @@
 use mantle::codec::{Decode, Encode, VarInt};
+use mantle::difficulty::BlockHeight;
 use mantle::network::{
     Command, CommandName, GetHeadersMsg, HeadersMsg, InvEntry, InvMsg, InvType, Magic,
-    MessageHeader, NetworkAddr, PingMsg, VersionMsg, encode_message,
+    MessageHeader, NetworkAddr, PeerNonce, PingMsg, Port, ProtocolVersion, Services, Timestamp,
+    VersionMsg, encode_message,
 };
 use mantle::primitives::{BlockHeader, Hash256};
 use std::hint::black_box;
@@ -19,23 +21,23 @@ fn encode_bytes<T: Encode>(val: &T) -> Vec<u8> {
 
 fn make_addr() -> NetworkAddr {
     NetworkAddr {
-        services: 1,
+        services: Services::NODE_NETWORK,
         ip: [0u8; 16],
-        port: 8333,
+        port: Port::MAINNET,
     }
 }
 
 fn make_version_msg() -> VersionMsg {
     let addr = make_addr();
     VersionMsg {
-        version: 70015,
-        services: 1,
-        timestamp: 1_700_000_000,
+        version: ProtocolVersion::CURRENT,
+        services: Services::NODE_NETWORK,
+        timestamp: Timestamp::new(1_700_000_000),
         receiver: addr,
         sender: addr,
-        nonce: 0xdead_beef,
+        nonce: PeerNonce::new(0xdead_beef),
         user_agent: "/mantle:0.1.0/".to_string(),
-        start_height: 800_000,
+        start_height: BlockHeight::new(800_000),
         relay: true,
     }
 }
@@ -87,12 +89,12 @@ fn version_msg_decode(bencher: divan::Bencher) {
 
 #[divan::bench]
 fn ping_encode() -> Vec<u8> {
-    encode_bytes(&PingMsg { nonce: 0xdead_beef })
+    encode_bytes(&PingMsg { nonce: PeerNonce::new(0xdead_beef) })
 }
 
 #[divan::bench]
 fn ping_decode(bencher: divan::Bencher) {
-    let bytes = encode_bytes(&PingMsg { nonce: 0xdead_beef });
+    let bytes = encode_bytes(&PingMsg { nonce: PeerNonce::new(0xdead_beef) });
     bencher.bench(|| {
         PingMsg::decode(&mut Cursor::new(bytes.as_slice()))
             .expect("PingMsg decode cannot fail on valid bytes")
@@ -223,7 +225,7 @@ fn headers_msg_decode_into(bencher: divan::Bencher, n: usize) {
 #[divan::bench]
 fn getheaders_encode(bencher: divan::Bencher) {
     let msg = GetHeadersMsg {
-        version: 70015,
+        version: ProtocolVersion::CURRENT,
         locator_hashes: (0..10u8).map(|i| Hash256::from_bytes([i; 32])).collect(),
         stop_hash: Hash256::ZERO,
     };
@@ -233,7 +235,7 @@ fn getheaders_encode(bencher: divan::Bencher) {
 #[divan::bench]
 fn getheaders_decode(bencher: divan::Bencher) {
     let msg = GetHeadersMsg {
-        version: 70015,
+        version: ProtocolVersion::CURRENT,
         locator_hashes: (0..10u8).map(|i| Hash256::from_bytes([i; 32])).collect(),
         stop_hash: Hash256::ZERO,
     };

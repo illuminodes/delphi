@@ -2,9 +2,11 @@ use std::io;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mantle::codec::{Decode, Encode};
+use mantle::difficulty::BlockHeight;
 use mantle::hash::Hash256;
 use mantle::network::{
-    Command, CommandName, MessageHeader, Network, NetworkAddr, VersionMsg, services,
+    Command, CommandName, MessageHeader, Network, NetworkAddr, PeerNonce, Port, ProtocolVersion,
+    Services, Timestamp, VersionMsg,
 };
 use ququmatz::IoUring;
 
@@ -22,19 +24,19 @@ pub fn our_version(user_agent: &str) -> VersionMsg {
     )
     .unwrap_or(i64::MAX);
     let empty = NetworkAddr {
-        services: 0,
+        services: Services::NONE,
         ip: [0u8; 16],
-        port: 0,
+        port: Port::new(0),
     };
     VersionMsg {
-        version: 70016,
-        services: services::NODE_NETWORK,
-        timestamp: now,
+        version: ProtocolVersion::new(70016),
+        services: Services::NODE_NETWORK,
+        timestamp: Timestamp::new(now),
         receiver: empty,
         sender: empty,
-        nonce: 0xfeed_face_dead_beef,
+        nonce: PeerNonce::new(0xfeed_face_dead_beef),
         user_agent: user_agent.to_string(),
-        start_height: 0,
+        start_height: BlockHeight::ZERO,
         relay: false,
     }
 }

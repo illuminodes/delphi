@@ -1109,7 +1109,7 @@ fn encode_getdata(hashes: &[Hash256]) -> Vec<u8> {
 
 fn getheaders_payload(locator: Hash256) -> Vec<u8> {
     let msg = GetHeadersMsg {
-        version: 70016,
+        version: mantle::network::ProtocolVersion::new(70016),
         locator_hashes: vec![locator],
         stop_hash: Hash256::ZERO,
     };

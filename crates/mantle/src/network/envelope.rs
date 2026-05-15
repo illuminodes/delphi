@@ -58,6 +58,33 @@ impl MessageHeader {
     pub fn checksum(&self) -> [u8; 4] {
         self.checksum
     }
+
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::ENCODED_LEN] {
+        let mut buf = [0u8; Self::ENCODED_LEN];
+        buf[0..4].copy_from_slice(&self.magic_bytes);
+        buf[4..16].copy_from_slice(&self.command.0);
+        buf[16..20].copy_from_slice(&self.length.to_le_bytes());
+        buf[20..24].copy_from_slice(&self.checksum);
+        buf
+    }
+
+    #[must_use]
+    pub fn from_bytes(b: &[u8; Self::ENCODED_LEN]) -> Self {
+        let mut magic_bytes = [0u8; 4];
+        magic_bytes.copy_from_slice(&b[0..4]);
+        let mut cmd = [0u8; 12];
+        cmd.copy_from_slice(&b[4..16]);
+        let length = u32::from_le_bytes([b[16], b[17], b[18], b[19]]);
+        let mut checksum = [0u8; 4];
+        checksum.copy_from_slice(&b[20..24]);
+        Self {
+            magic_bytes,
+            command: CommandName(cmd),
+            length,
+            checksum,
+        }
+    }
 }
 
 #[allow(clippy::missing_fields_in_debug)]
@@ -73,44 +100,30 @@ impl std::fmt::Debug for MessageHeader {
 }
 
 impl Encode for MessageHeader {
+    #[inline]
     fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
-        w.write_all(&self.magic_bytes).map_err(CodecError::Io)?;
-        w.write_all(&self.command.0).map_err(CodecError::Io)?;
-        self.length.encode(w)?;
-        w.write_all(&self.checksum).map_err(CodecError::Io)
+        w.write_all(&self.to_bytes()).map_err(CodecError::Io)
     }
 }
 
 impl Decode for MessageHeader {
+    #[inline]
     fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
-        let magic_bytes = <[u8; 4]>::decode(r)?;
-        let command = CommandName(<[u8; 12]>::decode(r)?);
-        let length = u32::decode(r)?;
-        let checksum = <[u8; 4]>::decode(r)?;
-        Ok(Self {
-            magic_bytes,
-            command,
-            length,
-            checksum,
-        })
+        let mut buf = [0u8; Self::ENCODED_LEN];
+        r.read_exact(&mut buf).map_err(CodecError::Io)?;
+        Ok(Self::from_bytes(&buf))
     }
 }
 
 impl<'a> DecodeRef<'a> for MessageHeader {
+    #[inline]
     fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
-        let (magic_bytes, buf) = <[u8; 4]>::decode_ref(buf)?;
-        let (cmd, buf) = <[u8; 12]>::decode_ref(buf)?;
-        let (length, buf) = u32::decode_ref(buf)?;
-        let (checksum, buf) = <[u8; 4]>::decode_ref(buf)?;
-        Ok((
-            Self {
-                magic_bytes,
-                command: CommandName(cmd),
-                length,
-                checksum,
-            },
-            buf,
-        ))
+        if buf.len() < Self::ENCODED_LEN {
+            return Err(CodecError::UnexpectedEof);
+        }
+        let (head, tail) = buf.split_at(Self::ENCODED_LEN);
+        let arr: &[u8; Self::ENCODED_LEN] = head.try_into().map_err(|_| CodecError::UnexpectedEof)?;
+        Ok((Self::from_bytes(arr), tail))
     }
 }
 
@@ -135,14 +148,228 @@ pub fn encode_message(
     w.write_all(payload).map_err(CodecError::Io)
 }
 
-// ── Services bitfield ─────────────────────────────────────────────────────────
+// ── Network-layer newtypes ───────────────────────────────────────────────────
 
-pub mod services {
-    pub const NODE_NETWORK: u64 = 1 << 0;
-    pub const NODE_BLOOM: u64 = 1 << 2;
-    pub const NODE_WITNESS: u64 = 1 << 3;
-    pub const NODE_COMPACT_FILTERS: u64 = 1 << 6;
-    pub const NODE_NETWORK_LIMITED: u64 = 1 << 10;
+/// Services bitfield advertised by a peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Services(u64);
+
+impl Services {
+    pub const NONE: Self = Self(0);
+    pub const NODE_NETWORK: Self = Self(1 << 0);
+    pub const NODE_BLOOM: Self = Self(1 << 2);
+    pub const NODE_WITNESS: Self = Self(1 << 3);
+    pub const NODE_COMPACT_FILTERS: Self = Self(1 << 6);
+    pub const NODE_NETWORK_LIMITED: Self = Self(1 << 10);
+
+    #[inline]
+    #[must_use]
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_u64(self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn has(self, flag: Self) -> bool {
+        self.0 & flag.0 == flag.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 8] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl std::ops::BitOr for Services {
+    type Output = Self;
+    #[inline]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl Encode for Services {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for Services {
+    #[inline]
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
+        u64::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for Services {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
+        u64::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}
+
+/// Protocol version negotiated during the P2P handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ProtocolVersion(u32);
+
+impl ProtocolVersion {
+    pub const CURRENT: Self = Self(70015);
+
+    #[inline]
+    #[must_use]
+    pub const fn new(v: u32) -> Self {
+        Self(v)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
+}
+
+impl Encode for ProtocolVersion {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for ProtocolVersion {
+    #[inline]
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
+        u32::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for ProtocolVersion {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
+        u32::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}
+
+/// Random nonce used in P2P `version` and `ping`/`pong` messages.
+///
+/// Distinct from the mining [`Nonce`](crate::difficulty::Nonce) (u32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct PeerNonce(u64);
+
+impl PeerNonce {
+    #[inline]
+    #[must_use]
+    pub const fn new(n: u64) -> Self {
+        Self(n)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_u64(self) -> u64 {
+        self.0
+    }
+}
+
+impl Encode for PeerNonce {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for PeerNonce {
+    #[inline]
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
+        u64::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for PeerNonce {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
+        u64::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}
+
+/// Network port number (big-endian on the wire).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Port(u16);
+
+impl Port {
+    pub const MAINNET: Self = Self(8333);
+
+    #[inline]
+    #[must_use]
+    pub const fn new(p: u16) -> Self {
+        Self(p)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_u16(self) -> u16 {
+        self.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_be_bytes(self) -> [u8; 2] {
+        self.0.to_be_bytes()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn from_be_bytes(b: [u8; 2]) -> Self {
+        Self(u16::from_be_bytes(b))
+    }
+}
+
+/// Unix timestamp (i64) used in the `version` message.
+///
+/// Distinct from [`BlockTime`](crate::difficulty::BlockTime) (u32) which is
+/// the block-header timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Timestamp(i64);
+
+impl Timestamp {
+    #[inline]
+    #[must_use]
+    pub const fn new(t: i64) -> Self {
+        Self(t)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_i64(self) -> i64 {
+        self.0
+    }
+}
+
+impl Encode for Timestamp {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for Timestamp {
+    #[inline]
+    fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
+        i64::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for Timestamp {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
+        i64::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
 }
 
 // ── NetworkAddr ───────────────────────────────────────────────────────────────
@@ -150,17 +377,16 @@ pub mod services {
 /// A peer address as encoded in `version` and `addr` messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetworkAddr {
-    pub services: u64,
+    pub services: Services,
     /// IPv6 address (IPv4 mapped as `::ffff:0:0/96`).
     pub ip: [u8; 16],
-    pub port: u16,
+    pub port: Port,
 }
 
 impl Encode for NetworkAddr {
     fn encode(&self, w: &mut impl Write) -> Result<(), CodecError> {
         self.services.encode(w)?;
         w.write_all(&self.ip).map_err(CodecError::Io)?;
-        // port is big-endian on the wire
         w.write_all(&self.port.to_be_bytes())
             .map_err(CodecError::Io)
     }
@@ -168,27 +394,27 @@ impl Encode for NetworkAddr {
 
 impl Decode for NetworkAddr {
     fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
-        let services = u64::decode(r)?;
+        let services = Services::decode(r)?;
         let ip = <[u8; 16]>::decode(r)?;
         let mut port_bytes = [0u8; 2];
         r.read_exact(&mut port_bytes).map_err(CodecError::Io)?;
         Ok(Self {
             services,
             ip,
-            port: u16::from_be_bytes(port_bytes),
+            port: Port::from_be_bytes(port_bytes),
         })
     }
 }
 
 impl<'a> DecodeRef<'a> for NetworkAddr {
     fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
-        let (services, buf) = u64::decode_ref(buf)?;
+        let (services, buf) = Services::decode_ref(buf)?;
         let (ip, buf) = <[u8; 16]>::decode_ref(buf)?;
         if buf.len() < 2 {
             return Err(CodecError::UnexpectedEof);
         }
         let (port_bytes, buf) = buf.split_at(2);
-        let port = u16::from_be_bytes(
+        let port = Port::from_be_bytes(
             port_bytes
                 .try_into()
                 .map_err(|_| CodecError::Io(io::Error::from(io::ErrorKind::InvalidData)))?,
@@ -267,12 +493,11 @@ mod tests {
     #[test]
     fn network_addr_port_big_endian() {
         let addr = NetworkAddr {
-            services: services::NODE_NETWORK,
+            services: Services::NODE_NETWORK,
             ip: [0u8; 16],
-            port: 8333,
+            port: Port::MAINNET,
         };
         let bytes = encode(&addr);
-        // port is at offset 24 (8 services + 16 ip), big-endian
         assert_eq!(&bytes[24..26], &8333u16.to_be_bytes());
         assert_eq!(decode::<NetworkAddr>(&bytes), addr);
     }
@@ -329,9 +554,9 @@ mod tests {
     #[test]
     fn network_addr_port_zero() {
         let addr = NetworkAddr {
-            services: 0,
+            services: Services::NONE,
             ip: [0u8; 16],
-            port: 0,
+            port: Port::new(0),
         };
         let bytes = encode(&addr);
         assert_eq!(decode::<NetworkAddr>(&bytes), addr);
@@ -340,9 +565,9 @@ mod tests {
     #[test]
     fn network_addr_port_max() {
         let addr = NetworkAddr {
-            services: u64::MAX,
+            services: Services::new(u64::MAX),
             ip: [0xff; 16],
-            port: u16::MAX,
+            port: Port::new(u16::MAX),
         };
         let bytes = encode(&addr);
         assert_eq!(decode::<NetworkAddr>(&bytes), addr);

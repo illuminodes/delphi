@@ -1,22 +1,23 @@
 use std::io::{Read, Write};
 
-use crate::codec::{Decode, Encode, Error as CodecError, VarInt};
+use crate::codec::{Decode, DecodeRef, Encode, Error as CodecError, VarInt};
+use crate::difficulty::BlockHeight;
 
-use super::envelope::NetworkAddr;
+use super::envelope::{NetworkAddr, PeerNonce, ProtocolVersion, Services, Timestamp};
 
 // ── Message payloads ──────────────────────────────────────────────────────────
 
 /// `version` — sent first on connection establishment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionMsg {
-    pub version: i32,
-    pub services: u64,
-    pub timestamp: i64,
+    pub version: ProtocolVersion,
+    pub services: Services,
+    pub timestamp: Timestamp,
     pub receiver: NetworkAddr,
     pub sender: NetworkAddr,
-    pub nonce: u64,
+    pub nonce: PeerNonce,
     pub user_agent: String,
-    pub start_height: i32,
+    pub start_height: BlockHeight,
     pub relay: bool,
 }
 
@@ -29,7 +30,8 @@ impl Encode for VersionMsg {
         self.sender.encode(w)?;
         self.nonce.encode(w)?;
         self.user_agent.encode(w)?;
-        self.start_height.encode(w)?;
+        #[allow(clippy::cast_possible_wrap)]
+        (self.start_height.to_u32() as i32).encode(w)?;
         u8::from(self.relay).encode(w)
     }
 }
@@ -37,23 +39,86 @@ impl Encode for VersionMsg {
 impl Decode for VersionMsg {
     fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         Ok(Self {
-            version: i32::decode(r)?,
-            services: u64::decode(r)?,
-            timestamp: i64::decode(r)?,
+            version: ProtocolVersion::decode(r)?,
+            services: Services::decode(r)?,
+            timestamp: Timestamp::decode(r)?,
             receiver: NetworkAddr::decode(r)?,
             sender: NetworkAddr::decode(r)?,
-            nonce: u64::decode(r)?,
+            nonce: PeerNonce::decode(r)?,
             user_agent: VarInt::decode_string_limited::<256>(r)?,
-            start_height: i32::decode(r)?,
+            #[allow(clippy::cast_sign_loss)]
+            start_height: BlockHeight::new(i32::decode(r)? as u32),
             relay: u8::decode(r)? != 0,
         })
+    }
+}
+
+/// Zero-copy borrowed view of a `VersionMsg` — `user_agent` is a `&str` into
+/// the source buffer instead of an owned `String`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VersionMsgRef<'a> {
+    pub version: ProtocolVersion,
+    pub services: Services,
+    pub timestamp: Timestamp,
+    pub receiver: NetworkAddr,
+    pub sender: NetworkAddr,
+    pub nonce: PeerNonce,
+    pub user_agent: &'a str,
+    pub start_height: BlockHeight,
+    pub relay: bool,
+}
+
+impl<'a> DecodeRef<'a> for VersionMsgRef<'a> {
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
+        let (version, buf) = ProtocolVersion::decode_ref(buf)?;
+        let (services, buf) = Services::decode_ref(buf)?;
+        let (timestamp, buf) = Timestamp::decode_ref(buf)?;
+        let (receiver, buf) = NetworkAddr::decode_ref(buf)?;
+        let (sender, buf) = NetworkAddr::decode_ref(buf)?;
+        let (nonce, buf) = PeerNonce::decode_ref(buf)?;
+        let (user_agent, buf) = <&'a str>::decode_ref(buf)?;
+        let (start_height_raw, buf) = i32::decode_ref(buf)?;
+        let (relay_byte, buf) = u8::decode_ref(buf)?;
+        Ok((
+            Self {
+                version,
+                services,
+                timestamp,
+                receiver,
+                sender,
+                nonce,
+                user_agent,
+                #[allow(clippy::cast_sign_loss)]
+                start_height: BlockHeight::new(start_height_raw as u32),
+                relay: relay_byte != 0,
+            },
+            buf,
+        ))
+    }
+}
+
+impl VersionMsgRef<'_> {
+    /// Materialise into an owned `VersionMsg`.
+    #[must_use]
+    pub fn to_owned(self) -> VersionMsg {
+        VersionMsg {
+            version: self.version,
+            services: self.services,
+            timestamp: self.timestamp,
+            receiver: self.receiver,
+            sender: self.sender,
+            nonce: self.nonce,
+            user_agent: self.user_agent.to_string(),
+            start_height: self.start_height,
+            relay: self.relay,
+        }
     }
 }
 
 /// `ping` / `pong` — keepalive with a nonce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PingMsg {
-    pub nonce: u64,
+    pub nonce: PeerNonce,
 }
 
 impl Encode for PingMsg {
@@ -65,7 +130,7 @@ impl Encode for PingMsg {
 impl Decode for PingMsg {
     fn decode(r: &mut impl Read) -> Result<Self, CodecError> {
         Ok(Self {
-            nonce: u64::decode(r)?,
+            nonce: PeerNonce::decode(r)?,
         })
     }
 }
@@ -75,7 +140,7 @@ pub type PongMsg = PingMsg;
 
 #[cfg(test)]
 mod tests {
-    use super::super::envelope::services;
+    use super::super::envelope::Port;
     use super::*;
     use std::io::Cursor;
 
@@ -96,22 +161,22 @@ mod tests {
     #[test]
     fn version_msg_roundtrip() {
         let msg = VersionMsg {
-            version: 70015,
-            services: services::NODE_NETWORK,
-            timestamp: 1_700_000_000,
+            version: ProtocolVersion::CURRENT,
+            services: Services::NODE_NETWORK,
+            timestamp: Timestamp::new(1_700_000_000),
             receiver: NetworkAddr {
-                services: 0,
+                services: Services::NONE,
                 ip: [0u8; 16],
-                port: 8333,
+                port: Port::MAINNET,
             },
             sender: NetworkAddr {
-                services: services::NODE_NETWORK,
+                services: Services::NODE_NETWORK,
                 ip: [0u8; 16],
-                port: 8333,
+                port: Port::MAINNET,
             },
-            nonce: 0xdead_beef,
+            nonce: PeerNonce::new(0xdead_beef),
             user_agent: "/mantle:0.1.0/".to_string(),
-            start_height: 0,
+            start_height: BlockHeight::ZERO,
             relay: true,
         };
         let bytes = encode(&msg);
@@ -121,19 +186,19 @@ mod tests {
     #[test]
     fn version_msg_extreme_fields() {
         let addr = NetworkAddr {
-            services: 0,
+            services: Services::NONE,
             ip: [0u8; 16],
-            port: 0,
+            port: Port::new(0),
         };
         let msg = VersionMsg {
-            version: i32::MIN,
-            services: u64::MAX,
-            timestamp: i64::MIN,
+            version: ProtocolVersion::new(u32::MAX),
+            services: Services::new(u64::MAX),
+            timestamp: Timestamp::new(i64::MIN),
             receiver: addr,
             sender: addr,
-            nonce: u64::MAX,
+            nonce: PeerNonce::new(u64::MAX),
             user_agent: String::new(),
-            start_height: i32::MIN,
+            start_height: BlockHeight::new(u32::MAX),
             relay: false,
         };
         let bytes = encode(&msg);
@@ -143,26 +208,25 @@ mod tests {
     #[test]
     fn version_msg_invalid_utf8_user_agent() {
         let addr = NetworkAddr {
-            services: 0,
+            services: Services::NONE,
             ip: [0u8; 16],
-            port: 0,
+            port: Port::new(0),
         };
         let good = VersionMsg {
-            version: 70015,
-            services: 0,
-            timestamp: 0,
+            version: ProtocolVersion::CURRENT,
+            services: Services::NONE,
+            timestamp: Timestamp::new(0),
             receiver: addr,
             sender: addr,
-            nonce: 0,
+            nonce: PeerNonce::new(0),
             user_agent: "ok".to_string(),
-            start_height: 0,
+            start_height: BlockHeight::ZERO,
             relay: false,
         };
         let mut bytes = encode(&good);
-        // Locate and corrupt the user_agent bytes (after all fixed fields).
         // Fixed prefix: 4+8+8+26+26+8 = 80 bytes, then VarInt(2) at byte 80.
         let ua_offset = 80;
-        bytes[ua_offset + 1] = 0xff; // corrupt first byte of "ok"
+        bytes[ua_offset + 1] = 0xff;
         bytes[ua_offset + 2] = 0xfe;
         let e = decode_err::<VersionMsg>(&bytes);
         assert!(matches!(e, CodecError::InvalidUtf8(_) | CodecError::Io(_)));
@@ -171,7 +235,7 @@ mod tests {
     #[test]
     fn ping_roundtrip() {
         let ping = PingMsg {
-            nonce: 0xdead_beef_cafe,
+            nonce: PeerNonce::new(0xdead_beef_cafe),
         };
         let bytes = encode(&ping);
         assert_eq!(decode::<PingMsg>(&bytes), ping);
@@ -179,14 +243,18 @@ mod tests {
 
     #[test]
     fn ping_zero_nonce() {
-        let ping = PingMsg { nonce: 0 };
+        let ping = PingMsg {
+            nonce: PeerNonce::new(0),
+        };
         let bytes = encode(&ping);
         assert_eq!(decode::<PingMsg>(&bytes), ping);
     }
 
     #[test]
     fn ping_max_nonce() {
-        let ping = PingMsg { nonce: u64::MAX };
+        let ping = PingMsg {
+            nonce: PeerNonce::new(u64::MAX),
+        };
         let bytes = encode(&ping);
         assert_eq!(decode::<PingMsg>(&bytes), ping);
     }
