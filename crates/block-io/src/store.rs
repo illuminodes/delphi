@@ -32,11 +32,14 @@ impl FileStore {
         })
     }
 
+    pub fn fd(&self) -> RawFd {
+        self.fd
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     pub fn uring_read(&self, ring: &mut IoUring, offset: u64, len: u32) -> io::Result<Vec<u8>> {
         let mut buf = vec![0u8; len as usize];
-        let sqe = unsafe { ququmatz::Sqe::read_ptr(self.fd, buf.as_mut_ptr(), len, offset) }
-            .user_data(u64::MAX);
+        let sqe = ququmatz::Sqe::read(self.fd, &mut buf, offset).user_data(u64::MAX);
         ring.push(sqe)
             .map_err(|e| io::Error::other(format!("{e:?}")))?;
         loop {
@@ -53,11 +56,8 @@ impl FileStore {
         }
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     pub fn uring_write(&self, ring: &mut IoUring, data: &[u8], offset: u64) -> io::Result<()> {
-        let sqe =
-            unsafe { ququmatz::Sqe::write_ptr(self.fd, data.as_ptr(), data.len() as u32, offset) }
-                .user_data(u64::MAX);
+        let sqe = ququmatz::Sqe::write(self.fd, data, offset).user_data(u64::MAX);
         ring.push(sqe)
             .map_err(|e| io::Error::other(format!("{e:?}")))?;
         loop {
@@ -126,6 +126,11 @@ impl BlockStore {
     }
 
     pub fn read(&self, ring: &mut IoUring, height: BlockHeight) -> io::Result<Vec<u8>> {
+        let (offset, length) = self.block_location(height)?;
+        self.store.uring_read(ring, offset, length)
+    }
+
+    pub fn block_location(&self, height: BlockHeight) -> io::Result<(u64, u32)> {
         let entry = self
             .index
             .get(height.to_u32() as usize)
@@ -137,7 +142,11 @@ impl BlockStore {
                 format!("block {} not in index", height.to_u32()),
             ));
         }
-        self.store.uring_read(ring, entry.offset, entry.length)
+        Ok((entry.offset, entry.length))
+    }
+
+    pub fn file_store(&self) -> &FileStore {
+        &self.store
     }
 
     #[allow(clippy::cast_possible_truncation)]

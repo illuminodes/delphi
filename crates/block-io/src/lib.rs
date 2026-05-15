@@ -5,6 +5,7 @@
 )]
 
 mod handle;
+mod slab;
 mod store;
 
 pub use handle::FileIoHandle;

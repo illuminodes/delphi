@@ -1,15 +1,17 @@
 use std::io;
 use std::path::Path;
 
-use mantle::primitives::{BlockHeader, BlockHeight};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256};
 use ququmatz::IoUring;
 
+use crate::slab::BlockIoSlab;
 use crate::store::{BlockStore, HeaderStore};
 
 enum FileReq {
     WriteBlock { height: BlockHeight, data: Vec<u8> },
     WriteBlockAsync { height: BlockHeight, data: Vec<u8> },
     ReadBlock { height: BlockHeight },
+    ReadBlockDecoded { height: BlockHeight, expected_hash: Hash256 },
     HasBlock { height: BlockHeight },
     WriteHeaders { start: BlockHeight, data: Vec<u8> },
     LoadCachedHeaders { start: BlockHeight },
@@ -21,6 +23,7 @@ enum FileResp {
     Ok,
     Bool(bool),
     BlockData(Vec<u8>),
+    DecodedBlock(Block),
     Headers(Vec<(BlockHeight, BlockHeader)>),
     Err(io::Error),
 }
@@ -84,6 +87,30 @@ impl FileIoHandle {
             .map_err(|_| io::Error::other("file-io ring full"))?;
         match self.rx.pop_block() {
             Some(FileResp::BlockData(data)) => Ok(data),
+            Some(FileResp::Err(e)) => Err(e),
+            _ => Err(io::Error::other("file-io unexpected response")),
+        }
+    }
+
+    /// Read, decode, and hash-verify a block on the worker thread.
+    ///
+    /// The worker reads into a pre-allocated slab slot, decodes in place,
+    /// verifies the header hash matches `expected_hash`, and returns the
+    /// owned `Block`. No per-read allocation on the worker — the slab
+    /// buffer is reused across calls.
+    pub fn read_block_decoded(
+        &mut self,
+        height: BlockHeight,
+        expected_hash: Hash256,
+    ) -> io::Result<Block> {
+        self.tx
+            .push(FileReq::ReadBlockDecoded {
+                height,
+                expected_hash,
+            })
+            .map_err(|_| io::Error::other("file-io ring full"))?;
+        match self.rx.pop_block() {
+            Some(FileResp::DecodedBlock(block)) => Ok(block),
             Some(FileResp::Err(e)) => Err(e),
             _ => Err(io::Error::other("file-io unexpected response")),
         }
@@ -155,6 +182,7 @@ fn file_io_worker(
     };
 
     let mut writes_since_flush: u64 = 0;
+    let mut slab = BlockIoSlab::new();
 
     while let Some(req) = rx.pop_block() {
         let resp = match req {
@@ -178,8 +206,33 @@ fn file_io_worker(
                 }
                 continue;
             }
-            FileReq::ReadBlock { height } => match blocks.read(&mut ring, height) {
-                Ok(data) => FileResp::BlockData(data),
+            FileReq::ReadBlock { height } => {
+                match blocks.block_location(height) {
+                    Ok((offset, length)) => {
+                        match slab.read_raw(blocks.file_store(), &mut ring, offset, length) {
+                            Ok(data) => FileResp::BlockData(data),
+                            Err(e) => FileResp::Err(e),
+                        }
+                    }
+                    Err(e) => FileResp::Err(e),
+                }
+            }
+            FileReq::ReadBlockDecoded {
+                height,
+                expected_hash,
+            } => match blocks.block_location(height) {
+                Ok((offset, length)) => {
+                    match slab.read_decode_verify(
+                        blocks.file_store(),
+                        &mut ring,
+                        offset,
+                        length,
+                        expected_hash,
+                    ) {
+                        Ok(block) => FileResp::DecodedBlock(block),
+                        Err(e) => FileResp::Err(e),
+                    }
+                }
                 Err(e) => FileResp::Err(e),
             },
             FileReq::HasBlock { height } => FileResp::Bool(blocks.has_block(height)),

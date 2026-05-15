@@ -40,6 +40,10 @@ name = "validator"
 harness = false
 
 [[bench]]
+name = "block_io"
+harness = false
+
+[[bench]]
 name = "replay_parity"
 harness = false
 
@@ -80,6 +84,14 @@ name = "validator-pprof"
 path = "src/validator/pprof.rs"
 
 [[bin]]
+name = "block-io-dhat"
+path = "src/block_io/dhat.rs"
+
+[[bin]]
+name = "block-io-pprof"
+path = "src/block_io/pprof.rs"
+
+[[bin]]
 name = "parity-dhat"
 path = "src/parity_dhat.rs"
 
@@ -97,6 +109,7 @@ mantle-consensus = { path = "../crates/consensus" }
 mantle-storage = { path = "../crates/storage" }
 mantle-transport = { path = "../crates/transport" }
 mantle-validator = { path = "../crates/validator" }
+mantle-block-io = { path = "../crates/block-io" }
 ququmatz.workspace = true
 dhat = "0.3"
 tempfile = "3"

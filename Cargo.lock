@@ -670,6 +670,7 @@ dependencies = [
  "divan",
  "k256",
  "mantle",
+ "mantle-block-io",
  "mantle-consensus",
  "mantle-storage",
  "mantle-transport",
