@@ -570,4 +570,164 @@ mod tests {
             AddrEntry::ENCODED_LEN,
         );
     }
+
+    // ── AddrMsg iter_entries / decode_into ────────────────────────────────────
+
+    fn make_addr_payload(n: usize) -> Vec<u8> {
+        use crate::codec::Encode as _;
+        let mut payload = Vec::new();
+        crate::codec::VarInt::from(n).encode(&mut payload).unwrap();
+        for i in 0..n {
+            payload.extend_from_slice(&(i as u32).to_le_bytes());
+            payload.extend_from_slice(&Services::NODE_NETWORK.to_le_bytes());
+            payload.extend_from_slice(&[0u8; 16]);
+            payload.extend_from_slice(&8333u16.to_be_bytes());
+        }
+        payload
+    }
+
+    #[test]
+    fn addr_iter_empty() {
+        let payload = make_addr_payload(0);
+        let mut iter =
+            AddrMsg::iter_entries::<1000>(&payload).expect("must succeed on valid bytes");
+        assert_eq!(iter.len(), 0);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn addr_iter_matches_owned_decode() {
+        let payload = make_addr_payload(3);
+        let owned = decode::<AddrMsg>(&payload);
+        let iter_entries: Vec<AddrEntry> = AddrMsg::iter_entries::<1000>(&payload)
+            .expect("must succeed")
+            .map(|r| r.expect("entry must decode"))
+            .collect();
+        assert_eq!(iter_entries.len(), owned.0.len());
+        for (a, b) in iter_entries.iter().zip(&owned.0) {
+            assert_eq!(a.port(), b.port());
+            assert_eq!(a.time(), b.time());
+        }
+    }
+
+    #[test]
+    fn addr_iter_limit_exceeded() {
+        let payload = make_addr_payload(5);
+        let err = AddrMsg::iter_entries::<3>(&payload).unwrap_err();
+        assert!(matches!(
+            err,
+            CodecError::Io(_) | CodecError::LengthOverflow(_)
+        ));
+    }
+
+    #[test]
+    fn addr_iter_truncated_entry() {
+        let mut payload = make_addr_payload(2);
+        payload.truncate(1 + AddrEntry::ENCODED_LEN + 10);
+        let mut iter = AddrMsg::iter_entries::<1000>(&payload).expect("header parses");
+        assert!(iter.next().unwrap().is_ok());
+        assert!(iter.next().unwrap().is_err());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn addr_decode_into_reuses_capacity() {
+        let payload = make_addr_payload(5);
+        let mut buf: Vec<AddrEntry> = Vec::new();
+        AddrMsg::decode_into_limited::<1000>(
+            &mut std::io::Cursor::new(&payload),
+            &mut buf,
+        )
+        .expect("must succeed");
+        assert_eq!(buf.len(), 5);
+        let cap = buf.capacity();
+
+        AddrMsg::decode_into_limited::<1000>(
+            &mut std::io::Cursor::new(&payload),
+            &mut buf,
+        )
+        .expect("must succeed");
+        assert_eq!(buf.len(), 5);
+        assert!(buf.capacity() >= cap);
+    }
+
+    #[test]
+    fn addr_entry_to_bytes_from_bytes_roundtrip() {
+        let payload = make_addr_payload(1);
+        let entry = decode::<AddrMsg>(&payload).0.into_iter().next().unwrap();
+        let bytes = entry.to_bytes();
+        let entry2 = AddrEntry::from_bytes(&bytes);
+        assert_eq!(entry.time(), entry2.time());
+        assert_eq!(entry.services(), entry2.services());
+        assert_eq!(entry.ip(), entry2.ip());
+        assert_eq!(entry.port(), entry2.port());
+    }
+
+    #[test]
+    fn addr_entry_decode_ref() {
+        let payload = make_addr_payload(1);
+        let entry = decode::<AddrMsg>(&payload).0.into_iter().next().unwrap();
+        let bytes = entry.to_bytes();
+        let (decoded, tail) = AddrEntry::decode_ref(&bytes).unwrap();
+        assert_eq!(decoded.port(), entry.port());
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn addr_entry_decode_ref_truncated() {
+        let err = AddrEntry::decode_ref(&[0u8; 15]).unwrap_err();
+        assert!(matches!(err, CodecError::UnexpectedEof));
+    }
+
+    #[test]
+    fn addr_entry_ipv4_detection() {
+        let mut payload = make_addr_payload(1);
+        let ip_offset = 1 + 4 + 8;
+        payload[ip_offset..ip_offset + 12]
+            .copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff]);
+        payload[ip_offset + 12..ip_offset + 16].copy_from_slice(&[10, 0, 0, 1]);
+        let entry = decode::<AddrMsg>(&payload).0.into_iter().next().unwrap();
+        assert_eq!(entry.ip_v4(), Some([10, 0, 0, 1]));
+    }
+
+    #[test]
+    fn addr_entry_ipv6_no_v4() {
+        let payload = make_addr_payload(1);
+        let entry = decode::<AddrMsg>(&payload).0.into_iter().next().unwrap();
+        assert_eq!(entry.ip_v4(), None);
+    }
+
+    // ── AddrV2 adversarial ───────────────────────────────────────────────────
+
+    #[test]
+    fn addrv2_unknown_network_within_limit() {
+        let mut bytes = vec![0x01]; // count = 1
+        bytes.extend_from_slice(&100u32.to_le_bytes());
+        bytes.push(0x00); // services VarInt = 0
+        bytes.push(0xff); // unknown network_id
+        bytes.push(0x08); // addr-len VarInt = 8
+        bytes.extend_from_slice(&[0xaa; 8]);
+        bytes.extend_from_slice(&48_333u16.to_be_bytes());
+        let msg = decode::<AddrV2Msg>(&bytes);
+        assert_eq!(msg.0.len(), 1);
+        assert!(matches!(
+            msg.0[0].addr,
+            AddrV2Addr::Unknown { network_id: 0xff, .. }
+        ));
+    }
+
+    #[test]
+    fn addrv2_unknown_network_exceeds_max_len() {
+        let mut bytes = vec![0x01]; // count = 1
+        bytes.extend_from_slice(&100u32.to_le_bytes());
+        bytes.push(0x00);
+        bytes.push(0xff); // unknown network_id
+        // addr-len = 513 (exceeds MAX_UNKNOWN_LEN of 512)
+        bytes.push(0xfd);
+        bytes.extend_from_slice(&513u16.to_le_bytes());
+        bytes.extend_from_slice(&vec![0u8; 513]);
+        bytes.extend_from_slice(&48_333u16.to_be_bytes());
+        let mut cur = std::io::Cursor::new(&bytes);
+        assert!(AddrV2Msg::decode_limited(&mut cur).is_err());
+    }
 }

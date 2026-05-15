@@ -292,4 +292,67 @@ mod tests {
     fn hash256_zero_display() {
         assert_eq!(Hash256::ZERO.to_string(), "0".repeat(64));
     }
+
+    #[test]
+    fn from_display_hex_roundtrip() {
+        let h = Hash256::hash(b"test");
+        let hex = h.to_display_hex();
+        assert_eq!(Hash256::from_display_hex(&hex).unwrap(), h);
+    }
+
+    #[test]
+    fn from_display_hex_wrong_length() {
+        assert!(matches!(
+            Hash256::from_display_hex("abcd"),
+            Err(HexError::Length(4))
+        ));
+        assert!(matches!(
+            Hash256::from_display_hex(""),
+            Err(HexError::Length(0))
+        ));
+    }
+
+    #[test]
+    fn from_display_hex_invalid_char() {
+        let bad = format!("{}zz", "00".repeat(31));
+        assert!(matches!(
+            Hash256::from_display_hex(&bad),
+            Err(HexError::InvalidChar { .. })
+        ));
+    }
+
+    #[test]
+    fn from_display_hex_genesis_block() {
+        let hex = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+        let h = Hash256::from_display_hex(hex).unwrap();
+        assert_eq!(h.to_display_hex(), hex);
+    }
+
+    #[test]
+    fn hash256_as_ref_slice() {
+        let h = Hash256::from_bytes([0xab; 32]);
+        let slice: &[u8] = h.as_ref();
+        assert_eq!(slice.len(), 32);
+        assert_eq!(slice[0], 0xab);
+    }
+
+    #[test]
+    fn read_u32_le_and_read_hash() {
+        let mut data = [0xaa; 36];
+        data[0] = 0x01;
+        data[1] = 0x02;
+        data[2] = 0x03;
+        data[3] = 0x04;
+        assert_eq!(data.read_u32_le(0), 0x04030201);
+        let h = data.read_hash(4);
+        assert_eq!(h, [0xaa; 32]);
+    }
+
+    #[test]
+    fn read_hash_into() {
+        let data = [0xbb; 40];
+        let mut out = [0u8; 32];
+        data.read_hash_into(8, &mut out);
+        assert_eq!(out, [0xbb; 32]);
+    }
 }

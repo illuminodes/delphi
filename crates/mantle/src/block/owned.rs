@@ -170,7 +170,6 @@ mod tests {
 
     #[test]
     fn block_tx_count_varint_3byte_encoding() {
-        // Build a block with 253 (0xfd) transactions to force a 3-byte VarInt.
         let dummy_tx = Transaction {
             version: TxVersion::new(1),
             inputs: vec![],
@@ -182,8 +181,96 @@ mod tests {
             transactions: vec![dummy_tx; 253],
         };
         let bytes = encode(&block);
-        // tx_count byte at offset 80 must be 0xfd (3-byte VarInt marker).
         assert_eq!(bytes[BlockHeader::ENCODED_LEN], 0xfd);
         assert_eq!(decode::<Block>(&bytes), block);
+    }
+
+    #[test]
+    fn block_with_segwit_tx_roundtrips() {
+        let block = Block {
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            transactions: vec![Transaction {
+                version: TxVersion::new(2),
+                inputs: vec![TxIn {
+                    previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                    script_sig: Vec::<u8>::new().into(),
+                    sequence: Sequence::MAX,
+                    witness: Witness::from_slice(&[&[0xab; 72][..], &[0xcd; 33][..]]),
+                }],
+                outputs: vec![TxOut {
+                    value: Satoshi::new(1000),
+                    script_pubkey: vec![0x00, 0x14].into(),
+                }],
+                locktime: Locktime::new(0),
+            }],
+        };
+        let bytes = encode(&block);
+        assert_eq!(decode::<Block>(&bytes), block);
+    }
+
+    #[test]
+    fn block_weight_legacy_only() {
+        let block = Block {
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            transactions: vec![Transaction {
+                version: TxVersion::new(1),
+                inputs: vec![],
+                outputs: vec![],
+                locktime: Locktime::new(0),
+            }],
+        };
+        let bytes = encode(&block);
+        assert_eq!(block.weight(), (bytes.len() as u64) * 4);
+    }
+
+    #[test]
+    fn block_weight_segwit_less_than_4x_total() {
+        let block = Block {
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            transactions: vec![Transaction {
+                version: TxVersion::new(2),
+                inputs: vec![TxIn {
+                    previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                    script_sig: Vec::<u8>::new().into(),
+                    sequence: Sequence::MAX,
+                    witness: Witness::from_slice(&[&[0xab; 72][..], &[0xcd; 33][..]]),
+                }],
+                outputs: vec![TxOut {
+                    value: Satoshi::new(1000),
+                    script_pubkey: vec![0x00, 0x14].into(),
+                }],
+                locktime: Locktime::new(0),
+            }],
+        };
+        let total_bytes = encode(&block).len() as u64;
+        assert!(block.weight() < total_bytes * 4);
+        assert!(block.weight() > total_bytes);
+    }
+
+    #[test]
+    fn decode_limited_rejects_too_many_txs() {
+        let block = Block {
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            transactions: vec![
+                Transaction {
+                    version: TxVersion::new(1),
+                    inputs: vec![],
+                    outputs: vec![],
+                    locktime: Locktime::new(0),
+                };
+                5
+            ],
+        };
+        let bytes = encode(&block);
+        let err = Block::decode_limited::<3, 10_000, 10_000>(
+            &mut std::io::Cursor::new(&bytes),
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn block_truncated_inside_header() {
+        let e = decode_err::<Block>(&[0u8; 40]);
+        assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
     }
 }

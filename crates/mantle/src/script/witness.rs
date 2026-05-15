@@ -228,3 +228,190 @@ impl<const ITEMS: usize, const BYTES: usize> Decode for WitnessBuf<ITEMS, BYTES>
 /// (1, or 2 with annex). 164 bytes covers a P2WPKH witness (sig 73 + pubkey
 /// 33 = 106) with room for P2WSH scripts up to ~58 bytes inline.
 pub type Witness = WitnessBuf<4, 164>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::{Decode, Encode};
+    use std::io::Cursor;
+
+    fn encode_val<T: Encode>(val: &T) -> Vec<u8> {
+        let mut buf = Vec::new();
+        val.encode(&mut buf).expect("Vec<u8> write cannot fail");
+        buf
+    }
+    fn decode_val<T: Decode>(bytes: &[u8]) -> T {
+        T::decode(&mut Cursor::new(bytes)).expect("test data must decode")
+    }
+
+    // ── Empty witness ────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_witness_properties() {
+        let w = Witness::empty();
+        assert_eq!(w.len(), 0);
+        assert!(w.is_empty());
+        assert_eq!(w.get(0), None);
+        assert_eq!(w.iter().count(), 0);
+        assert_eq!(w.total_bytes(), 0);
+        assert!(matches!(w, WitnessBuf::Empty));
+    }
+
+    // ── 2-item P2WPKH witness (sig + pubkey) ────────────────────────────
+
+    #[test]
+    fn two_item_p2wpkh_stays_inline() {
+        let sig = [0x30u8; 72]; // typical DER sig length
+        let pubkey = [0x02u8; 33]; // compressed pubkey
+        let w = Witness::from_slice(&[&sig[..], &pubkey[..]]);
+        assert!(matches!(w, WitnessBuf::Inline { .. }));
+        assert_eq!(w.len(), 2);
+        assert!(!w.is_empty());
+        assert_eq!(w.get(0).unwrap(), &sig[..]);
+        assert_eq!(w.get(1).unwrap(), &pubkey[..]);
+        assert_eq!(w.get(2), None);
+    }
+
+    // ── Exactly 4 items fitting in 164 bytes stays Inline ────────────────
+
+    #[test]
+    fn four_items_within_budget_stays_inline() {
+        // 4 items * 41 bytes = 164 bytes total
+        let item = [0xAAu8; 41];
+        let w = Witness::from_slice(&[&item[..], &item[..], &item[..], &item[..]]);
+        assert!(matches!(w, WitnessBuf::Inline { .. }));
+        assert_eq!(w.len(), 4);
+    }
+
+    // ── 5 items goes to Heap ─────────────────────────────────────────────
+
+    #[test]
+    fn five_items_goes_to_heap() {
+        let item = [0xBBu8; 10];
+        let w = Witness::from_slice(&[&item[..], &item[..], &item[..], &item[..], &item[..]]);
+        assert!(matches!(w, WitnessBuf::Heap(_)));
+        assert_eq!(w.len(), 5);
+    }
+
+    // ── 4 items totaling 165 bytes goes to Heap ──────────────────────────
+
+    #[test]
+    fn four_items_exceeding_bytes_goes_to_heap() {
+        // 3 items of 41 bytes + 1 item of 42 bytes = 165 bytes > 164
+        let small = [0xCCu8; 41];
+        let big = [0xDDu8; 42];
+        let w = Witness::from_slice(&[&small[..], &small[..], &small[..], &big[..]]);
+        assert!(matches!(w, WitnessBuf::Heap(_)));
+        assert_eq!(w.len(), 4);
+    }
+
+    // ── iter ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn iter_yields_all_items_in_order() {
+        let a = [1u8, 2, 3];
+        let b = [4u8, 5];
+        let c = [6u8];
+        let w = Witness::from_slice(&[&a[..], &b[..], &c[..]]);
+        let items: Vec<&[u8]> = w.iter().collect();
+        assert_eq!(items, vec![&a[..], &b[..], &c[..]]);
+    }
+
+    // ── to_vec ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn to_vec_matches_input() {
+        let a = vec![10u8, 20];
+        let b = vec![30u8, 40, 50];
+        let w = Witness::from_slice(&[&a[..], &b[..]]);
+        let v = w.to_vec();
+        assert_eq!(v, vec![a, b]);
+    }
+
+    // ── Encode / Decode roundtrip ────────────────────────────────────────
+
+    #[test]
+    fn encode_decode_empty() {
+        let w = Witness::empty();
+        let bytes = encode_val(&w);
+        let decoded: Witness = decode_val(&bytes);
+        assert_eq!(w, decoded);
+    }
+
+    #[test]
+    fn encode_decode_two_items() {
+        let sig = [0x30u8; 72];
+        let pubkey = [0x02u8; 33];
+        let w = Witness::from_slice(&[&sig[..], &pubkey[..]]);
+        let bytes = encode_val(&w);
+        let decoded: Witness = decode_val(&bytes);
+        assert_eq!(w, decoded);
+    }
+
+    #[test]
+    fn encode_decode_heap_witness() {
+        let items: Vec<Vec<u8>> = (0..5).map(|i| vec![i as u8; 20]).collect();
+        let slices: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
+        let w = Witness::from_slice(&slices);
+        assert!(matches!(w, WitnessBuf::Heap(_)));
+        let bytes = encode_val(&w);
+        let decoded: Witness = decode_val(&bytes);
+        assert_eq!(w, decoded);
+    }
+
+    // ── PartialEq: Inline vs Heap ────────────────────────────────────────
+
+    #[test]
+    fn eq_inline_vs_heap_same_items() {
+        // Build the same 2-item witness as Inline (via Witness = WitnessBuf<4,164>)
+        // and as Heap (via WitnessBuf<1,1> which forces heap for 2 items)
+        let a = [0x01u8; 10];
+        let b = [0x02u8; 10];
+        let inline: Witness = Witness::from_slice(&[&a[..], &b[..]]);
+        assert!(matches!(inline, WitnessBuf::Inline { .. }));
+
+        let heap: WitnessBuf<1, 1> = WitnessBuf::from_slice(&[&a[..], &b[..]]);
+        assert!(matches!(heap, WitnessBuf::Heap(_)));
+
+        // Compare via iter since different generic params
+        let inline_items: Vec<&[u8]> = inline.iter().collect();
+        let heap_items: Vec<&[u8]> = heap.iter().collect();
+        assert_eq!(inline_items, heap_items);
+    }
+
+    // ── Default is Empty ─────────────────────────────────────────────────
+
+    #[test]
+    fn default_is_empty() {
+        let w = Witness::default();
+        assert!(matches!(w, WitnessBuf::Empty));
+        assert!(w.is_empty());
+    }
+
+    // ── encoded_len matches actual encoded bytes ─────────────────────────
+
+    #[test]
+    fn encoded_len_matches_actual_empty() {
+        let w = Witness::empty();
+        let bytes = encode_val(&w);
+        assert_eq!(w.encoded_len(), bytes.len());
+    }
+
+    #[test]
+    fn encoded_len_matches_actual_two_items() {
+        let sig = [0x30u8; 72];
+        let pubkey = [0x02u8; 33];
+        let w = Witness::from_slice(&[&sig[..], &pubkey[..]]);
+        let bytes = encode_val(&w);
+        assert_eq!(w.encoded_len(), bytes.len());
+    }
+
+    #[test]
+    fn encoded_len_matches_actual_heap() {
+        let items: Vec<Vec<u8>> = (0..5).map(|i| vec![i as u8; 20]).collect();
+        let slices: Vec<&[u8]> = items.iter().map(|v| v.as_slice()).collect();
+        let w = Witness::from_slice(&slices);
+        let bytes = encode_val(&w);
+        assert_eq!(w.encoded_len(), bytes.len());
+    }
+}

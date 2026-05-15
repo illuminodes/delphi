@@ -107,3 +107,120 @@ impl<'a> DecodeRef<'a> for Satoshi {
         u64::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::{Decode, DecodeRef, Encode};
+    use std::io::Cursor;
+
+    fn encode_val<T: Encode>(val: &T) -> Vec<u8> {
+        let mut buf = Vec::new();
+        val.encode(&mut buf).expect("Vec<u8> write cannot fail");
+        buf
+    }
+    fn decode_val<T: Decode>(bytes: &[u8]) -> T {
+        T::decode(&mut Cursor::new(bytes)).expect("test data must decode")
+    }
+
+    #[test]
+    fn roundtrip_encode_decode() {
+        let original = Satoshi::new(123_456_789);
+        let bytes = encode_val(&original);
+        let decoded: Satoshi = decode_val(&bytes);
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn decode_ref_zero_copy() {
+        let original = Satoshi::new(42);
+        let bytes = encode_val(&original);
+        let (decoded, rest) = Satoshi::decode_ref(&bytes).expect("decode_ref must succeed");
+        assert_eq!(decoded, original);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn max_money_constant() {
+        assert_eq!(Satoshi::MAX_MONEY.to_u64(), 21_000_000 * 100_000_000);
+    }
+
+    #[test]
+    fn checked_add_normal() {
+        let a = Satoshi::new(100);
+        let b = Satoshi::new(200);
+        assert_eq!(a.checked_add(b), Some(Satoshi::new(300)));
+    }
+
+    #[test]
+    fn checked_add_overflow_returns_none() {
+        let a = Satoshi::new(u64::MAX);
+        let b = Satoshi::new(1);
+        assert_eq!(a.checked_add(b), None);
+    }
+
+    #[test]
+    fn checked_sub_normal() {
+        let a = Satoshi::new(500);
+        let b = Satoshi::new(200);
+        assert_eq!(a.checked_sub(b), Some(Satoshi::new(300)));
+    }
+
+    #[test]
+    fn checked_sub_underflow_returns_none() {
+        let a = Satoshi::new(100);
+        let b = Satoshi::new(200);
+        assert_eq!(a.checked_sub(b), None);
+    }
+
+    #[test]
+    fn add_normal() {
+        let result = Satoshi::new(10) + Satoshi::new(20);
+        assert_eq!(result, Satoshi::new(30));
+    }
+
+    #[test]
+    #[should_panic]
+    fn add_overflow_panics() {
+        let _ = Satoshi::new(u64::MAX) + Satoshi::new(1);
+    }
+
+    #[test]
+    fn sub_normal() {
+        let result = Satoshi::new(50) - Satoshi::new(30);
+        assert_eq!(result, Satoshi::new(20));
+    }
+
+    #[test]
+    #[should_panic]
+    fn sub_underflow_panics() {
+        let _ = Satoshi::new(10) - Satoshi::new(20);
+    }
+
+    #[test]
+    fn sum_empty_iterator() {
+        let vals: Vec<Satoshi> = vec![];
+        let total: Satoshi = vals.into_iter().sum();
+        assert_eq!(total, Satoshi::ZERO);
+    }
+
+    #[test]
+    fn sum_several_values() {
+        let vals = vec![Satoshi::new(10), Satoshi::new(20), Satoshi::new(30)];
+        let total: Satoshi = vals.into_iter().sum();
+        assert_eq!(total, Satoshi::new(60));
+    }
+
+    #[test]
+    fn to_le_bytes_matches_u64_encoding() {
+        let val = Satoshi::new(0x0102030405060708);
+        assert_eq!(val.to_le_bytes(), 0x0102030405060708u64.to_le_bytes());
+    }
+
+    #[test]
+    fn decode_truncated_fails() {
+        let bytes = [0u8; 7]; // only 7 bytes, need 8
+        let result = Satoshi::decode(&mut Cursor::new(&bytes[..]));
+        assert!(result.is_err());
+    }
+}

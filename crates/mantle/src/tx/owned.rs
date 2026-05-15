@@ -230,7 +230,7 @@ mod tests {
 
     use crate::amount::Satoshi;
     use crate::codec::{Decode, Encode, Error};
-    use crate::difficulty::{Locktime, Sequence, TxVersion};
+    use crate::difficulty::{BlockHeight, Locktime, Sequence, TxVersion};
     use crate::hash::Hash256;
     use crate::script::Witness;
     use crate::tx::{OutPoint, Transaction, TxIn, TxOut};
@@ -306,10 +306,159 @@ mod tests {
 
     #[test]
     fn transaction_input_count_exceeds_data() {
-        // version(4) + VarInt(100) + no actual inputs.
-        let mut buf = vec![0x01, 0x00, 0x00, 0x00]; // version = 1
-        buf.push(0x64); // VarInt(100)
+        let mut buf = vec![0x01, 0x00, 0x00, 0x00];
+        buf.push(0x64);
         let e = decode_err::<Transaction>(&buf);
         assert!(matches!(e, Error::UnexpectedEof | Error::Io(_)));
+    }
+
+    #[test]
+    fn segwit_tx_roundtrip() {
+        let tx = Transaction {
+            version: TxVersion::new(2),
+            inputs: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Hash256::from_bytes([0x11; 32]),
+                    vout: 0,
+                },
+                script_sig: Vec::<u8>::new().into(),
+                sequence: Sequence::new(0xffff_fffe),
+                witness: Witness::from_slice(&[
+                    &[0xde, 0xad, 0xbe, 0xef][..],
+                    &[0x01; 33][..],
+                ]),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(99_000),
+                script_pubkey: vec![0x00, 0x14, 0xaa, 0xbb, 0xcc].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+        let bytes = encode(&tx);
+        let decoded = decode::<Transaction>(&bytes);
+        assert_eq!(decoded, tx);
+        assert!(decoded.is_segwit());
+    }
+
+    #[test]
+    fn segwit_tx_encoded_len_includes_witness() {
+        let tx = Transaction {
+            version: TxVersion::new(2),
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: Vec::<u8>::new().into(),
+                sequence: Sequence::MAX,
+                witness: Witness::from_slice(&[&[0xab; 72][..], &[0xcd; 33][..]]),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(1000),
+                script_pubkey: vec![0x00, 0x14].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+        let bytes = encode(&tx);
+        assert_eq!(tx.encoded_len(), bytes.len());
+        assert!(tx.encoded_len() > tx.base_encoded_len());
+    }
+
+    #[test]
+    fn segwit_txid_differs_from_wire_hash() {
+        use crate::tx::TxHash;
+        let tx = Transaction {
+            version: TxVersion::new(2),
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: Vec::<u8>::new().into(),
+                sequence: Sequence::MAX,
+                witness: Witness::from_slice(&[&[0xab; 72][..], &[0xcd; 33][..]]),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(1000),
+                script_pubkey: vec![0x00, 0x14].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+        let txid = tx.txid().unwrap();
+        let wire_hash = Hash256::hash(&encode(&tx));
+        assert_ne!(txid, wire_hash);
+    }
+
+    #[test]
+    fn legacy_tx_encoded_len_eq_base() {
+        let tx = Transaction {
+            version: TxVersion::new(1),
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: 0 },
+                script_sig: vec![0x51].into(),
+                sequence: Sequence::MAX,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![],
+            locktime: Locktime::new(0),
+        };
+        assert!(!tx.is_segwit());
+        assert_eq!(tx.encoded_len(), tx.base_encoded_len());
+    }
+
+    #[test]
+    fn bip34_height_script_zero() {
+        assert_eq!(Transaction::bip34_height_script(BlockHeight::ZERO), vec![0x00]);
+    }
+
+    #[test]
+    fn bip34_height_script_small() {
+        let script = Transaction::bip34_height_script(BlockHeight::new(1));
+        assert_eq!(script, vec![0x01, 0x01]);
+    }
+
+    #[test]
+    fn bip34_height_script_128_needs_padding() {
+        let script = Transaction::bip34_height_script(BlockHeight::new(128));
+        assert_eq!(script, vec![0x02, 0x80, 0x00]);
+    }
+
+    #[test]
+    fn bip34_validate_correct() {
+        use crate::difficulty::BlockHeight;
+        let height = BlockHeight::new(500_000);
+        let script_prefix = Transaction::bip34_height_script(height);
+        let mut script_sig: Vec<u8> = script_prefix;
+        script_sig.extend_from_slice(b"extra coinbase data");
+        let tx = Transaction {
+            version: TxVersion::new(1),
+            inputs: vec![TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: u32::MAX },
+                script_sig: script_sig.into(),
+                sequence: Sequence::MAX,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(50 * 100_000_000),
+                script_pubkey: vec![0x76, 0xa9].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+        assert!(tx.validate_bip34(height));
+        assert!(!tx.validate_bip34(BlockHeight::new(500_001)));
+    }
+
+    #[test]
+    fn decode_limited_rejects_too_many_inputs() {
+        let tx = Transaction {
+            version: TxVersion::new(1),
+            inputs: (0..5).map(|i| TxIn {
+                previous_output: OutPoint { txid: Hash256::ZERO, vout: i },
+                script_sig: vec![].into(),
+                sequence: Sequence::MAX,
+                witness: Witness::empty(),
+            }).collect(),
+            outputs: vec![],
+            locktime: Locktime::new(0),
+        };
+        let bytes = encode(&tx);
+        let err = Transaction::decode_limited::<3, 10_000>(
+            &mut std::io::Cursor::new(&bytes),
+        );
+        assert!(err.is_err());
     }
 }

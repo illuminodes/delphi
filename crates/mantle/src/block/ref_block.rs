@@ -264,4 +264,95 @@ mod tests {
         // first pass's high-water mark).
         assert!(arena.capacity() >= cap_before);
     }
+
+    #[test]
+    fn block_ref_zero_transactions() {
+        let block = Block {
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            transactions: vec![],
+        };
+        let bytes = encode(&block);
+        let mut arena = Vec::new();
+        let mut txs_buf = Vec::new();
+        let br = BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf)
+            .expect("empty block must decode");
+        assert_eq!(br.tx_count(), 0);
+        assert_eq!(br.transactions().count(), 0);
+        assert!(arena.is_empty());
+    }
+
+    #[test]
+    fn block_ref_truncated_wire_fails() {
+        let block = Block {
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            transactions: vec![make_tx()],
+        };
+        let bytes = encode(&block);
+        let truncated = &bytes[..bytes.len() / 2];
+        let mut arena = Vec::new();
+        let mut txs_buf = Vec::new();
+        assert!(BlockRef::decode_with_arena(truncated, &mut arena, &mut txs_buf).is_err());
+    }
+
+    #[test]
+    fn block_ref_truncated_at_header() {
+        let mut arena = Vec::new();
+        let mut txs_buf = Vec::new();
+        assert!(BlockRef::decode_with_arena(&[0u8; 40], &mut arena, &mut txs_buf).is_err());
+    }
+
+    #[test]
+    fn block_ref_all_txids_correct_multi_segwit() {
+        let segwit1 = make_segwit_tx();
+        let segwit2 = Transaction {
+            version: TxVersion::new(2),
+            inputs: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Hash256::from_bytes([0x22u8; 32]),
+                    vout: 1,
+                },
+                script_sig: Vec::<u8>::new().into(),
+                sequence: Sequence::new(0xffff_fffe),
+                witness: Witness::from_slice(&[&[0xaa; 71][..], &[0xbb; 33][..]]),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(50_000),
+                script_pubkey: vec![0x00, 0x14, 0xcc, 0xdd].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+        let block = Block {
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            transactions: vec![make_tx(), segwit1.clone(), segwit2.clone(), make_tx()],
+        };
+        let bytes = encode(&block);
+        let mut arena = Vec::new();
+        let mut txs_buf = Vec::new();
+        let br = BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf)
+            .expect("block with mixed txs must decode");
+        assert_eq!(br.tx_count(), 4);
+
+        let expected_txids: Vec<_> = block
+            .transactions
+            .iter()
+            .map(|tx| tx.txid().unwrap())
+            .collect();
+        for (i, tx_ref) in br.transactions().enumerate() {
+            let ref_txid = tx_ref.txid_into(&mut Vec::new()).unwrap();
+            assert_eq!(ref_txid, expected_txids[i], "txid mismatch at index {i}");
+        }
+    }
+
+    #[test]
+    fn block_ref_raw_spans_full_wire() {
+        let block = Block {
+            header: BlockHeader::new(1, Hash256::ZERO, Hash256::ZERO, 0, CompactBits::new(0), 0),
+            transactions: vec![make_tx(), make_segwit_tx()],
+        };
+        let bytes = encode(&block);
+        let mut arena = Vec::new();
+        let mut txs_buf = Vec::new();
+        let br = BlockRef::decode_with_arena(&bytes, &mut arena, &mut txs_buf).unwrap();
+        assert_eq!(br.raw.len(), bytes.len());
+    }
 }

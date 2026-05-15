@@ -478,3 +478,345 @@ impl<'a> DecodeRef<'a> for Sequence {
         u32::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::{Decode, DecodeRef, Encode};
+    use std::io::Cursor;
+
+    fn encode_val<T: Encode>(val: &T) -> Vec<u8> {
+        let mut buf = Vec::new();
+        val.encode(&mut buf).expect("Vec<u8> write cannot fail");
+        buf
+    }
+    fn decode_val<T: Decode>(bytes: &[u8]) -> T {
+        T::decode(&mut Cursor::new(bytes)).expect("test data must decode")
+    }
+
+    // ── CompactBits ──────────────────────────────────────────────────────
+
+    #[test]
+    fn compact_bits_genesis_target() {
+        let bits = CompactBits::new(0x1d00ffff);
+        let target = bits.to_target().expect("genesis bits must produce a target");
+        // The genesis target: 0x00000000FFFF0000...0000 (difficulty-1 target)
+        // exponent = 0x1d = 29, mantissa = 0x00ffff
+        // target = 0x00ffff * 2^(8*(29-3)) = 0x00ffff * 2^208
+        // byte 3 (from the high end) should start with 00 ff ff
+        assert_eq!(target[3], 0x00);
+        assert_eq!(target[4], 0xff);
+        assert_eq!(target[5], 0xff);
+        // leading 3 bytes must be zero
+        assert_eq!(target[0], 0);
+        assert_eq!(target[1], 0);
+        assert_eq!(target[2], 0);
+        // remaining bytes from index 6..32 must be zero
+        for &b in &target[6..] {
+            assert_eq!(b, 0);
+        }
+    }
+
+    #[test]
+    fn compact_bits_zero_mantissa_returns_none() {
+        // exponent = 0x1d, mantissa = 0 -> target would be zero, should return None
+        let bits = CompactBits::new(0x1d000000);
+        assert!(bits.to_target().is_none());
+    }
+
+    #[test]
+    fn compact_bits_negative_mantissa_returns_none() {
+        // bit 23 set -> negative flag in Bitcoin compact format
+        let bits = CompactBits::new(0x01800001);
+        assert!(bits.to_target().is_none());
+    }
+
+    #[test]
+    fn compact_bits_exponent_zero() {
+        // exponent = 0, mantissa = 1 -> value would be shifted by 8*(0-3) = negative shift
+        let bits = CompactBits::new(0x00000001);
+        // With exponent 0, the mantissa is right-shifted so far it becomes zero
+        // Result should be None (zero target) or a valid all-zero-ish target
+        // Either way it should not panic
+        let _result = bits.to_target();
+    }
+
+    #[test]
+    fn compact_bits_exponent_too_large_returns_none() {
+        // exponent > 34 should not fit in 32 bytes
+        let bits = CompactBits::new(0x23000001); // exponent = 0x23 = 35
+        assert!(bits.to_target().is_none());
+    }
+
+    #[test]
+    fn from_target_all_zero_returns_none() {
+        let zero = [0u8; 32];
+        assert!(CompactBits::from_target(zero).is_none());
+    }
+
+    #[test]
+    fn from_target_to_target_roundtrip_genesis() {
+        let bits = CompactBits::new(0x1d00ffff);
+        let target = bits.to_target().expect("genesis bits must have a target");
+        let recovered = CompactBits::from_target(target).expect("non-zero target must roundtrip");
+        let target2 = recovered.to_target().expect("recovered bits must have a target");
+        assert_eq!(target, target2);
+    }
+
+    #[test]
+    fn from_target_to_target_roundtrip_difficulty_1() {
+        // Difficulty-1 target in big-endian 32 bytes
+        let mut target = [0u8; 32];
+        target[3] = 0x00;
+        target[4] = 0xff;
+        target[5] = 0xff;
+        let bits = CompactBits::from_target(target).expect("difficulty-1 target must convert");
+        let rt = bits.to_target().expect("bits must convert back");
+        assert_eq!(target, rt);
+    }
+
+    #[test]
+    fn compact_bits_encode_decode_roundtrip() {
+        let original = CompactBits::new(0x1d00ffff);
+        let bytes = encode_val(&original);
+        let decoded: CompactBits = decode_val(&bytes);
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn compact_bits_decode_ref_trailing() {
+        let original = CompactBits::new(0x1d00ffff);
+        let mut bytes = encode_val(&original);
+        bytes.extend_from_slice(&[0xDE, 0xAD]);
+        let (decoded, rest) = CompactBits::decode_ref(&bytes).expect("decode_ref must succeed");
+        assert_eq!(decoded, original);
+        assert_eq!(rest, &[0xDE, 0xAD]);
+    }
+
+    // ── BlockHeight ──────────────────────────────────────────────────────
+
+    #[test]
+    fn block_height_zero() {
+        assert_eq!(BlockHeight::ZERO.to_u32(), 0);
+    }
+
+    #[test]
+    fn block_height_checked_add_normal() {
+        let h = BlockHeight::new(100);
+        assert_eq!(h.checked_add(50), Some(BlockHeight::new(150)));
+    }
+
+    #[test]
+    fn block_height_checked_add_overflow_returns_none() {
+        let h = BlockHeight::new(u32::MAX);
+        assert_eq!(h.checked_add(1), None);
+    }
+
+    #[test]
+    fn block_height_saturating_sub_normal() {
+        let h = BlockHeight::new(100);
+        assert_eq!(h.saturating_sub(30), BlockHeight::new(70));
+    }
+
+    #[test]
+    fn block_height_saturating_sub_floors_at_zero() {
+        let h = BlockHeight::new(10);
+        assert_eq!(h.saturating_sub(100), BlockHeight::ZERO);
+    }
+
+    #[test]
+    #[should_panic]
+    fn block_height_add_overflow_panics() {
+        let _ = BlockHeight::new(u32::MAX) + 1u32;
+    }
+
+    #[test]
+    #[should_panic]
+    fn block_height_sub_underflow_panics() {
+        let _ = BlockHeight::new(0) - 1u32;
+    }
+
+    #[test]
+    fn block_height_rem() {
+        let h = BlockHeight::new(2016);
+        let rem = h % 2016u32;
+        assert_eq!(rem, 0u32);
+        let h2 = BlockHeight::new(2017);
+        let rem2 = h2 % 2016u32;
+        assert_eq!(rem2, 1u32);
+    }
+
+    #[test]
+    fn block_height_display() {
+        let h = BlockHeight::new(840_000);
+        assert_eq!(format!("{}", h), "840000");
+    }
+
+    // ── BlockTime ────────────────────────────────────────────────────────
+
+    #[test]
+    #[should_panic]
+    fn block_time_add_overflow_panics() {
+        let _ = BlockTime::new(u32::MAX) + 1u32;
+    }
+
+    #[test]
+    fn block_time_into_u64() {
+        let t = BlockTime::new(1_700_000_000);
+        let val: u64 = t.into();
+        assert_eq!(val, 1_700_000_000u64);
+    }
+
+    #[test]
+    fn block_time_encode_decode_roundtrip() {
+        let original = BlockTime::new(1_231_006_505);
+        let bytes = encode_val(&original);
+        let decoded: BlockTime = decode_val(&bytes);
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn block_time_decode_ref_trailing() {
+        let original = BlockTime::new(1_231_006_505);
+        let mut bytes = encode_val(&original);
+        bytes.push(0xFF);
+        let (decoded, rest) = BlockTime::decode_ref(&bytes).expect("decode_ref must succeed");
+        assert_eq!(decoded, original);
+        assert_eq!(rest, &[0xFF]);
+    }
+
+    // ── BlockVersion ─────────────────────────────────────────────────────
+
+    #[test]
+    fn block_version_encode_decode_roundtrip() {
+        let original = BlockVersion::new(0x20000000);
+        let bytes = encode_val(&original);
+        let decoded: BlockVersion = decode_val(&bytes);
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn block_version_decode_ref_trailing() {
+        let original = BlockVersion::new(1);
+        let mut bytes = encode_val(&original);
+        bytes.extend_from_slice(&[0xAB, 0xCD]);
+        let (decoded, rest) = BlockVersion::decode_ref(&bytes).expect("decode_ref must succeed");
+        assert_eq!(decoded, original);
+        assert_eq!(rest, &[0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn block_version_to_le_bytes() {
+        let v = BlockVersion::new(0x20000000);
+        assert_eq!(v.to_le_bytes(), 0x20000000i32.to_le_bytes());
+    }
+
+    // ── Nonce ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn nonce_encode_decode_roundtrip() {
+        let original = Nonce::new(0xDEADBEEF);
+        let bytes = encode_val(&original);
+        let decoded: Nonce = decode_val(&bytes);
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn nonce_decode_ref_trailing() {
+        let original = Nonce::new(42);
+        let mut bytes = encode_val(&original);
+        bytes.push(0x01);
+        let (decoded, rest) = Nonce::decode_ref(&bytes).expect("decode_ref must succeed");
+        assert_eq!(decoded, original);
+        assert_eq!(rest, &[0x01]);
+    }
+
+    #[test]
+    fn nonce_to_le_bytes() {
+        let n = Nonce::new(0xDEADBEEF);
+        assert_eq!(n.to_le_bytes(), 0xDEADBEEFu32.to_le_bytes());
+    }
+
+    // ── TxVersion ────────────────────────────────────────────────────────
+
+    #[test]
+    fn tx_version_encode_decode_roundtrip() {
+        let original = TxVersion::new(2);
+        let bytes = encode_val(&original);
+        let decoded: TxVersion = decode_val(&bytes);
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn tx_version_decode_ref_trailing() {
+        let original = TxVersion::new(1);
+        let mut bytes = encode_val(&original);
+        bytes.extend_from_slice(&[0x00, 0x00]);
+        let (decoded, rest) = TxVersion::decode_ref(&bytes).expect("decode_ref must succeed");
+        assert_eq!(decoded, original);
+        assert_eq!(rest, &[0x00, 0x00]);
+    }
+
+    #[test]
+    fn tx_version_to_le_bytes() {
+        let v = TxVersion::new(2);
+        assert_eq!(v.to_le_bytes(), 2i32.to_le_bytes());
+    }
+
+    // ── Locktime ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn locktime_encode_decode_roundtrip() {
+        let original = Locktime::new(500_000);
+        let bytes = encode_val(&original);
+        let decoded: Locktime = decode_val(&bytes);
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn locktime_decode_ref_trailing() {
+        let original = Locktime::new(0);
+        let mut bytes = encode_val(&original);
+        bytes.push(0xFF);
+        let (decoded, rest) = Locktime::decode_ref(&bytes).expect("decode_ref must succeed");
+        assert_eq!(decoded, original);
+        assert_eq!(rest, &[0xFF]);
+    }
+
+    #[test]
+    fn locktime_to_le_bytes() {
+        let l = Locktime::new(500_000);
+        assert_eq!(l.to_le_bytes(), 500_000u32.to_le_bytes());
+    }
+
+    // ── Sequence ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn sequence_max_constant() {
+        assert_eq!(Sequence::MAX.to_u32(), 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn sequence_encode_decode_roundtrip() {
+        let original = Sequence::new(0xFFFFFFFE);
+        let bytes = encode_val(&original);
+        let decoded: Sequence = decode_val(&bytes);
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn sequence_decode_ref_trailing() {
+        let original = Sequence::MAX;
+        let mut bytes = encode_val(&original);
+        bytes.extend_from_slice(&[0x01, 0x02, 0x03]);
+        let (decoded, rest) = Sequence::decode_ref(&bytes).expect("decode_ref must succeed");
+        assert_eq!(decoded, original);
+        assert_eq!(rest, &[0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn sequence_to_le_bytes() {
+        let s = Sequence::new(0xFFFFFFFE);
+        assert_eq!(s.to_le_bytes(), 0xFFFFFFFEu32.to_le_bytes());
+    }
+}

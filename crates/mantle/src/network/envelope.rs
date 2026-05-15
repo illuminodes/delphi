@@ -595,4 +595,138 @@ mod tests {
             MessageHeader::ENCODED_LEN,
         );
     }
+
+    // ── Network newtype tests ────────────────────────────────────────────────
+
+    #[test]
+    fn services_bitflags() {
+        let s = Services::NODE_NETWORK | Services::NODE_WITNESS;
+        assert!(s.has(Services::NODE_NETWORK));
+        assert!(s.has(Services::NODE_WITNESS));
+        assert!(!s.has(Services::NODE_BLOOM));
+    }
+
+    #[test]
+    fn services_none_has_nothing() {
+        assert!(!Services::NONE.has(Services::NODE_NETWORK));
+    }
+
+    #[test]
+    fn services_encode_decode_roundtrip() {
+        let s = Services::NODE_NETWORK | Services::NODE_WITNESS;
+        let bytes = encode(&s);
+        assert_eq!(decode::<Services>(&bytes).to_u64(), s.to_u64());
+    }
+
+    #[test]
+    fn services_decode_ref() {
+        let s = Services::new(0x040d);
+        let bytes = encode(&s);
+        let (decoded, tail) = Services::decode_ref(&bytes).unwrap();
+        assert_eq!(decoded, s);
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn protocol_version_current() {
+        assert_eq!(ProtocolVersion::CURRENT.to_u32(), 70015);
+    }
+
+    #[test]
+    fn protocol_version_encode_decode_roundtrip() {
+        let v = ProtocolVersion::new(70016);
+        let bytes = encode(&v);
+        assert_eq!(decode::<ProtocolVersion>(&bytes).to_u32(), 70016);
+    }
+
+    #[test]
+    fn protocol_version_decode_ref() {
+        let v = ProtocolVersion::CURRENT;
+        let mut bytes = encode(&v);
+        bytes.push(0xff);
+        let (decoded, tail) = ProtocolVersion::decode_ref(&bytes).unwrap();
+        assert_eq!(decoded, v);
+        assert_eq!(tail, &[0xff]);
+    }
+
+    #[test]
+    fn peer_nonce_encode_decode_roundtrip() {
+        let n = PeerNonce::new(0xdead_beef_cafe_babe);
+        let bytes = encode(&n);
+        assert_eq!(decode::<PeerNonce>(&bytes).to_u64(), 0xdead_beef_cafe_babe);
+    }
+
+    #[test]
+    fn peer_nonce_decode_ref() {
+        let n = PeerNonce::new(42);
+        let bytes = encode(&n);
+        let (decoded, tail) = PeerNonce::decode_ref(&bytes).unwrap();
+        assert_eq!(decoded, n);
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn port_mainnet() {
+        assert_eq!(Port::MAINNET.to_u16(), 8333);
+    }
+
+    #[test]
+    fn port_be_bytes_roundtrip() {
+        let p = Port::new(18333);
+        let be = p.to_be_bytes();
+        assert_eq!(Port::from_be_bytes(be), p);
+    }
+
+    #[test]
+    fn timestamp_encode_decode_roundtrip() {
+        let t = Timestamp::new(1_700_000_000);
+        let bytes = encode(&t);
+        assert_eq!(decode::<Timestamp>(&bytes).to_i64(), 1_700_000_000);
+    }
+
+    #[test]
+    fn timestamp_negative() {
+        let t = Timestamp::new(-1);
+        let bytes = encode(&t);
+        assert_eq!(decode::<Timestamp>(&bytes).to_i64(), -1);
+    }
+
+    #[test]
+    fn timestamp_decode_ref() {
+        let t = Timestamp::new(i64::MAX);
+        let bytes = encode(&t);
+        let (decoded, tail) = Timestamp::decode_ref(&bytes).unwrap();
+        assert_eq!(decoded, t);
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn message_header_to_bytes_from_bytes_roundtrip() {
+        let h = MessageHeader::new(
+            Magic::Mainnet,
+            CommandName::new("version"),
+            100,
+            [0xab, 0xcd, 0xef, 0x01],
+        );
+        let bytes = h.to_bytes();
+        let h2 = MessageHeader::from_bytes(&bytes);
+        assert_eq!(h2.magic(), h.magic());
+        assert_eq!(h2.command(), h.command());
+        assert_eq!(h2.length(), h.length());
+        assert_eq!(h2.checksum(), h.checksum());
+    }
+
+    #[test]
+    fn network_addr_decode_ref_with_trailing() {
+        let addr = NetworkAddr {
+            services: Services::NODE_NETWORK,
+            ip: [0u8; 16],
+            port: Port::MAINNET,
+        };
+        let mut bytes = encode(&addr);
+        bytes.push(0xab);
+        let (decoded, tail) = NetworkAddr::decode_ref(&bytes).unwrap();
+        assert_eq!(decoded, addr);
+        assert_eq!(tail, &[0xab]);
+    }
 }

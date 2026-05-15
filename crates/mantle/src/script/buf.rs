@@ -146,3 +146,196 @@ pub type ScriptSig = ScriptBuf<128>;
 /// 36 bytes covers every standard output type: P2PKH (25), P2SH (23),
 /// P2WPKH (22), P2WSH (34), `OP_RETURN` bare (1+).
 pub type ScriptPubKey = ScriptBuf<36>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::{Decode, Encode};
+    use std::io::Cursor;
+
+    fn encode_val<T: Encode>(val: &T) -> Vec<u8> {
+        let mut buf = Vec::new();
+        val.encode(&mut buf).expect("Vec<u8> write cannot fail");
+        buf
+    }
+    fn decode_val<T: Decode>(bytes: &[u8]) -> T {
+        T::decode(&mut Cursor::new(bytes)).expect("test data must decode")
+    }
+
+    // ── Empty script ─────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_script_from_slice() {
+        let s = ScriptSig::from_slice(&[]);
+        assert_eq!(s.len(), 0);
+        assert!(s.is_empty());
+        assert!(matches!(s, ScriptBuf::Inline { .. }));
+    }
+
+    // ── ScriptSig inline/heap boundary (128) ─────────────────────────────
+
+    #[test]
+    fn scriptsig_at_boundary_stays_inline() {
+        let data = vec![0xABu8; 128];
+        let s = ScriptSig::from_slice(&data);
+        assert_eq!(s.len(), 128);
+        assert!(matches!(s, ScriptBuf::Inline { .. }));
+        assert_eq!(s.as_slice(), &data[..]);
+    }
+
+    #[test]
+    fn scriptsig_above_boundary_goes_to_heap() {
+        let data = vec![0xCDu8; 129];
+        let s = ScriptSig::from_slice(&data);
+        assert_eq!(s.len(), 129);
+        assert!(matches!(s, ScriptBuf::Heap(_)));
+        assert_eq!(s.as_slice(), &data[..]);
+    }
+
+    // ── ScriptPubKey inline/heap boundary (36) ───────────────────────────
+
+    #[test]
+    fn scriptpubkey_at_boundary_stays_inline() {
+        let data = vec![0x01u8; 36];
+        let s = ScriptPubKey::from_slice(&data);
+        assert_eq!(s.len(), 36);
+        assert!(matches!(s, ScriptBuf::Inline { .. }));
+    }
+
+    #[test]
+    fn scriptpubkey_above_boundary_goes_to_heap() {
+        let data = vec![0x02u8; 37];
+        let s = ScriptPubKey::from_slice(&data);
+        assert_eq!(s.len(), 37);
+        assert!(matches!(s, ScriptBuf::Heap(_)));
+    }
+
+    // ── as_slice / to_vec ────────────────────────────────────────────────
+
+    #[test]
+    fn as_slice_inline() {
+        let data = [1, 2, 3, 4, 5];
+        let s = ScriptSig::from_slice(&data);
+        assert!(matches!(s, ScriptBuf::Inline { .. }));
+        assert_eq!(s.as_slice(), &data);
+    }
+
+    #[test]
+    fn as_slice_heap() {
+        let data = vec![0xFFu8; 200];
+        let s = ScriptSig::from_slice(&data);
+        assert!(matches!(s, ScriptBuf::Heap(_)));
+        assert_eq!(s.as_slice(), &data[..]);
+    }
+
+    #[test]
+    fn to_vec_matches_as_slice() {
+        let data = vec![10u8; 50];
+        let s = ScriptSig::from_slice(&data);
+        assert_eq!(s.to_vec(), s.as_slice().to_vec());
+    }
+
+    // ── From<Vec<u8>> ────────────────────────────────────────────────────
+
+    #[test]
+    fn from_vec_small_becomes_inline() {
+        let v = vec![0xAAu8; 10];
+        let s: ScriptSig = v.clone().into();
+        assert!(matches!(s, ScriptBuf::Inline { .. }));
+        assert_eq!(s.as_slice(), &v[..]);
+    }
+
+    #[test]
+    fn from_vec_large_stays_heap() {
+        let v = vec![0xBBu8; 200];
+        let s: ScriptSig = v.clone().into();
+        assert!(matches!(s, ScriptBuf::Heap(_)));
+        assert_eq!(s.as_slice(), &v[..]);
+    }
+
+    // ── PartialEq ────────────────────────────────────────────────────────
+
+    #[test]
+    fn eq_inline_vs_heap_same_content() {
+        // Force one Inline (via ScriptSig with 100 bytes) and one Heap (via ScriptPubKey with same 100 bytes)
+        let data = vec![0x42u8; 100];
+        let inline = ScriptSig::from_slice(&data); // 100 <= 128, Inline
+        let heap = ScriptPubKey::from_slice(&data); // 100 > 36, Heap
+        assert!(matches!(inline, ScriptBuf::Inline { .. }));
+        assert!(matches!(heap, ScriptBuf::Heap(_)));
+        // They are different generic types, so compare slices
+        assert_eq!(inline.as_slice(), heap.as_slice());
+    }
+
+    #[test]
+    fn eq_with_raw_slice() {
+        let data = [1u8, 2, 3];
+        let s = ScriptSig::from_slice(&data);
+        assert!(s == data[..]);
+    }
+
+    #[test]
+    fn eq_with_vec() {
+        let data = vec![4u8, 5, 6];
+        let s = ScriptSig::from_slice(&data);
+        assert!(s == data);
+    }
+
+    // ── Deref ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn deref_to_slice() {
+        let data = [7u8, 8, 9];
+        let s = ScriptSig::from_slice(&data);
+        let slice: &[u8] = &*s;
+        assert_eq!(slice, &data);
+    }
+
+    // ── Encode / Decode roundtrip ────────────────────────────────────────
+
+    #[test]
+    fn encode_decode_empty() {
+        let s = ScriptSig::from_slice(&[]);
+        let bytes = encode_val(&s);
+        let decoded: ScriptSig = decode_val(&bytes);
+        assert_eq!(s, decoded);
+    }
+
+    #[test]
+    fn encode_decode_small() {
+        let data = vec![0x76u8, 0xa9, 0x14]; // OP_DUP OP_HASH160 PUSH20
+        let s = ScriptSig::from_slice(&data);
+        let bytes = encode_val(&s);
+        let decoded: ScriptSig = decode_val(&bytes);
+        assert_eq!(s, decoded);
+    }
+
+    #[test]
+    fn encode_decode_at_inline_boundary() {
+        let data = vec![0xEEu8; 128];
+        let s = ScriptSig::from_slice(&data);
+        let bytes = encode_val(&s);
+        let decoded: ScriptSig = decode_val(&bytes);
+        assert_eq!(s, decoded);
+    }
+
+    #[test]
+    fn encode_decode_heap() {
+        let data = vec![0xDDu8; 500];
+        let s = ScriptSig::from_slice(&data);
+        let bytes = encode_val(&s);
+        let decoded: ScriptSig = decode_val(&bytes);
+        assert_eq!(s, decoded);
+    }
+
+    #[test]
+    fn decode_truncated_fails() {
+        // VarInt says 100 bytes but we only provide 5
+        let mut bytes = Vec::new();
+        // VarInt encoding of 100: single byte 0x64
+        bytes.push(0x64);
+        bytes.extend_from_slice(&[0x00; 5]);
+        let result = ScriptSig::decode(&mut Cursor::new(&bytes));
+        assert!(result.is_err());
+    }
+}

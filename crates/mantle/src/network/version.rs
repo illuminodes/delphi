@@ -261,7 +261,136 @@ mod tests {
 
     #[test]
     fn ping_truncated() {
-        let e = decode_err::<PingMsg>(&[0x00; 4]); // needs 8 bytes
+        let e = decode_err::<PingMsg>(&[0x00; 4]);
+        assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
+    }
+
+    // ── VersionMsgRef ────────────────────────────────────────────────────────
+
+    fn decode_ref<'a, T: DecodeRef<'a>>(buf: &'a [u8]) -> (T, &'a [u8]) {
+        T::decode_ref(buf).expect("test data must decode")
+    }
+
+    #[test]
+    fn version_msg_ref_roundtrip() {
+        let msg = VersionMsg {
+            version: ProtocolVersion::CURRENT,
+            services: Services::NODE_NETWORK,
+            timestamp: Timestamp::new(1_700_000_000),
+            receiver: NetworkAddr {
+                services: Services::NONE,
+                ip: [0u8; 16],
+                port: Port::MAINNET,
+            },
+            sender: NetworkAddr {
+                services: Services::NODE_NETWORK,
+                ip: [0u8; 16],
+                port: Port::MAINNET,
+            },
+            nonce: PeerNonce::new(0xdead_beef),
+            user_agent: "/mantle:0.1.0/".to_string(),
+            start_height: BlockHeight::new(800_000),
+            relay: true,
+        };
+        let bytes = encode(&msg);
+        let (msg_ref, tail) = decode_ref::<VersionMsgRef>(&bytes);
+        assert!(tail.is_empty());
+        assert_eq!(msg_ref.version, msg.version);
+        assert_eq!(msg_ref.services, msg.services);
+        assert_eq!(msg_ref.timestamp, msg.timestamp);
+        assert_eq!(msg_ref.nonce, msg.nonce);
+        assert_eq!(msg_ref.user_agent, "/mantle:0.1.0/");
+        assert_eq!(msg_ref.start_height, msg.start_height);
+        assert_eq!(msg_ref.relay, true);
+    }
+
+    #[test]
+    fn version_msg_ref_to_owned_matches_original() {
+        let msg = VersionMsg {
+            version: ProtocolVersion::CURRENT,
+            services: Services::NONE,
+            timestamp: Timestamp::new(0),
+            receiver: NetworkAddr {
+                services: Services::NONE,
+                ip: [0u8; 16],
+                port: Port::new(0),
+            },
+            sender: NetworkAddr {
+                services: Services::NONE,
+                ip: [0u8; 16],
+                port: Port::new(0),
+            },
+            nonce: PeerNonce::new(0),
+            user_agent: "test".to_string(),
+            start_height: BlockHeight::ZERO,
+            relay: false,
+        };
+        let bytes = encode(&msg);
+        let (msg_ref, _) = decode_ref::<VersionMsgRef>(&bytes);
+        assert_eq!(msg_ref.to_owned(), msg);
+    }
+
+    #[test]
+    fn version_msg_ref_user_agent_zero_copy() {
+        let msg = VersionMsg {
+            version: ProtocolVersion::CURRENT,
+            services: Services::NONE,
+            timestamp: Timestamp::new(0),
+            receiver: NetworkAddr {
+                services: Services::NONE,
+                ip: [0u8; 16],
+                port: Port::new(0),
+            },
+            sender: NetworkAddr {
+                services: Services::NONE,
+                ip: [0u8; 16],
+                port: Port::new(0),
+            },
+            nonce: PeerNonce::new(0),
+            user_agent: "/mantle/".to_string(),
+            start_height: BlockHeight::ZERO,
+            relay: false,
+        };
+        let bytes = encode(&msg);
+        let (msg_ref, _) = decode_ref::<VersionMsgRef>(&bytes);
+        let ua_ptr = msg_ref.user_agent.as_ptr() as usize;
+        let buf_start = bytes.as_ptr() as usize;
+        let buf_end = buf_start + bytes.len();
+        assert!(
+            ua_ptr >= buf_start && ua_ptr < buf_end,
+            "user_agent must borrow from the input buffer"
+        );
+    }
+
+    #[test]
+    fn version_msg_ref_truncated_fails() {
+        let msg = VersionMsg {
+            version: ProtocolVersion::CURRENT,
+            services: Services::NONE,
+            timestamp: Timestamp::new(0),
+            receiver: NetworkAddr {
+                services: Services::NONE,
+                ip: [0u8; 16],
+                port: Port::new(0),
+            },
+            sender: NetworkAddr {
+                services: Services::NONE,
+                ip: [0u8; 16],
+                port: Port::new(0),
+            },
+            nonce: PeerNonce::new(0),
+            user_agent: "ok".to_string(),
+            start_height: BlockHeight::ZERO,
+            relay: false,
+        };
+        let bytes = encode(&msg);
+        let truncated = &bytes[..bytes.len() / 2];
+        assert!(VersionMsgRef::decode_ref(truncated).is_err());
+    }
+
+    #[test]
+    fn version_msg_truncated_after_services() {
+        let e = decode_err::<VersionMsg>(&[0u8; 12]);
         assert!(matches!(e, CodecError::UnexpectedEof | CodecError::Io(_)));
     }
 }
