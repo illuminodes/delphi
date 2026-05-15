@@ -18,7 +18,7 @@ pub const PEER_SEND_OUTSTANDING_CAP: usize = 8;
 pub struct Peer<T> {
     pub addr: SocketAddrV4,
     pub sock: Option<Socket>,
-    pub sockaddr: Box<SockAddrIn>,
+    pub sockaddr: SockAddrIn,
     pub state: PeerState,
     pub recv_buf: Vec<u8>,
     pub recv_armed: bool,

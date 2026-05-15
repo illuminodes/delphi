@@ -113,12 +113,12 @@ fn make_peer(slot: u16) -> Peer<()> {
     Peer {
         addr: SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 8333),
         sock: None,
-        sockaddr: Box::new(SockAddrIn {
+        sockaddr: SockAddrIn {
             sin_family: 2, // AF_INET
             sin_port: 8333u16.to_be(),
             sin_addr: u32::from_ne_bytes([127, 0, 0, 1]),
             sin_zero: [0; 8],
-        }),
+        },
         state: PeerState::Ready,
         recv_buf: Vec::new(),
         recv_armed: false,

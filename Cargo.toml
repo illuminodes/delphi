@@ -27,9 +27,9 @@ style = "warn"
 debug = true
 
 [workspace.dependencies]
-sha2 = { version = "0.11", default-features = false }
-sha1 = { version = "0.11", default-features = false }
-ripemd = { version = "0.2", default-features = false }
+sha2 = "0.11"
+sha1 = "0.11"
+ripemd = "0.2"
 k256 = { version = "0.14.0-rc.9", default-features = false }
 bitcoinconsensus = "0.106.0"
 ququmatz = { path = "/home/cuarentaydos/Code/tooling/ququmatz" }

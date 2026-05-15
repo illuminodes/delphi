@@ -225,12 +225,12 @@ impl Fetcher {
             SocketFlags::NONBLOCK,
         )
         .map_err(|e| FetchError::UringErr(format!("socket: {e:?}")))?;
-        let sockaddr = Box::new(SockAddrIn {
+        let sockaddr = SockAddrIn {
             sin_family: u16::try_from(AddressFamily::Inet.as_raw()).expect("AF_INET fits u16"),
             sin_port: addr.port().to_be(),
             sin_addr: u32::from_ne_bytes(addr.ip().octets()),
             sin_zero: [0; 8],
-        });
+        };
 
         let fd = sock.fd();
         let peer = FPeer {
