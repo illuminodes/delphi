@@ -1,4 +1,4 @@
-use mantle::primitives::{BlockHeader, BlockHeight, CompactBits, Hash256};
+use mantle::primitives::{BlockHeader, BlockHeight, BlockTime, CompactBits, Hash256};
 
 use crate::chain_view::ChainView;
 use crate::error::ValidationError;
@@ -126,7 +126,7 @@ pub(super) fn expected_nbits(
     parent_height: BlockHeight,
     parent: BlockHeader,
     view: &impl ChainView,
-    block_time: u32,
+    block_time: BlockTime,
     allow_min_difficulty: bool,
 ) -> Result<CompactBits, ValidationError> {
     let this_height = parent_height + 1;

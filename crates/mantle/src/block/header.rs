@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 
 use crate::codec::{Decode, DecodeRef, Encode, Error};
-use crate::difficulty::{BlockVersion, CompactBits, Nonce};
+use crate::difficulty::{BlockTime, BlockVersion, CompactBits, Nonce};
 use crate::hash::Hash256;
 
 /// 80-byte fixed-size block header.
@@ -14,7 +14,7 @@ pub struct BlockHeader {
     version: BlockVersion,
     prev_block: Hash256,
     merkle_root: Hash256,
-    time: u32,
+    time: BlockTime,
     bits: CompactBits,
     nonce: Nonce,
 }
@@ -37,7 +37,7 @@ impl BlockHeader {
             version: BlockVersion::new(version),
             prev_block,
             merkle_root,
-            time,
+            time: BlockTime::new(time),
             bits,
             nonce: Nonce::new(nonce),
         }
@@ -98,7 +98,7 @@ impl BlockHeader {
 
     #[inline]
     #[must_use]
-    pub fn time(&self) -> u32 {
+    pub fn time(&self) -> BlockTime {
         self.time
     }
 
@@ -130,7 +130,7 @@ impl BlockHeader {
     }
 
     #[inline]
-    pub fn set_time(&mut self, t: u32) {
+    pub fn set_time(&mut self, t: BlockTime) {
         self.time = t;
     }
 
@@ -192,7 +192,7 @@ mod tests {
     use std::io::Cursor;
 
     use crate::codec::{Decode, DecodeRef, Encode, Error};
-    use crate::difficulty::CompactBits;
+    use crate::difficulty::{BlockTime, CompactBits};
     use crate::hash::Hash256;
 
     use super::BlockHeader;
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(h.version(), 0x0200_0000);
         assert_eq!(h.prev_block(), Hash256::from_bytes([0xaa; 32]));
         assert_eq!(h.merkle_root(), Hash256::from_bytes([0xbb; 32]));
-        assert_eq!(h.time(), 1_700_000_000);
+        assert_eq!(h.time(), BlockTime::new(1_700_000_000));
         assert_eq!(h.bits(), CompactBits::new(0x1d00_ffff));
         assert_eq!(h.nonce(), 42);
     }

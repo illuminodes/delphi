@@ -1,5 +1,7 @@
 use mantle::collections::PrehashedMap;
-use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi, ScriptPubKey};
+use mantle::primitives::{
+    BlockHeader, BlockHeight, BlockTime, Hash256, OutPoint, Satoshi, ScriptPubKey,
+};
 
 use crate::error::ChainViewError;
 
@@ -154,7 +156,7 @@ pub trait ChainView {
     ///
     /// # Errors
     /// Returns `Err` if headers cannot be retrieved.
-    fn median_time_past(&self, header: &BlockHeader) -> Result<u32, ChainViewError>;
+    fn median_time_past(&self, header: &BlockHeader) -> Result<BlockTime, ChainViewError>;
 
     /// Current tip of the chain as seen by this view.
     fn tip(&self) -> TipInfo;
@@ -251,14 +253,17 @@ impl ChainView for MemoryChainView {
         Ok(self.header_index.get(hash).copied())
     }
 
-    fn median_time_past(&self, header: &BlockHeader) -> Result<u32, ChainViewError> {
+    fn median_time_past(&self, header: &BlockHeader) -> Result<BlockTime, ChainViewError> {
         // Find the height of the parent of `header`, then collect up to 11
         // ancestor timestamps ending at that parent.
         let parent_height = match self.header_index.get(&header.prev_block()) {
             Some(&h) => h,
             None if header.prev_block() == Hash256::ZERO => {
                 // Genesis parent — MTP of genesis is genesis timestamp itself.
-                return Ok(self.headers.first().map_or(0, BlockHeader::time));
+                return Ok(self
+                    .headers
+                    .first()
+                    .map_or(BlockTime::new(0), BlockHeader::time));
             }
             None => return Err(ChainViewError::NotFound),
         };
@@ -270,7 +275,7 @@ impl ChainView for MemoryChainView {
         // Window of up to 11, but capped by how many headers we actually have.
         let count = (ph_idx + 1).min(11);
         let start = (ph_idx + 1).saturating_sub(11);
-        let mut times: Vec<u32> = self.headers[start..=ph_idx]
+        let mut times: Vec<BlockTime> = self.headers[start..=ph_idx]
             .iter()
             .map(BlockHeader::time)
             .collect();
@@ -302,6 +307,7 @@ impl ChainView for MemoryChainView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mantle::primitives::BlockTime;
 
     fn header(time: u32, prev: Hash256) -> BlockHeader {
         BlockHeader::new(
@@ -340,14 +346,14 @@ mod tests {
                 .expect("no error")
                 .expect("height 0 exists")
                 .time(),
-            1_000
+            BlockTime::new(1_000)
         );
         assert_eq!(
             view.get_header_at(BlockHeight::new(2))
                 .expect("no error")
                 .expect("height 2 exists")
                 .time(),
-            3_000
+            BlockTime::new(3_000)
         );
         assert!(
             view.get_header_at(BlockHeight::new(3))
@@ -367,7 +373,7 @@ mod tests {
                 .expect("no error")
                 .expect("header exists")
                 .time(),
-            9_999
+            BlockTime::new(9_999)
         );
         assert!(view.get_header(&Hash256::ZERO).expect("no error").is_none());
     }
@@ -405,7 +411,7 @@ mod tests {
         // MTP for `next` = median of [1_000] = 1_000.
         assert_eq!(
             view.median_time_past(&next).expect("mtp must succeed"),
-            1_000
+            BlockTime::new(1_000)
         );
     }
 
@@ -417,7 +423,7 @@ mod tests {
         let tip_hash = view.tip().hash;
         let next = header(99, tip_hash);
         // Median of [1..=11] = 6.
-        assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), 6);
+        assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), BlockTime::new(6));
     }
 
     #[test]
@@ -431,7 +437,7 @@ mod tests {
         );
         let tip_hash = view.tip().hash;
         let next = header(99, tip_hash);
-        assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), 10);
+        assert_eq!(view.median_time_past(&next).expect("mtp must succeed"), BlockTime::new(10));
     }
 
     #[test]

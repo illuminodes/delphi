@@ -97,6 +97,74 @@ impl<'a> DecodeRef<'a> for Nonce {
     }
 }
 
+// ── BlockTime ────────────────────────────────────────────────────────────────
+
+/// Block header timestamp (u32 Unix seconds). Also the type returned by
+/// `median_time_past()` — both represent consensus-layer timestamps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct BlockTime(u32);
+
+impl BlockTime {
+    #[inline]
+    #[must_use]
+    pub const fn new(t: u32) -> Self {
+        Self(t)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl Encode for BlockTime {
+    #[inline]
+    fn encode(&self, w: &mut impl Write) -> Result<(), Error> {
+        self.0.encode(w)
+    }
+}
+
+impl Decode for BlockTime {
+    #[inline]
+    fn decode(r: &mut impl Read) -> Result<Self, Error> {
+        u32::decode(r).map(Self)
+    }
+}
+
+impl<'a> DecodeRef<'a> for BlockTime {
+    #[inline]
+    fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
+        u32::decode_ref(buf).map(|(v, rest)| (Self(v), rest))
+    }
+}
+
+impl fmt::Display for BlockTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<BlockTime> for u64 {
+    #[inline]
+    fn from(t: BlockTime) -> u64 {
+        u64::from(t.0)
+    }
+}
+
+impl std::ops::Add<u32> for BlockTime {
+    type Output = Self;
+    fn add(self, rhs: u32) -> Self {
+        Self(self.0.checked_add(rhs).expect("BlockTime overflow"))
+    }
+}
+
 // ── CompactBits ──────────────────────────────────────────────────────────────
 
 /// The `nBits` compact-format difficulty target stored in a block header.

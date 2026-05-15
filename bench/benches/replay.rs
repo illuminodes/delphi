@@ -14,8 +14,8 @@
 //!   Parametrised by height; fixtures must be present in fixtures/ordinals/.
 
 use mantle::primitives::{
-    Block, BlockHeader, BlockHeight, CompactBits, Hash256, Locktime, OutPoint, Satoshi, Sequence,
-    Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
+    Block, BlockHeader, BlockHeight, BlockTime, CompactBits, Hash256, Locktime, OutPoint, Satoshi,
+    Sequence, Transaction, TxHash, TxIn, TxOut, TxVersion, Witness,
 };
 use mantle_consensus::merkle::compute_merkle_root;
 use mantle_consensus::script::ScriptExecutionCache;
@@ -425,7 +425,7 @@ impl ChainView for DummyView<'_> {
     fn height_of(&self, hash: &Hash256) -> Result<Option<BlockHeight>, ChainViewError> {
         Ok(self.snap.height_of(hash))
     }
-    fn median_time_past(&self, hdr: &BlockHeader) -> Result<u32, ChainViewError> {
+    fn median_time_past(&self, hdr: &BlockHeader) -> Result<BlockTime, ChainViewError> {
         self.snap
             .median_time_past(hdr)
             .ok_or(ChainViewError::NotFound)

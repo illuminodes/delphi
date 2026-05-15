@@ -348,7 +348,7 @@ fn timestamp_too_early_rejected() {
             tip.hash,
             compute_merkle_root(&[tx.txid().expect("txid encoding cannot fail")])
                 .expect("single-tx merkle root cannot be empty"),
-            mtp, // exactly MTP — must be > MTP
+            mtp.to_u32(), // exactly MTP — must be > MTP
             CompactBits::new(0x207f_ffff),
             0,
         ),

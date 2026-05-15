@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use mantle::codec::Decode;
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
-use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256, OutPoint};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, BlockTime, Hash256, OutPoint};
 use mantle_consensus::chain_view::{ChainView, Coin, ConnectScratch, TipInfo};
 use mantle_consensus::error::ChainViewError;
 use mantle_consensus::script::ScriptExecutionCache;
@@ -169,7 +169,7 @@ impl ChainView for BenchView<'_> {
         Ok(self.headers.height_of(hash))
     }
 
-    fn median_time_past(&self, header: &BlockHeader) -> Result<u32, ChainViewError> {
+    fn median_time_past(&self, header: &BlockHeader) -> Result<BlockTime, ChainViewError> {
         self.headers
             .median_time_past(header)
             .ok_or(ChainViewError::NotFound)

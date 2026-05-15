@@ -1,5 +1,5 @@
 use mantle::collections::PrehashedMap;
-use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint};
+use mantle::primitives::{BlockHeader, BlockHeight, BlockTime, Hash256, OutPoint};
 use mantle_consensus::chain_view::{ChainView, Coin, TipInfo};
 use mantle_consensus::error::ChainViewError;
 
@@ -97,11 +97,11 @@ impl HeaderSnapshot {
     }
 
     #[must_use]
-    pub fn median_time_past(&self, header: &BlockHeader) -> Option<u32> {
+    pub fn median_time_past(&self, header: &BlockHeader) -> Option<BlockTime> {
         let parent_height = *self.by_hash.get(&header.prev_block())?;
         let ph_idx = parent_height.checked_sub(self.base)? as usize;
         let start = (ph_idx + 1).saturating_sub(11);
-        let mut times: Vec<u32> = self.headers[start..=ph_idx]
+        let mut times: Vec<BlockTime> = self.headers[start..=ph_idx]
             .iter()
             .map(|(_, h)| h.time())
             .collect();
@@ -164,7 +164,7 @@ impl ChainView for PrefetchedView<'_> {
         Ok(self.headers.height_of(hash))
     }
 
-    fn median_time_past(&self, header: &BlockHeader) -> Result<u32, ChainViewError> {
+    fn median_time_past(&self, header: &BlockHeader) -> Result<BlockTime, ChainViewError> {
         self.headers
             .median_time_past(header)
             .ok_or(ChainViewError::NotFound)

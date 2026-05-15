@@ -267,7 +267,7 @@ fn validate_context_chain_12(bencher: divan::Bencher) {
         ))
         .expect("median_time_past must succeed on valid chain");
     let block = Block {
-        header: BlockHeader::new(4, tip.hash, merkle_root, mtp + 1, EASY_BITS, 0),
+        header: BlockHeader::new(4, tip.hash, merkle_root, (mtp + 1).to_u32(), EASY_BITS, 0),
         transactions: vec![tx],
     };
     let clock = FixedClock(clock_now + 3600);
