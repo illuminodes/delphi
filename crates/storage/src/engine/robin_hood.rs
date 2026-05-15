@@ -210,6 +210,7 @@ pub struct RobinHoodTable {
     slot_count: u64,
     mask: u64,
     live_count: u64,
+    fixed_fd: Option<ququmatz::types::RawFd>,
 }
 
 impl RobinHoodTable {
@@ -263,6 +264,7 @@ impl RobinHoodTable {
             slot_count,
             mask: slot_count - 1,
             live_count: 0,
+            fixed_fd: None,
         })
     }
 
@@ -279,6 +281,7 @@ impl RobinHoodTable {
             slot_count: header.slot_count,
             mask: header.slot_count - 1,
             live_count: header.live_count,
+            fixed_fd: None,
         })
     }
 
@@ -327,6 +330,22 @@ impl RobinHoodTable {
     pub fn fd(&self) -> ququmatz::types::RawFd {
         use std::os::unix::io::AsRawFd;
         ququmatz::types::RawFd::from_raw(self.file.as_raw_fd() as usize)
+    }
+
+    pub fn set_fixed_fd(&mut self, fd: ququmatz::types::RawFd) {
+        self.fixed_fd = Some(fd);
+    }
+
+    fn uring_fd(&self) -> ququmatz::types::RawFd {
+        self.fixed_fd.unwrap_or_else(|| self.fd())
+    }
+
+    fn apply_fd_flags(&self, sqe: ququmatz::Sqe) -> ququmatz::Sqe {
+        if self.fixed_fd.is_some() {
+            sqe.fixed_file()
+        } else {
+            sqe
+        }
     }
 
     // ── Public API ───────────────────────────────────────────────────────────
@@ -468,6 +487,7 @@ impl RobinHoodTable {
         self.overflow = open_overflow_file(&old_overflow_path)?;
         self.slot_count = new_count;
         self.mask = new_count - 1;
+        self.fixed_fd = None;
         Ok(())
     }
 
@@ -526,7 +546,7 @@ impl RobinHoodTable {
             self.resize()?;
         }
 
-        let fd = self.fd();
+        let fd = self.uring_fd();
 
         states.clear();
         for (op, coin) in pairs {
@@ -563,7 +583,7 @@ impl RobinHoodTable {
                     )
                 }
                 .user_data(i as u64);
-                flush_if_full(ring, sqe, &mut submitted)?;
+                flush_if_full(ring, self.apply_fd_flags(sqe), &mut submitted)?;
             }
 
             if submitted == 0 {
@@ -696,7 +716,7 @@ impl RobinHoodTable {
         }
 
         let n = ops.len();
-        let fd = self.fd();
+        let fd = self.uring_fd();
 
         // ── Phase 1: find each target slot (mirrors get_batch_uring) ─────────
 
@@ -731,7 +751,7 @@ impl RobinHoodTable {
                     )
                 }
                 .user_data(i as u64);
-                flush_if_full(ring, sqe, &mut submitted)?;
+                flush_if_full(ring, self.apply_fd_flags(sqe), &mut submitted)?;
             }
 
             if submitted == 0 {
@@ -826,7 +846,7 @@ impl RobinHoodTable {
                     )
                 }
                 .user_data(j as u64);
-                flush_if_full(ring, sqe, &mut submitted)?;
+                flush_if_full(ring, self.apply_fd_flags(sqe), &mut submitted)?;
             }
 
             if submitted == 0 {
@@ -941,7 +961,7 @@ impl RobinHoodTable {
         results.clear();
         results.resize(n, None);
 
-        let fd = self.fd();
+        let fd = self.uring_fd();
 
         // Per-outpoint state: current probe slot and distance.
         slots.clear();
@@ -973,7 +993,7 @@ impl RobinHoodTable {
                     )
                 }
                 .user_data(i as u64);
-                flush_if_full(ring, sqe, &mut submitted)?;
+                flush_if_full(ring, self.apply_fd_flags(sqe), &mut submitted)?;
             }
 
             if submitted == 0 {
@@ -1065,6 +1085,9 @@ pub struct RobinHoodEngine {
     uring_resolved: Vec<bool>,
     // Scratch buffers reused across flush_write_buffer calls.
     wb_pairs: Vec<(OutPoint, Coin)>,
+    wb_insert_arena: Vec<u8>,
+    wb_write_arena: Vec<u8>,
+    wb_insert_states: Vec<InsertState>,
     wb_del_slots: Vec<u64>,
     wb_del_dists: Vec<u16>,
     wb_del_resolved: Vec<bool>,
@@ -1101,8 +1124,16 @@ impl RobinHoodEngine {
             .open(&checkpoint_path)
             .map_err(io_err)?;
 
-        let ring = ququmatz::IoUring::new(STORAGE_RING_ENTRIES)
+        let mut ring = ququmatz::IoUring::builder(STORAGE_RING_ENTRIES)
+            .build()
             .map_err(|e| EngineError::Io(uring_err(e)))?;
+
+        let table_fd = table.fd();
+        ring.register_files(&[table_fd.as_i32()])
+            .map_err(|e| EngineError::Io(uring_err(e)))?;
+
+        let mut table = table;
+        table.set_fixed_fd(ququmatz::types::RawFd::from_raw(0));
 
         let mut engine = Self {
             data_dir: data_dir.to_owned(),
@@ -1122,6 +1153,9 @@ impl RobinHoodEngine {
             uring_dists: Vec::new(),
             uring_resolved: Vec::new(),
             wb_pairs: Vec::new(),
+            wb_insert_arena: Vec::new(),
+            wb_write_arena: Vec::new(),
+            wb_insert_states: Vec::new(),
             wb_del_slots: Vec::new(),
             wb_del_dists: Vec::new(),
             wb_del_resolved: Vec::new(),
@@ -1142,6 +1176,16 @@ impl RobinHoodEngine {
         self.data_dir.join("headers.bin")
     }
 
+    fn refresh_registered_fd(&mut self) -> Result<(), EngineError> {
+        let new_fd = self.table.fd();
+        self.ring
+            .update_registered_files(&[new_fd.as_i32()], 0)
+            .map_err(|e| EngineError::Io(uring_err(e)))?;
+        self.table
+            .set_fixed_fd(ququmatz::types::RawFd::from_raw(0));
+        Ok(())
+    }
+
     fn flush_write_buffer(&mut self) -> Result<(), EngineError> {
         self.wb_pairs.clear();
         for (op, entry) in self.write_buffer.drain() {
@@ -1149,8 +1193,18 @@ impl RobinHoodEngine {
             self.wb_pairs.push((op, coin));
         }
 
-        for (op, coin) in self.wb_pairs.drain(..) {
-            self.table.insert(&op, &coin).map_err(io_err)?;
+        if !self.wb_pairs.is_empty() {
+            self.table
+                .insert_batch_uring(
+                    &self.wb_pairs,
+                    &mut self.ring,
+                    &mut self.wb_insert_arena,
+                    &mut self.wb_write_arena,
+                    &mut self.wb_insert_states,
+                )
+                .map_err(io_err)?;
+            self.wb_pairs.clear();
+            self.refresh_registered_fd()?;
         }
 
         let deletes = std::mem::take(&mut self.pending_disk_deletes);

@@ -28,6 +28,10 @@ name = "script"
 harness = false
 
 [[bench]]
+name = "storage"
+harness = false
+
+[[bench]]
 name = "replay"
 harness = false
 
@@ -46,6 +50,14 @@ path = "src/consensus/dhat.rs"
 [[bin]]
 name = "consensus-pprof"
 path = "src/consensus/pprof.rs"
+
+[[bin]]
+name = "storage-dhat"
+path = "src/storage/dhat.rs"
+
+[[bin]]
+name = "storage-pprof"
+path = "src/storage/pprof.rs"
 
 [[bin]]
 name = "dhat-profile"
@@ -106,6 +118,7 @@ mantle-storage = { path = "../crates/storage" }
 mantle-validator = { path = "../crates/validator" }
 ququmatz.workspace = true
 dhat = "0.3"
+tempfile = "3"
 pprof = { version = "0.14", features = ["flamegraph"] }
 k256 = { workspace = true, features = ["ecdsa", "arithmetic"] }
 sha2 = { workspace = true }

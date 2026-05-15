@@ -677,6 +677,7 @@ dependencies = [
  "ququmatz",
  "ripemd",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
