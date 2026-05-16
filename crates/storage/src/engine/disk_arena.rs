@@ -17,7 +17,7 @@ use super::{Engine, EngineError};
 use crate::types::{CommitBlockReq, Durability, LookupResult};
 
 const HEADER_RECORD_SIZE: usize = 116;
-const WRITE_BUFFER_CAP: usize = 4096;
+const WRITE_BUFFER_CAP: usize = 100_000;
 
 /// In-memory write buffer entry. Coins stay here until flushed to the
 /// disk arena. Short-lived coins (created and spent before flush) are
@@ -108,7 +108,7 @@ impl DiskArenaEngine {
         self.data_dir.join("headers.bin")
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
     fn flush_write_buffer(&mut self) -> Result<(), EngineError> {
         if self.write_buf.is_empty() && self.pending_spends.is_empty() {
             return Ok(());
@@ -121,13 +121,17 @@ impl DiskArenaEngine {
             tx_groups.entry(op.txid).or_default().push((op.vout, coin));
         }
 
-        // First pass: alloc spans, build tx handles, encode all slots into io_buf.
-        struct PendingWrite {
-            file_offset: u64,
-            buf_offset: usize,
+        // First pass: alloc spans and build metadata.
+        #[allow(clippy::items_after_statements)]
+        struct TxFlush {
+            txid: Hash256,
+            span: mantle_utxo_set::disk_arena::DiskSpan,
+            outputs: Vec<(u32, BufferedCoin)>,
+            live: u64,
+            height: BlockHeight,
+            coinbase: bool,
         }
-        let mut writes: Vec<PendingWrite> = Vec::new();
-        self.io_buf.clear();
+        let mut flushes: Vec<TxFlush> = Vec::with_capacity(tx_groups.len());
 
         for (txid, mut outputs) in tx_groups {
             outputs.sort_by_key(|(vout, _)| *vout);
@@ -138,59 +142,86 @@ impl DiskArenaEngine {
             let mut live = 0u64;
             let mut height = BlockHeight::ZERO;
             let mut coinbase = false;
-
             for (vout, coin) in &outputs {
                 if *vout < 64 { live |= 1 << vout; }
                 height = coin.height;
                 coinbase = coin.coinbase;
+            }
 
-                let buf_offset = self.io_buf.len();
-                self.io_buf.resize(buf_offset + 56, 0u8);
+            flushes.push(TxFlush { txid, span, outputs, live, height, coinbase });
+        }
+
+        // Sort by file offset so encoding produces a contiguous buffer.
+        flushes.sort_by_key(|f| f.span.base);
+
+        // Encode in file order.
+        self.io_buf.clear();
+        for flush in &flushes {
+            let span_bytes = usize::from(flush.span.count) * 56;
+            let buf_offset = self.io_buf.len();
+            self.io_buf.resize(buf_offset + span_bytes, 0u8);
+            for (vout, coin) in &flush.outputs {
+                let slot_start = buf_offset + (*vout as usize) * 56;
                 let slot_buf: &mut [u8; 56] =
-                    (&mut self.io_buf[buf_offset..buf_offset + 56]).try_into().unwrap();
+                    (&mut self.io_buf[slot_start..slot_start + 56]).try_into().unwrap();
                 mantle_utxo_set::disk_arena::encode_coin_slot(
                     slot_buf, coin.value, coin.height, coin.coinbase,
                     coin.script_pubkey.as_slice(),
                 );
-                let file_offset = (u64::from(span.base) + u64::from(*vout)) * 56;
-                writes.push(PendingWrite { file_offset, buf_offset });
             }
-
-            self.txs.insert(txid, DiskTxHandle { span, height, live, coinbase });
+            self.txs.insert(flush.txid, DiskTxHandle {
+                span: flush.span, height: flush.height, live: flush.live, coinbase: flush.coinbase,
+            });
         }
 
-        // Second pass: submit all writes via io_uring.
-        if !writes.is_empty() {
-            use std::os::unix::io::AsRawFd;
-            let fd = ququmatz::types::RawFd::from_raw(self.arena.fd().as_raw_fd() as usize);
-            let mut submitted = 0u32;
+        // Write to disk: single pwrite if contiguous, uring if scattered.
+        if !flushes.is_empty() {
+            use std::os::unix::fs::FileExt;
 
-            for w in &writes {
-                let sqe = unsafe {
-                    ququmatz::Sqe::write_ptr(
-                        fd,
-                        self.io_buf[w.buf_offset..].as_ptr(),
-                        56,
-                        w.file_offset,
-                    )
-                }.user_data(u64::MAX);
-                self.ring.push(sqe)
-                    .map_err(|e| EngineError::Io(io::Error::other(format!("{e:?}"))))?;
-                submitted += 1;
+            let all_contiguous = flushes.windows(2).all(|w| {
+                w[0].span.base + u32::from(w[0].span.count) == w[1].span.base
+            });
 
-                // Flush ring if close to full (256 entries).
-                if submitted >= 200 {
+            if all_contiguous {
+                let start_offset = u64::from(flushes[0].span.base) * 56;
+                self.arena.fd().write_all_at(&self.io_buf, start_offset)
+                    .map_err(io_err)?;
+            } else {
+                use std::os::unix::io::AsRawFd;
+                #[allow(clippy::cast_sign_loss)]
+                let fd = ququmatz::types::RawFd::from_raw(self.arena.fd().as_raw_fd() as usize);
+                let mut submitted = 0u32;
+                let mut buf_offset = 0usize;
+
+                for flush in &flushes {
+                    let span_bytes = usize::from(flush.span.count) * 56;
+                    let file_offset = u64::from(flush.span.base) * 56;
+                    let sqe = unsafe {
+                        ququmatz::Sqe::write_ptr(
+                            fd,
+                            self.io_buf[buf_offset..].as_ptr(),
+                            span_bytes as u32,
+                            file_offset,
+                        )
+                    }.user_data(u64::MAX);
+                    self.ring.push(sqe)
+                        .map_err(|e| EngineError::Io(io::Error::other(format!("{e:?}"))))?;
+                    submitted += 1;
+                    buf_offset += span_bytes;
+
+                    if submitted >= 200 {
+                        self.ring.submit_and_wait(submitted)
+                            .map_err(|e| EngineError::Io(io::Error::other(format!("{e:?}"))))?;
+                        while self.ring.complete().is_some() {}
+                        submitted = 0;
+                    }
+                }
+
+                if submitted > 0 {
                     self.ring.submit_and_wait(submitted)
                         .map_err(|e| EngineError::Io(io::Error::other(format!("{e:?}"))))?;
                     while self.ring.complete().is_some() {}
-                    submitted = 0;
                 }
-            }
-
-            if submitted > 0 {
-                self.ring.submit_and_wait(submitted)
-                    .map_err(|e| EngineError::Io(io::Error::other(format!("{e:?}"))))?;
-                while self.ring.complete().is_some() {}
             }
         }
 
@@ -261,8 +292,8 @@ impl Engine for DiskArenaEngine {
             }
         }
 
-        // Flush if buffer is getting large and this block requests persistence.
-        if self.write_buf.len() >= WRITE_BUFFER_CAP && req.durability == Durability::Synced {
+        // Flush when buffer exceeds capacity to bound memory usage.
+        if self.write_buf.len() >= WRITE_BUFFER_CAP {
             self.flush_write_buffer()?;
         }
 
