@@ -93,17 +93,33 @@ impl CoinArena {
     }
 
     /// Allocate and fill a span directly from `NewCoin` data.
+    /// Coins must all share the same txid (contiguous run from a block).
     #[allow(clippy::cast_possible_truncation)]
     pub fn alloc_from_coins(&mut self, coins: &[NewCoin<'_>], max_vout: u32) -> ArenaSpan {
         let count = max_vout + 1;
         let base = self.coins.len();
-        self.coins.resize_with(base + count as usize, || None);
+        self.coins.reserve(count as usize);
+
+        // Push slots sequentially — fill gaps with None, actual coins with Some.
+        // Avoids resize_with which would zero all slots before we overwrite them.
+        let mut next_vout = 0u32;
         for c in coins {
-            self.coins[base + c.outpoint.vout as usize] = Some(CoinEntry {
+            let vout = c.outpoint.vout;
+            while next_vout < vout {
+                self.coins.push(None);
+                next_vout += 1;
+            }
+            self.coins.push(Some(CoinEntry {
                 value: c.value,
                 script_pubkey: c.script_pubkey.into(),
-            });
+            }));
+            next_vout = vout + 1;
         }
+        while next_vout < count {
+            self.coins.push(None);
+            next_vout += 1;
+        }
+
         ArenaSpan {
             base: base as u32,
             count: count as u16,

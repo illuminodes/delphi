@@ -19,6 +19,7 @@ use mantle_storage::engine::robin_hood::RobinHoodEngine;
 use mantle_storage::engine::tx_grouped::TxGroupedEngine;
 use mantle_storage::engine::Engine;
 use mantle_storage::types::{CommitBlockReq, Durability, ReqToken};
+use mantle_utxo_set::{ArenaUtxoSet, ConnectScratch};
 
 #[path = "../pprof_common.rs"]
 mod pprof_common;
@@ -205,10 +206,70 @@ fn run_ordinals(label: &str, mut make_engine: impl FnMut(&Path) -> Box<dyn Engin
     print_top(&report, label, iters, 0);
 }
 
+fn run_arena_ordinals() {
+    let corpus = build_corpus();
+    if corpus.blocks.is_empty() {
+        eprintln!("ordinals fixtures missing, skipping");
+        return;
+    }
+
+    let guard = pprof::ProfilerGuardBuilder::default()
+        .frequency(997)
+        .build()
+        .expect("pprof profiler must initialize");
+
+    for _ in 0..3 {
+        let mut set = ArenaUtxoSet::new();
+        let mut scratch = ConnectScratch::new();
+
+        let seed_created: Vec<NewCoin<'_>> = corpus
+            .pre_window
+            .iter()
+            .map(|(op, value, spk)| NewCoin {
+                outpoint: *op,
+                value: *value,
+                script_pubkey: spk,
+                coinbase: false,
+                height: BlockHeight::new(1),
+            })
+            .collect();
+        let undo = set
+            .connect_block_with(&mut scratch, BlockHeight::new(1), &seed_created, &[])
+            .unwrap();
+        scratch.reclaim(undo);
+
+        for rb in &corpus.blocks {
+            let created: Vec<NewCoin<'_>> = rb
+                .created
+                .iter()
+                .map(|(op, value, spk, coinbase)| NewCoin {
+                    outpoint: *op,
+                    value: *value,
+                    script_pubkey: spk,
+                    coinbase: *coinbase,
+                    height: BlockHeight::new(rb.height),
+                })
+                .collect();
+            let undo = set.connect_block_best_effort(
+                &mut scratch,
+                BlockHeight::new(rb.height),
+                &created,
+                &rb.spent,
+            );
+            scratch.reclaim(undo);
+        }
+        std::hint::black_box(&set);
+    }
+
+    let report = guard.report().build().expect("pprof report must build");
+    print_top(&report, "arena_ordinals", 3, 0);
+}
+
 const SCENARIOS: &[&str] = &[
     "flat_ordinals",
     "robin_hood_ordinals",
     "tx_grouped_ordinals",
+    "arena_ordinals",
 ];
 
 fn main() {
@@ -230,6 +291,9 @@ fn main() {
             run_ordinals("tx_grouped_ordinals", |p| {
                 Box::new(TxGroupedEngine::open(p).unwrap())
             });
+        }
+        Some("arena_ordinals") => {
+            run_arena_ordinals();
         }
         Some(other) => {
             eprintln!("unknown scenario: {other}");
