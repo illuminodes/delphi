@@ -31,25 +31,60 @@ impl TxEntry {
     #[must_use]
     pub fn new(height: BlockHeight, coinbase: bool, outputs: Vec<Option<CoinEntry>>) -> Self {
         let count = outputs.len();
-        let (live, outs) = if count <= INLINE_CAP {
+        if count <= INLINE_CAP {
             let mut word = 0u64;
-            let mut slots: [Option<CoinEntry>; INLINE_CAP] =
-                [None, None, None, None];
+            let mut slots: [Option<CoinEntry>; INLINE_CAP] = [None, None, None, None];
             for (i, slot) in outputs.into_iter().enumerate() {
                 if slot.is_some() {
                     word |= 1 << i;
                 }
                 slots[i] = slot;
             }
-            (
-                Bitmap::Inline(word),
-                Outputs::Inline {
-                    #[allow(clippy::cast_possible_truncation)]
-                    len: count as u8, // count <= INLINE_CAP (4)
-                    slots,
-                },
-            )
-        } else if count <= 64 {
+            return Self {
+                height,
+                coinbase,
+                live: Bitmap::Inline(word),
+                #[allow(clippy::cast_possible_truncation)]
+                outputs: Outputs::Inline { len: count as u8, slots },
+            };
+        }
+        Self::new_heap(height, coinbase, outputs)
+    }
+
+    /// Build a `TxEntry` by draining from a mutable slice. The slots are
+    /// `take()`-d so the source vec retains its capacity for reuse.
+    #[must_use]
+    pub fn drain_from(
+        height: BlockHeight,
+        coinbase: bool,
+        src: &mut [Option<CoinEntry>],
+    ) -> Self {
+        let count = src.len();
+        if count <= INLINE_CAP {
+            let mut word = 0u64;
+            let mut slots: [Option<CoinEntry>; INLINE_CAP] = [None, None, None, None];
+            for (i, slot) in src.iter_mut().enumerate() {
+                let taken = slot.take();
+                if taken.is_some() {
+                    word |= 1 << i;
+                }
+                slots[i] = taken;
+            }
+            return Self {
+                height,
+                coinbase,
+                live: Bitmap::Inline(word),
+                #[allow(clippy::cast_possible_truncation)]
+                outputs: Outputs::Inline { len: count as u8, slots },
+            };
+        }
+        let outputs: Vec<Option<CoinEntry>> = src.iter_mut().map(Option::take).collect();
+        Self::new_heap(height, coinbase, outputs)
+    }
+
+    fn new_heap(height: BlockHeight, coinbase: bool, outputs: Vec<Option<CoinEntry>>) -> Self {
+        let count = outputs.len();
+        let (live, outs) = if count <= 64 {
             let mut word = 0u64;
             for (i, slot) in outputs.iter().enumerate() {
                 if slot.is_some() {

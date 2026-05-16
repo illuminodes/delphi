@@ -111,9 +111,11 @@ impl Engine for TxGroupedEngine {
             self.wal_write_pos += 37;
         }
 
-        self.utxo_set
+        let undo = self
+            .utxo_set
             .connect_block_with(&mut self.scratch, req.height, req.created, req.spent)
             .map_err(|e| EngineError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+        self.scratch.reclaim(undo);
 
         debug_assert_eq!(req.header.prev_block(), req.prev_hash);
         self.header_write_len = write_header_record(

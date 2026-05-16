@@ -47,6 +47,17 @@ impl ConnectScratch {
         self.undo_spent.clear();
         self.created_txids.clear();
     }
+
+    /// Return consumed `BlockUndo` vecs so their capacity is reused on the
+    /// next `connect_block_with` call.
+    pub fn reclaim(&mut self, undo: BlockUndo) {
+        let mut spent = undo.spent;
+        let mut txids = undo.created_txids;
+        spent.clear();
+        txids.clear();
+        self.undo_spent = spent;
+        self.created_txids = txids;
+    }
 }
 
 impl Default for ConnectScratch {
@@ -222,7 +233,8 @@ impl UtxoSet {
                 i += 1;
             }
 
-            // Build outputs array inline. Reuse the scratch vec's capacity.
+            // Build outputs in the scratch vec, then drain into TxEntry.
+            // drain_from takes from the slice without stealing the Vec's capacity.
             scratch.outputs.clear();
             scratch
                 .outputs
@@ -234,10 +246,7 @@ impl UtxoSet {
                 });
             }
 
-            // Move outputs into TxEntry — TxEntry::new takes ownership.
-            // We swap with an empty vec so scratch keeps its capacity.
-            let owned = std::mem::take(&mut scratch.outputs);
-            let entry = TxEntry::new(height, coinbase, owned);
+            let entry = TxEntry::drain_from(height, coinbase, &mut scratch.outputs);
             self.txs.insert(txid, entry);
         }
 
