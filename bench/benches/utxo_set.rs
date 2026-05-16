@@ -467,11 +467,14 @@ mod ordinals_replay {
         prev_hash: Hash256,
         created: Vec<(OutPoint, Satoshi, Vec<u8>, bool)>,
         spent: Vec<OutPoint>,
+        new_coins: Vec<NewCoin<'static>>,
     }
 
     struct Corpus {
         blocks: Vec<RealBlock>,
+        #[allow(dead_code)]
         pre_window: Vec<(OutPoint, Satoshi, Vec<u8>)>,
+        seed_coins: Vec<NewCoin<'static>>,
     }
 
     fn ordinals_dir() -> PathBuf {
@@ -541,15 +544,56 @@ mod ordinals_replay {
                 prev_hash,
                 created,
                 spent,
+                new_coins: Vec::new(),
             });
         }
+
+        // Second pass: blocks vec is stable, build NewCoin slices that
+        // borrow script bytes from the now-pinned created tuples.
+        // SAFETY: the Corpus lives in a LazyLock — the blocks and their
+        // created vecs are never moved or freed. The transmuted 'static
+        // lifetime is valid for the program's duration.
+        for blk in &mut blocks {
+            blk.new_coins = blk
+                .created
+                .iter()
+                .map(|(op, value, spk, coinbase)| {
+                    let spk_ref: &[u8] = spk;
+                    let spk_static: &'static [u8] =
+                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(spk_ref) };
+                    NewCoin {
+                        outpoint: *op,
+                        value: *value,
+                        script_pubkey: spk_static,
+                        coinbase: *coinbase,
+                        height: BlockHeight::new(blk.height),
+                    }
+                })
+                .collect();
+        }
+
+        let seed_coins: Vec<NewCoin<'static>> = pre_window
+            .iter()
+            .map(|(op, value, spk)| {
+                let spk_ref: &[u8] = spk;
+                let spk_static: &'static [u8] =
+                    unsafe { std::mem::transmute::<&[u8], &'static [u8]>(spk_ref) };
+                NewCoin {
+                    outpoint: *op,
+                    value: *value,
+                    script_pubkey: spk_static,
+                    coinbase: false,
+                    height: BlockHeight::new(1),
+                }
+            })
+            .collect();
 
         eprintln!(
             "ordinals corpus: {} blocks, {} pre-window UTXOs to seed",
             blocks.len(),
             pre_window.len()
         );
-        Corpus { blocks, pre_window }
+        Corpus { blocks, pre_window, seed_coins }
     }
 
     static CORPUS: LazyLock<Corpus> = LazyLock::new(build_corpus);
@@ -562,17 +606,6 @@ mod ordinals_replay {
 
         let seed_hash = corpus.blocks[0].prev_hash;
         let seed_height = BlockHeight::new(START_HEIGHT - 1);
-        let seed_created: Vec<NewCoin<'_>> = corpus
-            .pre_window
-            .iter()
-            .map(|(op, value, spk)| NewCoin {
-                outpoint: *op,
-                value: *value,
-                script_pubkey: spk,
-                coinbase: false,
-                height: BlockHeight::new(1),
-            })
-            .collect();
         let seed_header = BlockHeader::new(
             BlockVersion::new(1),
             Hash256::ZERO,
@@ -587,7 +620,7 @@ mod ordinals_replay {
             hash: seed_hash,
             prev_hash: Hash256::ZERO,
             header: seed_header,
-            created: &seed_created,
+            created: &corpus.seed_coins,
             spent: &[],
             block_bytes: None,
             durability: Durability::Memory,
@@ -595,24 +628,14 @@ mod ordinals_replay {
         .unwrap();
 
         for (i, rb) in corpus.blocks.iter().enumerate() {
-            let created: Vec<NewCoin<'_>> = rb
-                .created
-                .iter()
-                .map(|(op, value, spk, coinbase)| NewCoin {
-                    outpoint: *op,
-                    value: *value,
-                    script_pubkey: spk,
-                    coinbase: *coinbase,
-                    height: BlockHeight::new(rb.height),
-                })
-                .collect();
             eng.write_block(&CommitBlockReq {
+                #[allow(clippy::cast_possible_truncation)]
                 token: ReqToken(i as u64 + 1),
                 height: BlockHeight::new(rb.height),
                 hash: rb.hash,
                 prev_hash: rb.prev_hash,
                 header: rb.header,
-                created: &created,
+                created: &rb.new_coins,
                 spent: &rb.spent,
                 block_bytes: None,
                 durability: Durability::Memory,
@@ -683,38 +706,16 @@ mod ordinals_replay {
             let mut set = ArenaUtxoSet::new();
             let mut scratch = ConnectScratch::new();
 
-            let seed_created: Vec<NewCoin<'_>> = corpus
-                .pre_window
-                .iter()
-                .map(|(op, value, spk)| NewCoin {
-                    outpoint: *op,
-                    value: *value,
-                    script_pubkey: spk,
-                    coinbase: false,
-                    height: BlockHeight::new(1),
-                })
-                .collect();
             let undo = set
-                .connect_block_with(&mut scratch, BlockHeight::new(1), &seed_created, &[])
+                .connect_block_with(&mut scratch, BlockHeight::new(1), &corpus.seed_coins, &[])
                 .unwrap();
             scratch.reclaim(undo);
 
             for rb in &corpus.blocks {
-                let created: Vec<NewCoin<'_>> = rb
-                    .created
-                    .iter()
-                    .map(|(op, value, spk, coinbase)| NewCoin {
-                        outpoint: *op,
-                        value: *value,
-                        script_pubkey: spk,
-                        coinbase: *coinbase,
-                        height: BlockHeight::new(rb.height),
-                    })
-                    .collect();
                 let undo = set.connect_block_best_effort(
                     &mut scratch,
                     BlockHeight::new(rb.height),
-                    &created,
+                    &rb.new_coins,
                     &rb.spent,
                 );
                 scratch.reclaim(undo);
