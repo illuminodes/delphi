@@ -1,3 +1,4 @@
+pub mod arena;
 pub mod flat;
 pub mod robin_hood;
 pub mod tx_grouped;

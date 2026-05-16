@@ -9,6 +9,7 @@ use mantle::primitives::{
     OutPoint, Satoshi, TxHash,
 };
 use mantle_consensus::chain_view::NewCoin;
+use mantle_storage::engine::arena::ArenaEngine;
 use mantle_storage::engine::flat::FlatEngine;
 use mantle_storage::engine::robin_hood::RobinHoodEngine;
 use mantle_storage::engine::tx_grouped::TxGroupedEngine;
@@ -721,6 +722,20 @@ mod ordinals_replay {
                 scratch.reclaim(undo);
             }
             black_box(&set);
+        });
+    }
+
+    #[divan::bench(sample_count = 3)]
+    fn arena_engine(bencher: divan::Bencher) {
+        if !has_fixtures() {
+            eprintln!("ordinals fixtures missing, skipping");
+            return;
+        }
+        LazyLock::force(&CORPUS);
+        bencher.bench_local(|| {
+            let dir = TmpDir::new("arena-eng-ord");
+            let mut eng = ArenaEngine::open(dir.path()).unwrap();
+            seed_and_replay(&mut eng);
         });
     }
 
