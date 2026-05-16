@@ -7,6 +7,7 @@ members = [
     "crates/validator",
     "crates/transport",
     "crates/block-io",
+    "crates/utxo-set",
     "bench",
     "conformance",
     "replay",

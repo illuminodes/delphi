@@ -674,6 +674,7 @@ dependencies = [
  "mantle-consensus",
  "mantle-storage",
  "mantle-transport",
+ "mantle-utxo-set",
  "mantle-validator",
  "pprof",
  "ququmatz",
@@ -735,6 +736,7 @@ version = "0.1.0"
 dependencies = [
  "mantle",
  "mantle-consensus",
+ "mantle-utxo-set",
  "quetzalcoatl",
  "ququmatz",
 ]
@@ -745,6 +747,14 @@ version = "0.1.0"
 dependencies = [
  "mantle",
  "ququmatz",
+]
+
+[[package]]
+name = "mantle-utxo-set"
+version = "0.1.0"
+dependencies = [
+ "mantle",
+ "mantle-consensus",
 ]
 
 [[package]]

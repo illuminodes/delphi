@@ -1,5 +1,6 @@
 pub mod flat;
 pub mod robin_hood;
+pub mod tx_grouped;
 
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint};
 use mantle_consensus::chain_view::{Coin, TipInfo};

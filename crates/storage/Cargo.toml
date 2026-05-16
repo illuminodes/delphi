@@ -12,5 +12,6 @@ storage-dbg = []
 [dependencies]
 mantle = { path = "../mantle" }
 mantle-consensus = { path = "../consensus" }
+mantle-utxo-set = { path = "../utxo-set" }
 quetzalcoatl.workspace = true
 ququmatz.workspace = true
