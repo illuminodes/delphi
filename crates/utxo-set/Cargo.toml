@@ -9,3 +9,4 @@ workspace = true
 [dependencies]
 mantle = { path = "../mantle" }
 mantle-consensus = { path = "../consensus" }
+ququmatz.workspace = true

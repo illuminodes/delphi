@@ -1,8 +1,7 @@
-#![forbid(unsafe_code)]
-
 pub mod arena;
 mod arena_set;
 mod coin_entry;
+pub mod disk_arena;
 mod error;
 mod set;
 mod tx_entry;
