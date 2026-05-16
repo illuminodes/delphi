@@ -58,8 +58,8 @@ pub struct BlockUndo {
 /// Reusable scratch buffers for `connect_block` / `disconnect_block`.
 /// Eliminates per-block allocations on the hot path.
 pub struct ConnectScratch {
-    undo_spent: Vec<SpendUndo>,
-    created_txids: Vec<Hash256>,
+    pub(crate) undo_spent: Vec<SpendUndo>,
+    pub(crate) created_txids: Vec<Hash256>,
 }
 
 impl ConnectScratch {
@@ -71,7 +71,7 @@ impl ConnectScratch {
         }
     }
 
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.undo_spent.clear();
         self.created_txids.clear();
     }

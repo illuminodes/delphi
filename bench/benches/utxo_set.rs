@@ -14,6 +14,7 @@ use mantle_storage::engine::robin_hood::RobinHoodEngine;
 use mantle_storage::engine::tx_grouped::TxGroupedEngine;
 use mantle_storage::engine::Engine;
 use mantle_storage::types::{CommitBlockReq, Durability, LookupResult, ReqToken};
+use mantle_utxo_set::{ArenaUtxoSet, ConnectScratch};
 
 fn main() {
     divan::main();
@@ -668,6 +669,57 @@ mod ordinals_replay {
             let dir = TmpDir::new("txg-ord");
             let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
             seed_and_replay(&mut eng);
+        });
+    }
+
+    #[divan::bench(sample_count = 3)]
+    fn arena(bencher: divan::Bencher) {
+        if !has_fixtures() {
+            eprintln!("ordinals fixtures missing, skipping");
+            return;
+        }
+        let corpus = &*CORPUS;
+        bencher.bench_local(|| {
+            let mut set = ArenaUtxoSet::new();
+            let mut scratch = ConnectScratch::new();
+
+            let seed_created: Vec<NewCoin<'_>> = corpus
+                .pre_window
+                .iter()
+                .map(|(op, value, spk)| NewCoin {
+                    outpoint: *op,
+                    value: *value,
+                    script_pubkey: spk,
+                    coinbase: false,
+                    height: BlockHeight::new(1),
+                })
+                .collect();
+            let undo = set
+                .connect_block_with(&mut scratch, BlockHeight::new(1), &seed_created, &[])
+                .unwrap();
+            scratch.reclaim(undo);
+
+            for rb in &corpus.blocks {
+                let created: Vec<NewCoin<'_>> = rb
+                    .created
+                    .iter()
+                    .map(|(op, value, spk, coinbase)| NewCoin {
+                        outpoint: *op,
+                        value: *value,
+                        script_pubkey: spk,
+                        coinbase: *coinbase,
+                        height: BlockHeight::new(rb.height),
+                    })
+                    .collect();
+                let undo = set.connect_block_best_effort(
+                    &mut scratch,
+                    BlockHeight::new(rb.height),
+                    &created,
+                    &rb.spent,
+                );
+                scratch.reclaim(undo);
+            }
+            black_box(&set);
         });
     }
 
