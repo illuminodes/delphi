@@ -266,13 +266,23 @@ impl DiskArena {
 //   [48..56] padding (zeroed)
 
 fn encode_slot(buf: &mut [u8; SLOT_SIZE as usize], coin: &CoinEntry, height: BlockHeight, coinbase: bool) {
-    buf[0..8].copy_from_slice(&coin.value.to_le_bytes());
+    encode_coin_slot(buf, coin.value, height, coinbase, coin.script_pubkey.as_slice());
+}
+
+/// Encode a coin into a 56-byte slot buffer from raw fields.
+pub fn encode_coin_slot(
+    buf: &mut [u8; SLOT_SIZE as usize],
+    value: Satoshi,
+    height: BlockHeight,
+    coinbase: bool,
+    script_pubkey: &[u8],
+) {
+    buf[0..8].copy_from_slice(&value.to_le_bytes());
     buf[8..12].copy_from_slice(&height.to_u32().to_le_bytes());
-    let spk = coin.script_pubkey.as_slice();
-    let spk_len = spk.len().min(MAX_INLINE_SPK);
+    let spk_len = script_pubkey.len().min(MAX_INLINE_SPK);
     #[allow(clippy::cast_possible_truncation)]
     { buf[12] = spk_len as u8; }
-    buf[13..13 + spk_len].copy_from_slice(&spk[..spk_len]);
+    buf[13..13 + spk_len].copy_from_slice(&script_pubkey[..spk_len]);
     buf[13 + spk_len..47].fill(0);
     buf[47] = u8::from(coinbase);
     buf[48..56].fill(0);
