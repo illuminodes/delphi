@@ -131,7 +131,7 @@ impl ReplayBufs {
 
     /// Collect intra-block outputs and external outpoints from a zero-copy
     /// `BlockRef`.
-    fn collect_outpoints_ref(&mut self, block_ref: &BlockRef<'_>) {
+    fn collect_outpoints_ref(&mut self, block_ref: &BlockRef<'_, '_>) {
         for tx in block_ref.transactions().skip(1) {
             for inp in tx.inputs() {
                 let Ok(i) = inp else { continue };
@@ -276,7 +276,7 @@ impl ReplayBufs {
     /// Returns `PipelineError` on any validation, lookup, or I/O failure.
     pub fn prefetch_and_connect<'blk, S>(
         &mut self,
-        block_ref: &'blk BlockRef<'blk>,
+        block_ref: &'blk BlockRef<'blk, 'blk>,
         height: BlockHeight,
         storage: &mut S,
         headers: &HeaderSnapshot,

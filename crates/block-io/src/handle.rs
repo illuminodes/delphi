@@ -3,13 +3,14 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use mantle::codec::Decode;
 use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256};
 use quetzalcoatl::capacity::Capacity;
 use quetzalcoatl::mpsc::RingBuffer as MpscRing;
 use quetzalcoatl::spsc::RingBuffer as SpscRing;
 use ququmatz::IoUring;
 
-use crate::slab::BlockIoSlab;
+use crate::slab::{Slab, SlabWriter};
 use crate::store::{BlockStore, HeaderStore};
 
 pub enum FileReq {
@@ -17,10 +18,12 @@ pub enum FileReq {
     WriteBlockAsync { height: BlockHeight, data: Vec<u8> },
     ReadBlock { height: BlockHeight },
     ReadBlockDecoded { height: BlockHeight, expected_hash: Hash256 },
+    ReadBlockSlab { height: BlockHeight },
     HasBlock { height: BlockHeight },
     WriteHeaders { start: BlockHeight, data: Vec<u8> },
     LoadCachedHeaders { start: BlockHeight },
     FlushBlockIndex,
+    ReleaseSlab { slot: u16 },
     Shutdown,
 }
 
@@ -29,6 +32,7 @@ pub enum FileResp {
     Bool(bool),
     BlockData(Vec<u8>),
     DecodedBlock(Block),
+    SlabReady(crate::slab::SlabToken),
     Headers(Vec<(BlockHeight, BlockHeader)>),
     Err(io::Error),
 }
@@ -107,6 +111,31 @@ where
         }
     }
 
+    /// Read block bytes into a slab slot and return a token.
+    ///
+    /// The caller uses [`SlabReader::handle`] with the token to get a
+    /// zero-copy `BufHandle<'a>` borrowing the block bytes directly from
+    /// the pre-allocated slab.  After processing, send the slot index
+    /// back via [`release_slab`](Self::release_slab) so the worker can
+    /// reuse it.
+    pub fn read_block_slab(
+        &mut self,
+        height: BlockHeight,
+    ) -> io::Result<crate::slab::SlabToken> {
+        self.tx
+            .push(FileReq::ReadBlockSlab { height })
+            .map_err(|_| io::Error::other("file-io ring full"))?;
+        match self.rx.pop_block() {
+            Some(FileResp::SlabReady(token)) => Ok(token),
+            Some(FileResp::Err(e)) => Err(e),
+            _ => Err(io::Error::other("file-io unexpected response")),
+        }
+    }
+
+    pub fn release_slab(&self, slot: u16) {
+        let _ = self.tx.push(FileReq::ReleaseSlab { slot });
+    }
+
     pub fn write_headers(&mut self, start: BlockHeight, data: Vec<u8>) -> io::Result<()> {
         self.tx
             .push(FileReq::WriteHeaders { start, data })
@@ -169,6 +198,10 @@ impl FileIoHandle {
         let (req_tx, req_rx) = req_ring.split();
         let (resp_tx, resp_rx) = resp_ring.split();
 
+        // Leak a Slab for the 'static detached-thread path.
+        let slab: &'static Slab = Box::leak(Box::new(Slab::new()));
+        let (slab_writer, _slab_reader) = slab.split();
+
         std::thread::Builder::new()
             .name("file-io".into())
             .spawn(move || {
@@ -179,7 +212,7 @@ impl FileIoHandle {
                     headers,
                     data_dir,
                     ring: IoUring::new(256).expect("io_uring"),
-                    slab: BlockIoSlab::new(),
+                    slab_writer,
                 }
                 .run();
             })
@@ -193,16 +226,21 @@ impl FileIoHandle {
 
 pub fn with_file_io<F, R>(data_dir: &Path, f: F) -> io::Result<R>
 where
-    F: FnOnce(&mut FileIoHandle<&MpscRing<FileReq>, &SpscRing<FileResp>>) -> R,
+    F: FnOnce(
+        &mut FileIoHandle<&MpscRing<FileReq>, &SpscRing<FileResp>>,
+        &crate::slab::SlabReader<'_>,
+    ) -> R,
 {
     let blocks = BlockStore::open(data_dir)?;
     let headers = HeaderStore::open(data_dir)?;
     let data_dir_owned = data_dir.to_owned();
+    let slab = Slab::new();
 
     let req_ring: MpscRing<FileReq> = MpscRing::new(Capacity::exact(FILE_RING_CAP));
     let resp_ring: SpscRing<FileResp> = SpscRing::new(Capacity::exact(FILE_RING_CAP));
 
     let result = std::thread::scope(|s| {
+        let (slab_writer, slab_reader) = slab.split();
         let (req_tx, req_rx) = req_ring.split_borrowed();
         let (resp_tx, resp_rx) = resp_ring.split_borrowed();
 
@@ -214,13 +252,13 @@ where
                 headers,
                 data_dir: data_dir_owned,
                 ring: IoUring::new(256).expect("io_uring"),
-                slab: BlockIoSlab::new(),
+                slab_writer,
             }
             .run();
         });
 
         let mut handle = FileIoHandle::from_parts(req_tx, resp_rx);
-        f(&mut handle)
+        f(&mut handle, &slab_reader)
     });
 
     Ok(result)
@@ -229,6 +267,7 @@ where
 // ── Worker ───────────────────────────────────────────────────────────────────
 
 struct FileIoWorker<
+    'slab,
     RReq: Deref<Target = MpscRing<FileReq>>,
     RResp: Deref<Target = SpscRing<FileResp>>,
 > {
@@ -238,10 +277,11 @@ struct FileIoWorker<
     headers: HeaderStore,
     data_dir: PathBuf,
     ring: IoUring,
-    slab: BlockIoSlab,
+    slab_writer: SlabWriter<'slab>,
 }
 
-impl<RReq, RResp> FileIoWorker<RReq, RResp>
+#[allow(clippy::too_many_lines)]
+impl<RReq, RResp> FileIoWorker<'_, RReq, RResp>
 where
     RReq: Deref<Target = MpscRing<FileReq>>,
     RResp: Deref<Target = SpscRing<FileResp>>,
@@ -275,12 +315,29 @@ where
                 }
                 FileReq::ReadBlock { height } => match self.blocks.block_location(height) {
                     Ok((offset, length)) => {
-                        match self
-                            .slab
-                            .read_raw(self.blocks.file_store(), &mut self.ring, offset, length)
-                        {
-                            Ok(data) => FileResp::BlockData(data),
-                            Err(e) => FileResp::Err(e),
+                        match self.slab_writer.alloc() {
+                            Some(slot) => {
+                                match self.slab_writer.fill_from_disk(
+                                    slot,
+                                    self.blocks.file_store(),
+                                    &mut self.ring,
+                                    offset,
+                                    length,
+                                ) {
+                                    Ok(_token) => {
+                                        let data = self.slab_writer.slot_buf_mut(slot)
+                                            [..length as usize]
+                                            .to_vec();
+                                        self.slab_writer.release(slot);
+                                        FileResp::BlockData(data)
+                                    }
+                                    Err(e) => {
+                                        self.slab_writer.release(slot);
+                                        FileResp::Err(e)
+                                    }
+                                }
+                            }
+                            None => FileResp::Err(io::Error::other("slab full")),
                         }
                     }
                     Err(e) => FileResp::Err(e),
@@ -290,15 +347,65 @@ where
                     expected_hash,
                 } => match self.blocks.block_location(height) {
                     Ok((offset, length)) => {
-                        match self.slab.read_decode_verify(
-                            self.blocks.file_store(),
-                            &mut self.ring,
-                            offset,
-                            length,
-                            expected_hash,
-                        ) {
-                            Ok(block) => FileResp::DecodedBlock(block),
-                            Err(e) => FileResp::Err(e),
+                        match self.slab_writer.alloc() {
+                            Some(slot) => {
+                                match self.slab_writer.fill_from_disk(
+                                    slot,
+                                    self.blocks.file_store(),
+                                    &mut self.ring,
+                                    offset,
+                                    length,
+                                ) {
+                                    Ok(_token) => {
+                                        let data = &self.slab_writer.slot_buf_mut(slot)
+                                            [..length as usize];
+                                        let result = Block::decode(
+                                            &mut std::io::Cursor::new(data),
+                                        );
+                                        self.slab_writer.release(slot);
+                                        match result {
+                                            Ok(block) => {
+                                                if block.header.hash() == expected_hash {
+                                                    FileResp::DecodedBlock(block)
+                                                } else {
+                                                    FileResp::Err(io::Error::other("hash mismatch"))
+                                                }
+                                            }
+                                            Err(e) => FileResp::Err(io::Error::other(
+                                                format!("decode: {e}"),
+                                            )),
+                                        }
+                                    }
+                                    Err(e) => {
+                                        self.slab_writer.release(slot);
+                                        FileResp::Err(e)
+                                    }
+                                }
+                            }
+                            None => FileResp::Err(io::Error::other("slab full")),
+                        }
+                    }
+                    Err(e) => FileResp::Err(e),
+                },
+                FileReq::ReadBlockSlab { height } => match self.blocks.block_location(height) {
+                    Ok((offset, length)) => {
+                        match self.slab_writer.alloc() {
+                            Some(slot) => {
+                                match self.slab_writer.fill_from_disk(
+                                    slot,
+                                    self.blocks.file_store(),
+                                    &mut self.ring,
+                                    offset,
+                                    length,
+                                ) {
+                                    Ok(token) => FileResp::SlabReady(token),
+                                    Err(e) => {
+                                        self.slab_writer.release(slot);
+                                        FileResp::Err(e)
+                                    }
+                                }
+                            }
+                            None => FileResp::Err(io::Error::other("slab full")),
                         }
                     }
                     Err(e) => FileResp::Err(e),
@@ -322,12 +429,18 @@ where
                     Ok(()) => FileResp::Ok,
                     Err(e) => FileResp::Err(e),
                 },
+                FileReq::ReleaseSlab { slot } => {
+                    self.slab_writer.release(slot);
+                    continue;
+                }
                 FileReq::Shutdown => {
                     let _ = self.resp_tx.push(FileResp::Ok);
                     return;
                 }
             };
-            let _ = self.resp_tx.push(resp);
+            if self.resp_tx.push(resp).is_err() {
+                eprintln!("[file-io] FAILED to push response!");
+            }
         }
     }
 }

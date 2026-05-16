@@ -94,31 +94,29 @@ impl<'a> Iterator for TxOutRefIter<'a> {
 /// — those callers must either go via `decode_into_arena` or fall back to
 /// [`Self::to_owned`]+`Transaction::txid_into`.
 #[derive(Debug, Clone, Copy)]
-pub struct TransactionRef<'a> {
+pub struct TransactionRef<'wire, 'arena>
+where
+    'wire: 'arena,
+{
     pub version: TxVersion,
     pub locktime: Locktime,
-    /// Complete wire bytes (BIP144 witness form if segwit, otherwise identical
-    /// to `non_witness_raw`). Used by `Encode` and `encoded_len`.
-    pub raw: &'a [u8],
-    /// Non-witness serialisation bytes (no marker/flag/witness fields).
-    /// Used by `txid_into` to hash without re-encoding.
-    pub non_witness_raw: &'a [u8],
-    /// `true` if `raw` is a BIP144 segwit serialisation (marker+flag present).
+    pub raw: &'wire [u8],
+    pub non_witness_raw: &'arena [u8],
     pub is_segwit: bool,
     input_count: usize,
-    inputs_buf: &'a [u8],
+    inputs_buf: &'wire [u8],
     output_count: usize,
-    outputs_buf: &'a [u8],
-    /// Slice covering all per-input witness stacks for this tx (segwit only).
-    /// Empty for legacy. The witness layout is `for each input: VarInt(count)
-    /// || VarInt(len)+bytes per item` (BIP144).
-    pub witnesses_buf: &'a [u8],
+    outputs_buf: &'wire [u8],
+    pub witnesses_buf: &'wire [u8],
 }
 
-impl<'a> TransactionRef<'a> {
+impl<'wire, 'arena> TransactionRef<'wire, 'arena>
+where
+    'wire: 'arena,
+{
     /// Lazily iterate over inputs. Each call returns a fresh iterator.
     #[must_use]
-    pub fn inputs(&self) -> TxInRefIter<'a> {
+    pub fn inputs(&self) -> TxInRefIter<'wire> {
         TxInRefIter {
             buf: self.inputs_buf,
             remaining: self.input_count,
@@ -127,7 +125,7 @@ impl<'a> TransactionRef<'a> {
 
     /// Lazily iterate over outputs. Each call returns a fresh iterator.
     #[must_use]
-    pub fn outputs(&self) -> TxOutRefIter<'a> {
+    pub fn outputs(&self) -> TxOutRefIter<'wire> {
         TxOutRefIter {
             buf: self.outputs_buf,
             remaining: self.output_count,
@@ -192,7 +190,7 @@ impl<'a> TransactionRef<'a> {
     /// out-of-range index. The returned ref borrows from the wire buffer; no
     /// witness items are decoded until iterated.
     #[must_use]
-    pub fn witness(&self, n_in: usize) -> WitnessRef<'a> {
+    pub fn witness(&self, n_in: usize) -> WitnessRef<'wire> {
         if !self.is_segwit || n_in >= self.input_count {
             return WitnessRef::EMPTY;
         }
@@ -228,7 +226,7 @@ impl<'a> TransactionRef<'a> {
 pub fn transaction_ref_with_arena<'a>(
     wire: &'a [u8],
     arena: &'a mut Vec<u8>,
-) -> Result<(TransactionRef<'a>, &'a [u8]), Error> {
+) -> Result<(TransactionRef<'a, 'a>, &'a [u8]), Error> {
     let (mut tx, rest) = TransactionRef::decode_ref(wire)?;
     if !tx.is_segwit {
         // Already correct — `non_witness_raw == raw` aliases the wire bytes.
@@ -440,7 +438,7 @@ impl<'a> Iterator for WitnessRefIter<'a> {
     }
 }
 
-impl Encode for TransactionRef<'_> {
+impl Encode for TransactionRef<'_, '_> {
     #[inline]
     fn encode(&self, w: &mut impl std::io::Write) -> Result<(), Error> {
         w.write_all(self.raw)?;
@@ -448,14 +446,14 @@ impl Encode for TransactionRef<'_> {
     }
 }
 
-impl TxHash for TransactionRef<'_> {
+impl TxHash for TransactionRef<'_, '_> {
     #[inline]
     fn txid_into(&self, _buf: &mut Vec<u8>) -> Result<Hash256, Error> {
         Ok(self.non_witness_raw.sha256d())
     }
 }
 
-impl<'a> DecodeRef<'a> for TransactionRef<'a> {
+impl<'a> DecodeRef<'a> for TransactionRef<'a, 'a> {
     fn decode_ref(buf: &'a [u8]) -> Result<(Self, &'a [u8]), Error> {
         let tx_start = buf;
         let (version, buf) = TxVersion::decode_ref(buf)?;

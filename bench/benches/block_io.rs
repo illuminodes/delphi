@@ -261,6 +261,50 @@ fn seed_fixture_store(handle: &mut FileIoHandle, fix: &FixtureBlocks) {
 
 mod decoded {
     use super::*;
+    use mantle::primitives::BlockRef;
+
+    #[divan::bench]
+    fn read_slab_zero_copy_100(bencher: divan::Bencher) {
+        let Some(fix) = load_fixture_blocks() else {
+            eprintln!("fixtures/ordinals/ not found — skipping");
+            return;
+        };
+        let dir = tmp_dir("dec-slab");
+
+        mantle_block_io::with_file_io(&dir.0, |handle, slab_reader| {
+            for (i, bytes) in fix.raw.iter().enumerate() {
+                let h = fix.start + u32::try_from(i).unwrap();
+                handle
+                    .write_block(BlockHeight::new(h), bytes.clone())
+                    .expect("seed");
+            }
+            handle.flush_block_index().expect("flush");
+
+            bencher.bench_local(|| {
+                for i in 0..fix.raw.len() {
+                    let h = fix.start + u32::try_from(i).unwrap();
+                    let token = handle
+                        .read_block_slab(BlockHeight::new(h))
+                        .expect("read_slab");
+                    let buf_handle = slab_reader.handle(token);
+                    let mut arena = Vec::new();
+                    let mut txs_buf = Vec::new();
+                    let block_ref = BlockRef::decode_with_arena(
+                        buf_handle.as_slice(),
+                        &mut arena,
+                        &mut txs_buf,
+                    )
+                    .expect("decode");
+                    assert_eq!(block_ref.header.hash(), fix.hashes[i]);
+                    black_box(&block_ref);
+                    handle.release_slab(buf_handle.slot);
+                }
+            });
+
+            handle.shutdown();
+        })
+        .expect("with_file_io");
+    }
 
     #[divan::bench]
     fn read_then_decode_100(bencher: divan::Bencher) {

@@ -397,7 +397,7 @@ impl TxStructureView for Transaction {
     }
 }
 
-impl TxStructureView for TransactionRef<'_> {
+impl TxStructureView for TransactionRef<'_, '_> {
     fn input_count(&self) -> usize {
         TransactionRef::input_count(self)
     }

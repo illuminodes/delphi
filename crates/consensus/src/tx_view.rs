@@ -62,13 +62,16 @@ impl BlockView for Block {
     }
 }
 
-impl<'b> BlockView for BlockRef<'b> {
+impl<'wire, 'arena> BlockView for BlockRef<'wire, 'arena>
+where
+    'wire: 'arena,
+{
     type Tx<'a>
-        = TransactionRef<'b>
+        = TransactionRef<'wire, 'arena>
     where
         Self: 'a;
     type TxIter<'a>
-        = std::slice::Iter<'a, TransactionRef<'b>>
+        = std::slice::Iter<'a, TransactionRef<'wire, 'arena>>
     where
         Self: 'a;
 
@@ -356,21 +359,24 @@ impl WitnessView for RefWitnessView<'_> {
     }
 }
 
-impl<'tx> TxView for TransactionRef<'tx> {
+impl<'wire, 'arena> TxView for TransactionRef<'wire, 'arena>
+where
+    'wire: 'arena,
+{
     type Input<'a>
-        = RefInputView<'tx>
+        = RefInputView<'wire>
     where
         Self: 'a;
     type Output<'a>
-        = RefOutputView<'tx>
+        = RefOutputView<'wire>
     where
         Self: 'a;
     type InputIter<'a>
-        = RefInputIter<'tx>
+        = RefInputIter<'wire>
     where
         Self: 'a;
     type OutputIter<'a>
-        = RefOutputIter<'tx>
+        = RefOutputIter<'wire>
     where
         Self: 'a;
 

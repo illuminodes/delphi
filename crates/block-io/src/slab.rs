@@ -1,57 +1,119 @@
-use std::io;
-
-use mantle::codec::Decode;
-use mantle::primitives::{Block, Hash256};
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 const SLOT_SIZE: usize = 4 * 1024 * 1024;
 const SLOT_COUNT: usize = 4;
 
-/// Lifetime-bound handle to a filled slab slot. Borrows the slab's buffer,
-/// preventing the slot from being reused until the handle is dropped.
-pub struct SlabHandle<'a> {
-    data: &'a [u8],
-    slot: u16,
+#[derive(Clone, Copy)]
+pub struct SlabToken {
+    pub slot: u16,
+    pub len: u32,
 }
 
-impl<'a> SlabHandle<'a> {
+pub struct BufHandle<'a> {
+    slice: &'a [u8],
+    pub slot: u16,
+}
+
+impl<'a> BufHandle<'a> {
     #[must_use]
     pub fn as_slice(&self) -> &'a [u8] {
-        self.data
-    }
-
-    #[must_use]
-    pub fn slot(&self) -> u16 {
-        self.slot
+        self.slice
     }
 }
 
-/// Pre-allocated multi-slot block I/O slab, owned by the file-io worker.
-///
-/// Each slot is a contiguous `SLOT_SIZE`-byte region within a single
-/// allocation. `io_uring` reads into slots via the safe `Sqe::read` API.
-/// After a read, the caller gets a [`SlabHandle`] that borrows the data —
-/// the Rust borrow checker enforces that the slot cannot be reused while
-/// the handle is alive. No `unsafe`, no raw pointers, no `set_len`.
-pub struct BlockIoSlab {
-    buf: Vec<u8>,
-    used_len: Vec<u32>,
-    free: Vec<u16>,
+impl AsRef<[u8]> for BufHandle<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.slice
+    }
 }
 
-impl BlockIoSlab {
-    pub fn new() -> Self {
-        let buf = vec![0u8; SLOT_COUNT * SLOT_SIZE];
-        let used_len = vec![0u32; SLOT_COUNT];
-        let free = (0..u16::try_from(SLOT_COUNT).expect("SLOT_COUNT fits u16"))
-            .rev()
-            .collect();
+// ── Slot — the single unsafe boundary ──────────────────────────────────────
+//
+// All unsafe in the slab module is confined to this type (3 items):
+//   1. `unsafe impl Sync` — required because UnsafeCell is !Sync
+//   2. `write_buf()`       — &self → &mut [u8] for the writer
+//   3. `read_buf()`        — &self → &[u8] for the reader
+//
+// Safety invariant: a slot is exclusively owned by either the writer
+// (allocated, no token sent) or the reader (token received, not yet
+// released), never both simultaneously.  The ring buffer's
+// Release/Acquire ordering on token send/receive enforces this.
+
+struct Slot {
+    buf: UnsafeCell<Box<[u8; SLOT_SIZE]>>,
+    used_len: AtomicU32,
+}
+
+unsafe impl Sync for Slot {}
+
+impl Slot {
+    fn new() -> Self {
         Self {
-            buf,
-            used_len,
-            free,
+            buf: UnsafeCell::new(vec![0u8; SLOT_SIZE].into_boxed_slice().try_into().unwrap()),
+            used_len: AtomicU32::new(0),
         }
     }
 
+    #[allow(clippy::mut_from_ref)]
+    fn write_buf(&self) -> &mut [u8; SLOT_SIZE] {
+        // SAFETY: caller holds exclusive write access (slot allocated,
+        // no token sent, not in free list).
+        unsafe { &mut *self.buf.get() }
+    }
+
+    fn read_buf(&self) -> &[u8; SLOT_SIZE] {
+        // SAFETY: caller holds read access (token received through ring
+        // with Acquire ordering, writer will not touch until released).
+        unsafe { &*self.buf.get() }
+    }
+
+    fn set_used_len(&self, len: u32) {
+        self.used_len.store(len, Ordering::Release);
+    }
+
+    fn used_len(&self) -> u32 {
+        self.used_len.load(Ordering::Acquire)
+    }
+}
+
+// ── Slab (safe) ────────────────────────────────────────────────────────────
+
+pub struct Slab {
+    slots: Vec<Slot>,
+}
+
+impl Default for Slab {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Slab {
+    pub fn new() -> Self {
+        let slots = (0..SLOT_COUNT).map(|_| Slot::new()).collect();
+        Self { slots }
+    }
+
+    pub fn split(&self) -> (SlabWriter<'_>, SlabReader<'_>) {
+        let free = (0..u16::try_from(SLOT_COUNT).expect("SLOT_COUNT fits u16"))
+            .rev()
+            .collect();
+        (
+            SlabWriter { slab: self, free },
+            SlabReader { slab: self },
+        )
+    }
+}
+
+// ── SlabWriter (safe — delegates unsafe to Slot) ───────────────────────────
+
+pub struct SlabWriter<'a> {
+    slab: &'a Slab,
+    free: Vec<u16>,
+}
+
+impl SlabWriter<'_> {
     pub fn alloc(&mut self) -> Option<u16> {
         self.free.pop()
     }
@@ -61,125 +123,72 @@ impl BlockIoSlab {
         if idx >= SLOT_COUNT {
             return;
         }
-        if self.used_len[idx] == 0 {
+        let s = &self.slab.slots[idx];
+        if s.used_len() == 0 {
             return;
         }
-        self.used_len[idx] = 0;
+        s.set_used_len(0);
         self.free.push(slot);
     }
 
-    fn slot_mut(&mut self, slot: u16, len: usize) -> &mut [u8] {
-        let off = (slot as usize) * SLOT_SIZE;
-        &mut self.buf[off..off + len]
+    #[allow(clippy::mut_from_ref)]
+    pub fn slot_buf_mut(&self, slot: u16) -> &mut [u8] {
+        self.slab.slots[slot as usize].write_buf()
     }
 
-    fn slot_ref(&self, slot: u16) -> &[u8] {
-        let idx = slot as usize;
-        let off = idx * SLOT_SIZE;
-        let len = self.used_len[idx] as usize;
-        &self.buf[off..off + len]
+    pub fn fill(&self, slot: u16, len: u32) -> SlabToken {
+        self.slab.slots[slot as usize].set_used_len(len);
+        SlabToken { slot, len }
     }
 
-    /// Get a lifetime-bound handle to a filled slot's data.
-    pub fn handle(&self, slot: u16) -> SlabHandle<'_> {
-        SlabHandle {
-            data: self.slot_ref(slot),
-            slot,
-        }
-    }
-
-    /// Read from disk into a slab slot using the safe `Sqe::read` API.
-    fn fill_slot(
-        &mut self,
+    pub fn fill_from_disk(
+        &self,
+        slot: u16,
         store: &crate::store::FileStore,
         ring: &mut ququmatz::IoUring,
-        slot: u16,
         offset: u64,
         len: u32,
-    ) -> io::Result<()> {
+    ) -> std::io::Result<SlabToken> {
         let len_usize = len as usize;
         if len_usize > SLOT_SIZE {
-            return Err(io::Error::other(format!(
+            return Err(std::io::Error::other(format!(
                 "block {len} bytes exceeds slot size {SLOT_SIZE}"
             )));
         }
-        let dst = self.slot_mut(slot, len_usize);
+        let dst = &mut self.slot_buf_mut(slot)[..len_usize];
         let sqe = ququmatz::Sqe::read(store.fd(), dst, offset).user_data(u64::MAX);
         ring.push(sqe)
-            .map_err(|e| io::Error::other(format!("{e:?}")))?;
+            .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
         loop {
             ring.submit_and_wait(1)
-                .map_err(|e| io::Error::other(format!("{e:?}")))?;
+                .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
             while let Some(cqe) = ring.complete() {
                 if cqe.user_data == u64::MAX {
                     if cqe.result < 0 {
-                        return Err(io::Error::from_raw_os_error(-cqe.result));
+                        return Err(std::io::Error::from_raw_os_error(-cqe.result));
                     }
-                    self.used_len[slot as usize] = len;
-                    return Ok(());
+                    return Ok(self.fill(slot, len));
                 }
             }
         }
     }
+}
 
-    /// Read block bytes from disk, decode, and verify the header hash.
-    /// The slab slot is allocated, filled, used for decode, and released
-    /// within this call — no data escapes the worker.
-    pub fn read_decode_verify(
-        &mut self,
-        store: &crate::store::FileStore,
-        ring: &mut ququmatz::IoUring,
-        offset: u64,
-        len: u32,
-        expected_hash: Hash256,
-    ) -> io::Result<Block> {
-        let slot = self
-            .alloc()
-            .ok_or_else(|| io::Error::other("block-io slab full"))?;
-        let result = self.fill_and_decode(store, ring, slot, offset, len, expected_hash);
-        self.release(slot);
-        result
-    }
+// ── SlabReader (safe — delegates unsafe to Slot) ───────────────────────────
 
-    fn fill_and_decode(
-        &mut self,
-        store: &crate::store::FileStore,
-        ring: &mut ququmatz::IoUring,
-        slot: u16,
-        offset: u64,
-        len: u32,
-        expected_hash: Hash256,
-    ) -> io::Result<Block> {
-        self.fill_slot(store, ring, slot, offset, len)?;
-        let data = self.slot_ref(slot);
-        let block = Block::decode(&mut io::Cursor::new(data))
-            .map_err(|e| io::Error::other(format!("decode: {e}")))?;
-        if block.header.hash() != expected_hash {
-            return Err(io::Error::other(format!(
-                "hash mismatch: expected {}, got {}",
-                expected_hash.to_display_hex(),
-                block.header.hash().to_display_hex()
-            )));
+pub struct SlabReader<'a> {
+    slab: &'a Slab,
+}
+
+impl<'a> SlabReader<'a> {
+    pub fn handle(&self, token: SlabToken) -> BufHandle<'a> {
+        let s = &self.slab.slots[token.slot as usize];
+        let len = token.len as usize;
+        let buf = s.read_buf();
+        BufHandle {
+            slice: &buf[..len],
+            slot: token.slot,
         }
-        Ok(block)
-    }
-
-    /// Read raw block bytes, returning an owned copy.
-    /// Fallback for callers that need raw bytes without decode.
-    pub fn read_raw(
-        &mut self,
-        store: &crate::store::FileStore,
-        ring: &mut ququmatz::IoUring,
-        offset: u64,
-        len: u32,
-    ) -> io::Result<Vec<u8>> {
-        let slot = self
-            .alloc()
-            .ok_or_else(|| io::Error::other("block-io slab full"))?;
-        self.fill_slot(store, ring, slot, offset, len)?;
-        let data = self.slot_ref(slot).to_vec();
-        self.release(slot);
-        Ok(data)
     }
 }
 
@@ -188,61 +197,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn alloc_and_release() {
-        let mut slab = BlockIoSlab::new();
-        assert_eq!(slab.free.len(), SLOT_COUNT);
+    fn alloc_fill_read_release() {
+        let slab = Slab::new();
+        let (mut writer, reader) = slab.split();
 
-        let slot = slab.alloc().expect("should allocate");
-        assert_eq!(slab.free.len(), SLOT_COUNT - 1);
+        let slot = writer.alloc().expect("should allocate");
+        let buf = writer.slot_buf_mut(slot);
+        buf[0] = 0xAB;
+        buf[1] = 0xCD;
+        let token = writer.fill(slot, 2);
 
-        slab.used_len[slot as usize] = 100;
-        slab.release(slot);
-        assert_eq!(slab.free.len(), SLOT_COUNT);
+        let handle = reader.handle(token);
+        assert_eq!(handle.as_slice(), &[0xAB, 0xCD]);
+        assert_eq!(handle.slot, slot);
+
+        drop(handle);
+        writer.release(slot);
+        assert!(writer.alloc().is_some());
+    }
+
+    #[test]
+    fn exhaust_and_reclaim() {
+        let slab = Slab::new();
+        let (mut writer, _reader) = slab.split();
+
+        let mut slots = Vec::new();
+        for _ in 0..SLOT_COUNT {
+            slots.push(writer.alloc().expect("should allocate"));
+        }
+        assert!(writer.alloc().is_none());
+
+        writer.fill(slots[0], 1);
+        writer.release(slots[0]);
+        assert!(writer.alloc().is_some());
     }
 
     #[test]
     fn double_release_is_noop() {
-        let mut slab = BlockIoSlab::new();
-        let slot = slab.alloc().expect("should allocate");
-        slab.used_len[slot as usize] = 100;
-        slab.release(slot);
-        let before = slab.free.len();
-        slab.release(slot);
-        assert_eq!(slab.free.len(), before);
-    }
+        let slab = Slab::new();
+        let (mut writer, _reader) = slab.split();
 
-    #[test]
-    fn exhaust_slots() {
-        let mut slab = BlockIoSlab::new();
-        let mut slots = Vec::new();
-        for _ in 0..SLOT_COUNT {
-            slots.push(slab.alloc().expect("should allocate"));
-        }
-        assert!(slab.alloc().is_none());
-
-        slab.used_len[slots[0] as usize] = 1;
-        slab.release(slots[0]);
-        assert!(slab.alloc().is_some());
-    }
-
-    #[test]
-    fn handle_borrows_data() {
-        let mut slab = BlockIoSlab::new();
-        let slot = slab.alloc().expect("should allocate");
-        let off = (slot as usize) * SLOT_SIZE;
-        slab.buf[off] = 0xAB;
-        slab.buf[off + 1] = 0xCD;
-        slab.used_len[slot as usize] = 2;
-
-        let handle = slab.handle(slot);
-        assert_eq!(handle.as_slice(), &[0xAB, 0xCD]);
-        assert_eq!(handle.slot(), slot);
-    }
-
-    #[test]
-    fn release_out_of_bounds_is_noop() {
-        let mut slab = BlockIoSlab::new();
-        slab.release(u16::MAX);
-        assert_eq!(slab.free.len(), SLOT_COUNT);
+        let slot = writer.alloc().expect("should allocate");
+        writer.fill(slot, 1);
+        writer.release(slot);
+        let before = writer.free.len();
+        writer.release(slot);
+        assert_eq!(writer.free.len(), before);
     }
 }

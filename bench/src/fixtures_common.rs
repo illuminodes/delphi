@@ -374,7 +374,7 @@ pub fn replay_block_ref(
 }
 
 fn build_ref_outpoints(
-    block_ref: &BlockRef<'_>,
+    block_ref: &BlockRef<'_, '_>,
 ) -> (
     Vec<Hash256>,
     PrehashedMap<OutPoint, Option<Coin>>,
@@ -513,15 +513,15 @@ pub fn replay_block_ref_reusing(
     durability: Durability,
     arena: &mut Vec<u8>,
     bufs: &mut BenchReplayBufs,
-    txs_scratch: &mut Vec<TransactionRef<'static>>,
+    txs_scratch: &mut Vec<TransactionRef<'static, 'static>>,
 ) {
     bufs.clear();
 
     // SAFETY: txs_scratch is cleared inside decode_with_arena on entry.
     // Between calls the vec is empty — no dangling lifetime references.
     // TransactionRef layout is identical for all lifetimes.
-    let txs_buf: &mut Vec<TransactionRef<'_>> =
-        unsafe { &mut *std::ptr::from_mut(txs_scratch).cast::<Vec<TransactionRef<'_>>>() };
+    let txs_buf: &mut Vec<TransactionRef<'_, '_>> =
+        unsafe { &mut *std::ptr::from_mut(txs_scratch).cast::<Vec<TransactionRef<'_, '_>>>() };
     let block_ref = BlockRef::decode_with_arena(wire, arena, txs_buf)
         .unwrap_or_else(|e| panic!("BlockRef decode at height {}: {e}", height.to_u32()));
 

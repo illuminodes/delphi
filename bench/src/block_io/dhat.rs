@@ -1,117 +1,95 @@
 //! Block-IO heap profiler — dhat allocation analysis.
 //!
+//! Exercises the zero-copy `ReadBlockSlab` → `BlockRef` path.
+//!
 //! Run with:
 //!   cargo build --release --bin block-io-dhat
 //!   ./target/release/block-io-dhat
-//!
-//! dhat writes `dhat-heap.json` in the current directory on exit.
 
 #[path = "fixtures.rs"]
 mod fixtures;
 
-use fixtures::{
-    make_block_data, make_header_bytes, seed_blocks, spawn_handle, tmp_dir, ITERS_MEDIUM,
-    ITERS_SMALL,
-};
-use mantle::primitives::BlockHeight;
+use fixtures::tmp_dir;
+use mantle::primitives::{BlockHeader, BlockHeight, BlockRef, Hash256};
 use std::hint::black_box;
+use std::path::{Path, PathBuf};
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
+fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
+        .join("ordinals")
+}
+
+struct FixtureBlocks {
+    start: u32,
+    raw: Vec<Vec<u8>>,
+    hashes: Vec<Hash256>,
+}
+
+fn load_fixtures(n: usize) -> Option<FixtureBlocks> {
+    let dir = fixtures_dir();
+    let meta = std::fs::read(dir.join("metadata.bin")).ok()?;
+    if meta.len() < 4 {
+        return None;
+    }
+    let start = u32::from_le_bytes([meta[0], meta[1], meta[2], meta[3]]);
+    let blocks_dir = dir.join("blocks");
+    let mut raw = Vec::with_capacity(n);
+    let mut hashes = Vec::with_capacity(n);
+    for h in start..start + u32::try_from(n).unwrap() {
+        let bytes = std::fs::read(blocks_dir.join(format!("{h:07}.bin"))).ok()?;
+        let header = BlockHeader::from_bytes(bytes[..80].try_into().unwrap());
+        hashes.push(header.hash());
+        raw.push(bytes);
+    }
+    Some(FixtureBlocks { start, raw, hashes })
+}
+
 fn main() {
     let _profiler = dhat::Profiler::new_heap();
 
-    scenario_write_sync();
-    scenario_write_async();
-    scenario_read_sequential();
-    scenario_write_read_roundtrip();
-    scenario_header_load();
+    let Some(fix) = load_fixtures(20) else {
+        eprintln!("fixtures/ordinals/ not found — nothing to profile");
+        return;
+    };
+    let dir = tmp_dir("dhat-slab");
 
-    eprintln!("all scenarios complete — dhat summary follows");
-}
-
-fn scenario_write_sync() {
-    let data = make_block_data(1_500_000);
-    for _ in 0..ITERS_SMALL {
-        let dir = tmp_dir("dhat-ws");
-        let mut handle = spawn_handle(&dir);
-        for h in 0..50u32 {
+    mantle_block_io::with_file_io(&dir.0, |handle, slab_reader| {
+        for (i, bytes) in fix.raw.iter().enumerate() {
+            let h = fix.start + u32::try_from(i).unwrap();
             handle
-                .write_block(BlockHeight::new(h), data.clone())
-                .expect("write_block");
+                .write_block(BlockHeight::new(h), bytes.clone())
+                .expect("seed");
         }
+        handle.flush_block_index().expect("flush");
+
+        for _ in 0..20 {
+            for i in 0..fix.raw.len() {
+                let h = fix.start + u32::try_from(i).unwrap();
+                let token = handle
+                    .read_block_slab(BlockHeight::new(h))
+                    .expect("read_slab");
+                let buf_handle = slab_reader.handle(token);
+                let mut arena = Vec::new();
+                let mut txs_buf = Vec::new();
+                let block_ref = BlockRef::decode_with_arena(
+                    buf_handle.as_slice(),
+                    &mut arena,
+                    &mut txs_buf,
+                )
+                .expect("decode");
+                assert_eq!(block_ref.header.hash(), fix.hashes[i]);
+                black_box(&block_ref);
+                handle.release_slab(buf_handle.slot);
+            }
+        }
+        eprintln!("read_slab + BlockRef::decode (20 blocks): 20 iters done");
         handle.shutdown();
-    }
-    eprintln!("write_sync(50 x 1.5MB): {ITERS_SMALL} iters done");
-}
+    })
+    .expect("with_file_io");
 
-fn scenario_write_async() {
-    let data = make_block_data(1_500_000);
-    for _ in 0..ITERS_SMALL {
-        let dir = tmp_dir("dhat-wa");
-        let mut handle = spawn_handle(&dir);
-        for h in 0..50u32 {
-            handle
-                .write_block_async(BlockHeight::new(h), data.clone())
-                .expect("write_block_async");
-        }
-        handle.shutdown();
-    }
-    eprintln!("write_async(50 x 1.5MB): {ITERS_SMALL} iters done");
-}
-
-fn scenario_read_sequential() {
-    let data = make_block_data(1_500_000);
-    let dir = tmp_dir("dhat-rs");
-    let mut handle = spawn_handle(&dir);
-    seed_blocks(&mut handle, 100, &data);
-    handle.flush_block_index().expect("flush");
-
-    for _ in 0..ITERS_SMALL {
-        for h in 0..100u32 {
-            black_box(handle.read_block(BlockHeight::new(h)).expect("read"));
-        }
-    }
-    eprintln!("read_sequential(100 x 1.5MB): {ITERS_SMALL} iters done");
-
-    handle.shutdown();
-}
-
-fn scenario_write_read_roundtrip() {
-    let data = make_block_data(1_500_000);
-    for _ in 0..ITERS_SMALL {
-        let dir = tmp_dir("dhat-rt");
-        let mut handle = spawn_handle(&dir);
-        for h in 0..20u32 {
-            handle
-                .write_block(BlockHeight::new(h), data.clone())
-                .expect("write");
-        }
-        for h in 0..20u32 {
-            black_box(handle.read_block(BlockHeight::new(h)).expect("read"));
-        }
-        handle.shutdown();
-    }
-    eprintln!("write_read_roundtrip(20 x 1.5MB): {ITERS_SMALL} iters done");
-}
-
-fn scenario_header_load() {
-    let hdr_data = make_header_bytes(10_000);
-    let dir = tmp_dir("dhat-hdr");
-    let mut handle = spawn_handle(&dir);
-    handle
-        .write_headers(BlockHeight::new(1), hdr_data)
-        .expect("write_headers");
-
-    for _ in 0..ITERS_MEDIUM {
-        black_box(
-            handle
-                .load_cached_headers(BlockHeight::new(1))
-                .expect("load"),
-        );
-    }
-    eprintln!("header_load(10k): {ITERS_MEDIUM} iters done");
-
-    handle.shutdown();
+    eprintln!("done — dhat summary follows");
 }

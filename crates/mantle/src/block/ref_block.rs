@@ -16,33 +16,72 @@ use super::header::BlockHeader;
 /// Both the wire bytes and the arena are caller-owned. The lifetime `'a`
 /// is the shorter of the two, so a `BlockRef` can outlive its decoder but
 /// not its data.
+/// Two lifetimes:
+/// - `'wire` — the block wire bytes (slab slot / network buffer).
+/// - `'arena` — the decode arena (segwit non-witness preimages).
+///
+/// `'wire: 'arena` — wire data outlives the arena, so legacy txs
+/// can alias wire bytes through `non_witness_raw`.
 #[derive(Debug)]
-pub struct BlockRef<'a> {
+pub struct BlockRef<'wire, 'arena>
+where
+    'wire: 'arena,
+{
     pub header: BlockHeader,
-    /// Complete wire bytes of the block (header + tx count + every tx).
-    pub raw: &'a [u8],
-    /// Pre-decoded transaction views. For legacy txs `non_witness_raw`
-    /// aliases `raw`; for segwit txs it aliases the arena.
-    pub txs: &'a [TransactionRef<'a>],
+    pub raw: &'wire [u8],
+    pub txs: &'arena [TransactionRef<'wire, 'arena>],
 }
 
-impl<'a> BlockRef<'a> {
-    /// Decode a block from `wire`, populating `arena` with non-witness
-    /// preimages for any segwit transactions in the block.
-    ///
-    /// `arena` is cleared on entry so the caller can reuse the same allocation
-    /// across blocks; capacity is preserved to amortise heap traffic during
-    /// IBD/replay.
+/// Reusable decode buffers for zero-allocation block decoding.
+///
+/// Two lifetimes mirror [`BlockRef`]:
+/// - `'wire`  — wire data (slab slot / network buffer).
+/// - `'arena` — the arena's own heap storage.
+///
+/// Create with [`DecodeArena::new`], call [`decode`](Self::decode) in
+/// a loop.  Capacity is preserved across calls; the `&'arena mut self`
+/// borrow is released when the returned `BlockRef` drops.
+pub struct DecodeArena<'wire, 'arena>
+where
+    'wire: 'arena,
+{
+    arena: Vec<u8>,
+    txs: Vec<TransactionRef<'wire, 'arena>>,
+    segwit_spans: Vec<(usize, usize, usize)>,
+}
+
+impl DecodeArena<'_, '_> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            arena: Vec::new(),
+            txs: Vec::new(),
+            segwit_spans: Vec::new(),
+        }
+    }
+}
+
+impl Default for DecodeArena<'_, '_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'wire, 'arena> DecodeArena<'wire, 'arena>
+where
+    'wire: 'arena,
+{
+    /// Decode a block from `wire`, reusing internal buffers.
     ///
     /// # Errors
     /// Propagates I/O errors from the decoder.
-    pub fn decode_with_arena(
-        wire: &'a [u8],
-        arena: &'a mut Vec<u8>,
-        txs_buf: &'a mut Vec<TransactionRef<'a>>,
-    ) -> Result<Self, Error> {
-        arena.clear();
-        txs_buf.clear();
+    pub fn decode(
+        &'arena mut self,
+        wire: &'wire [u8],
+    ) -> Result<BlockRef<'wire, 'arena>, Error> {
+        self.arena.clear();
+        self.txs.clear();
+        self.segwit_spans.clear();
 
         let (header, rest) = BlockHeader::decode_ref(wire)?;
         let (vi, mut rest) = VarInt::decode_ref(rest)?;
@@ -50,22 +89,14 @@ impl<'a> BlockRef<'a> {
             .to_usize()
             .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e.to_string())))?;
 
-        arena.reserve(rest.len());
-
-        let txs = txs_buf;
-        txs.reserve(tx_count.saturating_sub(txs.capacity()));
-
-        // Pass 1: decode all transactions and append non-witness preimages
-        // for segwit txs into the arena. Record (start, end) offsets so we
-        // can patch `non_witness_raw` in a second pass once the arena is
-        // immutably borrowed.
-        let mut segwit_spans: Vec<(usize, usize, usize)> = Vec::new();
+        self.arena.reserve(rest.len());
+        self.txs.reserve(tx_count.saturating_sub(self.txs.capacity()));
 
         for i in 0..tx_count {
             let (tx, after) = TransactionRef::decode_ref(rest)?;
 
             if tx.is_segwit {
-                let arena_start = arena.len();
+                let arena_start = self.arena.len();
                 let raw = tx.raw;
                 let inputs_region_start = 4 + 2;
                 let witnesses_start_offset = if tx.witnesses_buf.is_empty() {
@@ -73,19 +104,86 @@ impl<'a> BlockRef<'a> {
                 } else {
                     (tx.witnesses_buf.as_ptr() as usize) - (raw.as_ptr() as usize)
                 };
-                arena.extend_from_slice(&raw[..4]);
-                arena.extend_from_slice(&raw[inputs_region_start..witnesses_start_offset]);
-                arena.extend_from_slice(&raw[raw.len() - 4..]);
-                segwit_spans.push((i, arena_start, arena.len()));
+                self.arena.extend_from_slice(&raw[..4]);
+                self.arena.extend_from_slice(&raw[inputs_region_start..witnesses_start_offset]);
+                self.arena.extend_from_slice(&raw[raw.len() - 4..]);
+                self.segwit_spans.push((i, arena_start, self.arena.len()));
+            }
+
+            self.txs.push(tx);
+            rest = after;
+        }
+
+        for &(idx, start, end) in &self.segwit_spans {
+            self.txs[idx].non_witness_raw = &self.arena[start..end];
+        }
+
+        let raw_consumed = wire.len() - rest.len();
+        let raw = &wire[..raw_consumed];
+
+        Ok(BlockRef {
+            header,
+            raw,
+            txs: &self.txs,
+        })
+    }
+}
+
+impl<'wire, 'arena> BlockRef<'wire, 'arena>
+where
+    'wire: 'arena,
+{
+    /// Convenience wrapper — allocates fresh buffers per call.
+    ///
+    /// For hot loops, prefer [`DecodeArena::decode`].
+    ///
+    /// # Errors
+    /// Propagates I/O errors from the decoder.
+    pub fn decode_with_arena(
+        wire: &'wire [u8],
+        arena_buf: &'arena mut Vec<u8>,
+        txs_buf: &'arena mut Vec<TransactionRef<'wire, 'arena>>,
+    ) -> Result<Self, Error> {
+        arena_buf.clear();
+        txs_buf.clear();
+
+        let mut segwit_spans: Vec<(usize, usize, usize)> = Vec::new();
+
+        let (header, rest) = BlockHeader::decode_ref(wire)?;
+        let (vi, mut rest) = VarInt::decode_ref(rest)?;
+        let tx_count = vi
+            .to_usize()
+            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::InvalidData, e.to_string())))?;
+
+        arena_buf.reserve(rest.len());
+
+        let txs = txs_buf;
+        txs.reserve(tx_count.saturating_sub(txs.capacity()));
+
+        for i in 0..tx_count {
+            let (tx, after) = TransactionRef::decode_ref(rest)?;
+
+            if tx.is_segwit {
+                let arena_start = arena_buf.len();
+                let raw = tx.raw;
+                let inputs_region_start = 4 + 2;
+                let witnesses_start_offset = if tx.witnesses_buf.is_empty() {
+                    raw.len() - 4
+                } else {
+                    (tx.witnesses_buf.as_ptr() as usize) - (raw.as_ptr() as usize)
+                };
+                arena_buf.extend_from_slice(&raw[..4]);
+                arena_buf.extend_from_slice(&raw[inputs_region_start..witnesses_start_offset]);
+                arena_buf.extend_from_slice(&raw[raw.len() - 4..]);
+                segwit_spans.push((i, arena_start, arena_buf.len()));
             }
 
             txs.push(tx);
             rest = after;
         }
 
-        // Pass 2: patch non_witness_raw for segwit txs using safe arena slices.
         for &(idx, start, end) in &segwit_spans {
-            txs[idx].non_witness_raw = &arena[start..end];
+            txs[idx].non_witness_raw = &arena_buf[start..end];
         }
 
         let raw_consumed = wire.len() - rest.len();
@@ -105,7 +203,7 @@ impl<'a> BlockRef<'a> {
     }
 
     /// Iterate transactions.
-    pub fn transactions(&self) -> std::slice::Iter<'_, TransactionRef<'a>> {
+    pub fn transactions(&self) -> std::slice::Iter<'_, TransactionRef<'wire, 'arena>> {
         self.txs.iter()
     }
 }
