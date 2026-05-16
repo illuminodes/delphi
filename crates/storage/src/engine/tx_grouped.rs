@@ -113,8 +113,7 @@ impl Engine for TxGroupedEngine {
 
         let undo = self
             .utxo_set
-            .connect_block_with(&mut self.scratch, req.height, req.created, req.spent)
-            .map_err(|e| EngineError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
+            .connect_block_best_effort(&mut self.scratch, req.height, req.created, req.spent);
         self.scratch.reclaim(undo);
 
         debug_assert_eq!(req.header.prev_block(), req.prev_hash);

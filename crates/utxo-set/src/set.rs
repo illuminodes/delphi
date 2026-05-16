@@ -262,6 +262,59 @@ impl UtxoSet {
         })
     }
 
+    /// Like `connect_block_with` but silently skips missing or immature
+    /// spends instead of returning an error. Matches the storage-engine
+    /// contract where `remove` on a missing key is a no-op.
+    pub fn connect_block_best_effort(
+        &mut self,
+        scratch: &mut ConnectScratch,
+        height: BlockHeight,
+        created: &[NewCoin<'_>],
+        spent: &[OutPoint],
+    ) -> BlockUndo {
+        scratch.clear();
+
+        let mut i = 0;
+        while i < created.len() {
+            let txid = created[i].outpoint.txid;
+            let coinbase = created[i].coinbase;
+            scratch.created_txids.push(txid);
+
+            let run_start = i;
+            let mut max_vout = 0u32;
+            while i < created.len() && created[i].outpoint.txid == txid {
+                max_vout = max_vout.max(created[i].outpoint.vout);
+                i += 1;
+            }
+
+            scratch.outputs.clear();
+            scratch
+                .outputs
+                .resize_with(max_vout as usize + 1, || None);
+            for c in &created[run_start..i] {
+                scratch.outputs[c.outpoint.vout as usize] = Some(CoinEntry {
+                    value: c.value,
+                    script_pubkey: c.script_pubkey.into(),
+                });
+            }
+
+            let entry = TxEntry::drain_from(height, coinbase, &mut scratch.outputs);
+            self.txs.insert(txid, entry);
+        }
+
+        scratch.undo_spent.reserve(spent.len());
+        for op in spent {
+            if let Ok(undo) = self.spend(op, height) {
+                scratch.undo_spent.push(undo);
+            }
+        }
+
+        BlockUndo {
+            spent: std::mem::take(&mut scratch.undo_spent),
+            created_txids: std::mem::take(&mut scratch.created_txids),
+        }
+    }
+
     /// Disconnect a block using its undo record. Reverses `connect_block`.
     pub fn disconnect_block(&mut self, undo: &BlockUndo) {
         for txid in &undo.created_txids {

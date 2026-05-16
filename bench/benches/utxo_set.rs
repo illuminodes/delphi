@@ -1,8 +1,12 @@
 use std::hint::black_box;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
+use mantle::codec::Decode;
+use mantle::collections::PrehashedSet;
 use mantle::primitives::{
-    BlockHeader, BlockHeight, BlockTime, BlockVersion, CompactBits, Hash256, Nonce, OutPoint,
-    Satoshi,
+    Block, BlockHeader, BlockHeight, BlockTime, BlockVersion, CompactBits, Hash256, Nonce,
+    OutPoint, Satoshi, TxHash,
 };
 use mantle_consensus::chain_view::NewCoin;
 use mantle_storage::engine::flat::FlatEngine;
@@ -443,6 +447,302 @@ mod multi_output {
         bencher.bench_local(|| {
             out.clear();
             eng.read_coins(black_box(&ops), &mut out).unwrap();
+        });
+    }
+}
+
+// ── Ordinals replay (real mainnet blocks) ───────────────────────────────────
+
+mod ordinals_replay {
+    use super::*;
+
+    const START_HEIGHT: u32 = 767_430;
+    const END_HEIGHT: u32 = 768_430;
+
+    struct RealBlock {
+        height: u32,
+        header: BlockHeader,
+        hash: Hash256,
+        prev_hash: Hash256,
+        created: Vec<(OutPoint, Satoshi, Vec<u8>, bool)>,
+        spent: Vec<OutPoint>,
+    }
+
+    struct Corpus {
+        blocks: Vec<RealBlock>,
+        pre_window: Vec<(OutPoint, Satoshi, Vec<u8>)>,
+    }
+
+    fn ordinals_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join("ordinals")
+    }
+
+    fn build_corpus() -> Corpus {
+        let dir = ordinals_dir();
+        let mut blocks = Vec::with_capacity(1001);
+        let mut created_set: PrehashedSet<OutPoint> = PrehashedSet::default();
+        let mut pre_window: Vec<(OutPoint, Satoshi, Vec<u8>)> = Vec::new();
+        let mut pre_window_set: PrehashedSet<OutPoint> = PrehashedSet::default();
+        let mut txid_buf = Vec::new();
+
+        for h in START_HEIGHT..=END_HEIGHT {
+            let path = dir.join("blocks").join(format!("{h:07}.bin"));
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(_) => break,
+            };
+            let block = Block::decode(&mut std::io::Cursor::new(&bytes))
+                .unwrap_or_else(|e| panic!("decode block {h}: {e}"));
+
+            let header = block.header;
+            let hash = header.hash();
+            let prev_hash = header.prev_block();
+
+            let mut created = Vec::new();
+            let mut spent = Vec::new();
+
+            for (tx_idx, tx) in block.transactions.iter().enumerate() {
+                let txid = tx.txid_into(&mut txid_buf).expect("txid");
+                let coinbase = tx_idx == 0;
+
+                for (vout, out) in tx.outputs.iter().enumerate() {
+                    let op = OutPoint {
+                        txid,
+                        vout: vout as u32,
+                    };
+                    created.push((op, out.value, out.script_pubkey.to_vec(), coinbase));
+                    created_set.insert(op);
+                }
+
+                if !coinbase {
+                    for inp in &tx.inputs {
+                        let op = inp.previous_output;
+                        spent.push(op);
+                        if !created_set.contains(&op) && pre_window_set.insert(op) {
+                            pre_window.push((
+                                op,
+                                Satoshi::new(1000),
+                                vec![0x00, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+                                     0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+                                     0x0f, 0x10, 0x11, 0x12, 0x13, 0x14],
+                            ));
+                        }
+                    }
+                }
+            }
+
+            blocks.push(RealBlock {
+                height: h,
+                header,
+                hash,
+                prev_hash,
+                created,
+                spent,
+            });
+        }
+
+        eprintln!(
+            "ordinals corpus: {} blocks, {} pre-window UTXOs to seed",
+            blocks.len(),
+            pre_window.len()
+        );
+        Corpus { blocks, pre_window }
+    }
+
+    static CORPUS: LazyLock<Corpus> = LazyLock::new(build_corpus);
+
+    fn seed_and_replay(eng: &mut dyn Engine) {
+        let corpus = &*CORPUS;
+        if corpus.blocks.is_empty() {
+            return;
+        }
+
+        let seed_hash = corpus.blocks[0].prev_hash;
+        let seed_height = BlockHeight::new(START_HEIGHT - 1);
+        let seed_created: Vec<NewCoin<'_>> = corpus
+            .pre_window
+            .iter()
+            .map(|(op, value, spk)| NewCoin {
+                outpoint: *op,
+                value: *value,
+                script_pubkey: spk,
+                coinbase: false,
+                height: BlockHeight::new(1),
+            })
+            .collect();
+        let seed_header = BlockHeader::new(
+            BlockVersion::new(1),
+            Hash256::ZERO,
+            Hash256::ZERO,
+            BlockTime::new(1),
+            CompactBits::new(0x1d00_ffff),
+            Nonce::new(0),
+        );
+        eng.write_block(&CommitBlockReq {
+            token: ReqToken(0),
+            height: seed_height,
+            hash: seed_hash,
+            prev_hash: Hash256::ZERO,
+            header: seed_header,
+            created: &seed_created,
+            spent: &[],
+            block_bytes: None,
+            durability: Durability::Memory,
+        })
+        .unwrap();
+
+        for (i, rb) in corpus.blocks.iter().enumerate() {
+            let created: Vec<NewCoin<'_>> = rb
+                .created
+                .iter()
+                .map(|(op, value, spk, coinbase)| NewCoin {
+                    outpoint: *op,
+                    value: *value,
+                    script_pubkey: spk,
+                    coinbase: *coinbase,
+                    height: BlockHeight::new(rb.height),
+                })
+                .collect();
+            eng.write_block(&CommitBlockReq {
+                token: ReqToken(i as u64 + 1),
+                height: BlockHeight::new(rb.height),
+                hash: rb.hash,
+                prev_hash: rb.prev_hash,
+                header: rb.header,
+                created: &created,
+                spent: &rb.spent,
+                block_bytes: None,
+                durability: Durability::Memory,
+            })
+            .unwrap();
+        }
+    }
+
+    fn has_fixtures() -> bool {
+        let dir = ordinals_dir();
+        dir.join("blocks").is_dir()
+            && dir
+                .join("blocks")
+                .join(format!("{START_HEIGHT:07}.bin"))
+                .exists()
+    }
+
+    #[divan::bench(sample_count = 3)]
+    fn flat(bencher: divan::Bencher) {
+        if !has_fixtures() {
+            eprintln!("ordinals fixtures missing, skipping");
+            return;
+        }
+        LazyLock::force(&CORPUS);
+        bencher.bench_local(|| {
+            let dir = TmpDir::new("flat-ord");
+            let mut eng = FlatEngine::open(dir.path()).unwrap();
+            seed_and_replay(&mut eng);
+        });
+    }
+
+    #[divan::bench(sample_count = 3)]
+    fn robin_hood(bencher: divan::Bencher) {
+        if !has_fixtures() {
+            eprintln!("ordinals fixtures missing, skipping");
+            return;
+        }
+        LazyLock::force(&CORPUS);
+        bencher.bench_local(|| {
+            let dir = TmpDir::new("rh-ord");
+            let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
+            seed_and_replay(&mut eng);
+        });
+    }
+
+    #[divan::bench(sample_count = 3)]
+    fn tx_grouped(bencher: divan::Bencher) {
+        if !has_fixtures() {
+            eprintln!("ordinals fixtures missing, skipping");
+            return;
+        }
+        LazyLock::force(&CORPUS);
+        bencher.bench_local(|| {
+            let dir = TmpDir::new("txg-ord");
+            let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
+            seed_and_replay(&mut eng);
+        });
+    }
+
+    #[divan::bench(sample_count = 10)]
+    fn flat_read_after_replay(bencher: divan::Bencher) {
+        if !has_fixtures() {
+            return;
+        }
+        let corpus = &*CORPUS;
+        if corpus.blocks.len() < 500 {
+            return;
+        }
+        let dir = TmpDir::new("flat-ord-r");
+        let mut eng = FlatEngine::open(dir.path()).unwrap();
+        seed_and_replay(&mut eng);
+        let lookup_ops: Vec<OutPoint> = corpus.blocks[500]
+            .spent
+            .iter()
+            .take(100)
+            .copied()
+            .collect();
+        let mut out: Vec<LookupResult> = Vec::new();
+        bencher.bench_local(|| {
+            out.clear();
+            eng.read_coins(black_box(&lookup_ops), &mut out).unwrap();
+        });
+    }
+
+    #[divan::bench(sample_count = 10)]
+    fn robin_hood_read_after_replay(bencher: divan::Bencher) {
+        if !has_fixtures() {
+            return;
+        }
+        let corpus = &*CORPUS;
+        if corpus.blocks.len() < 500 {
+            return;
+        }
+        let dir = TmpDir::new("rh-ord-r");
+        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
+        seed_and_replay(&mut eng);
+        let lookup_ops: Vec<OutPoint> = corpus.blocks[500]
+            .spent
+            .iter()
+            .take(100)
+            .copied()
+            .collect();
+        let mut out: Vec<LookupResult> = Vec::new();
+        bencher.bench_local(|| {
+            out.clear();
+            eng.read_coins(black_box(&lookup_ops), &mut out).unwrap();
+        });
+    }
+
+    #[divan::bench(sample_count = 10)]
+    fn tx_grouped_read_after_replay(bencher: divan::Bencher) {
+        if !has_fixtures() {
+            return;
+        }
+        let corpus = &*CORPUS;
+        if corpus.blocks.len() < 500 {
+            return;
+        }
+        let dir = TmpDir::new("txg-ord-r");
+        let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
+        seed_and_replay(&mut eng);
+        let lookup_ops: Vec<OutPoint> = corpus.blocks[500]
+            .spent
+            .iter()
+            .take(100)
+            .copied()
+            .collect();
+        let mut out: Vec<LookupResult> = Vec::new();
+        bencher.bench_local(|| {
+            out.clear();
+            eng.read_coins(black_box(&lookup_ops), &mut out).unwrap();
         });
     }
 }
