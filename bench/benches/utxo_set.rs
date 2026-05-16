@@ -10,6 +10,7 @@ use mantle::primitives::{
 };
 use mantle_consensus::chain_view::NewCoin;
 use mantle_storage::engine::arena::ArenaEngine;
+use mantle_storage::engine::disk_arena::DiskArenaEngine;
 use mantle_storage::engine::flat::FlatEngine;
 use mantle_storage::engine::robin_hood::RobinHoodEngine;
 use mantle_storage::engine::tx_grouped::TxGroupedEngine;
@@ -175,6 +176,8 @@ mod lookup {
     fn tx_grouped_hit(b: divan::Bencher) { let d = TmpDir::new("t-lh"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_hit(b, &mut e); }
     #[divan::bench]
     fn arena_hit(b: divan::Bencher) { let d = TmpDir::new("a-lh"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_hit(b, &mut e); }
+    #[divan::bench]
+    fn disk_arena_hit(b: divan::Bencher) { let d = TmpDir::new("d-lh"); let mut e = DiskArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_hit(b, &mut e); }
 
     #[divan::bench]
     fn flat_miss(b: divan::Bencher) { let d = TmpDir::new("f-lm"); let mut e = FlatEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_miss(b, &mut e); }
@@ -184,6 +187,8 @@ mod lookup {
     fn tx_grouped_miss(b: divan::Bencher) { let d = TmpDir::new("t-lm"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_miss(b, &mut e); }
     #[divan::bench]
     fn arena_miss(b: divan::Bencher) { let d = TmpDir::new("a-lm"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_miss(b, &mut e); }
+    #[divan::bench]
+    fn disk_arena_miss(b: divan::Bencher) { let d = TmpDir::new("d-lm"); let mut e = DiskArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_miss(b, &mut e); }
 }
 
 // ── Batched lookup (100 coins) ──────────────────────────────────────────────
@@ -208,6 +213,8 @@ mod batch_lookup {
     fn tx_grouped(b: divan::Bencher) { let d = TmpDir::new("t-b"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_batch(b, &mut e); }
     #[divan::bench]
     fn arena(b: divan::Bencher) { let d = TmpDir::new("a-b"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_batch(b, &mut e); }
+    #[divan::bench]
+    fn disk_arena(b: divan::Bencher) { let d = TmpDir::new("d-b"); let mut e = DiskArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_batch(b, &mut e); }
 }
 
 // ── Connect block (write_block with creates) ────────────────────────────────
@@ -255,6 +262,8 @@ mod connect {
     fn tx_grouped(b: divan::Bencher) { let d = TmpDir::new("t-c"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); bench_write_block(b, &mut e); }
     #[divan::bench]
     fn arena(b: divan::Bencher) { let d = TmpDir::new("a-c"); let mut e = ArenaEngine::open(d.path()).unwrap(); bench_write_block(b, &mut e); }
+    #[divan::bench]
+    fn disk_arena(b: divan::Bencher) { let d = TmpDir::new("d-c"); let mut e = DiskArenaEngine::open(d.path()).unwrap(); bench_write_block(b, &mut e); }
 }
 
 // ── Connect + spend (create then consume via write_block) ───────────────────
@@ -320,6 +329,8 @@ mod connect_spend {
     fn tx_grouped(b: divan::Bencher) { let d = TmpDir::new("t-cs"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); bench_write_and_spend(b, &mut e); }
     #[divan::bench]
     fn arena(b: divan::Bencher) { let d = TmpDir::new("a-cs"); let mut e = ArenaEngine::open(d.path()).unwrap(); bench_write_and_spend(b, &mut e); }
+    #[divan::bench]
+    fn disk_arena(b: divan::Bencher) { let d = TmpDir::new("d-cs"); let mut e = DiskArenaEngine::open(d.path()).unwrap(); bench_write_and_spend(b, &mut e); }
 }
 
 // ── Multi-output transaction grouping ───────────────────────────────────────
@@ -346,6 +357,8 @@ mod multi_output {
     fn tx_grouped(b: divan::Bencher, n: u32) { let d = TmpDir::new("t-mo"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_engine_multi_output(&mut e, 1000, n); bench_multi(b, &mut e, n); }
     #[divan::bench(args = [2, 5, 10])]
     fn arena(b: divan::Bencher, n: u32) { let d = TmpDir::new("a-mo"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_engine_multi_output(&mut e, 1000, n); bench_multi(b, &mut e, n); }
+    #[divan::bench(args = [2, 5, 10])]
+    fn disk_arena(b: divan::Bencher, n: u32) { let d = TmpDir::new("d-mo"); let mut e = DiskArenaEngine::open(d.path()).unwrap(); seed_engine_multi_output(&mut e, 1000, n); bench_multi(b, &mut e, n); }
 }
 
 // ── Ordinals replay (real mainnet blocks) ───────────────────────────────────
@@ -531,6 +544,13 @@ mod ordinals_replay {
         bencher.bench_local(|| { let d = TmpDir::new("a-ord"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_and_replay(&mut e); });
     }
 
+    #[divan::bench(sample_count = 3)]
+    fn disk_arena(bencher: divan::Bencher) {
+        if !has_fixtures() { eprintln!("ordinals fixtures missing, skipping"); return; }
+        LazyLock::force(&CORPUS);
+        bencher.bench_local(|| { let d = TmpDir::new("d-ord"); let mut e = DiskArenaEngine::open(d.path()).unwrap(); seed_and_replay(&mut e); });
+    }
+
     #[divan::bench(sample_count = 10)]
     fn flat_read(bencher: divan::Bencher) {
         if !has_fixtures() { return; }
@@ -574,6 +594,17 @@ mod ordinals_replay {
         let mut out: Vec<LookupResult> = Vec::new();
         bencher.bench_local(|| { out.clear(); e.read_coins(black_box(&ops), &mut out).unwrap(); });
     }
+
+    #[divan::bench(sample_count = 10)]
+    fn disk_arena_read(bencher: divan::Bencher) {
+        if !has_fixtures() { return; }
+        let corpus = &*CORPUS;
+        if corpus.blocks.len() < 500 { return; }
+        let d = TmpDir::new("d-ord-r"); let mut e = DiskArenaEngine::open(d.path()).unwrap(); seed_and_replay(&mut e);
+        let ops: Vec<OutPoint> = corpus.blocks[500].spent.iter().take(100).copied().collect();
+        let mut out: Vec<LookupResult> = Vec::new();
+        bencher.bench_local(|| { out.clear(); e.read_coins(black_box(&ops), &mut out).unwrap(); });
+    }
 }
 
 // ── Recovery (startup from WAL/log) ─────────────────────────────────────────
@@ -603,5 +634,11 @@ mod recover {
     fn arena(bencher: divan::Bencher) {
         let d = TmpDir::new("a-rec"); { let mut e = ArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 500); e.flush(Durability::Synced).unwrap(); }
         bencher.bench(|| { black_box(ArenaEngine::open(d.path()).unwrap()); });
+    }
+
+    #[divan::bench]
+    fn disk_arena(bencher: divan::Bencher) {
+        let d = TmpDir::new("d-rec"); { let mut e = DiskArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 500); e.flush(Durability::Synced).unwrap(); }
+        bencher.bench(|| { black_box(DiskArenaEngine::open(d.path()).unwrap()); });
     }
 }
