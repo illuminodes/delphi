@@ -1,4 +1,5 @@
 pub mod arena;
+pub mod disk_arena;
 pub mod flat;
 pub mod robin_hood;
 pub mod tx_grouped;
