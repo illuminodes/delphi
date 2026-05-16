@@ -15,7 +15,6 @@ use mantle_storage::engine::robin_hood::RobinHoodEngine;
 use mantle_storage::engine::tx_grouped::TxGroupedEngine;
 use mantle_storage::engine::Engine;
 use mantle_storage::types::{CommitBlockReq, Durability, LookupResult, ReqToken};
-use mantle_utxo_set::{ArenaUtxoSet, ConnectScratch};
 
 fn main() {
     divan::main();
@@ -154,44 +153,14 @@ fn seed_engine_multi_output(eng: &mut dyn Engine, n_blocks: u32, outputs_per_tx:
 mod lookup {
     use super::*;
 
-    #[divan::bench]
-    fn flat_hit(bencher: divan::Bencher) {
-        let dir = TmpDir::new("flat-lh");
-        let mut eng = FlatEngine::open(dir.path()).unwrap();
-        seed_engine(&mut eng, 1000);
+    fn bench_hit(bencher: divan::Bencher, eng: &mut dyn Engine) {
         let target = make_outpoint(500);
         bencher.bench_local(|| {
             black_box(eng.read_coin(black_box(&target)).unwrap());
         });
     }
 
-    #[divan::bench]
-    fn robin_hood_hit(bencher: divan::Bencher) {
-        let dir = TmpDir::new("rh-lh");
-        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
-        seed_engine(&mut eng, 1000);
-        let target = make_outpoint(500);
-        bencher.bench_local(|| {
-            black_box(eng.read_coin(black_box(&target)).unwrap());
-        });
-    }
-
-    #[divan::bench]
-    fn tx_grouped_hit(bencher: divan::Bencher) {
-        let dir = TmpDir::new("txg-lh");
-        let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
-        seed_engine(&mut eng, 1000);
-        let target = make_outpoint(500);
-        bencher.bench_local(|| {
-            black_box(eng.read_coin(black_box(&target)).unwrap());
-        });
-    }
-
-    #[divan::bench]
-    fn flat_miss(bencher: divan::Bencher) {
-        let dir = TmpDir::new("flat-lm");
-        let mut eng = FlatEngine::open(dir.path()).unwrap();
-        seed_engine(&mut eng, 1000);
+    fn bench_miss(bencher: divan::Bencher, eng: &mut dyn Engine) {
         let missing = make_outpoint(99_999);
         bencher.bench_local(|| {
             black_box(eng.read_coin(black_box(&missing)).unwrap());
@@ -199,26 +168,22 @@ mod lookup {
     }
 
     #[divan::bench]
-    fn robin_hood_miss(bencher: divan::Bencher) {
-        let dir = TmpDir::new("rh-lm");
-        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
-        seed_engine(&mut eng, 1000);
-        let missing = make_outpoint(99_999);
-        bencher.bench_local(|| {
-            black_box(eng.read_coin(black_box(&missing)).unwrap());
-        });
-    }
+    fn flat_hit(b: divan::Bencher) { let d = TmpDir::new("f-lh"); let mut e = FlatEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_hit(b, &mut e); }
+    #[divan::bench]
+    fn robin_hood_hit(b: divan::Bencher) { let d = TmpDir::new("r-lh"); let mut e = RobinHoodEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_hit(b, &mut e); }
+    #[divan::bench]
+    fn tx_grouped_hit(b: divan::Bencher) { let d = TmpDir::new("t-lh"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_hit(b, &mut e); }
+    #[divan::bench]
+    fn arena_hit(b: divan::Bencher) { let d = TmpDir::new("a-lh"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_hit(b, &mut e); }
 
     #[divan::bench]
-    fn tx_grouped_miss(bencher: divan::Bencher) {
-        let dir = TmpDir::new("txg-lm");
-        let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
-        seed_engine(&mut eng, 1000);
-        let missing = make_outpoint(99_999);
-        bencher.bench_local(|| {
-            black_box(eng.read_coin(black_box(&missing)).unwrap());
-        });
-    }
+    fn flat_miss(b: divan::Bencher) { let d = TmpDir::new("f-lm"); let mut e = FlatEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_miss(b, &mut e); }
+    #[divan::bench]
+    fn robin_hood_miss(b: divan::Bencher) { let d = TmpDir::new("r-lm"); let mut e = RobinHoodEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_miss(b, &mut e); }
+    #[divan::bench]
+    fn tx_grouped_miss(b: divan::Bencher) { let d = TmpDir::new("t-lm"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_miss(b, &mut e); }
+    #[divan::bench]
+    fn arena_miss(b: divan::Bencher) { let d = TmpDir::new("a-lm"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_miss(b, &mut e); }
 }
 
 // ── Batched lookup (100 coins) ──────────────────────────────────────────────
@@ -226,11 +191,7 @@ mod lookup {
 mod batch_lookup {
     use super::*;
 
-    #[divan::bench]
-    fn flat_100(bencher: divan::Bencher) {
-        let dir = TmpDir::new("flat-b100");
-        let mut eng = FlatEngine::open(dir.path()).unwrap();
-        seed_engine(&mut eng, 1000);
+    fn bench_batch(bencher: divan::Bencher, eng: &mut dyn Engine) {
         let ops: Vec<OutPoint> = (1..=100).map(make_outpoint).collect();
         let mut out: Vec<LookupResult> = Vec::new();
         bencher.bench_local(|| {
@@ -240,30 +201,13 @@ mod batch_lookup {
     }
 
     #[divan::bench]
-    fn robin_hood_100(bencher: divan::Bencher) {
-        let dir = TmpDir::new("rh-b100");
-        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
-        seed_engine(&mut eng, 1000);
-        let ops: Vec<OutPoint> = (1..=100).map(make_outpoint).collect();
-        let mut out: Vec<LookupResult> = Vec::new();
-        bencher.bench_local(|| {
-            out.clear();
-            eng.read_coins(black_box(&ops), &mut out).unwrap();
-        });
-    }
-
+    fn flat(b: divan::Bencher) { let d = TmpDir::new("f-b"); let mut e = FlatEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_batch(b, &mut e); }
     #[divan::bench]
-    fn tx_grouped_100(bencher: divan::Bencher) {
-        let dir = TmpDir::new("txg-b100");
-        let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
-        seed_engine(&mut eng, 1000);
-        let ops: Vec<OutPoint> = (1..=100).map(make_outpoint).collect();
-        let mut out: Vec<LookupResult> = Vec::new();
-        bencher.bench_local(|| {
-            out.clear();
-            eng.read_coins(black_box(&ops), &mut out).unwrap();
-        });
-    }
+    fn robin_hood(b: divan::Bencher) { let d = TmpDir::new("r-b"); let mut e = RobinHoodEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_batch(b, &mut e); }
+    #[divan::bench]
+    fn tx_grouped(b: divan::Bencher) { let d = TmpDir::new("t-b"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_batch(b, &mut e); }
+    #[divan::bench]
+    fn arena(b: divan::Bencher) { let d = TmpDir::new("a-b"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 1000); bench_batch(b, &mut e); }
 }
 
 // ── Connect block (write_block with creates) ────────────────────────────────
@@ -304,25 +248,13 @@ mod connect {
     }
 
     #[divan::bench]
-    fn flat(bencher: divan::Bencher) {
-        let dir = TmpDir::new("flat-conn");
-        let mut eng = FlatEngine::open(dir.path()).unwrap();
-        bench_write_block(bencher, &mut eng);
-    }
-
+    fn flat(b: divan::Bencher) { let d = TmpDir::new("f-c"); let mut e = FlatEngine::open(d.path()).unwrap(); bench_write_block(b, &mut e); }
     #[divan::bench]
-    fn robin_hood(bencher: divan::Bencher) {
-        let dir = TmpDir::new("rh-conn");
-        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
-        bench_write_block(bencher, &mut eng);
-    }
-
+    fn robin_hood(b: divan::Bencher) { let d = TmpDir::new("r-c"); let mut e = RobinHoodEngine::open(d.path()).unwrap(); bench_write_block(b, &mut e); }
     #[divan::bench]
-    fn tx_grouped(bencher: divan::Bencher) {
-        let dir = TmpDir::new("txg-conn");
-        let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
-        bench_write_block(bencher, &mut eng);
-    }
+    fn tx_grouped(b: divan::Bencher) { let d = TmpDir::new("t-c"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); bench_write_block(b, &mut e); }
+    #[divan::bench]
+    fn arena(b: divan::Bencher) { let d = TmpDir::new("a-c"); let mut e = ArenaEngine::open(d.path()).unwrap(); bench_write_block(b, &mut e); }
 }
 
 // ── Connect + spend (create then consume via write_block) ───────────────────
@@ -381,25 +313,13 @@ mod connect_spend {
     }
 
     #[divan::bench]
-    fn flat(bencher: divan::Bencher) {
-        let dir = TmpDir::new("flat-cs");
-        let mut eng = FlatEngine::open(dir.path()).unwrap();
-        bench_write_and_spend(bencher, &mut eng);
-    }
-
+    fn flat(b: divan::Bencher) { let d = TmpDir::new("f-cs"); let mut e = FlatEngine::open(d.path()).unwrap(); bench_write_and_spend(b, &mut e); }
     #[divan::bench]
-    fn robin_hood(bencher: divan::Bencher) {
-        let dir = TmpDir::new("rh-cs");
-        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
-        bench_write_and_spend(bencher, &mut eng);
-    }
-
+    fn robin_hood(b: divan::Bencher) { let d = TmpDir::new("r-cs"); let mut e = RobinHoodEngine::open(d.path()).unwrap(); bench_write_and_spend(b, &mut e); }
     #[divan::bench]
-    fn tx_grouped(bencher: divan::Bencher) {
-        let dir = TmpDir::new("txg-cs");
-        let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
-        bench_write_and_spend(bencher, &mut eng);
-    }
+    fn tx_grouped(b: divan::Bencher) { let d = TmpDir::new("t-cs"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); bench_write_and_spend(b, &mut e); }
+    #[divan::bench]
+    fn arena(b: divan::Bencher) { let d = TmpDir::new("a-cs"); let mut e = ArenaEngine::open(d.path()).unwrap(); bench_write_and_spend(b, &mut e); }
 }
 
 // ── Multi-output transaction grouping ───────────────────────────────────────
@@ -407,11 +327,7 @@ mod connect_spend {
 mod multi_output {
     use super::*;
 
-    #[divan::bench(args = [2, 5, 10])]
-    fn flat_lookup_same_tx(bencher: divan::Bencher, n_outputs: u32) {
-        let dir = TmpDir::new("flat-mo");
-        let mut eng = FlatEngine::open(dir.path()).unwrap();
-        seed_engine_multi_output(&mut eng, 1000, n_outputs);
+    fn bench_multi(bencher: divan::Bencher, eng: &mut dyn Engine, n_outputs: u32) {
         let ops: Vec<OutPoint> = (0..n_outputs)
             .map(|vout| make_outpoint_vout(500, vout))
             .collect();
@@ -423,34 +339,13 @@ mod multi_output {
     }
 
     #[divan::bench(args = [2, 5, 10])]
-    fn robin_hood_lookup_same_tx(bencher: divan::Bencher, n_outputs: u32) {
-        let dir = TmpDir::new("rh-mo");
-        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
-        seed_engine_multi_output(&mut eng, 1000, n_outputs);
-        let ops: Vec<OutPoint> = (0..n_outputs)
-            .map(|vout| make_outpoint_vout(500, vout))
-            .collect();
-        let mut out: Vec<LookupResult> = Vec::new();
-        bencher.bench_local(|| {
-            out.clear();
-            eng.read_coins(black_box(&ops), &mut out).unwrap();
-        });
-    }
-
+    fn flat(b: divan::Bencher, n: u32) { let d = TmpDir::new("f-mo"); let mut e = FlatEngine::open(d.path()).unwrap(); seed_engine_multi_output(&mut e, 1000, n); bench_multi(b, &mut e, n); }
     #[divan::bench(args = [2, 5, 10])]
-    fn tx_grouped_lookup_same_tx(bencher: divan::Bencher, n_outputs: u32) {
-        let dir = TmpDir::new("txg-mo");
-        let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
-        seed_engine_multi_output(&mut eng, 1000, n_outputs);
-        let ops: Vec<OutPoint> = (0..n_outputs)
-            .map(|vout| make_outpoint_vout(500, vout))
-            .collect();
-        let mut out: Vec<LookupResult> = Vec::new();
-        bencher.bench_local(|| {
-            out.clear();
-            eng.read_coins(black_box(&ops), &mut out).unwrap();
-        });
-    }
+    fn robin_hood(b: divan::Bencher, n: u32) { let d = TmpDir::new("r-mo"); let mut e = RobinHoodEngine::open(d.path()).unwrap(); seed_engine_multi_output(&mut e, 1000, n); bench_multi(b, &mut e, n); }
+    #[divan::bench(args = [2, 5, 10])]
+    fn tx_grouped(b: divan::Bencher, n: u32) { let d = TmpDir::new("t-mo"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_engine_multi_output(&mut e, 1000, n); bench_multi(b, &mut e, n); }
+    #[divan::bench(args = [2, 5, 10])]
+    fn arena(b: divan::Bencher, n: u32) { let d = TmpDir::new("a-mo"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_engine_multi_output(&mut e, 1000, n); bench_multi(b, &mut e, n); }
 }
 
 // ── Ordinals replay (real mainnet blocks) ───────────────────────────────────
@@ -466,6 +361,7 @@ mod ordinals_replay {
         header: BlockHeader,
         hash: Hash256,
         prev_hash: Hash256,
+        #[allow(dead_code)]
         created: Vec<(OutPoint, Satoshi, Vec<u8>, bool)>,
         spent: Vec<OutPoint>,
         new_coins: Vec<NewCoin<'static>>,
@@ -513,10 +409,8 @@ mod ordinals_replay {
                 let coinbase = tx_idx == 0;
 
                 for (vout, out) in tx.outputs.iter().enumerate() {
-                    let op = OutPoint {
-                        txid,
-                        vout: vout as u32,
-                    };
+                    #[allow(clippy::cast_possible_truncation)]
+                    let op = OutPoint { txid, vout: vout as u32 };
                     created.push((op, out.value, out.script_pubkey.to_vec(), coinbase));
                     created_set.insert(op);
                 }
@@ -539,60 +433,35 @@ mod ordinals_replay {
             }
 
             blocks.push(RealBlock {
-                height: h,
-                header,
-                hash,
-                prev_hash,
-                created,
-                spent,
+                height: h, header, hash, prev_hash, created, spent,
                 new_coins: Vec::new(),
             });
         }
 
-        // Second pass: blocks vec is stable, build NewCoin slices that
-        // borrow script bytes from the now-pinned created tuples.
-        // SAFETY: the Corpus lives in a LazyLock — the blocks and their
-        // created vecs are never moved or freed. The transmuted 'static
-        // lifetime is valid for the program's duration.
+        // SAFETY: Corpus lives in LazyLock — never moved or freed.
         for blk in &mut blocks {
-            blk.new_coins = blk
-                .created
-                .iter()
-                .map(|(op, value, spk, coinbase)| {
-                    let spk_ref: &[u8] = spk;
-                    let spk_static: &'static [u8] =
-                        unsafe { std::mem::transmute::<&[u8], &'static [u8]>(spk_ref) };
-                    NewCoin {
-                        outpoint: *op,
-                        value: *value,
-                        script_pubkey: spk_static,
-                        coinbase: *coinbase,
-                        height: BlockHeight::new(blk.height),
-                    }
-                })
-                .collect();
+            blk.new_coins = blk.created.iter().map(|(op, value, spk, coinbase)| {
+                let spk_static: &'static [u8] =
+                    unsafe { std::mem::transmute::<&[u8], &'static [u8]>(spk.as_slice()) };
+                NewCoin {
+                    outpoint: *op, value: *value, script_pubkey: spk_static,
+                    coinbase: *coinbase, height: BlockHeight::new(blk.height),
+                }
+            }).collect();
         }
 
-        let seed_coins: Vec<NewCoin<'static>> = pre_window
-            .iter()
-            .map(|(op, value, spk)| {
-                let spk_ref: &[u8] = spk;
-                let spk_static: &'static [u8] =
-                    unsafe { std::mem::transmute::<&[u8], &'static [u8]>(spk_ref) };
-                NewCoin {
-                    outpoint: *op,
-                    value: *value,
-                    script_pubkey: spk_static,
-                    coinbase: false,
-                    height: BlockHeight::new(1),
-                }
-            })
-            .collect();
+        let seed_coins: Vec<NewCoin<'static>> = pre_window.iter().map(|(op, value, spk)| {
+            let spk_static: &'static [u8] =
+                unsafe { std::mem::transmute::<&[u8], &'static [u8]>(spk.as_slice()) };
+            NewCoin {
+                outpoint: *op, value: *value, script_pubkey: spk_static,
+                coinbase: false, height: BlockHeight::new(1),
+            }
+        }).collect();
 
         eprintln!(
             "ordinals corpus: {} blocks, {} pre-window UTXOs to seed",
-            blocks.len(),
-            pre_window.len()
+            blocks.len(), pre_window.len()
         );
         Corpus { blocks, pre_window, seed_coins }
     }
@@ -601,217 +470,109 @@ mod ordinals_replay {
 
     fn seed_and_replay(eng: &mut dyn Engine) {
         let corpus = &*CORPUS;
-        if corpus.blocks.is_empty() {
-            return;
-        }
+        if corpus.blocks.is_empty() { return; }
 
         let seed_hash = corpus.blocks[0].prev_hash;
-        let seed_height = BlockHeight::new(START_HEIGHT - 1);
         let seed_header = BlockHeader::new(
-            BlockVersion::new(1),
-            Hash256::ZERO,
-            Hash256::ZERO,
-            BlockTime::new(1),
-            CompactBits::new(0x1d00_ffff),
-            Nonce::new(0),
+            BlockVersion::new(1), Hash256::ZERO, Hash256::ZERO,
+            BlockTime::new(1), CompactBits::new(0x1d00_ffff), Nonce::new(0),
         );
         eng.write_block(&CommitBlockReq {
             token: ReqToken(0),
-            height: seed_height,
-            hash: seed_hash,
-            prev_hash: Hash256::ZERO,
-            header: seed_header,
-            created: &corpus.seed_coins,
-            spent: &[],
-            block_bytes: None,
-            durability: Durability::Memory,
-        })
-        .unwrap();
+            height: BlockHeight::new(START_HEIGHT - 1),
+            hash: seed_hash, prev_hash: Hash256::ZERO, header: seed_header,
+            created: &corpus.seed_coins, spent: &[],
+            block_bytes: None, durability: Durability::Memory,
+        }).unwrap();
 
         for (i, rb) in corpus.blocks.iter().enumerate() {
             eng.write_block(&CommitBlockReq {
                 #[allow(clippy::cast_possible_truncation)]
                 token: ReqToken(i as u64 + 1),
                 height: BlockHeight::new(rb.height),
-                hash: rb.hash,
-                prev_hash: rb.prev_hash,
-                header: rb.header,
-                created: &rb.new_coins,
-                spent: &rb.spent,
-                block_bytes: None,
-                durability: Durability::Memory,
-            })
-            .unwrap();
+                hash: rb.hash, prev_hash: rb.prev_hash, header: rb.header,
+                created: &rb.new_coins, spent: &rb.spent,
+                block_bytes: None, durability: Durability::Memory,
+            }).unwrap();
         }
     }
 
     fn has_fixtures() -> bool {
         let dir = ordinals_dir();
         dir.join("blocks").is_dir()
-            && dir
-                .join("blocks")
-                .join(format!("{START_HEIGHT:07}.bin"))
-                .exists()
+            && dir.join("blocks").join(format!("{START_HEIGHT:07}.bin")).exists()
     }
 
     #[divan::bench(sample_count = 3)]
     fn flat(bencher: divan::Bencher) {
-        if !has_fixtures() {
-            eprintln!("ordinals fixtures missing, skipping");
-            return;
-        }
+        if !has_fixtures() { eprintln!("ordinals fixtures missing, skipping"); return; }
         LazyLock::force(&CORPUS);
-        bencher.bench_local(|| {
-            let dir = TmpDir::new("flat-ord");
-            let mut eng = FlatEngine::open(dir.path()).unwrap();
-            seed_and_replay(&mut eng);
-        });
+        bencher.bench_local(|| { let d = TmpDir::new("f-ord"); let mut e = FlatEngine::open(d.path()).unwrap(); seed_and_replay(&mut e); });
     }
 
     #[divan::bench(sample_count = 3)]
     fn robin_hood(bencher: divan::Bencher) {
-        if !has_fixtures() {
-            eprintln!("ordinals fixtures missing, skipping");
-            return;
-        }
+        if !has_fixtures() { eprintln!("ordinals fixtures missing, skipping"); return; }
         LazyLock::force(&CORPUS);
-        bencher.bench_local(|| {
-            let dir = TmpDir::new("rh-ord");
-            let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
-            seed_and_replay(&mut eng);
-        });
+        bencher.bench_local(|| { let d = TmpDir::new("r-ord"); let mut e = RobinHoodEngine::open(d.path()).unwrap(); seed_and_replay(&mut e); });
     }
 
     #[divan::bench(sample_count = 3)]
     fn tx_grouped(bencher: divan::Bencher) {
-        if !has_fixtures() {
-            eprintln!("ordinals fixtures missing, skipping");
-            return;
-        }
+        if !has_fixtures() { eprintln!("ordinals fixtures missing, skipping"); return; }
         LazyLock::force(&CORPUS);
-        bencher.bench_local(|| {
-            let dir = TmpDir::new("txg-ord");
-            let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
-            seed_and_replay(&mut eng);
-        });
+        bencher.bench_local(|| { let d = TmpDir::new("t-ord"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_and_replay(&mut e); });
     }
 
     #[divan::bench(sample_count = 3)]
     fn arena(bencher: divan::Bencher) {
-        if !has_fixtures() {
-            eprintln!("ordinals fixtures missing, skipping");
-            return;
-        }
-        let corpus = &*CORPUS;
-        bencher.bench_local(|| {
-            let mut set = ArenaUtxoSet::new();
-            let mut scratch = ConnectScratch::new();
-
-            let undo = set
-                .connect_block_with(&mut scratch, BlockHeight::new(1), &corpus.seed_coins, &[])
-                .unwrap();
-            scratch.reclaim(undo);
-
-            for rb in &corpus.blocks {
-                let undo = set.connect_block_best_effort(
-                    &mut scratch,
-                    BlockHeight::new(rb.height),
-                    &rb.new_coins,
-                    &rb.spent,
-                );
-                scratch.reclaim(undo);
-            }
-            black_box(&set);
-        });
-    }
-
-    #[divan::bench(sample_count = 3)]
-    fn arena_engine(bencher: divan::Bencher) {
-        if !has_fixtures() {
-            eprintln!("ordinals fixtures missing, skipping");
-            return;
-        }
+        if !has_fixtures() { eprintln!("ordinals fixtures missing, skipping"); return; }
         LazyLock::force(&CORPUS);
-        bencher.bench_local(|| {
-            let dir = TmpDir::new("arena-eng-ord");
-            let mut eng = ArenaEngine::open(dir.path()).unwrap();
-            seed_and_replay(&mut eng);
-        });
+        bencher.bench_local(|| { let d = TmpDir::new("a-ord"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_and_replay(&mut e); });
     }
 
     #[divan::bench(sample_count = 10)]
-    fn flat_read_after_replay(bencher: divan::Bencher) {
-        if !has_fixtures() {
-            return;
-        }
+    fn flat_read(bencher: divan::Bencher) {
+        if !has_fixtures() { return; }
         let corpus = &*CORPUS;
-        if corpus.blocks.len() < 500 {
-            return;
-        }
-        let dir = TmpDir::new("flat-ord-r");
-        let mut eng = FlatEngine::open(dir.path()).unwrap();
-        seed_and_replay(&mut eng);
-        let lookup_ops: Vec<OutPoint> = corpus.blocks[500]
-            .spent
-            .iter()
-            .take(100)
-            .copied()
-            .collect();
+        if corpus.blocks.len() < 500 { return; }
+        let d = TmpDir::new("f-ord-r"); let mut e = FlatEngine::open(d.path()).unwrap(); seed_and_replay(&mut e);
+        let ops: Vec<OutPoint> = corpus.blocks[500].spent.iter().take(100).copied().collect();
         let mut out: Vec<LookupResult> = Vec::new();
-        bencher.bench_local(|| {
-            out.clear();
-            eng.read_coins(black_box(&lookup_ops), &mut out).unwrap();
-        });
+        bencher.bench_local(|| { out.clear(); e.read_coins(black_box(&ops), &mut out).unwrap(); });
     }
 
     #[divan::bench(sample_count = 10)]
-    fn robin_hood_read_after_replay(bencher: divan::Bencher) {
-        if !has_fixtures() {
-            return;
-        }
+    fn robin_hood_read(bencher: divan::Bencher) {
+        if !has_fixtures() { return; }
         let corpus = &*CORPUS;
-        if corpus.blocks.len() < 500 {
-            return;
-        }
-        let dir = TmpDir::new("rh-ord-r");
-        let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
-        seed_and_replay(&mut eng);
-        let lookup_ops: Vec<OutPoint> = corpus.blocks[500]
-            .spent
-            .iter()
-            .take(100)
-            .copied()
-            .collect();
+        if corpus.blocks.len() < 500 { return; }
+        let d = TmpDir::new("r-ord-r"); let mut e = RobinHoodEngine::open(d.path()).unwrap(); seed_and_replay(&mut e);
+        let ops: Vec<OutPoint> = corpus.blocks[500].spent.iter().take(100).copied().collect();
         let mut out: Vec<LookupResult> = Vec::new();
-        bencher.bench_local(|| {
-            out.clear();
-            eng.read_coins(black_box(&lookup_ops), &mut out).unwrap();
-        });
+        bencher.bench_local(|| { out.clear(); e.read_coins(black_box(&ops), &mut out).unwrap(); });
     }
 
     #[divan::bench(sample_count = 10)]
-    fn tx_grouped_read_after_replay(bencher: divan::Bencher) {
-        if !has_fixtures() {
-            return;
-        }
+    fn tx_grouped_read(bencher: divan::Bencher) {
+        if !has_fixtures() { return; }
         let corpus = &*CORPUS;
-        if corpus.blocks.len() < 500 {
-            return;
-        }
-        let dir = TmpDir::new("txg-ord-r");
-        let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
-        seed_and_replay(&mut eng);
-        let lookup_ops: Vec<OutPoint> = corpus.blocks[500]
-            .spent
-            .iter()
-            .take(100)
-            .copied()
-            .collect();
+        if corpus.blocks.len() < 500 { return; }
+        let d = TmpDir::new("t-ord-r"); let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_and_replay(&mut e);
+        let ops: Vec<OutPoint> = corpus.blocks[500].spent.iter().take(100).copied().collect();
         let mut out: Vec<LookupResult> = Vec::new();
-        bencher.bench_local(|| {
-            out.clear();
-            eng.read_coins(black_box(&lookup_ops), &mut out).unwrap();
-        });
+        bencher.bench_local(|| { out.clear(); e.read_coins(black_box(&ops), &mut out).unwrap(); });
+    }
+
+    #[divan::bench(sample_count = 10)]
+    fn arena_read(bencher: divan::Bencher) {
+        if !has_fixtures() { return; }
+        let corpus = &*CORPUS;
+        if corpus.blocks.len() < 500 { return; }
+        let d = TmpDir::new("a-ord-r"); let mut e = ArenaEngine::open(d.path()).unwrap(); seed_and_replay(&mut e);
+        let ops: Vec<OutPoint> = corpus.blocks[500].spent.iter().take(100).copied().collect();
+        let mut out: Vec<LookupResult> = Vec::new();
+        bencher.bench_local(|| { out.clear(); e.read_coins(black_box(&ops), &mut out).unwrap(); });
     }
 }
 
@@ -821,41 +582,26 @@ mod recover {
     use super::*;
 
     #[divan::bench]
-    fn flat_500(bencher: divan::Bencher) {
-        let dir = TmpDir::new("flat-rec");
-        {
-            let mut eng = FlatEngine::open(dir.path()).unwrap();
-            seed_engine(&mut eng, 500);
-            eng.flush(Durability::Synced).unwrap();
-        }
-        bencher.bench(|| {
-            black_box(FlatEngine::open(dir.path()).unwrap());
-        });
+    fn flat(bencher: divan::Bencher) {
+        let d = TmpDir::new("f-rec"); { let mut e = FlatEngine::open(d.path()).unwrap(); seed_engine(&mut e, 500); e.flush(Durability::Synced).unwrap(); }
+        bencher.bench(|| { black_box(FlatEngine::open(d.path()).unwrap()); });
     }
 
     #[divan::bench]
-    fn robin_hood_500(bencher: divan::Bencher) {
-        let dir = TmpDir::new("rh-rec");
-        {
-            let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
-            seed_engine(&mut eng, 500);
-            eng.flush(Durability::Synced).unwrap();
-        }
-        bencher.bench(|| {
-            black_box(RobinHoodEngine::open(dir.path()).unwrap());
-        });
+    fn robin_hood(bencher: divan::Bencher) {
+        let d = TmpDir::new("r-rec"); { let mut e = RobinHoodEngine::open(d.path()).unwrap(); seed_engine(&mut e, 500); e.flush(Durability::Synced).unwrap(); }
+        bencher.bench(|| { black_box(RobinHoodEngine::open(d.path()).unwrap()); });
     }
 
     #[divan::bench]
-    fn tx_grouped_500(bencher: divan::Bencher) {
-        let dir = TmpDir::new("txg-rec");
-        {
-            let mut eng = TxGroupedEngine::open(dir.path()).unwrap();
-            seed_engine(&mut eng, 500);
-            eng.flush(Durability::Synced).unwrap();
-        }
-        bencher.bench(|| {
-            black_box(TxGroupedEngine::open(dir.path()).unwrap());
-        });
+    fn tx_grouped(bencher: divan::Bencher) {
+        let d = TmpDir::new("t-rec"); { let mut e = TxGroupedEngine::open(d.path()).unwrap(); seed_engine(&mut e, 500); e.flush(Durability::Synced).unwrap(); }
+        bencher.bench(|| { black_box(TxGroupedEngine::open(d.path()).unwrap()); });
+    }
+
+    #[divan::bench]
+    fn arena(bencher: divan::Bencher) {
+        let d = TmpDir::new("a-rec"); { let mut e = ArenaEngine::open(d.path()).unwrap(); seed_engine(&mut e, 500); e.flush(Durability::Synced).unwrap(); }
+        bencher.bench(|| { black_box(ArenaEngine::open(d.path()).unwrap()); });
     }
 }
