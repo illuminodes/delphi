@@ -8,6 +8,37 @@ use crate::tx_entry::TxEntry;
 
 const COINBASE_MATURITY: u32 = 100;
 
+/// Scan a contiguous `NewCoin` slice, detect tx boundaries by txid, and
+/// insert a `TxEntry` per transaction directly — no intermediate scratch vec.
+fn insert_created(
+    txs: &mut PrehashedMap<Hash256, TxEntry>,
+    created_txids: &mut Vec<Hash256>,
+    height: BlockHeight,
+    created: &[NewCoin<'_>],
+) {
+    let mut i = 0;
+    while i < created.len() {
+        let txid = created[i].outpoint.txid;
+        let coinbase = created[i].coinbase;
+        created_txids.push(txid);
+
+        let run_start = i;
+        let mut max_vout = 0u32;
+        while i < created.len() && created[i].outpoint.txid == txid {
+            max_vout = max_vout.max(created[i].outpoint.vout);
+            i += 1;
+        }
+
+        let entry = TxEntry::from_new_coins(
+            height,
+            coinbase,
+            &created[run_start..i],
+            max_vout,
+        );
+        txs.insert(txid, entry);
+    }
+}
+
 /// Undo record for a single spend within a block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpendUndo {
@@ -27,7 +58,6 @@ pub struct BlockUndo {
 /// Reusable scratch buffers for `connect_block` / `disconnect_block`.
 /// Eliminates per-block allocations on the hot path.
 pub struct ConnectScratch {
-    outputs: Vec<Option<CoinEntry>>,
     undo_spent: Vec<SpendUndo>,
     created_txids: Vec<Hash256>,
 }
@@ -36,14 +66,12 @@ impl ConnectScratch {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            outputs: Vec::new(),
             undo_spent: Vec::new(),
             created_txids: Vec::new(),
         }
     }
 
     fn clear(&mut self) {
-        self.outputs.clear();
         self.undo_spent.clear();
         self.created_txids.clear();
     }
@@ -217,40 +245,8 @@ impl UtxoSet {
     ) -> Result<BlockUndo, UtxoError> {
         scratch.clear();
 
-        // Insert created outputs. NewCoins from the same tx are contiguous,
-        // so we detect tx boundaries by txid change — no hashmap needed.
-        let mut i = 0;
-        while i < created.len() {
-            let txid = created[i].outpoint.txid;
-            let coinbase = created[i].coinbase;
-            scratch.created_txids.push(txid);
+        insert_created(&mut self.txs, &mut scratch.created_txids, height, created);
 
-            // Find the end of this tx's run and the max vout.
-            let run_start = i;
-            let mut max_vout = 0u32;
-            while i < created.len() && created[i].outpoint.txid == txid {
-                max_vout = max_vout.max(created[i].outpoint.vout);
-                i += 1;
-            }
-
-            // Build outputs in the scratch vec, then drain into TxEntry.
-            // drain_from takes from the slice without stealing the Vec's capacity.
-            scratch.outputs.clear();
-            scratch
-                .outputs
-                .resize_with(max_vout as usize + 1, || None);
-            for c in &created[run_start..i] {
-                scratch.outputs[c.outpoint.vout as usize] = Some(CoinEntry {
-                    value: c.value,
-                    script_pubkey: c.script_pubkey.into(),
-                });
-            }
-
-            let entry = TxEntry::drain_from(height, coinbase, &mut scratch.outputs);
-            self.txs.insert(txid, entry);
-        }
-
-        // Spend inputs.
         scratch.undo_spent.reserve(spent.len());
         for op in spent {
             scratch.undo_spent.push(self.spend(op, height)?);
@@ -274,33 +270,7 @@ impl UtxoSet {
     ) -> BlockUndo {
         scratch.clear();
 
-        let mut i = 0;
-        while i < created.len() {
-            let txid = created[i].outpoint.txid;
-            let coinbase = created[i].coinbase;
-            scratch.created_txids.push(txid);
-
-            let run_start = i;
-            let mut max_vout = 0u32;
-            while i < created.len() && created[i].outpoint.txid == txid {
-                max_vout = max_vout.max(created[i].outpoint.vout);
-                i += 1;
-            }
-
-            scratch.outputs.clear();
-            scratch
-                .outputs
-                .resize_with(max_vout as usize + 1, || None);
-            for c in &created[run_start..i] {
-                scratch.outputs[c.outpoint.vout as usize] = Some(CoinEntry {
-                    value: c.value,
-                    script_pubkey: c.script_pubkey.into(),
-                });
-            }
-
-            let entry = TxEntry::drain_from(height, coinbase, &mut scratch.outputs);
-            self.txs.insert(txid, entry);
-        }
+        insert_created(&mut self.txs, &mut scratch.created_txids, height, created);
 
         scratch.undo_spent.reserve(spent.len());
         for op in spent {

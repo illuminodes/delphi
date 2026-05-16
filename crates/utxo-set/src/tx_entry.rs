@@ -1,4 +1,5 @@
 use mantle::primitives::BlockHeight;
+use mantle_consensus::chain_view::NewCoin;
 
 use crate::coin_entry::CoinEntry;
 
@@ -80,6 +81,75 @@ impl TxEntry {
         }
         let outputs: Vec<Option<CoinEntry>> = src.iter_mut().map(Option::take).collect();
         Self::new_heap(height, coinbase, outputs)
+    }
+
+    /// Build a `TxEntry` directly from a contiguous slice of `NewCoin`s that
+    /// all belong to the same transaction. Avoids any intermediate Vec for
+    /// the inline case (≤4 outputs with `max_vout` < 4).
+    #[must_use]
+    pub fn from_new_coins(
+        height: BlockHeight,
+        coinbase: bool,
+        coins: &[NewCoin<'_>],
+        max_vout: u32,
+    ) -> Self {
+        let slot_count = max_vout as usize + 1;
+        if slot_count <= INLINE_CAP {
+            let mut word = 0u64;
+            let mut slots: [Option<CoinEntry>; INLINE_CAP] = [None, None, None, None];
+            for c in coins {
+                let idx = c.outpoint.vout as usize;
+                word |= 1 << idx;
+                slots[idx] = Some(CoinEntry {
+                    value: c.value,
+                    script_pubkey: c.script_pubkey.into(),
+                });
+            }
+            return Self {
+                height,
+                coinbase,
+                live: Bitmap::Inline(word),
+                #[allow(clippy::cast_possible_truncation)]
+                outputs: Outputs::Inline { len: slot_count as u8, slots },
+            };
+        }
+        let mut outputs: Vec<Option<CoinEntry>> = Vec::with_capacity(slot_count);
+        outputs.resize_with(slot_count, || None);
+        let mut word = 0u64;
+        for c in coins {
+            let idx = c.outpoint.vout as usize;
+            outputs[idx] = Some(CoinEntry {
+                value: c.value,
+                script_pubkey: c.script_pubkey.into(),
+            });
+            if idx < 64 {
+                word |= 1 << idx;
+            }
+        }
+        if slot_count <= 64 {
+            Self {
+                height,
+                coinbase,
+                live: Bitmap::Inline(word),
+                outputs: Outputs::Heap(outputs),
+            }
+        } else {
+            let words = slot_count.div_ceil(64);
+            let mut live = vec![0u64; words];
+            live[0] = word;
+            for c in coins {
+                let idx = c.outpoint.vout as usize;
+                if idx >= 64 {
+                    live[idx / 64] |= 1 << (idx % 64);
+                }
+            }
+            Self {
+                height,
+                coinbase,
+                live: Bitmap::Heap(live),
+                outputs: Outputs::Heap(outputs),
+            }
+        }
     }
 
     fn new_heap(height: BlockHeight, coinbase: bool, outputs: Vec<Option<CoinEntry>>) -> Self {
