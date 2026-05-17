@@ -75,6 +75,15 @@ pub fn seed_tx_grouped(
     eng
 }
 
+pub fn seed_production(
+    dir: &std::path::Path,
+    n_blocks: u32,
+) -> mantle_storage::engine::production::ProductionEngine {
+    let mut eng = mantle_storage::engine::production::ProductionEngine::open(dir).unwrap();
+    commit_blocks(&mut eng, n_blocks);
+    eng
+}
+
 fn commit_blocks(eng: &mut dyn Engine, n_blocks: u32) {
     let mut prev = Hash256::ZERO;
     for h in 1..=n_blocks {

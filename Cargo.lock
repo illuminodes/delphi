@@ -743,7 +743,9 @@ name = "mantle-storage"
 version = "0.1.0"
 dependencies = [
  "mantle",
+ "mantle-bloom",
  "mantle-consensus",
+ "mantle-lru",
  "mantle-utxo-set",
  "quetzalcoatl",
  "ququmatz",
