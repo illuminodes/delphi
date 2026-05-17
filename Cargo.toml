@@ -8,6 +8,8 @@ members = [
     "crates/transport",
     "crates/block-io",
     "crates/utxo-set",
+    "crates/bloom",
+    "crates/lru-cache",
     "bench",
     "conformance",
     "replay",

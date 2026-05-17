@@ -693,6 +693,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mantle-bloom"
+version = "0.1.0"
+
+[[package]]
 name = "mantle-conformance"
 version = "0.1.0"
 dependencies = [
@@ -715,6 +719,10 @@ dependencies = [
  "sha1",
  "sha2",
 ]
+
+[[package]]
+name = "mantle-lru"
+version = "0.1.0"
 
 [[package]]
 name = "mantle-replay"
@@ -755,6 +763,7 @@ version = "0.1.0"
 dependencies = [
  "mantle",
  "mantle-consensus",
+ "ququmatz",
 ]
 
 [[package]]
