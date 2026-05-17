@@ -9,8 +9,8 @@
 mod fixtures;
 
 use fixtures::{
-    make_block_hash, make_header, make_outpoint, seed_flat, seed_robin_hood, seed_tx_grouped,
-    ITERS_SMALL, P2WPKH_SPK,
+    make_block_hash, make_header, make_outpoint, seed_flat, seed_production, seed_robin_hood,
+    seed_tx_grouped, ITERS_SMALL, P2WPKH_SPK,
 };
 use mantle::primitives::{BlockHeight, Hash256, OutPoint, Satoshi};
 use mantle_consensus::chain_view::NewCoin;
@@ -277,6 +277,43 @@ fn run_scenario(name: &str) {
             }
             eprintln!("tx_grouped_recover(500 blocks): 100 iters done");
         }
+        "production_write" => {
+            let dir = tempfile::tempdir().unwrap();
+            let mut eng =
+                mantle_storage::engine::production::ProductionEngine::open(dir.path()).unwrap();
+            write_blocks_1000(&mut eng, "production");
+        }
+        "production_write_spend" => {
+            let dir = tempfile::tempdir().unwrap();
+            let mut eng =
+                mantle_storage::engine::production::ProductionEngine::open(dir.path()).unwrap();
+            write_and_spend_500(&mut eng, "production");
+        }
+        "production_read_batch" => {
+            let dir = tempfile::tempdir().unwrap();
+            let mut eng = seed_production(dir.path(), 1000);
+            read_coins_batch(&mut eng, "production");
+        }
+        "production_multi_output" => {
+            let dir = tempfile::tempdir().unwrap();
+            let mut eng =
+                mantle_storage::engine::production::ProductionEngine::open(dir.path()).unwrap();
+            seed_multi_output(&mut eng, 1000, 10);
+            multi_output_lookup(&mut eng, "production");
+        }
+        "production_recover" => {
+            let dir = tempfile::tempdir().unwrap();
+            {
+                let mut eng = seed_production(dir.path(), 500);
+                eng.flush(Durability::Synced).unwrap();
+            }
+            for _ in 0..10u32 {
+                let _ =
+                    mantle_storage::engine::production::ProductionEngine::open(dir.path())
+                        .unwrap();
+            }
+            eprintln!("production_recover(500 blocks): 10 iters done");
+        }
         other => {
             eprintln!("unknown scenario: {other}");
             eprintln!("available:");
@@ -292,18 +329,23 @@ const SCENARIOS: &[&str] = &[
     "flat_write",
     "robin_hood_write",
     "tx_grouped_write",
+    "production_write",
     "flat_write_spend",
     "robin_hood_write_spend",
     "tx_grouped_write_spend",
+    "production_write_spend",
     "flat_read_batch",
     "robin_hood_read_batch",
     "tx_grouped_read_batch",
+    "production_read_batch",
     "flat_multi_output",
     "robin_hood_multi_output",
     "tx_grouped_multi_output",
+    "production_multi_output",
     "flat_recover",
     "robin_hood_recover",
     "tx_grouped_recover",
+    "production_recover",
 ];
 
 fn main() {

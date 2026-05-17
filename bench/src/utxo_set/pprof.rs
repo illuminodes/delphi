@@ -15,6 +15,7 @@ use mantle::primitives::{
 };
 use mantle_consensus::chain_view::NewCoin;
 use mantle_storage::engine::flat::FlatEngine;
+use mantle_storage::engine::production::ProductionEngine;
 use mantle_storage::engine::robin_hood::RobinHoodEngine;
 use mantle_storage::engine::tx_grouped::TxGroupedEngine;
 use mantle_storage::engine::Engine;
@@ -269,6 +270,7 @@ const SCENARIOS: &[&str] = &[
     "flat_ordinals",
     "robin_hood_ordinals",
     "tx_grouped_ordinals",
+    "production_ordinals",
     "arena_ordinals",
 ];
 
@@ -290,6 +292,11 @@ fn main() {
         Some("tx_grouped_ordinals") => {
             run_ordinals("tx_grouped_ordinals", |p| {
                 Box::new(TxGroupedEngine::open(p).unwrap())
+            });
+        }
+        Some("production_ordinals") => {
+            run_ordinals("production_ordinals", |p| {
+                Box::new(ProductionEngine::open(p).unwrap())
             });
         }
         Some("arena_ordinals") => {
