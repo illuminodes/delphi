@@ -1150,3 +1150,193 @@ fn nbits_target_roundtrip_canonical_examples() {
         );
     }
 }
+
+// ── BIP30 exception-height bypass ────────────────────────────────────────
+
+/// At BIP30 exception heights (91842, 91880), a duplicate-txid coinbase
+/// must NOT trigger the BIP30 rejection — the check is bypassed entirely.
+#[test]
+fn connect_bip30_exception_height_bypasses_check() {
+    // Use height 91842 (first BIP30 exception).
+    let exception_height = BlockHeight::new(91_842);
+    let (mut view, _, _) = connect_setup(91_842);
+
+    // Build a coinbase for this exception height and compute its txid.
+    let cb = coinbase_tx(exception_height, block_subsidy(exception_height).to_u64());
+    let collision_txid = cb.txid().expect("txid encoding cannot fail");
+
+    // Pre-populate the UTXO set with a coinbase at the same txid.
+    view.insert_coin(
+        OutPoint {
+            txid: collision_txid,
+            vout: 0,
+        },
+        Coin {
+            value: Satoshi::new(1_000),
+            script_pubkey: vec![0x51].into(),
+            height: BlockHeight::new(1),
+            coinbase: true,
+        },
+    );
+
+    let block = make_block(vec![cb], CompactBits::new(0x207f_ffff));
+    let mut scratch = Vec::new();
+
+    // At a non-exception height this would fail with Bip30Violation.
+    // At the exception height it must succeed.
+    connect_block(
+        &block,
+        exception_height,
+        &view,
+        &mut scratch,
+        &mut ConnectScratch::new(),
+        true, // skip script — focus on BIP30 logic only
+        None,
+        None,
+    )
+    .expect("BIP30 exception height must bypass the duplicate-txid check");
+}
+
+/// BIP30 probe finds an existing coin that is NOT a coinbase — this is
+/// not a BIP30 violation, so connect_block must proceed normally.
+#[test]
+fn connect_bip30_non_coinbase_coin_is_not_a_violation() {
+    let (mut view, _, _) = connect_setup(200);
+    let cb = coinbase_tx(
+        BlockHeight::new(200),
+        block_subsidy(BlockHeight::new(200)).to_u64(),
+    );
+    let collision_txid = cb.txid().expect("txid encoding cannot fail");
+
+    // Insert a NON-coinbase coin at the same outpoint (txid:0).
+    view.insert_coin(
+        OutPoint {
+            txid: collision_txid,
+            vout: 0,
+        },
+        Coin {
+            value: Satoshi::new(1_000),
+            script_pubkey: vec![0x51].into(),
+            height: BlockHeight::new(1),
+            coinbase: false, // NOT coinbase — BIP30 should not trigger
+        },
+    );
+
+    let block = make_block(vec![cb], CompactBits::new(0x207f_ffff));
+    let mut scratch = Vec::new();
+    connect_block(
+        &block,
+        BlockHeight::new(200),
+        &view,
+        &mut scratch,
+        &mut ConnectScratch::new(),
+        true, // skip script
+        None,
+        None,
+    )
+    .expect("non-coinbase coin at same txid must not trigger BIP30");
+}
+
+// ── exec_cache: cold script failure caches the rejection ─────────────────
+
+/// When exec_cache is Some and script verification fails (cold miss),
+/// the error propagates as ScriptVerifyFailed. This covers the
+/// `verify_script_cached` branch inside connect_block for a failing input.
+#[test]
+fn connect_exec_cache_script_failure_propagates() {
+    let (mut view, _, _) = connect_setup(200);
+    let prev_op = OutPoint {
+        txid: Hash256::from_bytes([0xd1; 32]),
+        vout: 0,
+    };
+    view.insert_coin(
+        prev_op,
+        Coin {
+            value: Satoshi::new(50_000),
+            script_pubkey: vec![0x6a].into(), // OP_RETURN — always fails
+            height: BlockHeight::new(1),
+            coinbase: false,
+        },
+    );
+    let cb = coinbase_tx(
+        BlockHeight::new(200),
+        block_subsidy(BlockHeight::new(200)).to_u64(),
+    );
+    let spend = regular_tx(prev_op.txid, 0, 40_000);
+    let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
+    let mut scratch = Vec::new();
+    let mut cache = crate::script::ScriptExecutionCache::new(64);
+
+    let r = connect_block(
+        &block,
+        BlockHeight::new(200),
+        &view,
+        &mut scratch,
+        &mut ConnectScratch::new(),
+        false,
+        Some(&mut cache),
+        None,
+    );
+    assert!(
+        matches!(
+            r,
+            Err(ValidationError::ScriptVerifyFailed {
+                tx_index: 1,
+                input_index: 0,
+                ..
+            })
+        ),
+        "exec_cache cold miss with failing script must propagate error, got {r:?}"
+    );
+    // The cache should have recorded the failure (miss then insert).
+    assert!(cache.misses() > 0, "cache must record at least one miss");
+}
+
+// ── precomputed_txids path ───────────────────────────────────────────────
+
+/// Exercise the `precomputed_txids` parameter to cover the `Some(txids)`
+/// branch in the txid match expression (line 121).
+#[test]
+fn connect_with_precomputed_txids() {
+    let (mut view, _, _) = connect_setup(200);
+    let prev_op = OutPoint {
+        txid: Hash256::from_bytes([0xb1; 32]),
+        vout: 0,
+    };
+    view.insert_coin(
+        prev_op,
+        Coin {
+            value: Satoshi::new(50_000),
+            script_pubkey: vec![0x51].into(), // OP_1 — passes
+            height: BlockHeight::new(1),
+            coinbase: false,
+        },
+    );
+    let cb = coinbase_tx(
+        BlockHeight::new(200),
+        block_subsidy(BlockHeight::new(200)).to_u64(),
+    );
+    let spend = regular_tx(prev_op.txid, 0, 40_000);
+
+    let txids = vec![
+        cb.txid().expect("txid encoding cannot fail"),
+        spend.txid().expect("txid encoding cannot fail"),
+    ];
+    let block = make_block(vec![cb, spend], CompactBits::new(0x207f_ffff));
+    let mut scratch = Vec::new();
+
+    let result = connect_block(
+        &block,
+        BlockHeight::new(200),
+        &view,
+        &mut scratch,
+        &mut ConnectScratch::new(),
+        false,
+        None,
+        Some(&txids),
+    )
+    .expect("block with precomputed txids must connect");
+    assert_eq!(result.fees, Satoshi::new(10_000));
+    assert_eq!(result.spent, vec![prev_op]);
+    assert_eq!(result.created.len(), 2);
+}

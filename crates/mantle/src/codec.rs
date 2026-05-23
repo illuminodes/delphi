@@ -832,6 +832,28 @@ mod tests {
     }
 
     #[test]
+    fn codec_error_to_io_error_conversion() {
+        // UnexpectedEof -> ErrorKind::UnexpectedEof
+        let e = io::Error::from(Error::UnexpectedEof);
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+
+        // LengthOverflow -> ErrorKind::InvalidData
+        let e = io::Error::from(Error::LengthOverflow(999));
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+
+        // InvalidUtf8 -> ErrorKind::InvalidData
+        let utf8_err = std::str::from_utf8(&[0xff]).unwrap_err();
+        let e = io::Error::from(Error::InvalidUtf8(utf8_err));
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+
+        // Io(inner) -> returns the inner io::Error unchanged
+        let inner = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
+        let e = io::Error::from(Error::Io(inner));
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(e.to_string(), "access denied");
+    }
+
+    #[test]
     fn codec_error_display_all_variants() {
         let eof = Error::UnexpectedEof;
         assert!(format!("{eof}").contains("unexpected"));

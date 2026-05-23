@@ -1018,3 +1018,116 @@ fn all_upgradable_nops_fail_with_discourage() {
         );
     }
 }
+
+// ── op_check_sig: tapscript context not initialised (defensive) ──────
+
+#[test]
+fn op_checksig_tapscript_no_context_returns_bad_opcode() {
+    // Create an interpreter with SigVersion::Tapscript but do NOT set the
+    // tapscript context. When OP_CHECKSIG encounters a 32-byte pubkey and
+    // a non-empty sig it reaches the `let Some(ctx) = &self.tapscript`
+    // guard and returns BadOpcode (defensive unreachable path).
+    let checker = NopSigChecker;
+    let mut interp = Interpreter::new(&checker, ScriptFlags::NONE, SigVersion::Tapscript);
+    // Note: tapscript is None by default from Interpreter::new.
+
+    let mut script = Vec::new();
+    // Push a non-empty sig (1 byte) so we pass the empty-sig early return.
+    script.push(0x01); // OP_PUSHBYTES_1
+    script.push(0xff);
+    // Push a 32-byte pubkey so we pass the non-32-byte early return.
+    script.push(0x20); // OP_PUSHBYTES_32
+    script.extend_from_slice(&[0xab; 32]);
+    script.push(0xac); // OP_CHECKSIG
+
+    let r = interp.eval(&script);
+    assert!(
+        matches!(r, Err(ScriptError::BadOpcode)),
+        "tapscript CHECKSIG without context must return BadOpcode, got: {r:?}"
+    );
+}
+
+// ── op_check_multi_sig: pubkey shortage mid-loop pushes false ────────
+
+#[test]
+fn op_checkmultisig_pubkey_shortage_mid_loop_pushes_false() {
+    // 1-of-2 multisig with NopSigChecker (all sig checks fail). The loop
+    // exhausts both pubkeys without matching the single sig, then the
+    // `n_sigs - sig_idx > n_pubkeys - pk_idx` guard fires (lines 312-314),
+    // breaking with ok=false. Without NULLFAIL the result is just false
+    // pushed onto the stack.
+    //
+    // Stack (bottom to top): dummy, sig, n_sigs=1, pk1, pk2, n_pubkeys=2
+    // OP_0(dummy) OP_0(sig) OP_1(n_sigs) OP_0(pk1) OP_0(pk2) OP_2(n_pubkeys) OP_CHECKMULTISIG
+    let s = run(&[0x00, 0x00, 0x51, 0x00, 0x00, 0x52, 0xae]).expect("should not error");
+    assert_eq!(s.len(), 1);
+    assert!(
+        !s.peek(0).expect("non-empty stack").is_truthy(),
+        "pubkey shortage mid-loop must push false"
+    );
+}
+
+// ── op_check_multi_sig: NULLFAIL with non-empty sig on failure ───────
+
+#[test]
+fn op_checkmultisig_nullfail_nonempty_sig_returns_sig_null_fail() {
+    // 1-of-1 multisig with NopSigChecker (sig check always fails).
+    // A non-empty signature is provided and NULLFAIL is enabled.
+    // After the loop, ok=false and the NULLFAIL check finds a non-empty
+    // sig, returning SigNullFail (lines 330-335).
+    //
+    // Stack: dummy=OP_0, sig=1-byte, n_sigs=OP_1, pk=OP_0, n_pubkeys=OP_1
+    // Script: OP_0 OP_PUSHBYTES_1 0xff OP_1 OP_0 OP_1 OP_CHECKMULTISIG
+    let r = run_flags(
+        &[0x00, 0x01, 0xff, 0x51, 0x00, 0x51, 0xae],
+        ScriptFlags::NULLFAIL,
+    );
+    assert!(
+        matches!(r, Err(ScriptError::SigNullFail)),
+        "NULLFAIL with non-empty sig on multisig failure must return SigNullFail, got: {r:?}"
+    );
+}
+
+// ── op_check_sig: ECDSA NULLFAIL with non-empty failing sig ─────────
+
+#[test]
+fn op_checksig_ecdsa_nullfail_nonempty_sig_returns_sig_null_fail() {
+    // In the ECDSA (non-tapscript) path of op_check_sig (line 149):
+    //   if !ok && self.flags.contains(NULLFAIL) && !sig.is_empty()
+    // NopSigChecker always returns false for check_ecdsa_sig. We push a
+    // non-empty signature and a valid-looking pubkey, then OP_CHECKSIG
+    // with NULLFAIL flag must return SigNullFail.
+    //
+    // Script: OP_PUSHBYTES_1 0xff  OP_PUSHBYTES_1 0xaa  OP_CHECKSIG
+    // Stack before CHECKSIG (bottom to top): sig=[0xff], pubkey=[0xaa]
+    let r = run_flags(&[0x01, 0xff, 0x01, 0xaa, 0xac], ScriptFlags::NULLFAIL);
+    assert!(
+        matches!(r, Err(ScriptError::SigNullFail)),
+        "ECDSA CHECKSIG with NULLFAIL and non-empty failing sig must return SigNullFail, got: {r:?}"
+    );
+}
+
+// ── op_check_multi_sig: VERIFY variant failure returns Verify ────────
+
+#[test]
+fn op_checkmultisigverify_failure_returns_verify() {
+    // Line 339 of op_crypto.rs: when verify=true and ok=false, returns
+    // Err(ScriptError::Verify). We use NopSigChecker (always fails sig
+    // checks) with empty sigs so NULLFAIL does not fire. The VERIFY
+    // variant should return Verify, not SigNullFail.
+    //
+    // Build: OP_0(dummy) OP_0(sig) OP_1(n_sigs) OP_0(pk) OP_1(n_pubkeys) OP_CHECKMULTISIGVERIFY
+    // NopSigChecker: check_ecdsa_sig returns false. sig is empty so
+    // NULLFAIL doesn't trigger. The overall multisig result is false.
+    // Since verify=true: Err(Verify).
+    //
+    // Note: no NULLFAIL flag set — we only set P2SH to keep it simple.
+    let r = run_flags(
+        &[0x00, 0x00, 0x51, 0x00, 0x51, 0xaf],
+        ScriptFlags::NONE,
+    );
+    assert!(
+        matches!(r, Err(ScriptError::Verify)),
+        "CHECKMULTISIGVERIFY with failing sig (no NULLFAIL) must return Verify, got: {r:?}"
+    );
+}

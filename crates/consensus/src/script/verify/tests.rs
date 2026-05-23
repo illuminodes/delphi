@@ -1425,3 +1425,252 @@ fn unknown_witness_version_v16_accepted_without_discourage() {
     verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags)
         .expect("unknown witness v16 without DISCOURAGE flag must succeed");
 }
+
+// ── Taproot (witness v1, 32-byte program) dispatch ──────────────────
+
+#[test]
+fn taproot_empty_witness_fails() {
+    // Witness v1 (OP_1 = 0x51), 32-byte program, TAPROOT flag set,
+    // but an empty witness stack. run_taproot dispatches on
+    // effective_witness.len() — 0 items hits the catch-all arm
+    // returning WitnessProgramMismatch.
+    let program = [0xaa; 32];
+    let mut spk = vec![0x51, 0x20]; // OP_1, push 32 bytes
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[]); // empty witness
+    let flags = segwit_flags() | ScriptFlags::TAPROOT;
+    let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags);
+    assert!(
+        matches!(r, Err(ScriptError::WitnessProgramMismatch)),
+        "taproot with empty witness must fail with WitnessProgramMismatch, got: {r:?}"
+    );
+}
+
+#[test]
+fn taproot_invalid_schnorr_sig_format_fails() {
+    // Witness v1, 32-byte program, TAPROOT flag set. One witness item
+    // (key-path spend) but the item is too short to be a valid Schnorr
+    // signature (must be 64 or 65 bytes). This triggers
+    // SchnorrSigInvalidFormat inside run_taproot.
+    let program = [0xbb; 32];
+    let mut spk = vec![0x51, 0x20];
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[vec![0xab; 10]]); // 10 bytes, not 64/65
+    let flags = segwit_flags() | ScriptFlags::TAPROOT;
+    let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags);
+    assert!(
+        matches!(r, Err(ScriptError::SchnorrSigInvalidFormat)),
+        "taproot with malformed sig must fail with SchnorrSigInvalidFormat, got: {r:?}"
+    );
+}
+
+#[test]
+fn taproot_wrong_schnorr_sig_fails() {
+    // Witness v1, 32-byte program, TAPROOT flag set. One witness item
+    // of 64 bytes (valid length for a Schnorr sig with default hashtype)
+    // but the signature itself is all-zeros — verification against the
+    // output key must fail with TaprootVerify.
+    let program = [0xcc; 32];
+    let mut spk = vec![0x51, 0x20];
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[vec![0x00; 64]]); // 64-byte all-zero "sig"
+    let flags = segwit_flags() | ScriptFlags::TAPROOT;
+    let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags);
+    assert!(
+        matches!(r, Err(ScriptError::TaprootVerify)),
+        "taproot with wrong sig must fail with TaprootVerify, got: {r:?}"
+    );
+}
+
+// ── Native segwit: witness program extracted from scriptPubKey ───────
+
+#[test]
+fn native_p2wpkh_wrong_witness_count_fails() {
+    // Native P2WPKH (not P2SH-wrapped): scriptPubKey = OP_0 <20-byte pkh>.
+    // This exercises the `else if flags.contains(WITNESS)` branch at line 588
+    // where the witness program is extracted directly from the scriptPubKey
+    // (not from a P2SH redeem script). Providing 3 witness items instead of
+    // the required 2 triggers WitnessProgramMismatch from run_witness_v0.
+    let pkh = [0xaa; 20];
+    let spk = p2wpkh_spk(&pkh);
+    let tx = make_witness_tx(&[vec![0x01], vec![0x02; 33], vec![0x03]]);
+    let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), segwit_flags());
+    assert!(
+        matches!(r, Err(ScriptError::WitnessProgramMismatch)),
+        "native P2WPKH with 3 witness items must fail with WitnessProgramMismatch, got: {r:?}"
+    );
+}
+
+#[test]
+fn native_p2wsh_empty_witness_fails() {
+    // Native P2WSH: scriptPubKey = OP_0 <32-byte script hash>.
+    // Again exercises the native (non-P2SH) witness program extraction at
+    // line 588-589. An empty witness stack triggers WitnessProgramMismatch
+    // because split_last() returns None.
+    let script_hash = [0xbb; 32];
+    let mut spk = vec![0x00, 0x20];
+    spk.extend_from_slice(&script_hash);
+
+    let tx = make_witness_tx(&[]);
+    let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), segwit_flags());
+    assert!(
+        matches!(r, Err(ScriptError::WitnessProgramMismatch)),
+        "native P2WSH with empty witness must fail with WitnessProgramMismatch, got: {r:?}"
+    );
+}
+
+// ── P2SH redeem script eval failure paths ───────────────────────────
+
+#[test]
+fn p2sh_redeem_eval_fails_on_op_return() {
+    // Redeem script = OP_RETURN (0x6a). When evaluated, OP_RETURN
+    // always returns an error. The P2SH path runs interp.eval(redeem)
+    // which propagates the error.
+    let redeem = vec![0x6a]; // OP_RETURN
+    let redeem_hash = hash160(&redeem);
+
+    let mut spk = vec![0xa9, 0x14];
+    spk.extend_from_slice(&redeem_hash);
+    spk.push(0x87);
+    assert!(is_p2sh(&spk));
+
+    // scriptSig = <push redeem>
+    let mut script_sig = vec![u8::try_from(redeem.len()).expect("redeem fits")];
+    script_sig.extend_from_slice(&redeem);
+
+    let tx = make_tx();
+    let flags = ScriptFlags::P2SH;
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags);
+    assert!(
+        r.is_err(),
+        "P2SH with OP_RETURN redeem must fail, got: {r:?}"
+    );
+}
+
+#[test]
+fn p2sh_redeem_leaves_empty_stack() {
+    // Redeem script = OP_1 OP_DROP. Pushes 1 then drops it, leaving
+    // an empty stack. The P2SH path checks stack().is_empty() after
+    // eval and returns EvalFalse.
+    let redeem = vec![0x51, 0x75]; // OP_1 OP_DROP
+    let redeem_hash = hash160(&redeem);
+
+    let mut spk = vec![0xa9, 0x14];
+    spk.extend_from_slice(&redeem_hash);
+    spk.push(0x87);
+    assert!(is_p2sh(&spk));
+
+    // scriptSig = <push redeem>
+    let mut script_sig = vec![u8::try_from(redeem.len()).expect("redeem fits")];
+    script_sig.extend_from_slice(&redeem);
+
+    let tx = make_tx();
+    let flags = ScriptFlags::P2SH;
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags);
+    assert!(
+        matches!(r, Err(ScriptError::EvalFalse)),
+        "P2SH redeem leaving empty stack must fail with EvalFalse, got: {r:?}"
+    );
+}
+
+#[test]
+fn p2sh_redeem_leaves_falsy_top() {
+    // Redeem script = OP_0. Pushes an empty byte vector (falsy) onto
+    // the stack. The P2SH path checks is_truthy() on the top item
+    // and returns EvalFalse.
+    let redeem = vec![0x00]; // OP_0
+    let redeem_hash = hash160(&redeem);
+
+    let mut spk = vec![0xa9, 0x14];
+    spk.extend_from_slice(&redeem_hash);
+    spk.push(0x87);
+    assert!(is_p2sh(&spk));
+
+    // scriptSig = <push redeem>
+    let mut script_sig = vec![u8::try_from(redeem.len()).expect("redeem fits")];
+    script_sig.extend_from_slice(&redeem);
+
+    let tx = make_tx();
+    let flags = ScriptFlags::P2SH;
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags);
+    assert!(
+        matches!(r, Err(ScriptError::EvalFalse)),
+        "P2SH redeem leaving falsy top must fail with EvalFalse, got: {r:?}"
+    );
+}
+
+// ── try_verify_p2pkh: early None returns (lines 414, 417) ───────────
+
+#[test]
+fn try_verify_p2pkh_three_pushes_falls_through() {
+    // Line 414: scriptSig has MORE than 2 push items. The P2PKH fast path
+    // returns None and the full interpreter runs.
+    //
+    // Build a valid P2PKH scriptPubKey + a scriptSig with 3 pushes:
+    //   <sig> <pk> <extra>
+    // The fast path bails at reader.next_step() finding a third item.
+    // The full interpreter runs OP_DUP OP_HASH160 ... but the extra push
+    // leaves an additional item on the stack, which causes either a hash
+    // mismatch or a stack issue depending on execution order.
+    let sk = key([80u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    let pkh = hash160(&pk);
+    let spk = p2pkh_spk(&pkh);
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+
+    // scriptSig = <sig> <pk> <extra byte>
+    let mut script_sig = vec![u8::try_from(sig.len()).expect("DER <= 72")];
+    script_sig.extend_from_slice(&sig);
+    script_sig.push(u8::try_from(pk.len()).expect("compressed <= 33"));
+    script_sig.extend_from_slice(&pk);
+    script_sig.push(0x01); // OP_PUSHBYTES_1
+    script_sig.push(0xaa); // extra data byte
+
+    // The fast path returns None; the full interpreter runs the P2PKH
+    // script. With 3 items on the stack after scriptSig, OP_DUP
+    // duplicates the extra byte (top), OP_HASH160 hashes it, and
+    // OP_EQUALVERIFY fails because hash(0xaa) != pkh. The specific
+    // error (Verify from EQUALVERIFY) proves the full interpreter ran.
+    let flags = standard_flags();
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags);
+    assert!(
+        r.is_err(),
+        "3-push scriptSig should fall through to interpreter (fast path returns None), got: {r:?}"
+    );
+}
+
+#[test]
+fn try_verify_p2pkh_non_push_opcode_falls_through() {
+    // Line 417: scriptSig items are not push opcodes. The P2PKH fast
+    // path returns None and the full interpreter runs.
+    //
+    // Build a valid P2PKH scriptPubKey + a scriptSig containing a
+    // non-push opcode. The simplest: OP_1 OP_DUP. The reader sees
+    // OP_1 (push, ok) then OP_DUP (not a push) and the fast path
+    // returns None at the `!pk_step.opcode.is_push()` check.
+    let pkh = [0xab; 20];
+    let spk = p2pkh_spk(&pkh);
+    let tx = make_tx();
+
+    // scriptSig = OP_1(0x51) OP_DUP(0x76)
+    // OP_1 is a push (pushes the number 1), OP_DUP is NOT a push.
+    // The fast path sees the second step is not a push and returns None.
+    // The full interpreter then runs: scriptSig pushes 1, DUPs it (stack=[1,1]),
+    // then scriptPubKey runs OP_DUP OP_HASH160 ... which won't match.
+    let script_sig = vec![0x51, 0x76]; // OP_1 OP_DUP
+    let flags = standard_flags();
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags);
+    // The full interpreter runs: after scriptSig, stack = [1, 1, 1] (OP_1 pushes 1,
+    // OP_DUP duplicates it). Then scriptPubKey OP_DUP duplicates top, OP_HASH160
+    // hashes it, and the hash of [0x01] won't match [0xab; 20].
+    // OP_EQUALVERIFY will fail, returning EqualVerify.
+    assert!(
+        r.is_err(),
+        "non-push scriptSig should fall through to interpreter (fast path returns None), got: {r:?}"
+    );
+}

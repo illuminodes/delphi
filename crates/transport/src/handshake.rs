@@ -519,4 +519,103 @@ mod tests {
 
         assert_eq!(peer.state, PeerState::Dead);
     }
+
+    #[test]
+    fn partial_frame_header_present_but_payload_missing() {
+        // Build a valid header that claims a 100-byte payload,
+        // but only provide 10 bytes of payload data. The function
+        // should break out of the loop without consuming anything.
+        let header = MessageHeader::new(
+            Magic::Mainnet,
+            CommandName::new("inv"),
+            100,       // claims 100 bytes of payload
+            [0; 4],    // checksum irrelevant, we never reach that check
+        );
+        let mut recv_buf = Vec::new();
+        header
+            .encode(&mut recv_buf)
+            .expect("encode header to Vec");
+        recv_buf.extend_from_slice(&[0xab; 10]); // only 10 of 100 payload bytes
+
+        let original_len = recv_buf.len();
+        let mut peer = make_peer(PeerState::Ready, recv_buf);
+        let mut ring = IoUring::new(64).expect("io_uring");
+        let mut arena = SendArena::new();
+        let mut called = false;
+
+        consume_handshake_frames(
+            &mut ring,
+            &mut arena,
+            Network::Mainnet,
+            0,
+            &mut peer,
+            |_, _| {
+                called = true;
+            },
+        )
+        .expect("should succeed without consuming anything");
+
+        assert_eq!(peer.state, PeerState::Ready);
+        assert!(!called, "on_frame should not be called for incomplete frame");
+        assert_eq!(peer.recv_buf.len(), original_len, "recv_buf must be untouched");
+    }
+
+    #[test]
+    fn unrecognized_command_in_handshake_state_is_ignored() {
+        // When the peer is still in HandshakeVersionSent and receives
+        // a command that isn't "version" or "verack", the `_ => {}`
+        // fallthrough arm should silently consume the frame without
+        // changing state.
+        let payload = [0x01, 0x02, 0x03];
+        let inv_frame = frame_message(Command::Inv, &payload);
+
+        let mut peer = make_peer(PeerState::HandshakeVersionSent, inv_frame);
+        let mut ring = IoUring::new(64).expect("io_uring");
+        let mut arena = SendArena::new();
+        let mut called = false;
+
+        consume_handshake_frames(
+            &mut ring,
+            &mut arena,
+            Network::Mainnet,
+            0,
+            &mut peer,
+            |_, _| {
+                called = true;
+            },
+        )
+        .expect("should succeed");
+
+        assert_eq!(peer.state, PeerState::HandshakeVersionSent, "state must not change");
+        assert!(!called, "on_frame should not be called in non-Ready state");
+        assert!(peer.recv_buf.is_empty(), "frame should still be drained");
+    }
+
+    #[test]
+    fn unrecognized_command_in_handshake_recving_is_ignored() {
+        // Same as above but from HandshakeRecving state with a different command.
+        let payload = [0xde, 0xad];
+        let addr_frame = frame_message(Command::Addr, &payload);
+
+        let mut peer = make_peer(PeerState::HandshakeRecving, addr_frame);
+        let mut ring = IoUring::new(64).expect("io_uring");
+        let mut arena = SendArena::new();
+        let mut called = false;
+
+        consume_handshake_frames(
+            &mut ring,
+            &mut arena,
+            Network::Mainnet,
+            0,
+            &mut peer,
+            |_, _| {
+                called = true;
+            },
+        )
+        .expect("should succeed");
+
+        assert_eq!(peer.state, PeerState::HandshakeRecving, "state must not change");
+        assert!(!called, "on_frame should not be called in non-Ready state");
+        assert!(peer.recv_buf.is_empty(), "frame should still be drained");
+    }
 }

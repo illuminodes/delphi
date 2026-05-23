@@ -610,10 +610,6 @@ fn verify_script_inner<T: TxView>(
             if !is_p2sh_wrapped && !script_sig.is_empty() {
                 return Err(ScriptError::WitnessMalleated);
             }
-            if is_p2sh_wrapped && !is_push_only(script_sig) {
-                return Err(ScriptError::WitnessMalleatedP2sh);
-            }
-
             let witness_items = tx.input(n_in).witness().to_vec();
 
             if version == 0 {

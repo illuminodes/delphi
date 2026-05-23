@@ -1109,4 +1109,225 @@ mod tests {
             assert_eq!(got.span.base, u32::from(i));
         }
     }
+
+    // ── Helper: create txids that all hash to the same ideal slot ───────────
+    //
+    // `hash_txid` reads the first 8 bytes as u64 LE, then masks with
+    // `slot_count - 1`.  By keeping the low `log2(slot_count)` bits the
+    // same and varying the higher bits we get distinct txids that all
+    // map to the same bucket.
+
+    fn colliding_txid(base_slot: u64, mask: u64, sequence: u64) -> Hash256 {
+        // Every value `base_slot + (sequence+1) * (mask+1)` shares the same
+        // low bits as `base_slot` under `& mask`.
+        let val = base_slot + sequence * (mask + 1);
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&val.to_le_bytes());
+        // Put something distinguishing in the tail so Hash256 values differ.
+        bytes[24..32].copy_from_slice(&sequence.to_le_bytes());
+        Hash256::from_bytes(bytes)
+    }
+
+    // ── Tests targeting uncovered branches in insert_batch_uring ────────────
+
+    #[test]
+    fn insert_batch_uring_resize_during_batch() {
+        // Start with a small table (16 slots). Load factor threshold is
+        // 85%, so 14 entries should trigger a resize when we batch-insert
+        // 15 entries in one call (live_count + incoming > slot_count * 85/100).
+        let dir = TmpDir::new();
+        let mut index =
+            TxIndex::open_with_capacity(&dir.path().join("tx_index.bin"), 16).unwrap();
+        assert_eq!(index.slot_count(), 16);
+
+        let mut ring = ququmatz::IoUring::new(64).unwrap();
+        let mut arena = Vec::new();
+        let mut write_arena = Vec::new();
+
+        // 15 entries into a 16-slot table → resize path at the top of
+        // insert_batch_uring fires before probing begins.
+        let pairs: Vec<(Hash256, DiskTxHandle)> = (0..15u16)
+            .map(|i| {
+                (
+                    fake_txid_u16(i),
+                    fake_handle(u32::from(i) * 5, 2, u32::from(i) + 1000),
+                )
+            })
+            .collect();
+
+        index
+            .insert_batch_uring(&pairs, &mut ring, &mut arena, &mut write_arena)
+            .unwrap();
+
+        // Table must have grown.
+        assert!(
+            index.slot_count() > 16,
+            "table should have resized, got {}",
+            index.slot_count()
+        );
+        assert_eq!(index.len(), 15);
+
+        // Every entry must be retrievable.
+        for (i, (txid, _)) in pairs.iter().enumerate() {
+            let got = index.get(txid).unwrap().unwrap_or_else(|| {
+                panic!("entry {i} missing after batch-insert with resize")
+            });
+            assert_eq!(got.span.base, i as u32 * 5);
+            assert_eq!(got.height, BlockHeight::new(i as u32 + 1000));
+        }
+    }
+
+    #[test]
+    fn insert_batch_uring_collision_and_robin_hood() {
+        // Use a 128-slot table (mask = 0x7F). Pre-populate 4 entries at
+        // the same ideal slot so they occupy slots 50..53 with probe
+        // distances 1..4.  Then batch-insert ONE new entry that also
+        // collides at slot 50.  This single batch entry must:
+        //   - probe past existing entries (multi-round, the `else` branch)
+        //   - eventually find an empty slot at 54 and write there
+        //
+        // Then we repeat with a second batch entry that maps to a
+        // DIFFERENT ideal slot (slot 54) so it collides with the entry
+        // we just placed.  That entry's probe_distance is 1 (it's in its
+        // ideal slot 54… no wait, it's NOT in its ideal slot).
+        //
+        // Simpler approach: pre-populate 3 at slot 50 (pd 1,2,3), then
+        // batch-insert ONE that also collides at slot 50.  It probes past
+        // the existing 3 and lands at slot 53 with pd 4.  All 4 entries
+        // are retrievable.  This exercises multi-round probing and the
+        // write-to-empty branch after multiple probe rounds.
+        let dir = TmpDir::new();
+        let mut index =
+            TxIndex::open_with_capacity(&dir.path().join("tx_index.bin"), 128).unwrap();
+        let mask = index.slot_count() - 1;
+        assert_eq!(mask, 127);
+
+        let mut ring = ququmatz::IoUring::new(64).unwrap();
+        let mut arena = Vec::new();
+        let mut write_arena = Vec::new();
+
+        let target_slot: u64 = 50;
+
+        // Synchronously insert 3 entries at the target slot.
+        for seq in 0u64..3 {
+            let txid = colliding_txid(target_slot, mask, seq);
+            assert_eq!(index.ideal_slot(&txid), target_slot);
+            let handle = fake_handle(seq as u32, 1, seq as u32);
+            index.insert(&txid, &handle).unwrap();
+        }
+        assert_eq!(index.len(), 3);
+
+        // Batch-insert one MORE entry that collides at the same slot.
+        // It will probe past the 3 existing entries (multi-round reads)
+        // and land in an empty slot.
+        let new_txid = colliding_txid(target_slot, mask, 3);
+        assert_eq!(index.ideal_slot(&new_txid), target_slot);
+        let new_handle = fake_handle(300, 5, 999);
+        let batch_pairs = vec![(new_txid, new_handle)];
+
+        index
+            .insert_batch_uring(&batch_pairs, &mut ring, &mut arena, &mut write_arena)
+            .unwrap();
+
+        assert_eq!(index.len(), 4);
+
+        // All 4 entries must be retrievable.
+        for seq in 0u64..3 {
+            let txid = colliding_txid(target_slot, mask, seq);
+            let got = index.get(&txid).unwrap().unwrap_or_else(|| {
+                panic!("pre-existing entry seq={seq} missing")
+            });
+            assert_eq!(got.span.base, seq as u32);
+        }
+        let got = index.get(&new_txid).unwrap().expect("batch-inserted entry missing");
+        assert_eq!(got.span.base, 300);
+        assert_eq!(got.span.count, 5);
+        assert_eq!(got.height, BlockHeight::new(999));
+
+        // Now test Robin Hood displacement via batch insert.
+        // Insert an entry at a DIFFERENT ideal slot that is one past the
+        // last occupied slot.  Pre-populate slot 60 with pd=1, slot 61
+        // with pd=1 (different ideal slot 61).  Then batch-insert an
+        // entry whose ideal slot is 60 — it reads slot 60 (occupied,
+        // pd 1 == its pd 1 → advance), reads slot 61 (occupied, pd 1
+        // < its pd 2 → Robin Hood: displace the slot-61 entry and write
+        // ours there, continue inserting the displaced entry).
+        let slot_a: u64 = 60;
+        let slot_b: u64 = 61;
+        let txid_a = colliding_txid(slot_a, mask, 0);
+        let txid_b = colliding_txid(slot_b, mask, 0);
+        assert_eq!(index.ideal_slot(&txid_a), slot_a);
+        assert_eq!(index.ideal_slot(&txid_b), slot_b);
+
+        index.insert(&txid_a, &fake_handle(600, 1, 600)).unwrap();
+        index.insert(&txid_b, &fake_handle(610, 1, 610)).unwrap();
+
+        // Batch-insert a second entry at ideal slot 60.
+        let txid_a2 = colliding_txid(slot_a, mask, 1);
+        assert_eq!(index.ideal_slot(&txid_a2), slot_a);
+        let batch2 = vec![(txid_a2, fake_handle(620, 2, 620))];
+        index
+            .insert_batch_uring(&batch2, &mut ring, &mut arena, &mut write_arena)
+            .unwrap();
+
+        // All three entries must be present.
+        let ga = index.get(&txid_a).unwrap().expect("txid_a missing");
+        assert_eq!(ga.span.base, 600);
+        let gb = index.get(&txid_b).unwrap().expect("txid_b missing");
+        assert_eq!(gb.span.base, 610);
+        let ga2 = index.get(&txid_a2).unwrap().expect("txid_a2 missing");
+        assert_eq!(ga2.span.base, 620);
+    }
+
+    #[test]
+    fn insert_batch_uring_existing_key_update() {
+        // Insert entries synchronously, then batch-insert the SAME txids
+        // with different handles. The `existing.matches(...)` branch in
+        // insert_batch_uring should fire and update in-place without
+        // incrementing live_count.
+        let dir = TmpDir::new();
+        let mut index =
+            TxIndex::open_with_capacity(&dir.path().join("tx_index.bin"), 128).unwrap();
+
+        let mut ring = ququmatz::IoUring::new(64).unwrap();
+        let mut arena = Vec::new();
+        let mut write_arena = Vec::new();
+
+        let count = 10u8;
+
+        // Phase 1: synchronous insert of 10 entries.
+        for i in 0..count {
+            let txid = fake_txid(i);
+            let handle = fake_handle(u32::from(i), 2, u32::from(i) + 100);
+            index.insert(&txid, &handle).unwrap();
+        }
+        assert_eq!(index.len(), u64::from(count));
+
+        // Phase 2: batch-insert the same 10 txids with different handles.
+        let updated_pairs: Vec<(Hash256, DiskTxHandle)> = (0..count)
+            .map(|i| {
+                let txid = fake_txid(i);
+                let handle = fake_handle(u32::from(i) + 9000, 4, u32::from(i) + 5000);
+                (txid, handle)
+            })
+            .collect();
+
+        index
+            .insert_batch_uring(&updated_pairs, &mut ring, &mut arena, &mut write_arena)
+            .unwrap();
+
+        // live_count must NOT have grown — these were updates, not new inserts.
+        assert_eq!(index.len(), u64::from(count));
+
+        // Verify the handles were updated.
+        for i in 0..count {
+            let txid = fake_txid(i);
+            let got = index.get(&txid).unwrap().unwrap_or_else(|| {
+                panic!("txid {i} should still be present after update")
+            });
+            assert_eq!(got.span.base, u32::from(i) + 9000);
+            assert_eq!(got.span.count, 4);
+            assert_eq!(got.height, BlockHeight::new(u32::from(i) + 5000));
+        }
+    }
 }

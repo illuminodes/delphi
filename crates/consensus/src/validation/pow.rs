@@ -700,4 +700,247 @@ mod tests {
         // lowest mantissa bits.  Just verify it stays at the max exponent.
         assert_eq!(result.to_u32() >> 24, POW_LIMIT_BITS.to_u32() >> 24);
     }
+
+    // ── saturating_mul_u64: remaining uncovered branches ────────────────────
+
+    /// i=7 with rhs_hi != 0 and p_hi != 0: immediate saturation via the
+    /// `if i + 2 >= 9` guard (line 237). The high partial product from
+    /// limb 7 would land in a nonexistent 10th limb, so the function
+    /// must saturate.
+    #[test]
+    fn u256_mul_limb7_nonzero_with_rhs_hi_nonzero_saturates() {
+        // value has limb 7 = 0xFFFF_FFFF, all others zero.
+        // rhs = 0x1_0000_0001 (rhs_hi=1, rhs_lo=1).
+        // p_hi = 0xFFFF_FFFF * 1 = 0xFFFF_FFFF != 0  =>  saturate.
+        let val = u256_from_limbs([0, 0, 0, 0, 0, 0, 0, 0xFFFF_FFFF]);
+        let result = val.saturating_mul_u64(0x1_0000_0001);
+        assert_eq!(result, U256::MAX);
+    }
+
+    /// i=7 with rhs_hi != 0 but p_hi == 0 and carry != 0 after low-half
+    /// propagation: the carry check at line 243 triggers saturation.
+    #[test]
+    fn u256_mul_limb7_carry_overflow_with_rhs_hi() {
+        // value has limb 7 = 1, all others = 0xFFFF_FFFF.
+        // rhs = 0x1_0000_0000 (rhs_hi=1, rhs_lo=0).
+        // For i=7: p_hi = 1 * 1 = 1 != 0 => saturate.
+        let val = u256_from_limbs([
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            1,
+        ]);
+        let result = val.saturating_mul_u64(0x1_0000_0000);
+        assert_eq!(result, U256::MAX);
+    }
+
+    /// U256::MAX * 2 with rhs_hi=0: the rhs_lo-only path propagates carry
+    /// through all 8 limbs into acc[8], which triggers saturation at line 275.
+    #[test]
+    fn u256_mul_max_times_two_saturates_via_acc8() {
+        let result = U256::MAX.saturating_mul_u64(2);
+        assert_eq!(result, U256::MAX);
+    }
+
+    /// Mid-loop carry saturation (line 265-267): carry != 0 after the
+    /// while loop exhausts all available limbs. A U256 near MAX multiplied
+    /// by a small rhs_lo overflows the 9-limb accumulator.
+    #[test]
+    fn u256_mul_near_max_small_rhs_carry_saturates() {
+        // All limbs maxed except limb 7 = 0xFFFF_FFFE.
+        // rhs = 3, rhs_hi = 0, rhs_lo = 3.
+        // Limb 0: 0xFFFF_FFFF * 3 = 0x2_FFFF_FFFD => acc[0]=0xFFFFFFFD, carry=2
+        // ... carries ripple through all limbs, eventually overflowing.
+        let val = u256_from_limbs([
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFE,
+        ]);
+        let result = val.saturating_mul_u64(3);
+        assert_eq!(result, U256::MAX);
+    }
+
+    /// Exercise the rhs_hi != 0 path for a middle limb (not i=7) where
+    /// carry propagates through acc[i+3..]. This hits the inner while
+    /// loop at lines 253-258.
+    #[test]
+    fn u256_mul_rhs_hi_carry_propagation_mid_limbs() {
+        // value: limbs 4 and 5 are maxed, all others zero.
+        // rhs = 0x1_0000_0001 (rhs_hi=1, rhs_lo=1).
+        // The high product at i=5 goes into acc[6..7], and carry from
+        // i=4's high product may ripple further.
+        let val = u256_from_limbs([0, 0, 0, 0, 0xFFFF_FFFF, 0xFFFF_FFFF, 0, 0]);
+        let rhs: u64 = 0x1_0000_0001;
+        let result = val.saturating_mul_u64(rhs);
+        // Verify via roundtrip: result / rhs_lo_part won't recover exactly
+        // because of the 64-bit rhs, so just check it didn't saturate and
+        // is greater than the input.
+        assert_ne!(result, U256::MAX, "this multiplication should not overflow");
+        assert!(result > val, "product must exceed the input");
+    }
+
+    /// Exercise carry propagation in the rhs_hi path where the inner
+    /// while loop (lines 253-258) runs multiple iterations.
+    #[test]
+    fn u256_mul_rhs_hi_carry_ripple_through_multiple_limbs() {
+        // All low 6 limbs maxed, limbs 6-7 zero.
+        // rhs = 0x1_0000_0001 => rhs_hi=1, rhs_lo=1.
+        // The high partial products will cascade carries through limbs 6 and 7.
+        let val = u256_from_limbs([
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0,
+            0,
+        ]);
+        let rhs: u64 = 0x1_0000_0001;
+        let result = val.saturating_mul_u64(rhs);
+        // (2^192 - 1) * (2^32 + 1) = 2^224 + 2^192 - 2^32 - 1
+        // This fits in 256 bits, so must not saturate.
+        assert_ne!(result, U256::MAX, "product fits in 256 bits");
+        // Verify: the top limb (limb 7) should be 1 (from the 2^224 term).
+        let bytes = result.to_be_bytes();
+        assert_eq!(bytes[0..4], [0x00, 0x00, 0x00, 0x01]);
+    }
+
+    /// i=7 with rhs_hi != 0, p_hi == 0, but carry != 0 from low-half
+    /// propagation triggers saturation at line 243.
+    #[test]
+    fn u256_mul_limb7_zero_phi_but_carry_saturates() {
+        // value has limb 7 = 0, limb 6 = 0xFFFF_FFFF, others = 0xFFFF_FFFF.
+        // rhs = 0x2_0000_0000 (rhs_hi=2, rhs_lo=0).
+        // At i=6: p_hi = 0xFFFF_FFFF * 2 = 0x1_FFFF_FFFE, goes into acc[7..8].
+        //   acc[8] will be nonzero. At i=7: lhs_limb=0, p_hi=0, but acc[8]
+        //   already has content, and carry from low-half ripple adds to it.
+        // Actually let's simplify: limb 7 = 0 means at i=7 lhs_limb=0,
+        // so p_hi = 0 * 2 = 0, but carry from prior iterations may have
+        // pushed into acc[8]. The check at line 275 catches acc[8] != 0.
+        let val = u256_from_limbs([
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0,
+        ]);
+        let result = val.saturating_mul_u64(0x2_0000_0000);
+        // (2^224 - 1) * 2^33 = 2^257 - 2^33 => overflows.
+        assert_eq!(result, U256::MAX);
+    }
+
+    // ── saturating_mul_u64: multi-iteration while-loop tests ─────────────
+
+    /// rhs_hi path, carry ripples through 3+ limbs.
+    ///
+    /// Limbs 0-4 are all 0xFFFF_FFFF, rhs = 0x1_0000_0001 (rhs_hi=1, rhs_lo=1).
+    /// At each limb i in 0..5, the rhs_hi product creates carry that must
+    /// ripple through acc[i+3..]. The while loop at line 252 iterates
+    /// multiple times for early limbs because the carry propagates through
+    /// acc entries already populated by prior iterations.
+    #[test]
+    fn u256_mul_rhs_hi_carry_ripples_3plus_limbs() {
+        let val = u256_from_limbs([
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0,
+            0,
+            0,
+        ]);
+        let rhs: u64 = 0x1_0000_0001;
+        let result = val.saturating_mul_u64(rhs);
+        // (2^160 - 1) * (2^32 + 1) = 2^192 + 2^160 - 2^32 - 1
+        // This fits in 256 bits, so must not saturate.
+        assert_ne!(result, U256::MAX, "product fits in 256 bits");
+        // Expected limbs (LE):
+        //   limb 0: 0xFFFF_FFFF * 1 + 0 = 0xFFFF_FFFF  =>  but with carry from
+        //   cross-products this gets complex. Verify against known result:
+        //   (2^160 - 1) * (2^32 + 1) = 2^192 - 2^32 + 2^160 - 1
+        //   In limbs (LE): [-1, -1, 0, 0, 0, 1, 0, 0] with borrows resolved:
+        //     limb0 = 0xFFFF_FFFF, limb1 = 0xFFFF_FFFE, limb2..4 = 0, limb5 = 1, limb6..7 = 0
+        //   Wait: 2^192 + 2^160 - 2^32 - 1
+        //     = (limb6=1)*2^192 + (limb5=1)*2^160 - 2^32 - 1
+        //   But 2^192 is limb 6. Actually limb i covers bits [32*i, 32*(i+1)).
+        //   2^192 = limb6=1. 2^160 = limb5=1. 2^32 = limb1=1.
+        //   So the result is: 2^192 + 2^160 - 2^32 - 1
+        //     limb0: -1 mod 2^32 = 0xFFFF_FFFF, borrow 1
+        //     limb1: 0 - 1(from 2^32) - 1(borrow) = -2 mod 2^32 = 0xFFFF_FFFE, borrow 1
+        //     limb2: 0 - 1(borrow) = 0xFFFF_FFFF, borrow 1
+        //     limb3: 0 - 1(borrow) = 0xFFFF_FFFF, borrow 1
+        //     limb4: 0 - 1(borrow) = 0xFFFF_FFFF, borrow 1
+        //     limb5: 1 - 1(borrow) = 0
+        //     limb6: 1
+        //     limb7: 0
+        let expected = u256_from_limbs([
+            0xFFFF_FFFF,
+            0xFFFF_FFFE,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0,
+            1,
+            0,
+        ]);
+        assert_eq!(result, expected, "product must match hand-computed result");
+    }
+
+    /// rhs_lo-only path, carry ripples through 3+ limbs.
+    ///
+    /// Limbs 0-6 are all 0xFFFF_FFFF, rhs = 0xFFFF_FFFF (rhs_hi=0).
+    /// The multiplication at each limb produces a large carry that must
+    /// ripple forward through the while loop at line 261 for multiple
+    /// iterations because accumulator entries already contain values
+    /// from prior limb products.
+    #[test]
+    fn u256_mul_rhs_lo_carry_ripples_3plus_limbs() {
+        let val = u256_from_limbs([
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+            0,
+        ]);
+        let rhs: u64 = 0xFFFF_FFFF; // rhs_hi = 0, rhs_lo = 0xFFFF_FFFF
+        let result = val.saturating_mul_u64(rhs);
+        // (2^224 - 1) * (2^32 - 1) = 2^256 - 2^224 - 2^32 + 1
+        // This fits in 256 bits (just below 2^256), so must not saturate.
+        assert_ne!(result, U256::MAX, "product fits in 256 bits");
+        // Verify via roundtrip.
+        let back = result.div_u64(rhs);
+        assert_eq!(back, val, "roundtrip through div must recover original");
+    }
+
+    /// rhs_hi path, carry reaches saturation mid-propagation.
+    ///
+    /// All 8 limbs = 0xFFFF_FFFF, rhs = 0x2_00000001 (rhs_hi=2, rhs_lo=1).
+    /// The high partial products from early limbs generate carries that
+    /// ripple through the while loop at line 252-258. By the time the
+    /// loop reaches idx==9 (the bounds check `idx < 9`), carry is still
+    /// nonzero, triggering saturation at line 270.
+    #[test]
+    fn u256_mul_rhs_hi_carry_saturates_mid_propagation() {
+        let val = U256::MAX; // all 8 limbs = 0xFFFF_FFFF
+        let rhs: u64 = 0x2_0000_0001; // rhs_hi=2, rhs_lo=1
+        let result = val.saturating_mul_u64(rhs);
+        assert_eq!(result, U256::MAX, "must saturate on overflow");
+    }
 }

@@ -755,4 +755,206 @@ mod tests {
             "coinbase with zero outputs must fail, got: {r:?}"
         );
     }
+
+    // ── Malformed / truncated transactions ──────────────────────────────
+
+    #[test]
+    fn truncated_tx_version_rejected() {
+        // Only 2 bytes of the 4-byte version field — decode_ref fails
+        // immediately, returning MalformedTransaction.
+        let wire = [0x01, 0x00]; // truncated i32
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 0, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::MalformedTransaction { tx_index: 0 })
+            ),
+            "truncated version must fail with MalformedTransaction, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn truncated_after_version_rejected() {
+        // Full 4-byte version but nothing after — VarInt for input_count
+        // is missing.
+        let wire = 1i32.to_le_bytes();
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 3, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::MalformedTransaction { tx_index: 3 })
+            ),
+            "truncated after version must fail with MalformedTransaction, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn truncated_input_rejected() {
+        // Version + input_count=1 + partial input (only 10 bytes of
+        // the 36-byte outpoint). The TxInRef::decode_ref call fails.
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&1i32.to_le_bytes()); // version
+        wire.push(0x01); // input_count = 1
+        wire.extend_from_slice(&[0xaa; 10]); // partial outpoint
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 2, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::MalformedTransaction { tx_index: 2 })
+            ),
+            "truncated input must fail with MalformedTransaction, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn truncated_output_rejected() {
+        // A valid coinbase input followed by output_count=1 but only
+        // 3 bytes of the 8-byte value field — TxOutRef::decode_ref fails.
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&1i32.to_le_bytes()); // version
+        wire.push(0x01); // input_count = 1
+        wire.extend_from_slice(&encode_coinbase_input(&[0x04, 0x01]));
+        wire.push(0x01); // output_count = 1
+        wire.extend_from_slice(&[0x00; 3]); // partial value (need 8 bytes)
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 0, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::MalformedTransaction { tx_index: 0 })
+            ),
+            "truncated output must fail with MalformedTransaction, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn empty_inputs_non_coinbase_rejected() {
+        // A non-coinbase transaction (tx_index > 0) with input_count = 0
+        // must be rejected as EmptyInputs.
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&1i32.to_le_bytes()); // version
+        wire.push(0x00); // input_count = 0
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 1, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::EmptyInputs { tx_index: 1 })
+            ),
+            "zero inputs must fail with EmptyInputs, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn first_tx_not_coinbase_rejected_in_scan() {
+        // tx_index == 0 but the first input is not a coinbase (non-null
+        // outpoint). Must return FirstTxNotCoinbase.
+        let wire = build_normal_tx(&[(1_000, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 0, &mut seen);
+        assert!(
+            matches!(r, Err(ValidationError::FirstTxNotCoinbase)),
+            "non-coinbase at tx_index 0 must fail with FirstTxNotCoinbase, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn unexpected_coinbase_input_rejected_in_scan() {
+        // tx_index > 0 but the first input IS a coinbase (null outpoint).
+        // Must return UnexpectedCoinbaseInput.
+        let wire = build_coinbase_tx(&[0x04, 0x01], &[(1_000, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 1, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::UnexpectedCoinbaseInput { tx_index: 1 })
+            ),
+            "coinbase at tx_index 1 must fail with UnexpectedCoinbaseInput, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_input_rejected_in_scan() {
+        // A non-coinbase transaction with two inputs spending the same
+        // outpoint. Must return DuplicateInput.
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&1i32.to_le_bytes()); // version
+        wire.push(0x02); // input_count = 2
+        let inp = encode_input(&[0x11; 32], 0, &[0x51]);
+        wire.extend_from_slice(&inp); // first input
+        wire.extend_from_slice(&inp); // duplicate input
+        VarInt::from(1usize).encode(&mut wire).unwrap(); // output_count = 1
+        wire.extend_from_slice(&encode_output(1_000, &[0xac]));
+        wire.extend_from_slice(&0u32.to_le_bytes()); // locktime
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 1, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::DuplicateInput { tx_index: 1 })
+            ),
+            "duplicate inputs must fail with DuplicateInput, got: {r:?}"
+        );
+    }
+
+    // ── Coinbase with multiple inputs ────────────────────────────────
+
+    /// A coinbase transaction (tx_index=0) with input_count > 1.
+    /// The code at lines 294-298 iterates over additional inputs after
+    /// the first coinbase input without duplicate checking. This test
+    /// exercises that loop body (the `for _ in 1..input_count` path for
+    /// coinbase transactions).
+    #[test]
+    fn coinbase_with_multiple_inputs_parsed() {
+        // Build a coinbase tx with 3 inputs: the first is the null
+        // outpoint (coinbase), the second and third are arbitrary.
+        let script_sig = &[0x04, 0x01]; // 2-byte scriptSig (valid length)
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&1i32.to_le_bytes()); // version
+        wire.push(0x03); // input_count = 3
+        // First input: coinbase (null outpoint)
+        wire.extend_from_slice(&encode_coinbase_input(script_sig));
+        // Second input: arbitrary (not checked for coinbase-ness or duplicates)
+        wire.extend_from_slice(&encode_input(&[0x22; 32], 0, &[0x51]));
+        // Third input: another arbitrary input
+        wire.extend_from_slice(&encode_input(&[0x33; 32], 1, &[0x51]));
+        // One output
+        VarInt::from(1usize).encode(&mut wire).unwrap();
+        wire.extend_from_slice(&encode_output(50_0000_0000, &[0xac]));
+        wire.extend_from_slice(&0u32.to_le_bytes()); // locktime
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 0, &mut seen);
+        assert!(
+            r.is_ok(),
+            "coinbase with multiple inputs must be parsed without error, got: {r:?}"
+        );
+        let (raw_len, _txid) = r.unwrap();
+        assert_eq!(raw_len, wire.len(), "raw_len must consume entire wire");
+    }
+
+    /// Non-coinbase tx with multiple distinct inputs must succeed
+    /// (exercises the non-coinbase dedup loop for > 1 inputs that are
+    /// all unique).
+    #[test]
+    fn non_coinbase_multiple_distinct_inputs_accepted() {
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&1i32.to_le_bytes()); // version
+        wire.push(0x03); // input_count = 3
+        wire.extend_from_slice(&encode_input(&[0x11; 32], 0, &[0x51]));
+        wire.extend_from_slice(&encode_input(&[0x22; 32], 0, &[0x51]));
+        wire.extend_from_slice(&encode_input(&[0x33; 32], 0, &[0x51]));
+        VarInt::from(1usize).encode(&mut wire).unwrap();
+        wire.extend_from_slice(&encode_output(1_000, &[0xac]));
+        wire.extend_from_slice(&0u32.to_le_bytes()); // locktime
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 1, &mut seen);
+        assert!(
+            r.is_ok(),
+            "non-coinbase with 3 distinct inputs must pass, got: {r:?}"
+        );
+    }
 }
