@@ -465,6 +465,37 @@ mod tests {
     }
 
     #[test]
+    fn decode_arena_decode_matches_owned_block() {
+        let block = Block {
+            header: BlockHeader::new(
+                BlockVersion::new(1),
+                Hash256::ZERO,
+                Hash256::ZERO,
+                BlockTime::new(1_700_000_000),
+                CompactBits::new(0x1d00_ffff),
+                Nonce::new(42),
+            ),
+            transactions: vec![make_tx(), make_segwit_tx()],
+        };
+        let bytes = encode(&block);
+
+        let mut arena = super::DecodeArena::new();
+        let block_ref = arena.decode(&bytes).expect("DecodeArena::decode");
+
+        assert_eq!(block_ref.header, block.header);
+        assert_eq!(block_ref.tx_count(), block.transactions.len());
+        for (i, (tx_ref, tx_owned)) in block_ref
+            .transactions()
+            .zip(block.transactions.iter())
+            .enumerate()
+        {
+            let ref_txid = tx_ref.txid_into(&mut Vec::new()).unwrap();
+            let owned_txid = tx_owned.txid().unwrap();
+            assert_eq!(ref_txid, owned_txid, "txid mismatch at index {i}");
+        }
+    }
+
+    #[test]
     fn block_ref_raw_spans_full_wire() {
         let block = Block {
             header: BlockHeader::new(

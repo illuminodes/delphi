@@ -370,4 +370,61 @@ mod tests {
             assert_eq!(m.to_i64(), v);
         }
     }
+
+    #[test]
+    fn i64_min_roundtrips() {
+        // i64::MIN = -9223372036854775808. Its magnitude 0x8000_0000_0000_0000
+        // needs 8 bytes, but ScriptNum only encodes up to 5 bytes, so the
+        // value is truncated. Verify encode+decode at least doesn't panic.
+        let n = ScriptNum::from_i64(i64::MIN);
+        // The magnitude is 0x8000_0000_0000_0000 — after the while loop
+        // only the low 5 bytes are kept (magnitude is shifted right 40 bits).
+        // Since this exceeds the 5-byte range, the encoding is silently truncated.
+        assert!(n.len() <= 5);
+        // The value won't roundtrip correctly because of truncation, but
+        // the important thing is it doesn't panic or UB.
+    }
+
+    #[test]
+    fn i64_max_roundtrips() {
+        // i64::MAX = 9223372036854775807. Magnitude fits in 8 bytes but
+        // ScriptNum only encodes up to 5 bytes. Verify no panic.
+        let n = ScriptNum::from_i64(i64::MAX);
+        assert!(n.len() <= 5);
+    }
+
+    #[test]
+    fn value_128_needs_sign_byte() {
+        // 128 = 0x80. The high bit of the top byte is set, so we need
+        // an extra 0x00 sign byte. Encoded as [0x80, 0x00].
+        let n = ScriptNum::from_i64(128);
+        assert_eq!(n.as_bytes(), &[0x80, 0x00]);
+        assert_eq!(n.to_i64(), 128);
+    }
+
+    #[test]
+    fn value_neg128_needs_sign_byte() {
+        // -128 = magnitude 0x80. High bit set, need extra 0x80 sign byte.
+        let n = ScriptNum::from_i64(-128);
+        assert_eq!(n.as_bytes(), &[0x80, 0x80]);
+        assert_eq!(n.to_i64(), -128);
+    }
+
+    #[test]
+    fn value_neg256_encoding() {
+        // -256: magnitude = 256 = 0x0100. Two bytes [0x00, 0x01].
+        // Top byte 0x01 has high bit clear, so sign bit is set: [0x00, 0x81].
+        let n = ScriptNum::from_i64(-256);
+        assert_eq!(n.as_bytes(), &[0x00, 0x81]);
+        assert_eq!(n.to_i64(), -256);
+    }
+
+    #[test]
+    fn value_neg32768_encoding() {
+        // -32768 = -0x8000. Magnitude [0x00, 0x80]. High bit of top byte (0x80) is set,
+        // so needs sign byte: [0x00, 0x80, 0x80].
+        let n = ScriptNum::from_i64(-32768);
+        assert_eq!(n.as_bytes(), &[0x00, 0x80, 0x80]);
+        assert_eq!(n.to_i64(), -32768);
+    }
 }

@@ -451,4 +451,48 @@ mod tests {
     fn inv_entry_size_eq_encoded_len() {
         assert_eq!(std::mem::size_of::<InvEntry>(), InvEntry::ENCODED_LEN,);
     }
+
+    #[test]
+    fn inv_entry_decode_ref_roundtrip() {
+        let entry = InvEntry::new(InvType::WitnessTx, Hash256::from_bytes([0xab; 32]));
+        let bytes = encode(&InvMsg(vec![entry]));
+        let entry_bytes = &bytes[1..];
+        let (decoded, rest) = InvEntry::decode_ref(entry_bytes).unwrap();
+        assert_eq!(decoded.kind(), InvType::WitnessTx);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn inv_entry_decode_ref_truncated() {
+        let short = [0u8; InvEntry::ENCODED_LEN - 1];
+        assert!(InvEntry::decode_ref(&short).is_err());
+    }
+
+    #[test]
+    fn inv_entry_decode_ref_with_trailing_data() {
+        let entry = InvEntry::new(InvType::Block, Hash256::ZERO);
+        let bytes = encode(&InvMsg(vec![entry]));
+        let mut entry_bytes = bytes[1..].to_vec();
+        entry_bytes.push(0xff); // trailing byte
+        let (decoded, rest) = InvEntry::decode_ref(&entry_bytes).unwrap();
+        assert_eq!(decoded.kind(), InvType::Block);
+        assert_eq!(rest, &[0xff]);
+    }
+
+    #[test]
+    fn inv_type_all_known_variants_roundtrip() {
+        for &(variant, _expected_u32) in &[
+            (InvType::Tx, 1u32),
+            (InvType::Block, 2),
+            (InvType::FilteredBlock, 3),
+            (InvType::CmpctBlock, 4),
+            (InvType::WitnessTx, 0x4000_0001),
+            (InvType::WitnessBlock, 0x4000_0002),
+        ] {
+            let entry = InvEntry::new(variant, Hash256::ZERO);
+            let bytes = encode(&InvMsg(vec![entry]));
+            let decoded = decode::<InvMsg>(&bytes);
+            assert_eq!(decoded.0[0].kind(), variant);
+        }
+    }
 }

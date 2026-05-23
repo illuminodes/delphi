@@ -355,4 +355,20 @@ mod tests {
         data.read_hash_into(8, &mut out);
         assert_eq!(out, [0xbb; 32]);
     }
+
+    #[test]
+    fn hash256_display_is_64_hex_chars() {
+        let h = Hash256::from_bytes([0xab; 32]);
+        let s = format!("{h}");
+        assert_eq!(s.len(), 64);
+        assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hex_error_display() {
+        let e = HexError::Length(10);
+        assert!(format!("{e}").contains("64"));
+        let e = HexError::InvalidChar { offset: 5 };
+        assert!(format!("{e}").contains("offset 5"));
+    }
 }

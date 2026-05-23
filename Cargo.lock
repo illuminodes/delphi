@@ -749,6 +749,7 @@ dependencies = [
  "mantle-utxo-set",
  "quetzalcoatl",
  "ququmatz",
+ "tempfile",
 ]
 
 [[package]]

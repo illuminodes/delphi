@@ -510,3 +510,249 @@ where
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mantle::codec::Encode;
+
+    /// Helper: encode a coinbase input (null outpoint) with the given scriptSig bytes.
+    fn encode_coinbase_input(script_sig: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        // txid = 32 zero bytes (null)
+        buf.extend_from_slice(&[0u8; 32]);
+        // vout = 0xFFFFFFFF
+        buf.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        // VarInt(scriptSig.len())
+        VarInt::from(script_sig.len())
+            .encode(&mut buf)
+            .unwrap();
+        buf.extend_from_slice(script_sig);
+        // sequence
+        buf.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        buf
+    }
+
+    /// Helper: encode a normal (non-coinbase) input spending a given outpoint.
+    fn encode_input(txid: &[u8; 32], vout: u32, script_sig: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(txid);
+        buf.extend_from_slice(&vout.to_le_bytes());
+        VarInt::from(script_sig.len())
+            .encode(&mut buf)
+            .unwrap();
+        buf.extend_from_slice(script_sig);
+        buf.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        buf
+    }
+
+    /// Helper: encode a single output with the given value and scriptPubKey.
+    fn encode_output(value: u64, script_pubkey: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&value.to_le_bytes());
+        VarInt::from(script_pubkey.len())
+            .encode(&mut buf)
+            .unwrap();
+        buf.extend_from_slice(script_pubkey);
+        buf
+    }
+
+    /// Build a raw coinbase transaction with the given scriptSig, outputs, and
+    /// return its wire bytes.
+    fn build_coinbase_tx(script_sig: &[u8], outputs: &[(u64, &[u8])]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        // version
+        buf.extend_from_slice(&1i32.to_le_bytes());
+        // input count = 1
+        buf.push(0x01);
+        buf.extend_from_slice(&encode_coinbase_input(script_sig));
+        // output count
+        VarInt::from(outputs.len()).encode(&mut buf).unwrap();
+        for &(value, spk) in outputs {
+            buf.extend_from_slice(&encode_output(value, spk));
+        }
+        // locktime
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf
+    }
+
+    /// Build a raw non-coinbase transaction with one normal input and the
+    /// given outputs.
+    fn build_normal_tx(outputs: &[(u64, &[u8])]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1i32.to_le_bytes());
+        buf.push(0x01);
+        buf.extend_from_slice(&encode_input(&[0x11; 32], 0, &[0x51]));
+        VarInt::from(outputs.len()).encode(&mut buf).unwrap();
+        for &(value, spk) in outputs {
+            buf.extend_from_slice(&encode_output(value, spk));
+        }
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf
+    }
+
+    // ── Coinbase scriptSig too short ─────────────────────────────────────
+
+    #[test]
+    fn coinbase_scriptsig_too_short() {
+        // MIN_COINBASE_SCRIPTSIG_LEN = 2; use a 1-byte scriptSig.
+        let wire = build_coinbase_tx(&[0x04], &[(50_0000_0000, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 0, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::CoinbaseScriptSigLength { len: 1 })
+            ),
+            "1-byte coinbase scriptSig must fail, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn coinbase_scriptsig_empty() {
+        // 0-byte scriptSig (even shorter).
+        let wire = build_coinbase_tx(&[], &[(50_0000_0000, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 0, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::CoinbaseScriptSigLength { len: 0 })
+            ),
+            "0-byte coinbase scriptSig must fail, got: {r:?}"
+        );
+    }
+
+    // ── Coinbase scriptSig too long ──────────────────────────────────────
+
+    #[test]
+    fn coinbase_scriptsig_too_long() {
+        // MAX_COINBASE_SCRIPTSIG_LEN = 100; use 101 bytes.
+        let script_sig = vec![0x04; 101];
+        let wire = build_coinbase_tx(&script_sig, &[(50_0000_0000, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 0, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::CoinbaseScriptSigLength { len: 101 })
+            ),
+            "101-byte coinbase scriptSig must fail, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn coinbase_scriptsig_at_max_succeeds() {
+        // Exactly 100 bytes is valid.
+        let script_sig = vec![0x04; 100];
+        let wire = build_coinbase_tx(&script_sig, &[(50_0000_0000, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 0, &mut seen);
+        assert!(r.is_ok(), "100-byte coinbase scriptSig must pass, got: {r:?}");
+    }
+
+    #[test]
+    fn coinbase_scriptsig_at_min_succeeds() {
+        // Exactly 2 bytes is valid.
+        let wire = build_coinbase_tx(&[0x04, 0x01], &[(50_0000_0000, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 0, &mut seen);
+        assert!(r.is_ok(), "2-byte coinbase scriptSig must pass, got: {r:?}");
+    }
+
+    // ── Output value exceeding MAX_MONEY ─────────────────────────────────
+
+    #[test]
+    fn output_value_exceeds_max_money() {
+        let over_max = Satoshi::MAX_MONEY.to_u64() + 1;
+        let wire = build_normal_tx(&[(over_max, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 1, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::OutputValueOutOfRange {
+                    tx_index: 1,
+                    output_index: 0,
+                })
+            ),
+            "output value > MAX_MONEY must fail, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn output_value_at_max_money_succeeds() {
+        let at_max = Satoshi::MAX_MONEY.to_u64();
+        let wire = build_normal_tx(&[(at_max, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 1, &mut seen);
+        assert!(r.is_ok(), "output value == MAX_MONEY must pass, got: {r:?}");
+    }
+
+    // ── Total output value overflow ──────────────────────────────────────
+
+    #[test]
+    fn total_output_value_overflow() {
+        // Two outputs each at MAX_MONEY — the sum exceeds MAX_MONEY.
+        let at_max = Satoshi::MAX_MONEY.to_u64();
+        let wire = build_normal_tx(&[(at_max, &[0xac]), (at_max, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 1, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::TotalOutputValueOverflow { tx_index: 1 })
+            ),
+            "total output value > MAX_MONEY must fail, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn total_output_value_just_over() {
+        // Two outputs whose sum is MAX_MONEY + 1.
+        let half = Satoshi::MAX_MONEY.to_u64() / 2;
+        let other_half = Satoshi::MAX_MONEY.to_u64() - half + 1;
+        let wire = build_normal_tx(&[(half, &[0xac]), (other_half, &[0xac])]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 1, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::TotalOutputValueOverflow { tx_index: 1 })
+            ),
+            "total output value == MAX_MONEY + 1 must fail, got: {r:?}"
+        );
+    }
+
+    // ── Empty outputs ────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_outputs_rejected() {
+        // A transaction with 0 outputs must be rejected.
+        let wire = build_normal_tx(&[]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 1, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::EmptyOutputs { tx_index: 1 })
+            ),
+            "zero outputs must fail, got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn empty_outputs_coinbase_rejected() {
+        // Coinbase with 0 outputs must also be rejected.
+        let wire = build_coinbase_tx(&[0x04, 0x01], &[]);
+        let mut seen = HashSet::new();
+        let r = scan_tx_wire(&wire, 0, &mut seen);
+        assert!(
+            matches!(
+                r,
+                Err(ValidationError::EmptyOutputs { tx_index: 0 })
+            ),
+            "coinbase with zero outputs must fail, got: {r:?}"
+        );
+    }
+}

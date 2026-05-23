@@ -86,6 +86,9 @@ impl TxEntry {
     /// Build a `TxEntry` directly from a contiguous slice of `NewCoin`s that
     /// all belong to the same transaction. Avoids any intermediate Vec for
     /// the inline case (≤4 outputs with `max_vout` < 4).
+    ///
+    /// # Panics
+    /// Panics if `max_vout` or any coin's `vout` exceeds `usize::MAX`.
     #[must_use]
     pub fn from_new_coins(
         height: BlockHeight,
@@ -93,12 +96,12 @@ impl TxEntry {
         coins: &[NewCoin<'_>],
         max_vout: u32,
     ) -> Self {
-        let slot_count = max_vout as usize + 1;
+        let slot_count = usize::try_from(max_vout).expect("max_vout exceeds usize") + 1;
         if slot_count <= INLINE_CAP {
             let mut word = 0u64;
             let mut slots: [Option<CoinEntry>; INLINE_CAP] = [None, None, None, None];
             for c in coins {
-                let idx = c.outpoint.vout as usize;
+                let idx = usize::try_from(c.outpoint.vout).expect("vout exceeds usize");
                 word |= 1 << idx;
                 slots[idx] = Some(CoinEntry {
                     value: c.value,
@@ -117,7 +120,7 @@ impl TxEntry {
         outputs.resize_with(slot_count, || None);
         let mut word = 0u64;
         for c in coins {
-            let idx = c.outpoint.vout as usize;
+            let idx = usize::try_from(c.outpoint.vout).expect("vout exceeds usize");
             outputs[idx] = Some(CoinEntry {
                 value: c.value,
                 script_pubkey: c.script_pubkey.into(),
@@ -138,7 +141,7 @@ impl TxEntry {
             let mut live = vec![0u64; words];
             live[0] = word;
             for c in coins {
-                let idx = c.outpoint.vout as usize;
+                let idx = usize::try_from(c.outpoint.vout).expect("vout exceeds usize");
                 if idx >= 64 {
                     live[idx / 64] |= 1 << (idx % 64);
                 }
@@ -490,6 +493,31 @@ mod tests {
         entry.unspend(499, c);
         assert!(entry.is_unspent(499));
         assert_eq!(entry.unspent_count(), 500);
+    }
+
+    #[test]
+    fn output_count_inline_and_heap() {
+        // Inline (<=4 outputs)
+        let entry = TxEntry::new(
+            BlockHeight::new(1),
+            false,
+            vec![Some(coin(1)), Some(coin(2)), Some(coin(3))],
+        );
+        assert_eq!(entry.output_count(), 3);
+
+        // Heap (>4 outputs)
+        let entry = TxEntry::new(
+            BlockHeight::new(1),
+            false,
+            vec![
+                Some(coin(1)),
+                Some(coin(2)),
+                Some(coin(3)),
+                Some(coin(4)),
+                Some(coin(5)),
+            ],
+        );
+        assert_eq!(entry.output_count(), 5);
     }
 
     #[test]

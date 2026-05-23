@@ -16,6 +16,8 @@ use mantle::primitives::{BlockHeight, Hash256};
 use crate::disk_arena::{DiskSpan, DiskTxHandle};
 
 const BUCKET_SIZE: u64 = 64;
+const BUCKET_SIZE_U32: u32 = BUCKET_SIZE as u32;
+const BUCKET_SIZE_USIZE: usize = BUCKET_SIZE as usize;
 const MAGIC: [u8; 8] = *b"MANTLTX\0";
 const FORMAT_VERSION: u32 = 1;
 const INITIAL_SLOT_COUNT: u64 = 1024;
@@ -378,20 +380,19 @@ impl TxIndex {
     }
 
     fn backshift(&self, removed_slot: u64) -> io::Result<()> {
-        let mut prev = removed_slot;
-        let mut slot = (removed_slot + 1) & self.mask;
-        loop {
-            let bucket = self.read_bucket(slot)?;
-            if bucket.is_empty() || bucket.probe_distance == 1 {
-                self.write_empty(prev)?;
-                return Ok(());
-            }
-            let mut shifted = bucket;
-            shifted.probe_distance -= 1;
-            self.write_bucket(prev, &shifted)?;
-            prev = slot;
-            slot = (slot + 1) & self.mask;
-        }
+        crate::robin_hood::backshift(
+            removed_slot,
+            self.mask,
+            |slot| self.read_bucket(slot),
+            |slot, bucket| self.write_bucket(slot, bucket),
+            |slot| self.write_empty(slot),
+            |b| b.is_empty() || b.probe_distance == 1,
+            |b| {
+                let mut shifted = b.clone();
+                shifted.probe_distance -= 1;
+                shifted
+            },
+        )
     }
 
     fn resize(&mut self) -> io::Result<()> {
@@ -458,7 +459,7 @@ impl TxIndex {
         }
 
         let fd = self.uring_fd();
-        let bs = BUCKET_SIZE as usize;
+        let bs = BUCKET_SIZE_USIZE;
         let needed = n * bs;
         arena.clear();
         arena.resize(needed, 0u8);
@@ -480,10 +481,10 @@ impl TxIndex {
                     ququmatz::Sqe::read_ptr(
                         fd,
                         arena[buf_start..].as_mut_ptr(),
-                        bs as u32,
+                        BUCKET_SIZE_U32,
                         offset,
                     )
-                }.user_data(i as u64);
+                }.user_data(u64::try_from(i).expect("index fits u64"));
                 flush_if_full(ring, sqe, &mut submitted)?;
             }
 
@@ -495,14 +496,14 @@ impl TxIndex {
                 .map_err(|e| io::Error::other(format!("{e:?}")))?;
 
             while let Some(cqe) = ring.complete() {
-                let i = cqe.user_data as usize;
+                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
                 if i >= n { continue; }
                 if cqe.result < 0 {
                     return Err(io::Error::from_raw_os_error(-cqe.result));
                 }
 
                 let buf_start = i * bs;
-                let buf: &[u8; 64] = arena[buf_start..buf_start + bs].try_into().unwrap();
+                let buf: &[u8; 64] = arena[buf_start..buf_start + bs].try_into().expect("bucket-aligned slice");
                 let bucket = Bucket::decode(buf);
 
                 if bucket.is_empty() || bucket.probe_distance < dists[i] {
@@ -541,7 +542,7 @@ impl TxIndex {
         }
 
         let fd = self.uring_fd();
-        let bs = BUCKET_SIZE as usize;
+        let bs = BUCKET_SIZE_USIZE;
         let n = pairs.len();
         let needed = n * bs;
 
@@ -570,10 +571,10 @@ impl TxIndex {
                     ququmatz::Sqe::read_ptr(
                         fd,
                         arena[buf_start..].as_mut_ptr(),
-                        bs as u32,
+                        BUCKET_SIZE_U32,
                         offset,
                     )
-                }.user_data(i as u64);
+                }.user_data(u64::try_from(i).expect("index fits u64"));
                 flush_if_full(ring, sqe, &mut submitted)?;
             }
 
@@ -586,14 +587,14 @@ impl TxIndex {
             let mut write_cursor: usize = 0;
 
             while let Some(cqe) = ring.complete() {
-                let i = cqe.user_data as usize;
+                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
                 if i >= n { continue; }
                 if cqe.result < 0 {
                     return Err(io::Error::from_raw_os_error(-cqe.result));
                 }
 
                 let buf_start = i * bs;
-                let buf: &[u8; 64] = arena[buf_start..buf_start + bs].try_into().unwrap();
+                let buf: &[u8; 64] = arena[buf_start..buf_start + bs].try_into().expect("bucket-aligned slice");
                 let existing = Bucket::decode(buf);
                 let state = &mut states[i];
 
@@ -615,7 +616,7 @@ impl TxIndex {
                     if wb + bs > write_arena.len() {
                         write_arena.resize(wb + bs, 0);
                     }
-                    to_write.encode((&mut write_arena[wb..wb + bs]).try_into().unwrap());
+                    to_write.encode((&mut write_arena[wb..wb + bs]).try_into().expect("bucket-aligned slice"));
                     writes.push(slot);
                     write_cursor += 1;
                     None
@@ -634,7 +635,7 @@ impl TxIndex {
                     if wb + bs > write_arena.len() {
                         write_arena.resize(wb + bs, 0);
                     }
-                    state.bucket.encode((&mut write_arena[wb..wb + bs]).try_into().unwrap());
+                    state.bucket.encode((&mut write_arena[wb..wb + bs]).try_into().expect("bucket-aligned slice"));
                     writes.push(slot);
                     write_cursor += 1;
                 }
@@ -649,7 +650,7 @@ impl TxIndex {
                     ququmatz::Sqe::write_ptr(
                         fd,
                         write_arena[buf_start..].as_ptr(),
-                        bs as u32,
+                        BUCKET_SIZE_U32,
                         offset,
                     )
                 }.user_data(u64::MAX);
@@ -680,7 +681,7 @@ impl TxIndex {
 
         let n = txids.len();
         let fd = self.uring_fd();
-        let bs = BUCKET_SIZE as usize;
+        let bs = BUCKET_SIZE_USIZE;
         let needed = n * bs;
         arena.clear();
         arena.resize(needed, 0u8);
@@ -701,10 +702,10 @@ impl TxIndex {
                     ququmatz::Sqe::read_ptr(
                         fd,
                         arena[buf_start..].as_mut_ptr(),
-                        bs as u32,
+                        BUCKET_SIZE_U32,
                         offset,
                     )
-                }.user_data(i as u64);
+                }.user_data(u64::try_from(i).expect("index fits u64"));
                 flush_if_full(ring, sqe, &mut submitted)?;
             }
 
@@ -714,14 +715,14 @@ impl TxIndex {
                 .map_err(|e| io::Error::other(format!("{e:?}")))?;
 
             while let Some(cqe) = ring.complete() {
-                let i = cqe.user_data as usize;
+                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
                 if i >= n { continue; }
                 if cqe.result < 0 {
                     return Err(io::Error::from_raw_os_error(-cqe.result));
                 }
 
                 let buf_start = i * bs;
-                let buf: &[u8; 64] = arena[buf_start..buf_start + bs].try_into().unwrap();
+                let buf: &[u8; 64] = arena[buf_start..buf_start + bs].try_into().expect("bucket-aligned slice");
                 let bucket = Bucket::decode(buf);
 
                 if bucket.is_empty() || bucket.probe_distance < dists[i] {
@@ -935,5 +936,177 @@ mod tests {
         bytes[0..2].copy_from_slice(&n.to_le_bytes());
         bytes[30..32].copy_from_slice(&n.wrapping_mul(13).to_le_bytes());
         Hash256::from_bytes(bytes)
+    }
+
+    #[test]
+    fn insert_batch_uring() {
+        let dir = TmpDir::new();
+        let mut index = TxIndex::open_with_capacity(&dir.path().join("tx_index.bin"), 128).unwrap();
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+        let mut write_arena = Vec::new();
+
+        let pairs: Vec<(Hash256, DiskTxHandle)> = (0..20u8)
+            .map(|i| (fake_txid(i), fake_handle(u32::from(i) * 10, 3, u32::from(i) + 100)))
+            .collect();
+
+        index
+            .insert_batch_uring(&pairs, &mut ring, &mut arena, &mut write_arena)
+            .unwrap();
+
+        assert_eq!(index.len(), 20);
+        for (i, (txid, _)) in pairs.iter().enumerate() {
+            let got = index.get(txid).unwrap().unwrap_or_else(|| {
+                panic!("txid {i} should be present after batch insert")
+            });
+            assert_eq!(got.span.base, i as u32 * 10);
+            assert_eq!(got.span.count, 3);
+        }
+    }
+
+    #[test]
+    fn get_batch_uring() {
+        let dir = TmpDir::new();
+        let mut index = TxIndex::open_with_capacity(&dir.path().join("tx_index.bin"), 128).unwrap();
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+
+        // Insert entries with the normal synchronous path.
+        let count = 30u8;
+        for i in 0..count {
+            let txid = fake_txid(i);
+            let handle = fake_handle(u32::from(i), 2, u32::from(i) + 200);
+            index.insert(&txid, &handle).unwrap();
+        }
+
+        // Batch-lookup all of them via uring.
+        let txids: Vec<Hash256> = (0..count).map(fake_txid).collect();
+        let results = index.get_batch_uring(&txids, &mut ring, &mut arena).unwrap();
+
+        assert_eq!(results.len(), count as usize);
+        for (i, result) in results.iter().enumerate() {
+            let handle = result.as_ref().unwrap_or_else(|| {
+                panic!("txid {i} should be found in batch lookup")
+            });
+            assert_eq!(handle.span.base, i as u32);
+            assert_eq!(handle.span.count, 2);
+            assert_eq!(handle.height, BlockHeight::new(i as u32 + 200));
+        }
+
+        // Also test misses.
+        let miss_txids: Vec<Hash256> = (200..210u8).map(fake_txid).collect();
+        let miss_results = index.get_batch_uring(&miss_txids, &mut ring, &mut arena).unwrap();
+        assert!(miss_results.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn remove_batch_uring() {
+        let dir = TmpDir::new();
+        let mut index = TxIndex::open_with_capacity(&dir.path().join("tx_index.bin"), 128).unwrap();
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+
+        let count = 30u8;
+        for i in 0..count {
+            index.insert(&fake_txid(i), &fake_handle(u32::from(i), 2, u32::from(i) + 100)).unwrap();
+        }
+        assert_eq!(index.len(), 30);
+
+        // Batch-remove txids 10..20.
+        let remove_txids: Vec<Hash256> = (10..20u8).map(fake_txid).collect();
+        index.remove_batch_uring(&remove_txids, &mut ring, &mut arena).unwrap();
+
+        assert_eq!(index.len(), 20);
+
+        // Removed entries should be gone.
+        for i in 10..20u8 {
+            assert!(
+                index.get(&fake_txid(i)).unwrap().is_none(),
+                "txid {i} should have been removed"
+            );
+        }
+
+        // Remaining entries should still be present.
+        for i in (0..10u8).chain(20..count) {
+            let got = index.get(&fake_txid(i)).unwrap().unwrap_or_else(|| {
+                panic!("txid {i} should still be present")
+            });
+            assert_eq!(got.span.base, u32::from(i));
+        }
+    }
+
+    #[test]
+    fn robin_hood_displacement_on_insert() {
+        // Force Robin Hood displacement by inserting txids that hash to the
+        // same slot. With mask=1023 (1024 slots), any txids whose first 8
+        // bytes have the same low 10 bits will collide.
+        let dir = TmpDir::new();
+        let mut index = TxIndex::open(&dir.path().join("tx_index.bin")).unwrap();
+
+        // Create txids that all hash to the same ideal slot.
+        // hash_txid reads the first 8 bytes as u64 LE. We set the first 8
+        // bytes to values that share the same low 10 bits (mask = 0x3FF).
+        let base_slot = 42u64; // arbitrary slot
+        let mut txids = Vec::new();
+        for i in 0u64..5 {
+            let mut bytes = [0u8; 32];
+            let val = base_slot + i * 1024; // same low 10 bits
+            bytes[0..8].copy_from_slice(&val.to_le_bytes());
+            bytes[31] = i as u8; // make them distinguishable
+            txids.push(Hash256::from_bytes(bytes));
+        }
+
+        // Insert all 5 — each one after the first will probe further.
+        // The third+ inserts will find entries with lower probe_distance
+        // and displace them (Robin Hood).
+        for (i, txid) in txids.iter().enumerate() {
+            let handle = fake_handle(i as u32 * 10, 2, i as u32 + 100);
+            index.insert(txid, &handle).unwrap();
+        }
+
+        assert_eq!(index.len(), 5);
+
+        // All entries must be retrievable.
+        for (i, txid) in txids.iter().enumerate() {
+            let got = index.get(txid).unwrap().unwrap_or_else(|| {
+                panic!("txid {i} should be present after Robin Hood inserts")
+            });
+            assert_eq!(got.span.base, i as u32 * 10);
+            assert_eq!(got.height, BlockHeight::new(i as u32 + 100));
+        }
+
+        // Remove all and verify cleanup.
+        for txid in &txids {
+            assert!(index.remove(txid).unwrap());
+        }
+        assert_eq!(index.len(), 0);
+    }
+
+    #[test]
+    fn insert_resize_preserves_all_entries() {
+        // Insert enough entries to trigger multiple resizes and verify all survive.
+        let dir = TmpDir::new();
+        let mut index = TxIndex::open(&dir.path().join("tx_index.bin")).unwrap();
+        let initial_slots = index.slot_count();
+
+        // Insert enough to trigger at least one resize.
+        let count = (initial_slots * 9 / 10) as u16 + 10; // slightly over load factor
+        for i in 0..count {
+            let txid = fake_txid_u16(i);
+            let handle = fake_handle(u32::from(i), 1, u32::from(i));
+            index.insert(&txid, &handle).unwrap();
+        }
+
+        assert!(index.slot_count() > initial_slots, "should have resized");
+        assert_eq!(index.len(), u64::from(count));
+
+        // Every entry must survive the resize.
+        for i in 0..count {
+            let txid = fake_txid_u16(i);
+            let got = index.get(&txid).unwrap().unwrap_or_else(|| {
+                panic!("txid {i} should survive resize")
+            });
+            assert_eq!(got.span.base, u32::from(i));
+        }
     }
 }

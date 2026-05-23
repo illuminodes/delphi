@@ -1,19 +1,18 @@
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
-use mantle::hash::ByteSliceExt;
 use mantle::primitives::{
-    BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi,
+    BlockHeader, BlockHeight, Hash256, OutPoint,
 };
-use mantle_consensus::chain_view::{Coin, NewCoin, TipInfo};
+use mantle_consensus::chain_view::{Coin, TipInfo};
 use mantle_utxo_set::{ArenaUtxoSet, ConnectScratch};
 
+use super::header_io::HeaderStore;
+use super::wal_io::{read_wal_entry, write_wal_create, write_wal_spend, WalEntry};
 use super::{Engine, EngineError};
-use crate::types::{CommitBlockReq, Durability, LookupResult};
+use crate::types::{CommitBlockReq, Durability};
 
-const HEADER_RECORD_SIZE: usize = 116;
 const WRITE_BUF_BYTES: usize = 256 * 1024;
 
 pub struct ArenaEngine {
@@ -24,33 +23,18 @@ pub struct ArenaEngine {
     wal_file: BufWriter<File>,
     wal_write_pos: u64,
 
-    header_file: File,
-    header_write_len: u64,
-    header_index: PrehashedMap<Hash256, u32>,
-
-    checkpoint_file: File,
-    tip: TipInfo,
+    headers: HeaderStore,
 }
 
 impl ArenaEngine {
     /// # Errors
     /// Returns `EngineError` if any file I/O fails during open or recovery.
     pub fn open(data_dir: &Path) -> Result<Self, EngineError> {
-        std::fs::create_dir_all(data_dir).map_err(io_err)?;
+        std::fs::create_dir_all(data_dir)?;
 
         let wal_path = data_dir.join("utxo_wal.bin");
-        let header_path = data_dir.join("headers.bin");
-        let checkpoint_path = data_dir.join("checkpoint.bin");
-
         let wal_file = BufWriter::with_capacity(WRITE_BUF_BYTES, open_append(&wal_path)?);
-        let header_file = open_append(&header_path)?;
-        let checkpoint_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&checkpoint_path)
-            .map_err(io_err)?;
+        let headers = HeaderStore::open(data_dir)?;
 
         let mut engine = Self {
             data_dir: data_dir.to_owned(),
@@ -58,21 +42,10 @@ impl ArenaEngine {
             scratch: ConnectScratch::new(),
             wal_file,
             wal_write_pos: 0,
-            header_file,
-            header_write_len: 0,
-            header_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
-            checkpoint_file,
-            tip: TipInfo {
-                hash: Hash256::ZERO,
-                height: BlockHeight::ZERO,
-            },
+            headers,
         };
         engine.recover()?;
         Ok(engine)
-    }
-
-    fn header_path(&self) -> PathBuf {
-        self.data_dir.join("headers.bin")
     }
 
     fn wal_path(&self) -> PathBuf {
@@ -83,20 +56,6 @@ impl ArenaEngine {
 impl Engine for ArenaEngine {
     fn read_coin(&mut self, op: &OutPoint) -> Result<Option<Coin>, EngineError> {
         Ok(self.utxo_set.get(op))
-    }
-
-    fn read_coins(
-        &mut self,
-        ops: &[OutPoint],
-        out: &mut Vec<LookupResult>,
-    ) -> Result<(), EngineError> {
-        for &op in ops {
-            out.push(LookupResult {
-                outpoint: op,
-                coin: self.utxo_set.get(&op),
-            });
-        }
-        Ok(())
     }
 
     fn write_block(&mut self, req: &CommitBlockReq) -> Result<(), EngineError> {
@@ -117,101 +76,33 @@ impl Engine for ArenaEngine {
         self.scratch.reclaim(undo);
 
         debug_assert_eq!(req.header.prev_block(), req.prev_hash);
-        self.header_write_len = write_header_record(
-            &mut self.header_file,
-            req.height,
-            &req.header,
-            req.hash,
-            self.header_write_len,
-        )?;
-        self.header_index.insert(req.hash, req.height.to_u32());
-        self.tip = TipInfo {
-            hash: req.hash,
-            height: req.height,
-        };
+        self.headers.write_block_header(req.height, &req.header, req.hash)?;
         Ok(())
     }
 
     fn read_header(&self, hash: &Hash256) -> Result<Option<BlockHeader>, EngineError> {
-        let Some(&height_u32) = self.header_index.get(hash) else {
-            return Ok(None);
-        };
-        self.read_header_at(BlockHeight::new(height_u32))
+        self.headers.read_header(hash)
     }
 
     fn read_header_at(&self, h: BlockHeight) -> Result<Option<BlockHeader>, EngineError> {
-        let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE as u64;
-        let mut f = File::open(self.header_path()).map_err(io_err)?;
-        let file_len = f.seek(SeekFrom::End(0)).map_err(io_err)?;
-        if offset + HEADER_RECORD_SIZE as u64 > file_len {
-            return Ok(None);
-        }
-        f.seek(SeekFrom::Start(offset)).map_err(io_err)?;
-        let header = read_header_record(&mut f)?;
-        Ok(Some(header))
+        self.headers.read_header_at(h)
     }
 
     fn write_header(&mut self, h: BlockHeight, header: &BlockHeader) -> Result<(), EngineError> {
-        let hash = header.hash();
-        self.header_write_len = write_header_record(
-            &mut self.header_file,
-            h,
-            header,
-            hash,
-            self.header_write_len,
-        )?;
-        self.header_index.insert(hash, h.to_u32());
-        Ok(())
+        self.headers.write_header(h, header)
     }
 
     fn flush(&mut self, d: Durability) -> Result<(), EngineError> {
         if d == Durability::Synced {
-            self.wal_file.flush().map_err(io_err)?;
-            self.wal_file.get_ref().sync_all().map_err(io_err)?;
-            self.header_file.flush().map_err(io_err)?;
-            self.header_file.sync_all().map_err(io_err)?;
-            self.checkpoint_file
-                .seek(SeekFrom::Start(0))
-                .map_err(io_err)?;
-            let h = self.tip.height.to_u32().to_le_bytes();
-            self.checkpoint_file.write_all(&h).map_err(io_err)?;
-            self.checkpoint_file.sync_all().map_err(io_err)?;
+            self.wal_file.flush()?;
+            self.wal_file.get_ref().sync_all()?;
+            self.headers.sync_checkpoint()?;
         }
         Ok(())
     }
 
     fn recover(&mut self) -> Result<TipInfo, EngineError> {
-        let mut cp_buf = [0u8; 4];
-        let n = self.checkpoint_file.read(&mut cp_buf).map_err(io_err)?;
-        let checkpoint_height = if n == 4 {
-            u32::from_le_bytes(cp_buf)
-        } else {
-            0
-        };
-
-        self.header_index.clear();
-        let header_path = self.header_path();
-        let mut hf = File::open(&header_path).map_err(io_err)?;
-        let file_len = hf.seek(SeekFrom::End(0)).map_err(io_err)?;
-        hf.seek(SeekFrom::Start(0)).map_err(io_err)?;
-        let record_count = file_len / HEADER_RECORD_SIZE as u64;
-        for i in 0..record_count {
-            let mut buf = [0u8; HEADER_RECORD_SIZE];
-            if hf.read_exact(&mut buf).is_err() {
-                break;
-            }
-            let hash = Hash256::from_bytes(buf.read_hash(0));
-            let height = buf.read_u32_le(112);
-            if height <= checkpoint_height || checkpoint_height == 0 {
-                self.header_index.insert(hash, height);
-                if i + 1 == record_count {
-                    self.tip = TipInfo {
-                        hash,
-                        height: BlockHeight::new(height),
-                    };
-                }
-            }
-        }
+        self.headers.recover()?;
 
         self.utxo_set = ArenaUtxoSet::new();
         self.wal_write_pos = 0;
@@ -226,7 +117,7 @@ impl Engine for ArenaEngine {
                     }
                     Ok(Some(WalEntry::Spend(op, record_end))) => {
                         let _ = self.utxo_set.connect_block(
-                            self.tip.height,
+                            self.headers.tip.height,
                             &[],
                             &[op],
                         );
@@ -240,146 +131,248 @@ impl Engine for ArenaEngine {
             }
         }
 
-        self.header_write_len = record_count * HEADER_RECORD_SIZE as u64;
-        Ok(self.tip.clone())
+        Ok(self.headers.tip.clone())
     }
 
     fn tip(&self) -> TipInfo {
-        self.tip.clone()
+        self.headers.tip.clone()
     }
-}
-
-// ── WAL I/O ──────────────────────────────────────────────────────────────────
-
-fn write_wal_create<W: Write>(f: &mut W, nc: &NewCoin) -> Result<(), EngineError> {
-    f.write_all(nc.outpoint.txid.as_bytes()).map_err(io_err)?;
-    f.write_all(&nc.outpoint.vout.to_le_bytes()).map_err(io_err)?;
-    f.write_all(&[1u8]).map_err(io_err)?;
-    f.write_all(&nc.value.to_le_bytes()).map_err(io_err)?;
-    f.write_all(&nc.height.to_u32().to_le_bytes()).map_err(io_err)?;
-    f.write_all(&[u8::from(nc.coinbase)]).map_err(io_err)?;
-    let spk_len =
-        u32::try_from(nc.script_pubkey.len()).map_err(|_| EngineError::ScriptPubKeyTooLarge)?;
-    f.write_all(&spk_len.to_le_bytes()).map_err(io_err)?;
-    f.write_all(nc.script_pubkey).map_err(io_err)?;
-    Ok(())
-}
-
-fn write_wal_spend<W: Write>(f: &mut W, op: &OutPoint) -> Result<(), EngineError> {
-    f.write_all(op.txid.as_bytes()).map_err(io_err)?;
-    f.write_all(&op.vout.to_le_bytes()).map_err(io_err)?;
-    f.write_all(&[0u8]).map_err(io_err)?;
-    Ok(())
-}
-
-enum WalEntry<'a> {
-    Create(NewCoin<'a>, u64),
-    Spend(OutPoint, u64),
-}
-
-fn read_wal_entry(f: &mut File, offset: u64) -> Result<Option<WalEntry<'static>>, EngineError> {
-    f.seek(SeekFrom::Start(offset)).map_err(io_err)?;
-    let mut op_buf = [0u8; 36];
-    if f.read_exact(&mut op_buf).is_err() {
-        return Ok(None);
-    }
-    let txid = Hash256::from_bytes(op_buf.read_hash(0));
-    let vout = op_buf.read_u32_le(32);
-    let outpoint = OutPoint { txid, vout };
-
-    let mut tag = [0u8; 1];
-    f.read_exact(&mut tag).map_err(io_err)?;
-    if tag[0] == 0 {
-        return Ok(Some(WalEntry::Spend(outpoint, offset + 37)));
-    }
-
-    let mut buf8 = [0u8; 8];
-    f.read_exact(&mut buf8).map_err(io_err)?;
-    let value = u64::from_le_bytes(buf8);
-    let mut buf4 = [0u8; 4];
-    f.read_exact(&mut buf4).map_err(io_err)?;
-    let height = u32::from_le_bytes(buf4);
-    let mut tag1 = [0u8; 1];
-    f.read_exact(&mut tag1).map_err(io_err)?;
-    let coinbase = tag1[0] != 0;
-    f.read_exact(&mut buf4).map_err(io_err)?;
-    let spk_len =
-        usize::try_from(u32::from_le_bytes(buf4)).map_err(|_| EngineError::ScriptLenOverflow)?;
-
-    let mut spk = vec![0u8; spk_len];
-    f.read_exact(&mut spk).map_err(io_err)?;
-    let spk_static: &'static [u8] = Vec::leak(spk);
-
-    let record_end = offset + 36 + 1 + 8 + 4 + 1 + 4
-        + u64::try_from(spk_len).map_err(|_| EngineError::ScriptLenOverflow)?;
-
-    Ok(Some(WalEntry::Create(
-        NewCoin {
-            outpoint,
-            value: Satoshi::new(value),
-            script_pubkey: spk_static,
-            coinbase,
-            height: BlockHeight::new(height),
-        },
-        record_end,
-    )))
-}
-
-// ── Header I/O ───────────────────────────────────────────────────────────────
-
-fn write_header_record(
-    f: &mut File,
-    h: BlockHeight,
-    header: &BlockHeader,
-    hash: Hash256,
-    file_len: u64,
-) -> Result<u64, EngineError> {
-    let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE as u64;
-    let new_len = if offset > file_len {
-        f.set_len(offset).map_err(io_err)?;
-        offset
-    } else {
-        file_len
-    };
-    f.write_all(hash.as_bytes()).map_err(io_err)?;
-    f.write_all(&header.version().to_le_bytes()).map_err(io_err)?;
-    f.write_all(header.prev_block().as_bytes()).map_err(io_err)?;
-    f.write_all(header.merkle_root().as_bytes()).map_err(io_err)?;
-    f.write_all(&header.time().to_le_bytes()).map_err(io_err)?;
-    f.write_all(&header.bits().to_le_bytes()).map_err(io_err)?;
-    f.write_all(&header.nonce().to_le_bytes()).map_err(io_err)?;
-    f.write_all(&h.to_u32().to_le_bytes()).map_err(io_err)?;
-    Ok(new_len + HEADER_RECORD_SIZE as u64)
-}
-
-fn read_header_record(f: &mut File) -> Result<BlockHeader, EngineError> {
-    let mut buf = [0u8; HEADER_RECORD_SIZE];
-    f.read_exact(&mut buf).map_err(io_err)?;
-    Ok(parse_header_record(&buf))
-}
-
-#[allow(clippy::cast_possible_wrap)]
-fn parse_header_record(buf: &[u8; HEADER_RECORD_SIZE]) -> BlockHeader {
-    use mantle::primitives::{BlockTime, BlockVersion, Nonce};
-    BlockHeader::new(
-        BlockVersion::new(buf.read_u32_le(32) as i32),
-        Hash256::from_bytes(buf.read_hash(36)),
-        Hash256::from_bytes(buf.read_hash(68)),
-        BlockTime::new(buf.read_u32_le(100)),
-        CompactBits::new(buf.read_u32_le(104)),
-        Nonce::new(buf.read_u32_le(108)),
-    )
 }
 
 fn open_append(path: &Path) -> Result<File, EngineError> {
-    OpenOptions::new()
+    Ok(OpenOptions::new()
         .read(true)
         .append(true)
         .create(true)
-        .open(path)
-        .map_err(io_err)
+        .open(path)?)
 }
 
-fn io_err(e: impl Into<io::Error>) -> EngineError {
-    EngineError::Io(e.into())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mantle::primitives::{BlockTime, BlockVersion, CompactBits, Nonce, Satoshi};
+    use mantle_consensus::chain_view::NewCoin;
+    use crate::types::ReqToken;
+
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new() -> Self {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos();
+            let path = std::env::temp_dir()
+                .join(format!("mantle-arena-eng-{}-{}", std::process::id(), ns));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+        fn path(&self) -> &Path { &self.0 }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    fn make_header(prev: Hash256, time: u32) -> BlockHeader {
+        BlockHeader::new(
+            BlockVersion::new(1), prev, Hash256::ZERO,
+            BlockTime::new(time), CompactBits::new(0x1d00_ffff), Nonce::new(0),
+        )
+    }
+
+    fn make_outpoint(i: u32) -> OutPoint {
+        let mut b = [0u8; 32];
+        b[..4].copy_from_slice(&i.to_le_bytes());
+        OutPoint { txid: Hash256::from_bytes(b), vout: 0 }
+    }
+
+    #[test]
+    fn open_empty_dir_succeeds() {
+        let dir = TmpDir::new();
+        let eng = ArenaEngine::open(dir.path()).unwrap();
+        assert_eq!(eng.tip().height, BlockHeight::ZERO);
+    }
+
+    #[test]
+    fn write_block_and_read_coin() {
+        let dir = TmpDir::new();
+        let mut eng = ArenaEngine::open(dir.path()).unwrap();
+        let op = make_outpoint(1);
+        let spk: &[u8] = &[0x51];
+        let header = make_header(Hash256::ZERO, 1000);
+        let hash = header.hash();
+        let nc = NewCoin {
+            outpoint: op, value: Satoshi::new(5000), script_pubkey: spk,
+            coinbase: false, height: BlockHeight::new(1),
+        };
+        let req = CommitBlockReq {
+            token: ReqToken(0), height: BlockHeight::new(1), hash,
+            prev_hash: Hash256::ZERO, header, created: &[nc], spent: &[],
+            block_bytes: None, durability: Durability::Memory,
+        };
+        eng.write_block(&req).unwrap();
+        let coin = eng.read_coin(&op).unwrap();
+        assert!(coin.is_some());
+        assert_eq!(coin.unwrap().value, Satoshi::new(5000));
+    }
+
+    #[test]
+    fn write_and_spend_coin() {
+        let dir = TmpDir::new();
+        let mut eng = ArenaEngine::open(dir.path()).unwrap();
+        let op = make_outpoint(2);
+        let spk: &[u8] = &[0x51];
+        let header1 = make_header(Hash256::ZERO, 1000);
+        let hash1 = header1.hash();
+        let nc = NewCoin {
+            outpoint: op, value: Satoshi::new(3000), script_pubkey: spk,
+            coinbase: false, height: BlockHeight::new(1),
+        };
+        let req1 = CommitBlockReq {
+            token: ReqToken(0), height: BlockHeight::new(1), hash: hash1,
+            prev_hash: Hash256::ZERO, header: header1, created: &[nc], spent: &[],
+            block_bytes: None, durability: Durability::Memory,
+        };
+        eng.write_block(&req1).unwrap();
+        assert!(eng.read_coin(&op).unwrap().is_some());
+
+        let header2 = make_header(hash1, 2000);
+        let hash2 = header2.hash();
+        let req2 = CommitBlockReq {
+            token: ReqToken(1), height: BlockHeight::new(2), hash: hash2,
+            prev_hash: hash1, header: header2, created: &[], spent: &[op],
+            block_bytes: None, durability: Durability::Memory,
+        };
+        eng.write_block(&req2).unwrap();
+        assert!(eng.read_coin(&op).unwrap().is_none());
+    }
+
+    #[test]
+    fn flush_and_recover() {
+        let dir = TmpDir::new();
+        let op = make_outpoint(3);
+        let spk: &[u8] = &[0x51];
+        let header = make_header(Hash256::ZERO, 1000);
+        let hash = header.hash();
+        {
+            let mut eng = ArenaEngine::open(dir.path()).unwrap();
+            let nc = NewCoin {
+                outpoint: op, value: Satoshi::new(7000), script_pubkey: spk,
+                coinbase: false, height: BlockHeight::new(1),
+            };
+            let req = CommitBlockReq {
+                token: ReqToken(0), height: BlockHeight::new(1), hash,
+                prev_hash: Hash256::ZERO, header, created: &[nc], spent: &[],
+                block_bytes: None, durability: Durability::Synced,
+            };
+            eng.write_block(&req).unwrap();
+            eng.flush(Durability::Synced).unwrap();
+        }
+        let mut eng = ArenaEngine::open(dir.path()).unwrap();
+        assert_eq!(eng.tip().height, BlockHeight::new(1));
+        let coin = eng.read_coin(&op).unwrap();
+        assert!(coin.is_some());
+        assert_eq!(coin.unwrap().value, Satoshi::new(7000));
+    }
+
+    #[test]
+    fn header_write_and_read() {
+        let dir = TmpDir::new();
+        let mut eng = ArenaEngine::open(dir.path()).unwrap();
+        let header = make_header(Hash256::ZERO, 12345);
+        eng.write_header(BlockHeight::new(0), &header).unwrap();
+        let got = eng.read_header_at(BlockHeight::new(0)).unwrap().unwrap();
+        assert_eq!(got.time().to_u32(), 12345);
+    }
+
+    #[test]
+    fn read_header_out_of_range_returns_none() {
+        let dir = TmpDir::new();
+        let eng = ArenaEngine::open(dir.path()).unwrap();
+        let got = eng.read_header_at(BlockHeight::new(999)).unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn read_coins_batch() {
+        let dir = TmpDir::new();
+        let mut eng = ArenaEngine::open(dir.path()).unwrap();
+        let op1 = make_outpoint(10);
+        let op2 = make_outpoint(11);
+        let op_missing = make_outpoint(99);
+        let spk: &[u8] = &[0x51];
+        let header = make_header(Hash256::ZERO, 1000);
+        let hash = header.hash();
+        let nc1 = NewCoin {
+            outpoint: op1, value: Satoshi::new(1000), script_pubkey: spk,
+            coinbase: false, height: BlockHeight::new(1),
+        };
+        let nc2 = NewCoin {
+            outpoint: op2, value: Satoshi::new(2000), script_pubkey: spk,
+            coinbase: false, height: BlockHeight::new(1),
+        };
+        let req = CommitBlockReq {
+            token: ReqToken(0), height: BlockHeight::new(1), hash,
+            prev_hash: Hash256::ZERO, header,
+            created: &[nc1, nc2], spent: &[],
+            block_bytes: None, durability: Durability::Memory,
+        };
+        eng.write_block(&req).unwrap();
+        let mut results = Vec::new();
+        eng.read_coins(&[op1, op2, op_missing], &mut results).unwrap();
+        assert_eq!(results.len(), 3);
+        assert!(results[0].coin.is_some());
+        assert!(results[1].coin.is_some());
+        assert!(results[2].coin.is_none());
+    }
+
+    #[test]
+    fn recover_with_wal_spends() {
+        let dir = TmpDir::new();
+        let op1 = make_outpoint(50);
+        let op2 = make_outpoint(51);
+        let spk: &[u8] = &[0x51];
+        let header1 = make_header(Hash256::ZERO, 1000);
+        let hash1 = header1.hash();
+        {
+            let mut eng = ArenaEngine::open(dir.path()).unwrap();
+            let nc1 = NewCoin {
+                outpoint: op1, value: Satoshi::new(1000), script_pubkey: spk,
+                coinbase: false, height: BlockHeight::new(1),
+            };
+            let nc2 = NewCoin {
+                outpoint: op2, value: Satoshi::new(2000), script_pubkey: spk,
+                coinbase: false, height: BlockHeight::new(1),
+            };
+            let req1 = CommitBlockReq {
+                token: ReqToken(0), height: BlockHeight::new(1), hash: hash1,
+                prev_hash: Hash256::ZERO, header: header1,
+                created: &[nc1, nc2], spent: &[],
+                block_bytes: None, durability: Durability::Synced,
+            };
+            eng.write_block(&req1).unwrap();
+
+            let header2 = make_header(hash1, 2000);
+            let hash2 = header2.hash();
+            let req2 = CommitBlockReq {
+                token: ReqToken(1), height: BlockHeight::new(2), hash: hash2,
+                prev_hash: hash1, header: header2,
+                created: &[], spent: &[op1],
+                block_bytes: None, durability: Durability::Synced,
+            };
+            eng.write_block(&req2).unwrap();
+            eng.flush(Durability::Synced).unwrap();
+        }
+        let mut eng2 = ArenaEngine::open(dir.path()).unwrap();
+        assert!(eng2.read_coin(&op1).unwrap().is_none());
+        let coin2 = eng2.read_coin(&op2).unwrap().unwrap();
+        assert_eq!(coin2.value, Satoshi::new(2000));
+    }
+
+    #[test]
+    fn recover_checkpoint_height_zero() {
+        let dir = TmpDir::new();
+        {
+            let _eng = ArenaEngine::open(dir.path()).unwrap();
+        }
+        let eng2 = ArenaEngine::open(dir.path()).unwrap();
+        assert_eq!(eng2.tip().height, BlockHeight::ZERO);
+    }
 }

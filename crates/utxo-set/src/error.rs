@@ -31,3 +31,33 @@ impl fmt::Display for UtxoError {
 }
 
 impl std::error::Error for UtxoError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_all_variants_non_empty() {
+        let op = OutPoint {
+            txid: mantle::primitives::Hash256::ZERO,
+            vout: 0,
+        };
+        let variants: Vec<UtxoError> = vec![
+            UtxoError::OutputAlreadyExists(op),
+            UtxoError::OutputNotFound(op),
+            UtxoError::TooManyOutputs {
+                txid_prefix: [0u8; 8],
+                count: 999,
+            },
+            UtxoError::CoinbaseMaturity {
+                outpoint: op,
+                created: BlockHeight::new(1),
+                spend: BlockHeight::new(50),
+            },
+        ];
+        for v in &variants {
+            let s = format!("{v}");
+            assert!(!s.is_empty(), "Display for {v:?} should be non-empty");
+        }
+    }
+}

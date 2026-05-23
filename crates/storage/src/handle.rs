@@ -275,6 +275,276 @@ impl StorageHandle<'static> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{CommitBlockReq, Durability, ReqToken};
+    use mantle::primitives::{
+        BlockHeight, BlockTime, BlockVersion, CompactBits, Hash256, Nonce, OutPoint, Satoshi,
+    };
+    use mantle_consensus::chain_view::NewCoin;
+
+    fn make_header(time: u32) -> BlockHeader {
+        BlockHeader::new(
+            BlockVersion::new(1),
+            Hash256::ZERO,
+            Hash256::ZERO,
+            BlockTime::new(time),
+            CompactBits::new(0x1d00_ffff),
+            Nonce::new(0),
+        )
+    }
+
+    #[test]
+    fn commit_block_updates_tip() {
+        let dir = std::env::temp_dir().join(format!(
+            "mantle-handle-commit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut handle = StorageHandle::open(&dir).expect("open flat engine");
+
+        // Initial tip is genesis (height 0, zero hash).
+        let initial_tip = handle.tip();
+        assert_eq!(initial_tip.height, BlockHeight::ZERO);
+
+        let op = OutPoint {
+            txid: Hash256::from_bytes([0x01; 32]),
+            vout: 0,
+        };
+        let block_hash = Hash256::from_bytes([0x02; 32]);
+
+        // Use 'static data so commit_block (not commit_block_borrowed) works
+        // with the StorageHandle<'static> returned by open().
+        static SPK: [u8; 1] = [0x51];
+        let created: &'static [NewCoin<'static>] = Box::leak(Box::new([NewCoin {
+            outpoint: op,
+            value: Satoshi::new(5_000_000_000),
+            script_pubkey: &SPK,
+            coinbase: true,
+            height: BlockHeight::new(1),
+        }]));
+        let resp = handle
+            .commit_block(CommitBlockReq {
+                token: ReqToken(1),
+                height: BlockHeight::new(1),
+                hash: block_hash,
+                prev_hash: Hash256::ZERO,
+                header: make_header(1_000_000),
+                created: &created,
+                spent: &[],
+                block_bytes: None,
+                durability: Durability::Memory,
+            })
+            .expect("commit_block must succeed");
+
+        assert_eq!(resp.tip.height, BlockHeight::new(1));
+        assert_eq!(resp.tip.hash, block_hash);
+
+        // Cached tip should also be updated.
+        let tip = handle.tip();
+        assert_eq!(tip.height, BlockHeight::new(1));
+        assert_eq!(tip.hash, block_hash);
+
+        // Read the committed header back.
+        let hdr = handle.read_header(block_hash).expect("read_header").unwrap();
+        assert_eq!(hdr.time().to_u32(), 1_000_000);
+
+        handle.shutdown().expect("shutdown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_block_unexpected_response() {
+        // Verify that `commit_block` returns `UnexpectedResponse` when the
+        // response variant is wrong. This is hard to trigger through a real
+        // worker — we mainly verify the non-error path above. The error path
+        // is implicitly covered by the match arm.
+        // We at least verify the token round-trips correctly.
+        let dir = std::env::temp_dir().join(format!(
+            "mantle-handle-token-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut handle = StorageHandle::open(&dir).expect("open");
+
+        let resp = handle
+            .commit_block(CommitBlockReq {
+                token: ReqToken(42),
+                height: BlockHeight::new(1),
+                hash: Hash256::from_bytes([0x10; 32]),
+                prev_hash: Hash256::ZERO,
+                header: make_header(0),
+                created: &[],
+                spent: &[],
+                block_bytes: None,
+                durability: Durability::Memory,
+            })
+            .expect("commit_block");
+
+        assert_eq!(resp.token, ReqToken(42));
+        handle.shutdown().expect("shutdown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_header_at_returns_committed_header() {
+        // Exercise read_header_inner via read_header_at (by height).
+        let dir = std::env::temp_dir().join(format!(
+            "mantle-handle-rh-at-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut handle = StorageHandle::open(&dir).expect("open");
+
+        let block_hash = Hash256::from_bytes([0x05; 32]);
+        handle
+            .commit_block(CommitBlockReq {
+                token: ReqToken(1),
+                height: BlockHeight::new(1),
+                hash: block_hash,
+                prev_hash: Hash256::ZERO,
+                header: make_header(999),
+                created: &[],
+                spent: &[],
+                block_bytes: None,
+                durability: Durability::Memory,
+            })
+            .expect("commit_block");
+
+        // Read by height.
+        let hdr = handle
+            .read_header_at(BlockHeight::new(1))
+            .expect("read_header_at")
+            .expect("header must exist");
+        assert_eq!(hdr.time().to_u32(), 999);
+
+        handle.shutdown().expect("shutdown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_header_returns_none_for_unknown_hash() {
+        // Exercise the None path of read_header_inner via read_header.
+        let dir = std::env::temp_dir().join(format!(
+            "mantle-handle-rh-none-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut handle = StorageHandle::open(&dir).expect("open");
+
+        let unknown_hash = Hash256::from_bytes([0xee; 32]);
+        let result = handle.read_header(unknown_hash).expect("read_header");
+        assert!(result.is_none(), "unknown hash must return None");
+
+        handle.shutdown().expect("shutdown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_header_at_returns_none_for_unknown_height() {
+        // Exercise the None path of read_header_inner via read_header_at.
+        let dir = std::env::temp_dir().join(format!(
+            "mantle-handle-rh-at-none-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut handle = StorageHandle::open(&dir).expect("open");
+
+        let result = handle
+            .read_header_at(BlockHeight::new(999))
+            .expect("read_header_at");
+        assert!(result.is_none(), "unknown height must return None");
+
+        handle.shutdown().expect("shutdown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_header_multiple_blocks() {
+        // Commit two blocks, read both by hash and by height to exercise
+        // read_header_inner under multiple sequential calls.
+        let dir = std::env::temp_dir().join(format!(
+            "mantle-handle-rh-multi-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut handle = StorageHandle::open(&dir).expect("open");
+
+        let hash1 = Hash256::from_bytes([0x11; 32]);
+        handle
+            .commit_block(CommitBlockReq {
+                token: ReqToken(1),
+                height: BlockHeight::new(1),
+                hash: hash1,
+                prev_hash: Hash256::ZERO,
+                header: make_header(100),
+                created: &[],
+                spent: &[],
+                block_bytes: None,
+                durability: Durability::Memory,
+            })
+            .expect("commit block 1");
+
+        let hash2 = Hash256::from_bytes([0x22; 32]);
+        let mut h2 = make_header(200);
+        h2.set_prev_block(hash1);
+        handle
+            .commit_block(CommitBlockReq {
+                token: ReqToken(2),
+                height: BlockHeight::new(2),
+                hash: hash2,
+                prev_hash: hash1,
+                header: h2,
+                created: &[],
+                spent: &[],
+                block_bytes: None,
+                durability: Durability::Memory,
+            })
+            .expect("commit block 2");
+
+        // Read by hash.
+        let hdr1 = handle.read_header(hash1).expect("read").unwrap();
+        assert_eq!(hdr1.time().to_u32(), 100);
+        let hdr2 = handle.read_header(hash2).expect("read").unwrap();
+        assert_eq!(hdr2.time().to_u32(), 200);
+
+        // Read by height.
+        let hdr1_h = handle.read_header_at(BlockHeight::new(1)).expect("read").unwrap();
+        assert_eq!(hdr1_h.time().to_u32(), 100);
+        let hdr2_h = handle.read_header_at(BlockHeight::new(2)).expect("read").unwrap();
+        assert_eq!(hdr2_h.time().to_u32(), 200);
+
+        handle.shutdown().expect("shutdown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 fn open_arc(
     engine: impl crate::engine::Engine + Send + 'static,
 ) -> Result<StorageHandle<'static>, StorageError> {

@@ -30,8 +30,7 @@ impl Encode for VersionMsg {
         self.sender.encode(w)?;
         self.nonce.encode(w)?;
         self.user_agent.encode(w)?;
-        #[allow(clippy::cast_possible_wrap)]
-        (self.start_height.to_u32() as i32).encode(w)?;
+        i32::from_ne_bytes(self.start_height.to_u32().to_ne_bytes()).encode(w)?;
         u8::from(self.relay).encode(w)
     }
 }
@@ -46,8 +45,7 @@ impl Decode for VersionMsg {
             sender: NetworkAddr::decode(r)?,
             nonce: PeerNonce::decode(r)?,
             user_agent: VarInt::decode_string_limited::<256>(r)?,
-            #[allow(clippy::cast_sign_loss)]
-            start_height: BlockHeight::new(i32::decode(r)? as u32),
+            start_height: BlockHeight::new(u32::from_ne_bytes(i32::decode(r)?.to_ne_bytes())),
             relay: u8::decode(r)? != 0,
         })
     }
@@ -88,8 +86,7 @@ impl<'a> DecodeRef<'a> for VersionMsgRef<'a> {
                 sender,
                 nonce,
                 user_agent,
-                #[allow(clippy::cast_sign_loss)]
-                start_height: BlockHeight::new(start_height_raw as u32),
+                start_height: BlockHeight::new(u32::from_ne_bytes(start_height_raw.to_ne_bytes())),
                 relay: relay_byte != 0,
             },
             buf,

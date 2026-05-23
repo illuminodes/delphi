@@ -174,3 +174,56 @@ impl ChainView for PrefetchedView<'_> {
         self.tip.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mantle::primitives::{OutPoint, Satoshi, ScriptPubKey};
+
+    #[test]
+    fn get_coin_returns_found_and_missing() {
+        let op_present = OutPoint {
+            txid: Hash256::from_bytes([0xaa; 32]),
+            vout: 0,
+        };
+        let op_none = OutPoint {
+            txid: Hash256::from_bytes([0xbb; 32]),
+            vout: 0,
+        };
+        let op_absent = OutPoint {
+            txid: Hash256::from_bytes([0xcc; 32]),
+            vout: 0,
+        };
+
+        let coin = Coin {
+            value: Satoshi::new(1000),
+            script_pubkey: ScriptPubKey::from(vec![0x76, 0xa9]),
+            height: BlockHeight::new(100),
+            coinbase: false,
+        };
+
+        let mut coins = PrehashedMap::with_hasher(BuildPrehashedHasher);
+        coins.insert(op_present, Some(coin.clone()));
+        coins.insert(op_none, None);
+
+        let snap = HeaderSnapshot::new(BlockHeight::ZERO, Vec::new())
+            .expect("empty snapshot");
+        let tip = TipInfo {
+            hash: Hash256::ZERO,
+            height: BlockHeight::ZERO,
+        };
+        let view = PrefetchedView::new(&coins, &snap, tip);
+
+        // Present coin returns Ok(Some)
+        let result = view.get_coin(&op_present).unwrap();
+        assert_eq!(result.unwrap().value, Satoshi::new(1000));
+
+        // Explicitly None coin returns Ok(None)
+        let result = view.get_coin(&op_none).unwrap();
+        assert!(result.is_none());
+
+        // Absent key returns Err(NotFound)
+        let result = view.get_coin(&op_absent);
+        assert!(result.is_err());
+    }
+}

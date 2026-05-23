@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
@@ -7,18 +7,9 @@ use mantle::hash::ByteSliceExt;
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi, ScriptPubKey};
 use mantle_consensus::chain_view::{Coin, NewCoin, TipInfo};
 
+use super::header_io::HeaderStore;
 use super::{Engine, EngineError};
 use crate::types::{CommitBlockReq, Durability, LookupResult};
-
-/// Fixed size of a header record:
-/// hash(32) + version(4) + `prev_block`(32) + `merkle_root`(32) +
-/// time(4) + bits(4) + nonce(4) + height(4) = 116 bytes.
-///
-/// The `version` field comes after `hash` (not interleaved with the
-/// other header fields) so the offsets of `prev_block`, `merkle_root`,
-/// time/bits/nonce stay aligned with the BIP144 header byte order, just
-/// shifted by 4 bytes; the height tail at offset 112 stays put.
-const HEADER_RECORD_SIZE: usize = 116;
 
 /// User-space buffer in front of the append-only logs. Sized to absorb several
 /// blocks' worth of UTXO and header writes so the kernel only sees a handful
@@ -40,16 +31,7 @@ pub struct FlatEngine {
     utxo_flushed_pos: u64,
     utxo_index: PrehashedMap<OutPoint, u64>,
 
-    // Headers are tiny (112 B each, one per block) and read by methods that
-    // take `&self`. Keeping them unbuffered means reads always observe prior
-    // writes without coordination and the syscall savings are not worth the
-    // bookkeeping cost.
-    header_file: File,
-    header_write_len: u64,
-    header_index: PrehashedMap<Hash256, u32>,
-
-    checkpoint_file: File,
-    tip: TipInfo,
+    headers: HeaderStore,
 }
 
 impl FlatEngine {
@@ -60,22 +42,13 @@ impl FlatEngine {
     ///
     /// Returns `EngineError` if any file I/O fails during open or recovery.
     pub fn open(data_dir: &Path) -> Result<Self, EngineError> {
-        std::fs::create_dir_all(data_dir).map_err(io_err)?;
+        std::fs::create_dir_all(data_dir)?;
 
         let utxo_path = data_dir.join("utxo.bin");
-        let header_path = data_dir.join("headers.bin");
-        let checkpoint_path = data_dir.join("checkpoint.bin");
 
         let utxo_file = BufWriter::with_capacity(WRITE_BUF_BYTES, open_append(&utxo_path)?);
         let utxo_read = open_read(&utxo_path)?;
-        let header_file = open_append(&header_path)?;
-        let checkpoint_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&checkpoint_path)
-            .map_err(io_err)?;
+        let headers = HeaderStore::open(data_dir)?;
 
         let mut engine = Self {
             data_dir: data_dir.to_owned(),
@@ -84,14 +57,7 @@ impl FlatEngine {
             utxo_write_pos: 0,
             utxo_flushed_pos: 0,
             utxo_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
-            header_file,
-            header_write_len: 0,
-            header_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
-            checkpoint_file,
-            tip: TipInfo {
-                hash: Hash256::ZERO,
-                height: BlockHeight::ZERO,
-            },
+            headers,
         };
         engine.recover()?;
         Ok(engine)
@@ -102,7 +68,7 @@ impl FlatEngine {
     /// buffered.
     fn flush_utxo_writer(&mut self) -> Result<(), EngineError> {
         if self.utxo_flushed_pos != self.utxo_write_pos {
-            self.utxo_file.flush().map_err(io_err)?;
+            self.utxo_file.flush()?;
             self.utxo_flushed_pos = self.utxo_write_pos;
         }
         Ok(())
@@ -110,10 +76,6 @@ impl FlatEngine {
 
     fn utxo_path(&self) -> PathBuf {
         self.data_dir.join("utxo.bin")
-    }
-
-    fn header_path(&self) -> PathBuf {
-        self.data_dir.join("headers.bin")
     }
 }
 
@@ -129,7 +91,7 @@ impl Engine for FlatEngine {
         }
         self.utxo_read
             .seek(SeekFrom::Start(offset))
-            .map_err(io_err)?;
+            ?;
         read_coin_record(&mut self.utxo_read)
     }
 
@@ -151,7 +113,7 @@ impl Engine for FlatEngine {
             let coin = if let Some(&offset) = self.utxo_index.get(&op) {
                 self.utxo_read
                     .seek(SeekFrom::Start(offset))
-                    .map_err(io_err)?;
+                    ?;
                 read_coin_record(&mut self.utxo_read)?
             } else {
                 None
@@ -186,106 +148,34 @@ impl Engine for FlatEngine {
             req.prev_hash,
             "CommitBlockReq.header.prev_block must match req.prev_hash"
         );
-        self.header_write_len = write_header_record(
-            &mut self.header_file,
-            req.height,
-            &req.header,
-            req.hash,
-            self.header_write_len,
-        )?;
-        self.header_index.insert(req.hash, req.height.to_u32());
-
-        self.tip = TipInfo {
-            hash: req.hash,
-            height: req.height,
-        };
+        self.headers.write_block_header(req.height, &req.header, req.hash)?;
         Ok(())
     }
 
     fn read_header(&self, hash: &Hash256) -> Result<Option<BlockHeader>, EngineError> {
-        let Some(&height_u32) = self.header_index.get(hash) else {
-            return Ok(None);
-        };
-        self.read_header_at(BlockHeight::new(height_u32))
+        self.headers.read_header(hash)
     }
 
     fn read_header_at(&self, h: BlockHeight) -> Result<Option<BlockHeader>, EngineError> {
-        let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE as u64;
-        let mut f = File::open(self.header_path()).map_err(io_err)?;
-        let file_len = f.seek(SeekFrom::End(0)).map_err(io_err)?;
-        if offset + HEADER_RECORD_SIZE as u64 > file_len {
-            return Ok(None);
-        }
-        f.seek(SeekFrom::Start(offset)).map_err(io_err)?;
-        let header = read_header_record(&mut f)?;
-        Ok(Some(header))
+        self.headers.read_header_at(h)
     }
 
     fn write_header(&mut self, h: BlockHeight, header: &BlockHeader) -> Result<(), EngineError> {
-        let hash = header.hash();
-        self.header_write_len = write_header_record(
-            &mut self.header_file,
-            h,
-            header,
-            hash,
-            self.header_write_len,
-        )?;
-        self.header_index.insert(hash, h.to_u32());
-        Ok(())
+        self.headers.write_header(h, header)
     }
 
     fn flush(&mut self, d: Durability) -> Result<(), EngineError> {
         if d == Durability::Synced {
-            self.utxo_file.flush().map_err(io_err)?;
-            self.utxo_file.get_ref().sync_all().map_err(io_err)?;
+            self.utxo_file.flush()?;
+            self.utxo_file.get_ref().sync_all()?;
             self.utxo_flushed_pos = self.utxo_write_pos;
-            self.header_file.flush().map_err(io_err)?;
-            self.header_file.sync_all().map_err(io_err)?;
-            self.checkpoint_file
-                .seek(SeekFrom::Start(0))
-                .map_err(io_err)?;
-            let h = self.tip.height.to_u32().to_le_bytes();
-            self.checkpoint_file.write_all(&h).map_err(io_err)?;
-            self.checkpoint_file.sync_all().map_err(io_err)?;
+            self.headers.sync_checkpoint()?;
         }
         Ok(())
     }
 
     fn recover(&mut self) -> Result<TipInfo, EngineError> {
-        let mut cp_buf = [0u8; 4];
-        let n = self.checkpoint_file.read(&mut cp_buf).map_err(io_err)?;
-        let checkpoint_height = if n == 4 {
-            u32::from_le_bytes(cp_buf)
-        } else {
-            0
-        };
-
-        // Rebuild header index.
-        self.header_index.clear();
-        let header_path = self.header_path();
-        let mut hf = File::open(&header_path).map_err(io_err)?;
-        let file_len = hf.seek(SeekFrom::End(0)).map_err(io_err)?;
-        hf.seek(SeekFrom::Start(0)).map_err(io_err)?;
-        let record_count = file_len / HEADER_RECORD_SIZE as u64;
-        for i in 0..record_count {
-            let mut buf = [0u8; HEADER_RECORD_SIZE];
-            if hf.read_exact(&mut buf).is_err() {
-                break;
-            }
-            let hash = Hash256::from_bytes(buf.read_hash(0));
-            // Height tail sits at offset 112 — see HEADER_RECORD_SIZE doc.
-            let height = buf.read_u32_le(112);
-            if height <= checkpoint_height || checkpoint_height == 0 {
-                self.header_index.insert(hash, height);
-                if i + 1 == record_count {
-                    // Only need the tip hash/height; the parsed header itself is not kept.
-                    self.tip = TipInfo {
-                        hash,
-                        height: BlockHeight::new(height),
-                    };
-                }
-            }
-        }
+        self.headers.recover()?;
 
         // Rebuild UTXO index.
         self.utxo_index.clear();
@@ -311,13 +201,11 @@ impl Engine for FlatEngine {
             }
         }
 
-        self.header_write_len = record_count * HEADER_RECORD_SIZE as u64;
-
-        Ok(self.tip.clone())
+        Ok(self.headers.tip.clone())
     }
 
     fn tip(&self) -> TipInfo {
-        self.tip.clone()
+        self.headers.tip.clone()
     }
 }
 
@@ -335,27 +223,27 @@ impl Engine for FlatEngine {
 
 fn write_coin_record<W: Write>(f: &mut W, nc: &NewCoin) -> Result<(), EngineError> {
     write_outpoint(f, &nc.outpoint)?;
-    f.write_all(&[1u8]).map_err(io_err)?;
-    f.write_all(&nc.value.to_le_bytes()).map_err(io_err)?;
+    f.write_all(&[1u8])?;
+    f.write_all(&nc.value.to_le_bytes())?;
     f.write_all(&nc.height.to_u32().to_le_bytes())
-        .map_err(io_err)?;
-    f.write_all(&[u8::from(nc.coinbase)]).map_err(io_err)?;
+        ?;
+    f.write_all(&[u8::from(nc.coinbase)])?;
     let spk = nc.script_pubkey;
     let spk_len = u32::try_from(spk.len()).map_err(|_| EngineError::ScriptPubKeyTooLarge)?;
-    f.write_all(&spk_len.to_le_bytes()).map_err(io_err)?;
-    f.write_all(spk).map_err(io_err)?;
+    f.write_all(&spk_len.to_le_bytes())?;
+    f.write_all(spk)?;
     Ok(())
 }
 
 fn write_spend_record<W: Write>(f: &mut W, op: &OutPoint) -> Result<(), EngineError> {
     write_outpoint(f, op)?;
-    f.write_all(&[0u8]).map_err(io_err)?;
+    f.write_all(&[0u8])?;
     Ok(())
 }
 
 fn write_outpoint<W: Write>(f: &mut W, op: &OutPoint) -> Result<(), EngineError> {
-    f.write_all(op.txid.as_bytes()).map_err(io_err)?;
-    f.write_all(&op.vout.to_le_bytes()).map_err(io_err)?;
+    f.write_all(op.txid.as_bytes())?;
+    f.write_all(&op.vout.to_le_bytes())?;
     Ok(())
 }
 
@@ -368,19 +256,19 @@ fn read_coin_record(f: &mut File) -> Result<Option<Coin>, EngineError> {
         return Ok(None);
     }
     let mut buf8 = [0u8; 8];
-    f.read_exact(&mut buf8).map_err(io_err)?;
+    f.read_exact(&mut buf8)?;
     let value = u64::from_le_bytes(buf8);
     let mut buf4 = [0u8; 4];
-    f.read_exact(&mut buf4).map_err(io_err)?;
+    f.read_exact(&mut buf4)?;
     let height = u32::from_le_bytes(buf4);
     let mut tag1 = [0u8; 1];
-    f.read_exact(&mut tag1).map_err(io_err)?;
+    f.read_exact(&mut tag1)?;
     let coinbase = tag1[0] != 0;
-    f.read_exact(&mut buf4).map_err(io_err)?;
+    f.read_exact(&mut buf4)?;
     let spk_len =
         usize::try_from(u32::from_le_bytes(buf4)).map_err(|_| EngineError::ScriptLenOverflow)?;
     let mut spk = vec![0u8; spk_len];
-    f.read_exact(&mut spk).map_err(io_err)?;
+    f.read_exact(&mut spk)?;
     Ok(Some(Coin {
         value: Satoshi::new(value),
         script_pubkey: ScriptPubKey::from(spk),
@@ -393,7 +281,7 @@ fn read_utxo_log_entry(
     f: &mut File,
     offset: u64,
 ) -> Result<Option<(OutPoint, Option<Coin>, u64)>, EngineError> {
-    f.seek(SeekFrom::Start(offset)).map_err(io_err)?;
+    f.seek(SeekFrom::Start(offset))?;
     let mut op_buf = [0u8; 36];
     if f.read_exact(&mut op_buf).is_err() {
         return Ok(None);
@@ -403,24 +291,24 @@ fn read_utxo_log_entry(
     let op = OutPoint { txid, vout };
 
     let mut tag = [0u8; 1];
-    f.read_exact(&mut tag).map_err(io_err)?;
+    f.read_exact(&mut tag)?;
     if tag[0] == 0 {
         return Ok(Some((op, None, offset + 37)));
     }
     let mut buf8 = [0u8; 8];
-    f.read_exact(&mut buf8).map_err(io_err)?;
+    f.read_exact(&mut buf8)?;
     let value = u64::from_le_bytes(buf8);
     let mut buf4 = [0u8; 4];
-    f.read_exact(&mut buf4).map_err(io_err)?;
+    f.read_exact(&mut buf4)?;
     let height = u32::from_le_bytes(buf4);
     let mut tag1 = [0u8; 1];
-    f.read_exact(&mut tag1).map_err(io_err)?;
+    f.read_exact(&mut tag1)?;
     let coinbase = tag1[0] != 0;
-    f.read_exact(&mut buf4).map_err(io_err)?;
+    f.read_exact(&mut buf4)?;
     let spk_len =
         usize::try_from(u32::from_le_bytes(buf4)).map_err(|_| EngineError::ScriptLenOverflow)?;
     let mut spk = vec![0u8; spk_len];
-    f.read_exact(&mut spk).map_err(io_err)?;
+    f.read_exact(&mut spk)?;
     let coin = Coin {
         value: Satoshi::new(value),
         script_pubkey: ScriptPubKey::from(spk),
@@ -439,85 +327,16 @@ fn read_utxo_log_entry(
     Ok(Some((op, Some(coin), record_end)))
 }
 
-// ── Header record serialization ───────────────────────────────────────────────
-//
-// Fixed 116 bytes: hash(32) + prev_block(32) + merkle_root(32) +
-//   time(4) + bits(4) + nonce(4) + height(4)
-
-fn write_header_record(
-    f: &mut File,
-    h: BlockHeight,
-    header: &BlockHeader,
-    hash: Hash256,
-    file_len: u64,
-) -> Result<u64, EngineError> {
-    // Files are opened with O_APPEND, so every write goes to EOF regardless
-    // of any prior seek. We only have to extend the file to `offset` when
-    // there is a gap; the actual record then appends naturally.
-    let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE as u64;
-    let new_len = if offset > file_len {
-        // Use ftruncate to extend the file; the gap becomes a sparse hole on
-        // every Linux filesystem we support (ext4/xfs/btrfs/tmpfs) — no zero
-        // blocks are written. Reads from the hole return zeros, which is the
-        // semantics we need. In production each commit is at `tip+1` so this
-        // branch never fires; the bench harness commits sample blocks at high
-        // heights to fresh storage, which previously issued ~1300 small write
-        // syscalls per commit padding the gap.
-        f.set_len(offset).map_err(io_err)?;
-        offset
-    } else {
-        file_len
-    };
-    // Layout: hash(32) ‖ version(4) ‖ prev(32) ‖ merkle(32) ‖
-    //         time(4) ‖ bits(4) ‖ nonce(4) ‖ height(4) = 116 bytes.
-    f.write_all(hash.as_bytes()).map_err(io_err)?;
-    f.write_all(&header.version().to_le_bytes())
-        .map_err(io_err)?;
-    f.write_all(header.prev_block().as_bytes())
-        .map_err(io_err)?;
-    f.write_all(header.merkle_root().as_bytes())
-        .map_err(io_err)?;
-    f.write_all(&header.time().to_le_bytes()).map_err(io_err)?;
-    f.write_all(&header.bits().to_le_bytes()).map_err(io_err)?;
-    f.write_all(&header.nonce().to_le_bytes()).map_err(io_err)?;
-    f.write_all(&h.to_u32().to_le_bytes()).map_err(io_err)?;
-    Ok(new_len + HEADER_RECORD_SIZE as u64)
-}
-
-fn read_header_record(f: &mut File) -> Result<BlockHeader, EngineError> {
-    let mut buf = [0u8; HEADER_RECORD_SIZE];
-    f.read_exact(&mut buf).map_err(io_err)?;
-    Ok(parse_header_record(&buf))
-}
-
-#[allow(clippy::cast_possible_wrap)]
-fn parse_header_record(buf: &[u8; HEADER_RECORD_SIZE]) -> BlockHeader {
-    use mantle::primitives::{BlockTime, BlockVersion, CompactBits, Nonce};
-    BlockHeader::new(
-        BlockVersion::new(buf.read_u32_le(32) as i32),
-        Hash256::from_bytes(buf.read_hash(36)),
-        Hash256::from_bytes(buf.read_hash(68)),
-        BlockTime::new(buf.read_u32_le(100)),
-        CompactBits::new(buf.read_u32_le(104)),
-        Nonce::new(buf.read_u32_le(108)),
-    )
-}
-
 fn open_append(path: &Path) -> Result<File, EngineError> {
-    OpenOptions::new()
+    Ok(OpenOptions::new()
         .read(true)
         .append(true)
         .create(true)
-        .open(path)
-        .map_err(io_err)
+        .open(path)?)
 }
 
 fn open_read(path: &Path) -> Result<File, EngineError> {
-    OpenOptions::new().read(true).open(path).map_err(io_err)
-}
-
-fn io_err(e: impl Into<io::Error>) -> EngineError {
-    EngineError::Io(e.into())
+    Ok(OpenOptions::new().read(true).open(path)?)
 }
 
 #[cfg(test)]
@@ -666,6 +485,49 @@ mod tests {
     }
 
     #[test]
+    fn flush_synced_survives_reopen() {
+        let dir = tmp();
+        let op = OutPoint {
+            txid: Hash256::from_bytes([0xAA; 32]),
+            vout: 0,
+        };
+        {
+            let mut eng = FlatEngine::open(dir.path()).unwrap();
+            let nc = NewCoin {
+                outpoint: op,
+                value: Satoshi::new(42_000),
+                script_pubkey: &[0x51],
+                coinbase: false,
+                height: BlockHeight::new(1),
+            };
+            let req = crate::types::CommitBlockReq {
+                token: crate::types::ReqToken(0),
+                height: BlockHeight::new(1),
+                hash: Hash256::from_bytes([0xBB; 32]),
+                prev_hash: Hash256::ZERO,
+                header: make_header(100),
+                created: &[nc],
+                spent: &[],
+                block_bytes: None,
+                durability: Durability::Memory,
+            };
+            eng.write_block(&req).unwrap();
+            eng.flush(Durability::Synced).unwrap();
+        }
+        // Reopen from the same directory.
+        let mut eng2 = FlatEngine::open(dir.path()).unwrap();
+        // Coin must survive recovery.
+        let coin = eng2.read_coin(&op).unwrap().unwrap();
+        assert_eq!(coin.value.to_u64(), 42_000);
+        assert!(!coin.coinbase);
+        assert_eq!(coin.height, BlockHeight::new(1));
+        // Tip must match the flushed block.
+        let tip = eng2.tip();
+        assert_eq!(tip.height, BlockHeight::new(1));
+        assert_eq!(tip.hash, Hash256::from_bytes([0xBB; 32]));
+    }
+
+    #[test]
     fn recover_rebuilds_index() {
         let dir = tmp();
         let op = OutPoint {
@@ -697,5 +559,113 @@ mod tests {
         let mut eng2 = FlatEngine::open(dir.path()).unwrap();
         let coin = eng2.read_coin(&op).unwrap().unwrap();
         assert_eq!(coin.value.to_u64(), 999);
+    }
+
+    #[test]
+    fn read_coins_batch() {
+        let dir = tmp();
+        let mut eng = FlatEngine::open(dir.path()).unwrap();
+        let op1 = OutPoint { txid: Hash256::from_bytes([10u8; 32]), vout: 0 };
+        let op2 = OutPoint { txid: Hash256::from_bytes([11u8; 32]), vout: 0 };
+        let op_missing = OutPoint { txid: Hash256::from_bytes([99u8; 32]), vout: 0 };
+        let nc1 = NewCoin {
+            outpoint: op1,
+            value: Satoshi::new(1000),
+            script_pubkey: &[0x51],
+            coinbase: false,
+            height: BlockHeight::new(1),
+        };
+        let nc2 = NewCoin {
+            outpoint: op2,
+            value: Satoshi::new(2000),
+            script_pubkey: &[0x51],
+            coinbase: false,
+            height: BlockHeight::new(1),
+        };
+        let req = crate::types::CommitBlockReq {
+            token: crate::types::ReqToken(0),
+            height: BlockHeight::new(1),
+            hash: Hash256::from_bytes([12u8; 32]),
+            prev_hash: Hash256::ZERO,
+            header: make_header(1000),
+            created: &[nc1, nc2],
+            spent: &[],
+            block_bytes: None,
+            durability: Durability::Memory,
+        };
+        eng.write_block(&req).unwrap();
+        let mut results = Vec::new();
+        eng.read_coins(&[op1, op2, op_missing], &mut results).unwrap();
+        assert_eq!(results.len(), 3);
+        assert!(results[0].coin.is_some());
+        assert_eq!(results[0].coin.as_ref().unwrap().value, Satoshi::new(1000));
+        assert!(results[1].coin.is_some());
+        assert_eq!(results[1].coin.as_ref().unwrap().value, Satoshi::new(2000));
+        assert!(results[2].coin.is_none());
+    }
+
+    #[test]
+    fn recover_with_utxo_log_spends() {
+        // Write two blocks: one creates two coins, another spends one.
+        // Flush synced, reopen. Recovery must replay both creates and the spend
+        // in the UTXO log, covering the (op, None, record_end) branch.
+        let dir = tmp();
+        let op1 = OutPoint { txid: Hash256::from_bytes([0xA0; 32]), vout: 0 };
+        let op2 = OutPoint { txid: Hash256::from_bytes([0xA1; 32]), vout: 0 };
+        {
+            let mut eng = FlatEngine::open(dir.path()).unwrap();
+            let nc1 = NewCoin {
+                outpoint: op1,
+                value: Satoshi::new(1000),
+                script_pubkey: &[0x51],
+                coinbase: false,
+                height: BlockHeight::new(1),
+            };
+            let nc2 = NewCoin {
+                outpoint: op2,
+                value: Satoshi::new(2000),
+                script_pubkey: &[0x51],
+                coinbase: false,
+                height: BlockHeight::new(1),
+            };
+            let req1 = crate::types::CommitBlockReq {
+                token: crate::types::ReqToken(0),
+                height: BlockHeight::new(1),
+                hash: Hash256::from_bytes([0xB0; 32]),
+                prev_hash: Hash256::ZERO,
+                header: make_header(100),
+                created: &[nc1, nc2],
+                spent: &[],
+                block_bytes: None,
+                durability: Durability::Synced,
+            };
+            eng.write_block(&req1).unwrap();
+
+            // Block 2: spend op1.
+            let req2 = crate::types::CommitBlockReq {
+                token: crate::types::ReqToken(1),
+                height: BlockHeight::new(2),
+                hash: Hash256::from_bytes([0xB1; 32]),
+                prev_hash: Hash256::from_bytes([0xB0; 32]),
+                header: {
+                    let mut h = make_header(200);
+                    h.set_prev_block(Hash256::from_bytes([0xB0; 32]));
+                    h
+                },
+                created: &[],
+                spent: &[op1],
+                block_bytes: None,
+                durability: Durability::Synced,
+            };
+            eng.write_block(&req2).unwrap();
+            eng.flush(Durability::Synced).unwrap();
+        }
+        // Reopen — recovery replays the UTXO log with both creates and the spend.
+        let mut eng2 = FlatEngine::open(dir.path()).unwrap();
+        // op1 was spent — should be gone.
+        assert!(eng2.read_coin(&op1).unwrap().is_none());
+        // op2 was not spent — should survive.
+        let coin2 = eng2.read_coin(&op2).unwrap().unwrap();
+        assert_eq!(coin2.value.to_u64(), 2000);
     }
 }

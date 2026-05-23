@@ -36,9 +36,8 @@ impl FileStore {
         self.fd
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     pub fn uring_read(&self, ring: &mut IoUring, offset: u64, len: u32) -> io::Result<Vec<u8>> {
-        let mut buf = vec![0u8; len as usize];
+        let mut buf = vec![0u8; usize::try_from(len).expect("read length fits in usize")];
         let sqe = ququmatz::Sqe::read(self.fd, &mut buf, offset).user_data(u64::MAX);
         ring.push(sqe)
             .map_err(|e| io::Error::other(format!("{e:?}")))?;
@@ -77,7 +76,7 @@ impl FileStore {
     pub fn append(&mut self, ring: &mut IoUring, data: &[u8]) -> io::Result<u64> {
         let offset = self.write_offset;
         self.uring_write(ring, data, offset)?;
-        self.write_offset += data.len() as u64;
+        self.write_offset += u64::try_from(data.len()).expect("data length fits in u64");
         Ok(offset)
     }
 
@@ -118,8 +117,9 @@ impl BlockStore {
     }
 
     pub fn has_block(&self, height: BlockHeight) -> bool {
+        let h = usize::try_from(height.to_u32()).expect("block height fits in usize");
         self.index
-            .get(height.to_u32() as usize)
+            .get(h)
             .copied()
             .unwrap_or_default()
             .is_present()
@@ -131,9 +131,10 @@ impl BlockStore {
     }
 
     pub fn block_location(&self, height: BlockHeight) -> io::Result<(u64, u32)> {
+        let h = usize::try_from(height.to_u32()).expect("block height fits in usize");
         let entry = self
             .index
-            .get(height.to_u32() as usize)
+            .get(h)
             .copied()
             .unwrap_or_default();
         if !entry.is_present() {
@@ -149,7 +150,6 @@ impl BlockStore {
         &self.store
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     pub fn write(
         &mut self,
         ring: &mut IoUring,
@@ -157,13 +157,13 @@ impl BlockStore {
         data: &[u8],
     ) -> io::Result<()> {
         let offset = self.store.append(ring, data)?;
-        let h = height.to_u32() as usize;
+        let h = usize::try_from(height.to_u32()).expect("block height fits in usize");
         if h >= self.index.len() {
             self.index.resize(h + 1, BlockEntry::default());
         }
         self.index[h] = BlockEntry {
             offset,
-            length: data.len() as u32,
+            length: u32::try_from(data.len()).expect("block data length fits in u32"),
         };
         Ok(())
     }
@@ -189,7 +189,6 @@ impl HeaderStore {
         Ok(Self { store, metadata })
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     pub fn load_cached(
         &self,
         ring: &mut IoUring,
@@ -199,23 +198,24 @@ impl HeaderStore {
             return Ok(Vec::new());
         }
         let meta_bytes = self.metadata.uring_read(ring, 0, 4)?;
-        let cached_start = u32::from_le_bytes(meta_bytes[..4].try_into().unwrap());
+        let cached_start =
+            u32::from_le_bytes(meta_bytes[..4].try_into().expect("metadata slice is exactly 4 bytes"));
         if cached_start != start.to_u32() {
             return Ok(Vec::new());
         }
-        let count = self.store.write_offset as usize / HEADER_RECORD_SIZE;
+        let count = usize::try_from(self.store.write_offset).expect("write_offset fits in usize") / HEADER_RECORD_SIZE;
         if count == 0 {
             return Ok(Vec::new());
         }
-        #[allow(clippy::cast_possible_truncation)]
         let data = self
             .store
-            .uring_read(ring, 0, self.store.write_offset as u32)?;
+            .uring_read(ring, 0, u32::try_from(self.store.write_offset).expect("header file size fits in u32"))?;
         let mut headers = Vec::with_capacity(count);
         for (i, chunk) in data.chunks_exact(HEADER_RECORD_SIZE).enumerate() {
-            let arr: &[u8; 80] = chunk.try_into().unwrap();
+            let arr: &[u8; 80] = chunk.try_into().expect("chunks_exact guarantees 80-byte slice");
             let hdr = BlockHeader::from_slice(arr);
-            headers.push((BlockHeight::new(start.to_u32() + i as u32), hdr));
+            let idx = u32::try_from(i).expect("header index fits in u32");
+            headers.push((BlockHeight::new(start.to_u32() + idx), hdr));
         }
         Ok(headers)
     }
@@ -242,8 +242,8 @@ fn load_blocks_index(path: &Path) -> io::Result<Vec<BlockEntry>> {
     let count = data.len() / BLOCK_INDEX_ENTRY_SIZE;
     let mut index = Vec::with_capacity(count);
     for chunk in data.chunks_exact(BLOCK_INDEX_ENTRY_SIZE) {
-        let offset = u64::from_le_bytes(chunk[..8].try_into().unwrap());
-        let length = u32::from_le_bytes(chunk[8..12].try_into().unwrap());
+        let offset = u64::from_le_bytes(chunk[..8].try_into().expect("index chunk has 8 bytes for offset"));
+        let length = u32::from_le_bytes(chunk[8..12].try_into().expect("index chunk has 4 bytes for length"));
         index.push(BlockEntry { offset, length });
     }
     Ok(index)
@@ -258,9 +258,30 @@ fn save_blocks_index(path: &Path, index: &[BlockEntry]) -> io::Result<()> {
     fs::write(path, &data)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_store_open_creates_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "mantle_store_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let path = dir.join("test_store.bin");
+
+        let store = FileStore::open(&path).expect("FileStore::open");
+        assert_eq!(store.write_offset, 0);
+        assert!(path.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[cfg(unix)]
-#[allow(clippy::cast_sign_loss)]
 fn file_to_rawfd(file: &fs::File) -> RawFd {
     use std::os::unix::io::AsRawFd;
-    RawFd::from_raw(file.as_raw_fd() as usize)
+    let fd = file.as_raw_fd();
+    RawFd::from_raw(usize::try_from(fd).expect("file descriptor is non-negative"))
 }

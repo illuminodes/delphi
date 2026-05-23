@@ -189,6 +189,82 @@ fn find_and_delete_pushdata1_match() {
     assert_eq!(out, vec![0x76]);
 }
 
+// ── pushed_span coverage (via find_and_delete_sig) ──────────────────────
+
+#[test]
+fn find_and_delete_pushdata2_match() {
+    // OP_PUSHDATA2 [0x03, 0x00] (little-endian len=3) [0xaa,0xbb,0xcc] OP_DUP
+    let script = vec![0x4d, 0x03, 0x00, 0xaa, 0xbb, 0xcc, 0x76];
+    let out = find_and_delete_sig(&script, &[0xaa, 0xbb, 0xcc]);
+    assert_eq!(out, vec![0x76]);
+}
+
+#[test]
+fn find_and_delete_pushdata4_match() {
+    // OP_PUSHDATA4 [0x02, 0x00, 0x00, 0x00] (len=2) [0xdd, 0xee] OP_NOP
+    let script = vec![0x4e, 0x02, 0x00, 0x00, 0x00, 0xdd, 0xee, 0x61];
+    let out = find_and_delete_sig(&script, &[0xdd, 0xee]);
+    assert_eq!(out, vec![0x61]);
+}
+
+#[test]
+fn find_and_delete_pushdata2_truncated_header() {
+    // OP_PUSHDATA2 but only one length byte available — truncated push.
+    // Should be treated as a non-push opcode and passed through.
+    let script = vec![0x4d, 0x03];
+    let out = find_and_delete_sig(&script, &[0x03]);
+    // The truncated push is passed through byte by byte.
+    assert_eq!(out, script);
+}
+
+#[test]
+fn find_and_delete_pushdata4_truncated_header() {
+    // OP_PUSHDATA4 with only 3 length bytes — truncated.
+    let script = vec![0x4e, 0x01, 0x00, 0x00];
+    let out = find_and_delete_sig(&script, &[0x01]);
+    assert_eq!(out, script);
+}
+
+#[test]
+fn find_and_delete_pushdata2_truncated_data() {
+    // OP_PUSHDATA2 declares 5 bytes but only 2 are present.
+    let script = vec![0x4d, 0x05, 0x00, 0xaa, 0xbb];
+    let out = find_and_delete_sig(&script, &[0xaa, 0xbb]);
+    assert_eq!(out, script);
+}
+
+#[test]
+fn find_and_delete_pushdata4_truncated_data() {
+    // OP_PUSHDATA4 declares 10 bytes but only 1 is present.
+    let script = vec![0x4e, 0x0a, 0x00, 0x00, 0x00, 0xcc];
+    let out = find_and_delete_sig(&script, &[0xcc]);
+    assert_eq!(out, script);
+}
+
+#[test]
+fn find_and_delete_pushdata1_truncated_header() {
+    // OP_PUSHDATA1 at end of script — no length byte.
+    let script = vec![0x4c];
+    let out = find_and_delete_sig(&script, &[]);
+    assert_eq!(out, script);
+}
+
+#[test]
+fn find_and_delete_direct_push_truncated() {
+    // OP_PUSHBYTES_5 but only 2 data bytes — truncated.
+    let script = vec![0x05, 0xaa, 0xbb];
+    let out = find_and_delete_sig(&script, &[0xaa, 0xbb]);
+    assert_eq!(out, script);
+}
+
+#[test]
+fn find_and_delete_non_push_opcode_passthrough() {
+    // All non-push opcodes (>= 0x4f) are passed through unchanged.
+    let script = vec![0x76, 0xa9, 0x88]; // OP_DUP OP_HASH160 OP_EQUALVERIFY
+    let out = find_and_delete_sig(&script, &[0x76]);
+    assert_eq!(out, script); // none are pushes, so nothing matches
+}
+
 // ── script_code_after_codeseparator ─────────────────────────────────────
 
 #[test]

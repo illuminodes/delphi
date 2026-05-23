@@ -476,4 +476,51 @@ mod tests {
         let err = Transaction::decode_limited::<3, 10_000>(&mut std::io::Cursor::new(&bytes));
         assert!(err.is_err());
     }
+
+    #[test]
+    fn decode_limited_rejects_too_many_outputs() {
+        let tx = Transaction {
+            version: TxVersion::new(1),
+            inputs: vec![],
+            outputs: (0..5)
+                .map(|_| TxOut {
+                    value: Satoshi::new(1000),
+                    script_pubkey: vec![0x51].into(),
+                })
+                .collect(),
+            locktime: Locktime::new(0),
+        };
+        let bytes = encode(&tx);
+        let err = Transaction::decode_limited::<10_000, 3>(&mut std::io::Cursor::new(&bytes));
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn decode_limited_segwit_marker_zero_inputs_nonzero_flag() {
+        // Craft a legacy tx where the first byte after version is 0x00
+        // (zero inputs) and the next byte is NOT 0x01 (not a segwit flag).
+        // This exercises the legacy_output_count_first path.
+        //
+        // version(4) + 0x00(input_count=0) + 0x02(output_count=2 via flag byte)
+        // + 2 outputs + locktime
+        let mut buf = Vec::new();
+        TxVersion::new(1).encode(&mut buf).unwrap();
+        buf.push(0x00); // input count = 0 (also looks like segwit marker)
+        buf.push(0x02); // NOT 0x01 so not segwit; treated as output_count first byte = 2
+        // Two minimal outputs.
+        for _ in 0..2 {
+            Satoshi::new(500).encode(&mut buf).unwrap();
+            // script_pubkey: VarInt len + bytes
+            buf.push(0x01); // 1-byte script
+            buf.push(0x51); // OP_1
+        }
+        Locktime::new(0).encode(&mut buf).unwrap();
+
+        let tx = Transaction::decode_limited::<10_000, 10_000>(
+            &mut std::io::Cursor::new(&buf),
+        )
+        .expect("should decode as legacy 0-input tx");
+        assert_eq!(tx.inputs.len(), 0);
+        assert_eq!(tx.outputs.len(), 2);
+    }
 }

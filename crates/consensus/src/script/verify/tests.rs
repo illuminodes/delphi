@@ -120,6 +120,25 @@ fn p2pkh_fails_with_wrong_signature() {
 }
 
 #[test]
+fn p2pkh_wrong_sig_nullfail_rejects() {
+    let sk = key([7u8; 32]);
+    let attacker_sk = key([8u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    let pkh = hash160(&pk);
+    let tx = make_tx();
+    let spk = p2pkh_spk(&pkh);
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&attacker_sk, digest.as_bytes(), SigHashType::ALL);
+    let mut script_sig = vec![u8::try_from(sig.len()).expect("DER ≤ 72")];
+    script_sig.extend_from_slice(&sig);
+    script_sig.push(u8::try_from(pk.len()).expect("compressed ≤ 33"));
+    script_sig.extend_from_slice(&pk);
+    let flags = standard_flags() | ScriptFlags::NULLFAIL;
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags);
+    assert!(matches!(r, Err(ScriptError::SigNullFail)));
+}
+
+#[test]
 fn p2pkh_fails_with_empty_stack() {
     // Empty scriptSig + non-trivial scriptPubKey → final stack falsey.
     let pkh = [0u8; 20];
@@ -540,4 +559,869 @@ fn witness_unexpected_on_legacy_input() {
     let tx = make_witness_tx(&[vec![0xab]]); // 1 item instead of 2
     let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(0), segwit_flags());
     assert!(matches!(r, Err(ScriptError::WitnessProgramMismatch)));
+}
+
+// ── CHECKMULTISIG ─────────────────────────────────────────────────────
+
+fn multisig_spk(m: u8, pubkeys: &[Vec<u8>]) -> Vec<u8> {
+    let n = u8::try_from(pubkeys.len()).expect("pubkey count fits u8");
+    let mut s = vec![0x50 + m]; // OP_M
+    for pk in pubkeys {
+        s.push(u8::try_from(pk.len()).expect("compressed pk ≤ 75"));
+        s.extend_from_slice(pk);
+    }
+    s.push(0x50 + n); // OP_N
+    s.push(0xae); // OP_CHECKMULTISIG
+    s
+}
+
+fn multisig_script_sig(sigs: &[Vec<u8>]) -> Vec<u8> {
+    let mut s = vec![0x00]; // OP_0 dummy (off-by-one bug)
+    for sig in sigs {
+        s.push(u8::try_from(sig.len()).expect("DER sig ≤ 75"));
+        s.extend_from_slice(sig);
+    }
+    s
+}
+
+fn multisig_flags() -> ScriptFlags {
+    ScriptFlags::P2SH
+        | ScriptFlags::DERSIG
+        | ScriptFlags::LOW_S
+        | ScriptFlags::STRICTENC
+        | ScriptFlags::NULLDUMMY
+        | ScriptFlags::NULLFAIL
+}
+
+#[test]
+fn checkmultisig_2of3_succeeds() {
+    let sk1 = key([21u8; 32]);
+    let sk2 = key([22u8; 32]);
+    let sk3 = key([23u8; 32]);
+    let pk1 = compressed_pubkey(&sk1);
+    let pk2 = compressed_pubkey(&sk2);
+    let pk3 = compressed_pubkey(&sk3);
+    let spk = multisig_spk(2, &[pk1, pk2.clone(), pk3]);
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    // Sign with keys 1 and 2 (must be in pubkey order).
+    let sig1 = sign(&sk1, digest.as_bytes(), SigHashType::ALL);
+    let sig2 = sign(&sk2, digest.as_bytes(), SigHashType::ALL);
+    let script_sig = multisig_script_sig(&[sig1, sig2]);
+    verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags())
+        .expect("2-of-3 multisig should verify");
+}
+
+#[test]
+fn checkmultisig_1of1_succeeds() {
+    let sk = key([30u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    let spk = multisig_spk(1, &[pk]);
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+    let script_sig = multisig_script_sig(&[sig]);
+    verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags())
+        .expect("1-of-1 multisig should verify");
+}
+
+#[test]
+fn checkmultisig_2of3_with_keys_1_and_3() {
+    let sk1 = key([21u8; 32]);
+    let sk2 = key([22u8; 32]);
+    let sk3 = key([23u8; 32]);
+    let pk1 = compressed_pubkey(&sk1);
+    let pk2 = compressed_pubkey(&sk2);
+    let pk3 = compressed_pubkey(&sk3);
+    let spk = multisig_spk(2, &[pk1, pk2, pk3]);
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    // Sign with keys 1 and 3 (skipping key 2 — pubkeys may be skipped).
+    let sig1 = sign(&sk1, digest.as_bytes(), SigHashType::ALL);
+    let sig3 = sign(&sk3, digest.as_bytes(), SigHashType::ALL);
+    let script_sig = multisig_script_sig(&[sig1, sig3]);
+    verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags())
+        .expect("2-of-3 with keys 1,3 should verify");
+}
+
+#[test]
+fn checkmultisig_wrong_sig_order_fails() {
+    let sk1 = key([21u8; 32]);
+    let sk2 = key([22u8; 32]);
+    let sk3 = key([23u8; 32]);
+    let pk1 = compressed_pubkey(&sk1);
+    let pk2 = compressed_pubkey(&sk2);
+    let pk3 = compressed_pubkey(&sk3);
+    let spk = multisig_spk(2, &[pk1, pk2, pk3]);
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    // Reversed order: sig2 then sig1 — violates the "sigs must match
+    // pubkeys in order" rule.
+    let sig1 = sign(&sk1, digest.as_bytes(), SigHashType::ALL);
+    let sig2 = sign(&sk2, digest.as_bytes(), SigHashType::ALL);
+    let script_sig = multisig_script_sig(&[sig2, sig1]);
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags());
+    assert!(matches!(r, Err(ScriptError::SigNullFail)));
+}
+
+#[test]
+fn checkmultisig_wrong_key_fails() {
+    let sk1 = key([21u8; 32]);
+    let sk_attacker = key([99u8; 32]);
+    let pk1 = compressed_pubkey(&sk1);
+    let spk = multisig_spk(1, &[pk1]);
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&sk_attacker, digest.as_bytes(), SigHashType::ALL);
+    let script_sig = multisig_script_sig(&[sig]);
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags());
+    assert!(matches!(r, Err(ScriptError::SigNullFail)));
+}
+
+#[test]
+fn checkmultisig_nulldummy_enforced() {
+    let sk = key([30u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    let spk = multisig_spk(1, &[pk]);
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+    // Non-empty dummy element (should be OP_0 = empty push).
+    let mut script_sig = vec![0x01, 0xff]; // push 1 byte: 0xff
+    script_sig.push(u8::try_from(sig.len()).expect("DER ≤ 75"));
+    script_sig.extend_from_slice(&sig);
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags());
+    assert!(matches!(r, Err(ScriptError::SigNullDummy)));
+}
+
+#[test]
+fn checkmultisig_nulldummy_not_enforced_without_flag() {
+    let sk = key([30u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    let spk = multisig_spk(1, &[pk]);
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+    // Non-empty dummy — but NULLDUMMY is off, so this should still pass.
+    let mut script_sig = vec![0x01, 0xff];
+    script_sig.push(u8::try_from(sig.len()).expect("DER ≤ 75"));
+    script_sig.extend_from_slice(&sig);
+    let flags = multisig_flags() - ScriptFlags::NULLDUMMY;
+    verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags)
+        .expect("non-empty dummy allowed without NULLDUMMY flag");
+}
+
+#[test]
+fn checkmultisig_too_many_pubkeys() {
+    // n_pubkeys = 21 which exceeds the MAX_PUBKEYS_PER_MULTISIG (20).
+    // Build a script that pushes 21 as n_pubkeys.
+    let mut spk = vec![0x51]; // OP_1 (m=1)
+    // We don't need real pubkeys — the count check happens before the pops.
+    // Push 21 dummy pubkeys.
+    for _ in 0..21 {
+        spk.push(0x21); // push 33 bytes
+        spk.extend_from_slice(&[0x02; 33]); // dummy compressed pk
+    }
+    spk.push(0x01); // push literal byte 21
+    spk.push(21);
+    spk.push(0xae); // OP_CHECKMULTISIG
+    let tx = make_tx();
+    let script_sig = multisig_script_sig(&[]);
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags());
+    assert!(matches!(r, Err(ScriptError::PubKeyCount)));
+}
+
+#[test]
+fn checkmultisig_zero_of_zero_succeeds() {
+    // 0-of-0 multisig: degenerate but valid per consensus rules.
+    let spk = vec![0x00, 0x00, 0xae]; // OP_0 OP_0 OP_CHECKMULTISIG
+    let tx = make_tx();
+    let script_sig = multisig_script_sig(&[]); // OP_0 dummy only
+    verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags())
+        .expect("0-of-0 multisig is valid");
+}
+
+#[test]
+fn checkmultisigverify_succeeds() {
+    let sk = key([30u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    // Build: OP_1 <pk> OP_1 OP_CHECKMULTISIGVERIFY OP_1
+    let mut spk = vec![0x51]; // OP_1
+    spk.push(u8::try_from(pk.len()).expect("compressed pk ≤ 75"));
+    spk.extend_from_slice(&pk);
+    spk.push(0x51); // OP_1
+    spk.push(0xaf); // OP_CHECKMULTISIGVERIFY
+    spk.push(0x51); // OP_1 (leave truthy value for final stack)
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+    let script_sig = multisig_script_sig(&[sig]);
+    verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags())
+        .expect("CHECKMULTISIGVERIFY should verify and consume result");
+}
+
+#[test]
+fn checkmultisigverify_fails_on_bad_sig() {
+    let sk = key([30u8; 32]);
+    let sk_bad = key([31u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    let mut spk = vec![0x51]; // OP_1
+    spk.push(u8::try_from(pk.len()).expect("compressed pk ≤ 75"));
+    spk.extend_from_slice(&pk);
+    spk.push(0x51); // OP_1
+    spk.push(0xaf); // OP_CHECKMULTISIGVERIFY
+    spk.push(0x51); // OP_1
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&sk_bad, digest.as_bytes(), SigHashType::ALL);
+    let script_sig = multisig_script_sig(&[sig]);
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags());
+    assert!(matches!(r, Err(ScriptError::SigNullFail)));
+}
+
+// ── verify_script_inner: segwit branches ──────────────────────────────
+
+#[test]
+fn witness_v2_discourage_upgradable_rejected() {
+    // A witness program with version 2 (OP_2 = 0x52) and a 20-byte program.
+    // With DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM, this must be rejected.
+    let program = [0xaa; 20];
+    let mut spk = vec![0x52, 0x14]; // OP_2, push 20 bytes
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[vec![0x01]]);
+    let flags = segwit_flags() | ScriptFlags::DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM;
+    let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags);
+    assert!(
+        matches!(r, Err(ScriptError::DiscourageUpgradableWitnessProgram)),
+        "witness v2 with DISCOURAGE flag must fail, got: {r:?}"
+    );
+}
+
+#[test]
+fn witness_v16_discourage_upgradable_rejected() {
+    // OP_16 = 0x60, 32-byte program
+    let program = [0xbb; 32];
+    let mut spk = vec![0x60, 0x20]; // OP_16, push 32 bytes
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[vec![0x01]]);
+    let flags = segwit_flags() | ScriptFlags::DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM;
+    let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags);
+    assert!(
+        matches!(r, Err(ScriptError::DiscourageUpgradableWitnessProgram)),
+        "witness v16 with DISCOURAGE flag must fail, got: {r:?}"
+    );
+}
+
+#[test]
+fn witness_v2_accepted_without_discourage_flag() {
+    // Without DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM, unknown witness
+    // versions are accepted (future soft-fork).
+    let program = [0xaa; 20];
+    let mut spk = vec![0x52, 0x14]; // OP_2, push 20 bytes
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[vec![0x01]]);
+    let flags = segwit_flags(); // no DISCOURAGE flag
+    verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags)
+        .expect("unknown witness version without DISCOURAGE flag must succeed");
+}
+
+#[test]
+fn witness_unexpected_on_non_witness_script_with_witness_data() {
+    // A legacy script (not a witness program) but the input carries witness
+    // data. With WITNESS flag active, this must return WitnessUnexpected.
+    // Use a simple OP_1 scriptPubKey (always true, not a witness program).
+    let spk = vec![0x51]; // OP_1
+    let tx = make_witness_tx(&[vec![0xab, 0xcd]]);
+    let r = verify_script(&[], &spk, &tx, 0, Satoshi::ZERO, segwit_flags());
+    assert!(
+        matches!(r, Err(ScriptError::WitnessUnexpected)),
+        "legacy script with witness data must return WitnessUnexpected, got: {r:?}"
+    );
+}
+
+#[test]
+fn cleanstack_fails_on_non_p2sh_legacy_script() {
+    // A non-P2SH script where evaluation leaves >1 item on the stack.
+    // scriptPubKey: OP_1 (pushes 1 onto stack; scriptSig also pushes
+    // something, leaving 2 items).
+    let spk = vec![0x51]; // OP_1
+    let script_sig = vec![0x51]; // OP_1
+    let tx = make_tx();
+    let flags = standard_flags() | ScriptFlags::CLEANSTACK;
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags);
+    assert!(
+        matches!(r, Err(ScriptError::CleanStack)),
+        "non-P2SH script with 2 stack items must fail CLEANSTACK, got: {r:?}"
+    );
+}
+
+// ── P2SH-wrapped segwit (P2SH-P2WPKH) ────────────────────────────────
+
+#[test]
+fn p2sh_p2wpkh_succeeds() {
+    let sk = key([50u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    let pkh = hash160(&pk);
+
+    // The redeem script is the witness program: OP_0 <20-byte pkh>
+    let mut redeem = vec![0x00, 0x14];
+    redeem.extend_from_slice(&pkh);
+    let redeem_hash = hash160(&redeem);
+
+    // Outer P2SH scriptPubKey: OP_HASH160 <20> <hash> OP_EQUAL
+    let mut spk = vec![0xa9, 0x14];
+    spk.extend_from_slice(&redeem_hash);
+    spk.push(0x87);
+
+    let amount = Satoshi::new(200_000);
+
+    // BIP143 sighash: scriptCode is synthetic P2PKH over pkh
+    let mut script_code = vec![0x76u8, 0xa9, 0x14];
+    script_code.extend_from_slice(&pkh);
+    script_code.extend_from_slice(&[0x88, 0xac]);
+
+    // Build temporary tx with empty witness for sighash computation
+    let tmp_tx = make_witness_tx(&[]);
+    let cache = crate::script::sighash::Bip143Cache::new(&tmp_tx);
+    let digest = tmp_tx.bip143_sighash(0, &script_code, amount, SigHashType::ALL, &cache);
+    let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+
+    // For P2SH-P2WPKH, the witness is [sig, pubkey]
+    let tx = Transaction {
+        version: TxVersion::new(1),
+        inputs: vec![TxIn {
+            previous_output: OutPoint {
+                txid: Hash256::from_bytes([0u8; 32]),
+                vout: 0,
+            },
+            // scriptSig for P2SH-P2WPKH: just the redeem script push
+            script_sig: {
+                let mut ss = vec![u8::try_from(redeem.len()).expect("redeem fits")];
+                ss.extend_from_slice(&redeem);
+                ss.into()
+            },
+            sequence: Sequence::new(0xffff_ffff),
+            witness: Witness::from_slice(&[sig.as_slice(), pk.as_slice()]),
+        }],
+        outputs: vec![TxOut {
+            value: Satoshi::new(100_000),
+            script_pubkey: vec![0x6a].into(),
+        }],
+        locktime: Locktime::new(0),
+    };
+
+    verify_script(
+        tx.inputs[0].script_sig.as_ref(),
+        &spk,
+        &tx,
+        0,
+        amount,
+        segwit_flags(),
+    )
+    .expect("P2SH-P2WPKH should verify");
+}
+
+#[test]
+fn p2sh_p2wpkh_non_push_scriptsig_rejected() {
+    // P2SH-wrapped witness with non-push scriptSig must be rejected.
+    let pkh = [0xaa; 20];
+    let mut redeem = vec![0x00, 0x14];
+    redeem.extend_from_slice(&pkh);
+    let redeem_hash = hash160(&redeem);
+    let mut spk = vec![0xa9, 0x14];
+    spk.extend_from_slice(&redeem_hash);
+    spk.push(0x87);
+
+    let tx = make_witness_tx(&[vec![0x01], vec![0x02; 33]]);
+    // scriptSig with a non-push byte (OP_NOP=0x61)
+    let script_sig = vec![0x61];
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::new(100), segwit_flags());
+    assert!(r.is_err(), "non-push scriptSig for P2SH must fail");
+}
+
+#[test]
+fn native_segwit_non_empty_scriptsig_is_malleated() {
+    // Native segwit (not P2SH-wrapped): any non-empty scriptSig is rejected
+    // as WitnessMalleated.
+    let program = [0xaa; 20];
+    let mut spk = vec![0x52, 0x14]; // witness v2, 20-byte program
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[vec![0x01]]);
+    let flags = segwit_flags(); // no DISCOURAGE
+    let r = verify_script(&[0x01, 0xff], &spk, &tx, 0, Satoshi::new(100), flags);
+    assert!(
+        matches!(r, Err(ScriptError::WitnessMalleated)),
+        "native segwit with non-empty scriptSig must be WitnessMalleated, got: {r:?}"
+    );
+}
+
+// ── CHECKMULTISIG with OP_CODESEPARATOR ───────────────────────────────
+
+#[test]
+fn checkmultisig_with_codeseparator() {
+    // Build a script: OP_CODESEPARATOR OP_1 <pk> OP_1 OP_CHECKMULTISIG
+    // The CODESEPARATOR partitions the script so the sighash only covers
+    // the part after it.
+    let sk = key([55u8; 32]);
+    let pk = compressed_pubkey(&sk);
+
+    let mut spk = Vec::new();
+    spk.push(0xab); // OP_CODESEPARATOR
+    spk.push(0x51); // OP_1
+    spk.push(u8::try_from(pk.len()).expect("compressed pk ≤ 75"));
+    spk.extend_from_slice(&pk);
+    spk.push(0x51); // OP_1
+    spk.push(0xae); // OP_CHECKMULTISIG
+
+    let tx = make_tx();
+    // The sighash should be computed against the part of the script AFTER
+    // the OP_CODESEPARATOR (byte index 1 onwards).
+    let script_code = &spk[1..]; // skip the OP_CODESEPARATOR
+    let digest = tx.legacy_sighash(0, script_code, SigHashType::ALL);
+    let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+    let script_sig = multisig_script_sig(&[sig]);
+    verify_script(
+        &script_sig,
+        &spk,
+        &tx,
+        0,
+        Satoshi::ZERO,
+        multisig_flags(),
+    )
+    .expect("CHECKMULTISIG with CODESEPARATOR should verify");
+}
+
+#[test]
+fn checkmultisig_nsigs_greater_than_npubkeys_fails() {
+    // n_sigs > n_pubkeys: must fail with SigCount.
+    // Script: OP_2 <pk> OP_1 OP_CHECKMULTISIG (2-of-1 is invalid)
+    let sk = key([60u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    let mut spk = vec![0x52]; // OP_2
+    spk.push(u8::try_from(pk.len()).expect("pk ≤ 75"));
+    spk.extend_from_slice(&pk);
+    spk.push(0x51); // OP_1
+    spk.push(0xae); // OP_CHECKMULTISIG
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig1 = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+    let sig2 = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+    let script_sig = multisig_script_sig(&[sig1, sig2]);
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, multisig_flags());
+    assert!(
+        matches!(r, Err(ScriptError::SigCount)),
+        "n_sigs > n_pubkeys must fail with SigCount, got: {r:?}"
+    );
+}
+
+#[test]
+fn checkmultisig_negative_nsigs_fails() {
+    // To trigger n_sigs < 0, we need the CHECKMULTISIG stack to have -1
+    // in the n_sigs position.
+    //
+    // CHECKMULTISIG pops (top to bottom):
+    //   n_pubkeys, [pubkeys...], n_sigs, [sigs...], dummy
+    //
+    // scriptSig: OP_0 (dummy)
+    // scriptPubKey: OP_1NEGATE OP_0 OP_CHECKMULTISIG
+    //
+    // Stack after both scripts (bottom to top): [<empty>, <-1>, <empty>]
+    // CHECKMULTISIG pops:
+    //   n_pubkeys = 0 (top empty)
+    //   0 pubkeys
+    //   n_sigs = -1 -> SigCount
+    let spk = vec![0x4f, 0x00, 0xae]; // OP_1NEGATE OP_0 OP_CHECKMULTISIG
+    let script_sig = vec![0x00]; // OP_0 (dummy)
+    let tx = make_tx();
+    // No NULLDUMMY/STRICTENC/DERSIG so encoding checks don't fire first.
+    let flags = ScriptFlags::P2SH;
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags);
+    assert!(
+        matches!(r, Err(ScriptError::SigCount)),
+        "negative n_sigs must fail with SigCount, got: {r:?}"
+    );
+}
+
+#[test]
+fn checkmultisig_bad_pubkey_encoding_rejected() {
+    // A pubkey that is neither compressed (33 bytes starting with 02/03)
+    // nor uncompressed (65 bytes starting with 04) triggers PubKeyType
+    // when STRICTENC is set. This covers line 294 of op_crypto.rs.
+    let sk = key([40u8; 32]);
+    let pk = compressed_pubkey(&sk);
+
+    // Build a 1-of-2 multisig where the second pubkey is malformed:
+    // 33 bytes but starts with 0x05 (invalid prefix).
+    let mut bad_pk = vec![0x05];
+    bad_pk.extend_from_slice(&[0xaa; 32]);
+
+    let spk = multisig_spk(1, &[pk.clone(), bad_pk]);
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+    let script_sig = multisig_script_sig(&[sig]);
+    let r = verify_script(
+        &script_sig,
+        &spk,
+        &tx,
+        0,
+        Satoshi::ZERO,
+        multisig_flags(),
+    );
+    assert!(
+        matches!(r, Err(ScriptError::PubKeyType)),
+        "malformed pubkey in multisig must fail with PubKeyType, got: {r:?}"
+    );
+}
+
+#[test]
+fn checkmultisigverify_0of0_succeeds() {
+    // 0-of-0 CHECKMULTISIGVERIFY with verify=true: should succeed
+    // (nothing to verify, result is true, verify consumes it).
+    // Script: OP_0 OP_0 OP_CHECKMULTISIGVERIFY OP_1
+    let spk = vec![0x00, 0x00, 0xaf, 0x51]; // OP_0 OP_0 OP_CHECKMULTISIGVERIFY OP_1
+    let tx = make_tx();
+    let script_sig = multisig_script_sig(&[]); // OP_0 dummy only
+    verify_script(
+        &script_sig,
+        &spk,
+        &tx,
+        0,
+        Satoshi::ZERO,
+        multisig_flags(),
+    )
+    .expect("0-of-0 CHECKMULTISIGVERIFY should succeed");
+}
+
+// ── try_verify_p2pkh: uncovered branches ─────────────────────────────
+
+#[test]
+fn try_verify_p2pkh_wrong_pubkey_hash_fails() {
+    // Valid P2PKH pattern, correct sig, but the pubkey hash does not match
+    // the hash in scriptPubKey. The fast path should return EvalFalse.
+    let sk = key([70u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    // Use a different pubkey's hash in the scriptPubKey.
+    let wrong_pkh = [0xdd; 20];
+    let spk = p2pkh_spk(&wrong_pkh);
+    let tx = make_tx();
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+
+    let mut script_sig = vec![u8::try_from(sig.len()).expect("DER <= 72")];
+    script_sig.extend_from_slice(&sig);
+    script_sig.push(u8::try_from(pk.len()).expect("compressed <= 33"));
+    script_sig.extend_from_slice(&pk);
+
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, standard_flags());
+    assert!(
+        matches!(r, Err(ScriptError::EvalFalse)),
+        "wrong pkh should fail with EvalFalse, got: {r:?}"
+    );
+}
+
+#[test]
+fn try_verify_p2pkh_not_p2pkh_pattern_falls_through() {
+    // scriptPubKey that is almost P2PKH but wrong length (24 bytes instead of 25).
+    // The fast path should return None and fall through to the full interpreter.
+    let mut spk = vec![0x76, 0xa9, 0x13]; // OP_DUP OP_HASH160 OP_PUSHBYTES_19
+    spk.extend_from_slice(&[0xab; 19]);
+    spk.extend_from_slice(&[0x88, 0xac]);
+    // This is 24 bytes, not 25. try_verify_p2pkh returns None.
+    let tx = make_tx();
+    let r = verify_script(&[], &spk, &tx, 0, Satoshi::ZERO, standard_flags());
+    // OP_DUP on empty stack -> InvalidStackOperation (through the interpreter).
+    assert!(
+        matches!(r, Err(ScriptError::InvalidStackOperation)),
+        "non-P2PKH pattern should fall through to interpreter, got: {r:?}"
+    );
+}
+
+#[test]
+fn try_verify_p2pkh_witness_unexpected_on_legacy() {
+    // P2PKH input that carries witness data. With WITNESS flag active,
+    // the fast path should return WitnessUnexpected.
+    let sk = key([71u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    let pkh = hash160(&pk);
+    let spk = p2pkh_spk(&pkh);
+    let tx = make_witness_tx(&[vec![0x01]]); // witness present
+    let digest = tx.legacy_sighash(0, &spk, SigHashType::ALL);
+    let sig = sign(&sk, digest.as_bytes(), SigHashType::ALL);
+
+    let mut script_sig = vec![u8::try_from(sig.len()).expect("DER <= 72")];
+    script_sig.extend_from_slice(&sig);
+    script_sig.push(u8::try_from(pk.len()).expect("compressed <= 33"));
+    script_sig.extend_from_slice(&pk);
+
+    let r = verify_script(
+        &script_sig,
+        &spk,
+        &tx,
+        0,
+        Satoshi::ZERO,
+        standard_flags() | ScriptFlags::WITNESS,
+    );
+    assert!(
+        matches!(r, Err(ScriptError::WitnessUnexpected)),
+        "P2PKH with witness data should be WitnessUnexpected, got: {r:?}"
+    );
+}
+
+#[test]
+fn try_verify_p2pkh_empty_sig_fails() {
+    // P2PKH with valid pubkey hash but empty signature. The fast path
+    // should return EvalFalse (empty sig means CHECKSIG pushes false).
+    let sk = key([72u8; 32]);
+    let pk = compressed_pubkey(&sk);
+    let pkh = hash160(&pk);
+    let spk = p2pkh_spk(&pkh);
+    let tx = make_tx();
+
+    // scriptSig = <empty sig> <pubkey>
+    let mut script_sig = vec![0x00]; // OP_0 (empty push for sig)
+    script_sig.push(u8::try_from(pk.len()).expect("compressed <= 33"));
+    script_sig.extend_from_slice(&pk);
+
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, standard_flags());
+    assert!(
+        matches!(r, Err(ScriptError::EvalFalse)),
+        "empty sig should fail with EvalFalse, got: {r:?}"
+    );
+}
+
+// ── verify_script_inner: segwit v1 (taproot) dispatch ────────────────
+
+#[test]
+fn witness_v1_non_32byte_program_accepted_without_discourage() {
+    // Witness v1 (OP_1 = 0x51) with a 20-byte program (not 32 bytes).
+    // Without DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM, this is an unknown
+    // witness version and is accepted.
+    let program = [0xcc; 20];
+    let mut spk = vec![0x51, 0x14]; // OP_1, push 20 bytes
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[vec![0x01]]);
+    let flags = segwit_flags() | ScriptFlags::TAPROOT;
+    verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags)
+        .expect("v1 non-32-byte program should be accepted without discourage");
+}
+
+#[test]
+fn witness_v1_non_32byte_program_rejected_with_discourage() {
+    // Same as above but with DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM.
+    let program = [0xcc; 20];
+    let mut spk = vec![0x51, 0x14]; // OP_1, push 20 bytes
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[vec![0x01]]);
+    let flags =
+        segwit_flags() | ScriptFlags::TAPROOT | ScriptFlags::DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM;
+    let r = verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags);
+    assert!(
+        matches!(r, Err(ScriptError::DiscourageUpgradableWitnessProgram)),
+        "v1 non-32-byte program with DISCOURAGE must fail, got: {r:?}"
+    );
+}
+
+#[test]
+fn p2sh_wrapped_taproot_rejected() {
+    // BIP341: P2SH-wrapped taproot (witness v1, 32-byte program inside P2SH)
+    // is not valid and must be rejected with WitnessMalleatedP2sh.
+    let program = [0xdd; 32];
+    // Redeem script: OP_1 OP_PUSHBYTES_32 <32 bytes>
+    let mut redeem = vec![0x51, 0x20];
+    redeem.extend_from_slice(&program);
+    let redeem_hash = hash160(&redeem);
+
+    // Outer P2SH scriptPubKey
+    let mut spk = vec![0xa9, 0x14];
+    spk.extend_from_slice(&redeem_hash);
+    spk.push(0x87);
+
+    // scriptSig pushes the redeem script
+    let mut script_sig = vec![u8::try_from(redeem.len()).expect("redeem fits")];
+    script_sig.extend_from_slice(&redeem);
+
+    let tx = make_witness_tx(&[vec![0x01; 64]]); // dummy Schnorr sig
+
+    let flags = segwit_flags() | ScriptFlags::TAPROOT;
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::new(100_000), flags);
+    assert!(
+        matches!(r, Err(ScriptError::WitnessMalleatedP2sh)),
+        "P2SH-wrapped taproot must be rejected, got: {r:?}"
+    );
+}
+
+// ── verify_script_inner: uncovered branches ──────────────────────────
+
+#[test]
+fn cleanstack_rejects_extra_item_on_legacy_with_p2sh_flag() {
+    // Exercise the CLEANSTACK check at the end of verify_script_inner
+    // (line 658). scriptPubKey = OP_1 (always true), scriptSig = OP_1 OP_1
+    // (pushes two items). After eval, stack has [1, 1, 1] = 3 items.
+    // CLEANSTACK + P2SH flags are both set but the scriptPubKey is not
+    // P2SH-shaped, so the P2SH block is skipped and the final cleanstack
+    // gate at the bottom fires.
+    let spk = vec![0x51]; // OP_1
+    // scriptSig pushes two items: OP_1 OP_1
+    let script_sig = vec![0x51, 0x51];
+    let tx = make_tx();
+    let flags = ScriptFlags::P2SH | ScriptFlags::CLEANSTACK;
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags);
+    assert!(
+        matches!(r, Err(ScriptError::CleanStack)),
+        "3 items on stack with CLEANSTACK+P2SH must fail, got: {r:?}"
+    );
+}
+
+#[test]
+fn cleanstack_passes_with_exactly_one_item_on_legacy() {
+    // Counterpart: exactly one item left, CLEANSTACK + P2SH set, non-P2SH
+    // scriptPubKey. Must pass.
+    let spk = vec![0x51]; // OP_1
+    let script_sig: Vec<u8> = vec![]; // empty — OP_1 pushes one item
+    let tx = make_tx();
+    let flags = ScriptFlags::P2SH | ScriptFlags::CLEANSTACK;
+    verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags)
+        .expect("exactly one item on stack must pass CLEANSTACK");
+}
+
+#[test]
+fn p2sh_non_push_only_scriptsig_rejected() {
+    // The P2SH block (line 555) independently checks `is_push_only(script_sig)`
+    // even when the standalone SIGPUSHONLY flag is off. We craft a scriptSig
+    // that has a non-push opcode (OP_NOP = 0x61) followed by the redeem script
+    // push. The outer P2SH eval must pass (the redeem hash matches) but then
+    // the P2SH is_push_only check rejects it.
+    //
+    // Redeem script: OP_1 (trivially true).
+    let redeem = vec![0x51u8]; // OP_1
+    let redeem_hash = hash160(&redeem);
+
+    // Outer P2SH scriptPubKey: OP_HASH160 <20> <hash> OP_EQUAL
+    let mut spk = vec![0xa9, 0x14];
+    spk.extend_from_slice(&redeem_hash);
+    spk.push(0x87);
+    assert!(is_p2sh(&spk));
+
+    // scriptSig: OP_NOP <push redeem>
+    // OP_NOP (0x61) does nothing — leaves stack unchanged.
+    // Then push the redeem script bytes.
+    let mut script_sig = vec![0x61]; // OP_NOP — non-push opcode
+    script_sig.push(u8::try_from(redeem.len()).expect("redeem fits"));
+    script_sig.extend_from_slice(&redeem);
+
+    let tx = make_tx();
+    // P2SH on, but SIGPUSHONLY off — so the early gate at line 487 does NOT fire.
+    let flags = ScriptFlags::P2SH;
+    let r = verify_script(&script_sig, &spk, &tx, 0, Satoshi::ZERO, flags);
+    assert!(
+        matches!(r, Err(ScriptError::SigPushOnly)),
+        "P2SH with non-push scriptSig must fail with SigPushOnly, got: {r:?}"
+    );
+}
+
+#[test]
+fn native_segwit_v0_non_empty_scriptsig_is_malleated() {
+    // Native segwit (v0 P2WPKH) with a non-empty scriptSig must be rejected
+    // as WitnessMalleated. This exercises the `!is_p2sh_wrapped && !script_sig.is_empty()`
+    // branch (line 610-611).
+    let pkh = [0xbb; 20];
+    let spk = p2wpkh_spk(&pkh);
+    let tx = make_witness_tx(&[vec![0x01], vec![0x02; 33]]);
+    let r = verify_script(&[0x01, 0xaa], &spk, &tx, 0, Satoshi::new(100), segwit_flags());
+    assert!(
+        matches!(r, Err(ScriptError::WitnessMalleated)),
+        "native segwit v0 with non-empty scriptSig must be WitnessMalleated, got: {r:?}"
+    );
+}
+
+#[test]
+fn p2sh_wrapped_p2wpkh_witness_program_from_redeem() {
+    // Exercises the witness_program_of(redeem) path inside the P2SH block
+    // (line 571). The redeem script is a witness v0 program (P2WPKH).
+    // This is the same as p2sh_p2wpkh_succeeds but we verify the code path
+    // is reached by providing a wrong witness to trigger a distinct error
+    // from the segwit execution (not just EvalFalse from the P2SH path).
+    let pkh = [0xcc; 20];
+
+    // Redeem script = witness program: OP_0 <20-byte pkh>
+    let mut redeem = vec![0x00, 0x14];
+    redeem.extend_from_slice(&pkh);
+    let redeem_hash = hash160(&redeem);
+
+    // Outer P2SH scriptPubKey
+    let mut spk = vec![0xa9, 0x14];
+    spk.extend_from_slice(&redeem_hash);
+    spk.push(0x87);
+
+    // Witness with wrong item count (3 instead of 2 for P2WPKH).
+    let tx = Transaction {
+        version: TxVersion::new(1),
+        inputs: vec![TxIn {
+            previous_output: OutPoint {
+                txid: Hash256::from_bytes([0u8; 32]),
+                vout: 0,
+            },
+            script_sig: {
+                let mut ss = vec![u8::try_from(redeem.len()).expect("redeem fits")];
+                ss.extend_from_slice(&redeem);
+                ss.into()
+            },
+            sequence: Sequence::new(0xffff_ffff),
+            witness: Witness::from_slice(&[&[0x01][..], &[0x02; 33][..], &[0x03][..]]),
+        }],
+        outputs: vec![TxOut {
+            value: Satoshi::new(100_000),
+            script_pubkey: vec![0x6a].into(),
+        }],
+        locktime: Locktime::new(0),
+    };
+
+    let r = verify_script(
+        tx.inputs[0].script_sig.as_ref(),
+        &spk,
+        &tx,
+        0,
+        Satoshi::new(100_000),
+        segwit_flags(),
+    );
+    // P2WPKH requires exactly 2 witness items; 3 items triggers WitnessProgramMismatch.
+    assert!(
+        matches!(r, Err(ScriptError::WitnessProgramMismatch)),
+        "P2SH-wrapped P2WPKH with wrong witness count must fail, got: {r:?}"
+    );
+}
+
+#[test]
+fn unknown_witness_version_accepted_without_discourage() {
+    // An unknown witness version (v3, OP_3 = 0x53) with a 20-byte program.
+    // Without DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM, this must be accepted
+    // silently per the "future soft-fork" rule (line 642-644).
+    let program = [0xdd; 20];
+    let mut spk = vec![0x53, 0x14]; // OP_3, push 20 bytes
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[vec![0xab]]);
+    let flags = segwit_flags(); // no DISCOURAGE flag
+    verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags)
+        .expect("unknown witness v3 without DISCOURAGE flag must succeed");
+}
+
+#[test]
+fn unknown_witness_version_v16_accepted_without_discourage() {
+    // Same with v16 (OP_16 = 0x60) and a 32-byte program — widest version range.
+    let program = [0xee; 32];
+    let mut spk = vec![0x60, 0x20]; // OP_16, push 32 bytes
+    spk.extend_from_slice(&program);
+
+    let tx = make_witness_tx(&[vec![0x01]]);
+    let flags = segwit_flags();
+    verify_script(&[], &spk, &tx, 0, Satoshi::new(100_000), flags)
+        .expect("unknown witness v16 without DISCOURAGE flag must succeed");
 }

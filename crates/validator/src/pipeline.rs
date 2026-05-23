@@ -377,3 +377,389 @@ impl From<StorageError> for PipelineError {
         Self::Storage(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mantle::primitives::{
+        Block, BlockHeader, BlockTime, BlockVersion, CompactBits, Hash256, Locktime, Nonce,
+        OutPoint, Satoshi, Sequence, Transaction, TxIn, TxVersion,
+    };
+    use mantle::primitives::{TxOut, Witness};
+
+    /// Build a minimal block with one coinbase tx and one spending tx.
+    ///
+    /// The spending tx's input references `(prev_txid, 0)`, so we can
+    /// predict what outpoints the collector should record.
+    fn make_block_with_spend(prev_txid: Hash256) -> Block {
+        let header = BlockHeader::new(
+            BlockVersion::new(1),
+            Hash256::ZERO,
+            Hash256::ZERO,
+            BlockTime::new(1_231_006_505),
+            CompactBits::new(0x1d00_ffff),
+            Nonce::new(0),
+        );
+
+        let coinbase = Transaction {
+            version: TxVersion::new(1),
+            inputs: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0xffff_ffff,
+                },
+                script_sig: vec![0x04, 0x01].into(),
+                sequence: Sequence::MAX,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(5_000_000_000),
+                script_pubkey: vec![0xac].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+
+        let spending = Transaction {
+            version: TxVersion::new(1),
+            inputs: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: prev_txid,
+                    vout: 0,
+                },
+                script_sig: vec![0x00].into(),
+                sequence: Sequence::MAX,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(4_999_000_000),
+                script_pubkey: vec![0x76, 0xa9].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+
+        Block {
+            header,
+            transactions: vec![coinbase, spending],
+        }
+    }
+
+    #[test]
+    fn collect_outpoints_block_finds_external_spend() {
+        let prev_txid = Hash256::from_bytes([0xab; 32]);
+        let block = make_block_with_spend(prev_txid);
+
+        let mut bufs = ReplayBufs::new();
+        bufs.collect_outpoints_block(&block);
+
+        // The spending tx references (prev_txid, 0). Since prev_txid is not
+        // produced by any tx in this block, it must appear in spend_ops as an
+        // external outpoint to look up from storage.
+        let expected_external = OutPoint {
+            txid: prev_txid,
+            vout: 0,
+        };
+        assert!(
+            bufs.spend_ops.contains(&expected_external),
+            "spend_ops should contain the external outpoint {:?}, got {:?}",
+            expected_external,
+            bufs.spend_ops,
+        );
+
+        // No intra-block outputs should exist because the spending tx
+        // references a txid that doesn't match any tx in this block.
+        assert!(
+            bufs.intra.is_empty(),
+            "intra should be empty when spending from outside the block"
+        );
+    }
+
+    #[test]
+    fn collect_outpoints_block_detects_intra_block_spend() {
+        // Build a block where tx1 spends from the coinbase (tx0).
+        let header = BlockHeader::new(
+            BlockVersion::new(1),
+            Hash256::ZERO,
+            Hash256::ZERO,
+            BlockTime::new(1_231_006_505),
+            CompactBits::new(0x1d00_ffff),
+            Nonce::new(0),
+        );
+
+        let coinbase = Transaction {
+            version: TxVersion::new(1),
+            inputs: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0xffff_ffff,
+                },
+                script_sig: vec![0x04, 0x01].into(),
+                sequence: Sequence::MAX,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(5_000_000_000),
+                script_pubkey: vec![0xac].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+
+        // Compute the coinbase txid so we can reference it.
+        let mut scratch = Vec::new();
+        use mantle::primitives::TxHash;
+        let coinbase_txid = coinbase.txid_into(&mut scratch).expect("txid");
+
+        let spending = Transaction {
+            version: TxVersion::new(1),
+            inputs: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: coinbase_txid,
+                    vout: 0,
+                },
+                script_sig: vec![0x00].into(),
+                sequence: Sequence::MAX,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(4_999_000_000),
+                script_pubkey: vec![0x76, 0xa9].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+
+        let block = Block {
+            header,
+            transactions: vec![coinbase, spending],
+        };
+
+        let mut bufs = ReplayBufs::new();
+        bufs.collect_outpoints_block(&block);
+
+        // The spend of (coinbase_txid, 0) is intra-block, so it should
+        // appear in `intra` with the coinbase output's coin data.
+        let intra_op = OutPoint {
+            txid: coinbase_txid,
+            vout: 0,
+        };
+        assert!(
+            bufs.intra.contains_key(&intra_op),
+            "intra should contain the coinbase outpoint spent within the block"
+        );
+
+        let coin = bufs.intra[&intra_op].as_ref().expect("coin should be Some");
+        assert_eq!(coin.value, Satoshi::new(5_000_000_000));
+        assert!(coin.coinbase, "coin should be marked as coinbase");
+
+        // Since the spend is intra-block, it should NOT appear in spend_ops
+        // (no external lookup needed).
+        assert!(
+            !bufs.spend_ops.iter().any(|op| *op == intra_op),
+            "spend_ops should not contain the intra-block outpoint (except bip30)"
+        );
+    }
+
+    #[test]
+    fn collect_outpoints_block_coinbase_only() {
+        let header = BlockHeader::new(
+            BlockVersion::new(1),
+            Hash256::ZERO,
+            Hash256::ZERO,
+            BlockTime::new(0),
+            CompactBits::new(0),
+            Nonce::new(0),
+        );
+
+        let coinbase = Transaction {
+            version: TxVersion::new(1),
+            inputs: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Hash256::ZERO,
+                    vout: 0xffff_ffff,
+                },
+                script_sig: vec![0x04].into(),
+                sequence: Sequence::MAX,
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(5_000_000_000),
+                script_pubkey: vec![0xac].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+
+        let block = Block {
+            header,
+            transactions: vec![coinbase],
+        };
+
+        let mut bufs = ReplayBufs::new();
+        bufs.collect_outpoints_block(&block);
+
+        // With only a coinbase, there are no non-coinbase inputs, so no
+        // external spends. The only spend_ops entry (if any) is the BIP30
+        // check for the coinbase txid:0.
+        assert!(bufs.intra.is_empty());
+        // txids should have one entry (the coinbase txid).
+        assert_eq!(bufs.txids.len(), 1);
+    }
+
+    #[test]
+    fn collect_outpoints_block_records_txids() {
+        let prev_txid = Hash256::from_bytes([0xcd; 32]);
+        let block = make_block_with_spend(prev_txid);
+
+        let mut bufs = ReplayBufs::new();
+        bufs.collect_outpoints_block(&block);
+
+        // Should have recorded 2 txids (coinbase + spending tx).
+        assert_eq!(bufs.txids.len(), 2, "expected 2 txids");
+    }
+
+    #[test]
+    fn collect_outpoints_ref_finds_external_spend() {
+        use mantle::codec::Encode;
+
+        let prev_txid = Hash256::from_bytes([0xab; 32]);
+        let block = make_block_with_spend(prev_txid);
+
+        let mut encoded = Vec::new();
+        block.encode(&mut encoded).expect("encode block");
+
+        let mut arena_buf = Vec::new();
+        let mut txs_buf = Vec::new();
+        let block_ref =
+            BlockRef::decode_with_arena(&encoded, &mut arena_buf, &mut txs_buf)
+                .expect("decode BlockRef");
+
+        let mut bufs = ReplayBufs::new();
+        bufs.collect_outpoints_ref(&block_ref);
+
+        let expected_external = OutPoint {
+            txid: prev_txid,
+            vout: 0,
+        };
+        assert!(
+            bufs.spend_ops.contains(&expected_external),
+            "spend_ops should contain the external outpoint via collect_outpoints_ref"
+        );
+        assert!(
+            bufs.intra.is_empty(),
+            "intra should be empty when spending from outside the block"
+        );
+    }
+
+    #[test]
+    fn pipeline_error_display_validation() {
+        let err = PipelineError::Validation(ValidationError::EmptyBlock);
+        let msg = format!("{err}");
+        assert!(msg.starts_with("validation:"), "got: {msg}");
+    }
+
+    #[test]
+    fn pipeline_error_display_storage() {
+        let err = PipelineError::Storage(StorageError::RingFull);
+        let msg = format!("{err}");
+        assert!(msg.starts_with("storage:"), "got: {msg}");
+    }
+
+    /// Minimal mock that returns `None` for every outpoint lookup.
+    struct MockStorage;
+
+    impl<'req> mantle_storage::ops::StorageOps<'req> for MockStorage {
+        fn send_lookup(
+            &mut self,
+            ops: &'req [OutPoint],
+            out: &'req mut Vec<mantle_storage::types::LookupResult>,
+        ) -> Result<(), StorageError> {
+            out.clear();
+            for op in ops {
+                out.push(mantle_storage::types::LookupResult {
+                    outpoint: *op,
+                    coin: None,
+                });
+            }
+            Ok(())
+        }
+
+        fn recv_lookup(&mut self) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        fn commit_block_borrowed(
+            &mut self,
+            _req: mantle_storage::types::CommitBlockReq<'req>,
+        ) -> Result<mantle_storage::types::CommittedResp, StorageError> {
+            unimplemented!()
+        }
+
+        fn tip(&self) -> mantle_consensus::chain_view::TipInfo {
+            mantle_consensus::chain_view::TipInfo {
+                hash: Hash256::ZERO,
+                height: mantle::primitives::BlockHeight::ZERO,
+            }
+        }
+
+        fn read_header(
+            &mut self,
+            _hash: Hash256,
+        ) -> Result<Option<mantle::primitives::BlockHeader>, StorageError> {
+            Ok(None)
+        }
+
+        fn read_header_at(
+            &mut self,
+            _h: mantle::primitives::BlockHeight,
+        ) -> Result<Option<mantle::primitives::BlockHeader>, StorageError> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn fetch_coins_merges_intra_and_storage() {
+        let prev_txid = Hash256::from_bytes([0xab; 32]);
+        let block = make_block_with_spend(prev_txid);
+
+        let mut bufs = ReplayBufs::new();
+        bufs.collect_outpoints_block(&block);
+
+        // Record how many external ops need lookup.
+        let external_count = bufs.spend_ops.len();
+        assert!(external_count > 0);
+
+        let mut storage = MockStorage;
+        bufs.fetch_coins(&mut storage).unwrap();
+
+        // After fetch_coins, `coins` should contain at least the external
+        // lookups (all None from mock) plus any intra-block entries.
+        // The external outpoint (prev_txid, 0) should map to None.
+        let ext_op = OutPoint { txid: prev_txid, vout: 0 };
+        assert!(
+            bufs.coins.contains_key(&ext_op),
+            "coins should contain the external outpoint"
+        );
+        assert!(
+            bufs.coins[&ext_op].is_none(),
+            "mock storage returns None for all lookups"
+        );
+    }
+
+    #[test]
+    fn replay_bufs_clear_resets_state() {
+        let prev_txid = Hash256::from_bytes([0xab; 32]);
+        let block = make_block_with_spend(prev_txid);
+
+        let mut bufs = ReplayBufs::new();
+        bufs.collect_outpoints_block(&block);
+
+        // Verify some state was accumulated.
+        assert!(!bufs.txids.is_empty());
+
+        bufs.clear();
+
+        assert!(bufs.spent_set.is_empty());
+        assert!(bufs.txids.is_empty());
+        assert!(bufs.intra.is_empty());
+        assert!(bufs.spend_ops.is_empty());
+        assert!(bufs.bip30_ops.is_empty());
+        assert!(bufs.coins.is_empty());
+    }
+}

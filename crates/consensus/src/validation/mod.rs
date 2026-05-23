@@ -6,7 +6,7 @@ mod structure;
 // ── Re-exports (preserve the public API of the old validation.rs) ─────────────
 
 pub use clock::{Clock, FixedClock, SystemClock};
-pub use connect::{BlockHeightExt, connect_block};
+pub use connect::{BlockHeightExt, connect_block, count_legacy_sigops};
 pub use pow::{HeaderValidationExt, RetargetExt};
 pub use structure::{
     BIP34_HEIGHT, MAX_BLOCK_TRANSACTIONS, MAX_BLOCK_WEIGHT, MAX_COINBASE_SCRIPTSIG_LEN, MAX_MONEY,

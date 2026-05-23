@@ -712,6 +712,53 @@ mod tests {
     }
 
     #[test]
+    fn addrv2_addr_decode_ipv6() {
+        let mut buf = vec![0x02, 0x10]; // Ipv6, len=16
+        buf.extend_from_slice(&[1u8; 16]);
+        let addr = AddrV2Addr::decode(&mut Cursor::new(&buf)).unwrap();
+        assert!(matches!(addr, AddrV2Addr::Ipv6(_)));
+    }
+
+    #[test]
+    fn addrv2_addr_decode_torv2() {
+        let mut buf = vec![0x03, 0x0a]; // TorV2, len=10
+        buf.extend_from_slice(&[0xab; 10]);
+        let addr = AddrV2Addr::decode(&mut Cursor::new(&buf)).unwrap();
+        assert!(matches!(addr, AddrV2Addr::TorV2(_)));
+    }
+
+    #[test]
+    fn addrv2_addr_decode_torv3() {
+        let mut buf = vec![0x04, 0x20]; // TorV3, len=32
+        buf.extend_from_slice(&[0xcd; 32]);
+        let addr = AddrV2Addr::decode(&mut Cursor::new(&buf)).unwrap();
+        assert!(matches!(addr, AddrV2Addr::TorV3(_)));
+    }
+
+    #[test]
+    fn addrv2_addr_decode_i2p() {
+        let mut buf = vec![0x05, 0x20]; // I2p, len=32
+        buf.extend_from_slice(&[0xef; 32]);
+        let addr = AddrV2Addr::decode(&mut Cursor::new(&buf)).unwrap();
+        assert!(matches!(addr, AddrV2Addr::I2p(_)));
+    }
+
+    #[test]
+    fn addrv2_addr_decode_cjdns() {
+        let mut buf = vec![0x06, 0x10]; // Cjdns, len=16
+        buf.extend_from_slice(&[0x99; 16]);
+        let addr = AddrV2Addr::decode(&mut Cursor::new(&buf)).unwrap();
+        assert!(matches!(addr, AddrV2Addr::Cjdns(_)));
+    }
+
+    #[test]
+    fn addrv2_addr_decode_wrong_length_rejected() {
+        let mut buf = vec![0x01, 0x05]; // Ipv4 expects 4 bytes, giving 5
+        buf.extend_from_slice(&[0; 5]);
+        assert!(AddrV2Addr::decode(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
     fn addrv2_unknown_network_exceeds_max_len() {
         let mut bytes = vec![0x01]; // count = 1
         bytes.extend_from_slice(&100u32.to_le_bytes());
@@ -724,5 +771,172 @@ mod tests {
         bytes.extend_from_slice(&48_333u16.to_be_bytes());
         let mut cur = std::io::Cursor::new(&bytes);
         assert!(AddrV2Msg::decode_limited(&mut cur).is_err());
+    }
+
+    // ── AddrV2Addr::decode additional branch coverage ──────────────────────
+
+    #[test]
+    fn addrv2_addr_decode_empty_stream_fails() {
+        // Empty stream: the first read_exact for the network_id byte fails.
+        let buf: &[u8] = &[];
+        assert!(AddrV2Addr::decode(&mut Cursor::new(buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_truncated_after_nid_fails() {
+        // Network ID present but no VarInt for addr_len.
+        let buf: &[u8] = &[0x01]; // Ipv4 network_id, no length
+        assert!(AddrV2Addr::decode(&mut Cursor::new(buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_truncated_body_ipv4_fails() {
+        // Correct Ipv4 header (nid=0x01, len=4) but only 2 bytes of addr data.
+        let buf: &[u8] = &[0x01, 0x04, 0x0a, 0x00];
+        assert!(AddrV2Addr::decode(&mut Cursor::new(buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_truncated_body_torv3_fails() {
+        // Correct TorV3 header (nid=0x04, len=32) but only 10 bytes of data.
+        let mut buf = vec![0x04, 0x20]; // TorV3, len=32
+        buf.extend_from_slice(&[0xab; 10]);
+        assert!(AddrV2Addr::decode(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_unknown_zero_length() {
+        // Unknown network_id with addr_len=0: valid edge case, empty address.
+        let buf: &[u8] = &[0xfe, 0x00]; // unknown nid=0xFE, len=0
+        let addr = AddrV2Addr::decode(&mut Cursor::new(buf)).unwrap();
+        match addr {
+            AddrV2Addr::Unknown { network_id, addr } => {
+                assert_eq!(network_id, 0xfe);
+                assert!(addr.is_empty());
+            }
+            other => panic!("expected Unknown, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn addrv2_addr_decode_unknown_at_max_len() {
+        // Unknown network_id with addr_len exactly at MAX_UNKNOWN_LEN (512).
+        let mut buf = vec![0xfe]; // unknown nid
+        // VarInt for 512: 0xfd prefix + 512 as u16 LE
+        buf.push(0xfd);
+        buf.extend_from_slice(&512u16.to_le_bytes());
+        buf.extend_from_slice(&vec![0xaa; 512]);
+        let addr = AddrV2Addr::decode(&mut Cursor::new(&buf)).unwrap();
+        match addr {
+            AddrV2Addr::Unknown { network_id, addr } => {
+                assert_eq!(network_id, 0xfe);
+                assert_eq!(addr.len(), 512);
+            }
+            other => panic!("expected Unknown, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn addrv2_addr_decode_unknown_exceeds_max_directly() {
+        // Test the MAX_UNKNOWN_LEN rejection at the AddrV2Addr level (not
+        // through the full message decode, which was the only test before).
+        let mut buf = vec![0xfe]; // unknown nid
+        buf.push(0xfd);
+        buf.extend_from_slice(&513u16.to_le_bytes());
+        buf.extend_from_slice(&vec![0u8; 513]);
+        assert!(AddrV2Addr::decode(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_wrong_length_ipv6_rejected() {
+        // Ipv6 (nid=0x02) expects 16 bytes, give 20.
+        let mut buf = vec![0x02, 0x14]; // Ipv6, len=20
+        buf.extend_from_slice(&[0; 20]);
+        assert!(AddrV2Addr::decode(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_wrong_length_i2p_rejected() {
+        // I2p (nid=0x05) expects 32 bytes, give 16.
+        let mut buf = vec![0x05, 0x10]; // I2p, len=16
+        buf.extend_from_slice(&[0; 16]);
+        assert!(AddrV2Addr::decode(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_wrong_length_cjdns_rejected() {
+        // Cjdns (nid=0x06) expects 16 bytes, give 4.
+        let mut buf = vec![0x06, 0x04]; // Cjdns, len=4
+        buf.extend_from_slice(&[0; 4]);
+        assert!(AddrV2Addr::decode(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_wrong_length_torv2_rejected() {
+        // TorV2 (nid=0x03) expects 10 bytes, give 8.
+        let mut buf = vec![0x03, 0x08]; // TorV2, len=8
+        buf.extend_from_slice(&[0; 8]);
+        assert!(AddrV2Addr::decode(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_msg_rejects_oversize_count() {
+        // count = 1001 through AddrV2Msg (vs AddrMsg which was already tested).
+        let mut bytes = vec![0xfd];
+        bytes.extend_from_slice(&1001u16.to_le_bytes());
+        let mut cur = std::io::Cursor::new(&bytes);
+        assert!(AddrV2Msg::decode_limited(&mut cur).is_err());
+    }
+
+    #[test]
+    fn addrv2_entry_ip_v4_returns_none_for_non_ipv4() {
+        // Build an AddrV2Entry with TorV3 address; ip_v4() must return None.
+        let entry = AddrV2Entry {
+            time: crate::primitives::BlockTime::new(100),
+            services: Services::new(0),
+            addr: AddrV2Addr::TorV3([0xab; 32]),
+            port: Port::new(8333),
+        };
+        assert!(entry.ip_v4().is_none());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_ipv4_directly() {
+        // Test the Ipv4 success path through AddrV2Addr::decode directly,
+        // verifying bytes are read exactly.
+        let buf: &[u8] = &[0x01, 0x04, 10, 20, 30, 40];
+        let addr = AddrV2Addr::decode(&mut Cursor::new(buf)).unwrap();
+        assert!(matches!(addr, AddrV2Addr::Ipv4([10, 20, 30, 40])));
+    }
+
+    #[test]
+    fn addrv2_addr_decode_truncated_body_unknown_fails() {
+        // Unknown network_id with addr_len=4 but only 2 bytes of data.
+        let buf: &[u8] = &[0xfe, 0x04, 0xaa, 0xbb];
+        assert!(AddrV2Addr::decode(&mut Cursor::new(buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_truncated_body_i2p_fails() {
+        // I2p (nid=0x05) expects 32 bytes, provide only 5.
+        let mut buf = vec![0x05, 0x20]; // I2p, len=32
+        buf.extend_from_slice(&[0xaa; 5]);
+        assert!(AddrV2Addr::decode(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_truncated_body_cjdns_fails() {
+        // Cjdns (nid=0x06) expects 16 bytes, provide only 3.
+        let mut buf = vec![0x06, 0x10]; // Cjdns, len=16
+        buf.extend_from_slice(&[0xbb; 3]);
+        assert!(AddrV2Addr::decode(&mut Cursor::new(&buf)).is_err());
+    }
+
+    #[test]
+    fn addrv2_addr_decode_truncated_body_ipv6_fails() {
+        // Ipv6 (nid=0x02) expects 16 bytes, provide only 8.
+        let mut buf = vec![0x02, 0x10]; // Ipv6, len=16
+        buf.extend_from_slice(&[0xcc; 8]);
+        assert!(AddrV2Addr::decode(&mut Cursor::new(&buf)).is_err());
     }
 }

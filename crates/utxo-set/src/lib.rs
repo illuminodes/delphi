@@ -3,6 +3,7 @@ mod arena_set;
 mod coin_entry;
 pub mod disk_arena;
 mod error;
+pub mod robin_hood;
 pub mod tx_index;
 mod set;
 mod tx_entry;

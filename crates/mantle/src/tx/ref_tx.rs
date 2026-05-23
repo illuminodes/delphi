@@ -810,4 +810,122 @@ mod tests {
         let (legacy_ref, _) = decode_ref::<TransactionRef>(&lb);
         assert!(legacy_ref.witness(0).is_empty());
     }
+
+    /// Multi-input segwit tx: exercises `WitnessRef::skip_one` via
+    /// `TransactionRef::witness(n_in)` when n_in > 0.
+    #[test]
+    fn transaction_ref_witness_skip_one_multi_input() {
+        // Two-input segwit tx, each with different witness stacks.
+        let tx = Transaction {
+            version: TxVersion::new(2),
+            inputs: vec![
+                TxIn {
+                    previous_output: OutPoint {
+                        txid: Hash256::from_bytes([0x11u8; 32]),
+                        vout: 0,
+                    },
+                    script_sig: Vec::<u8>::new().into(),
+                    sequence: Sequence::new(0xffff_fffe),
+                    witness: Witness::from_slice(&[
+                        &[0xaa, 0xbb][..],
+                        &[0xcc][..],
+                    ]),
+                },
+                TxIn {
+                    previous_output: OutPoint {
+                        txid: Hash256::from_bytes([0x22u8; 32]),
+                        vout: 1,
+                    },
+                    script_sig: Vec::<u8>::new().into(),
+                    sequence: Sequence::new(0xffff_ffff),
+                    witness: Witness::from_slice(&[
+                        &[0xdd, 0xee, 0xff][..],
+                    ]),
+                },
+            ],
+            outputs: vec![TxOut {
+                value: Satoshi::new(50_000),
+                script_pubkey: vec![0x00, 0x14, 0x01, 0x02, 0x03].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+        let bytes = encode(&tx);
+        let (tx_ref, tail) = decode_ref::<TransactionRef>(&bytes);
+        assert!(tail.is_empty());
+        assert!(tx_ref.is_segwit);
+        assert_eq!(tx_ref.input_count(), 2);
+
+        // witness(0) should work without skip_one.
+        let w0 = tx_ref.witness(0);
+        assert_eq!(w0.len(), 2);
+        let items0: Vec<&[u8]> = w0.iter().collect();
+        assert_eq!(items0[0], &[0xaa, 0xbb]);
+        assert_eq!(items0[1], &[0xcc]);
+
+        // witness(1) must call skip_one to skip past input 0's witness.
+        let w1 = tx_ref.witness(1);
+        assert_eq!(w1.len(), 1);
+        let items1: Vec<&[u8]> = w1.iter().collect();
+        assert_eq!(items1[0], &[0xdd, 0xee, 0xff]);
+
+        // Out-of-range still returns EMPTY.
+        assert!(tx_ref.witness(2).is_empty());
+    }
+
+    // ── WitnessRef::pop_from ──────────────────────────────────────────
+
+    use super::WitnessRef;
+
+    #[test]
+    fn witness_ref_pop_from_empty_witness() {
+        // VarInt(0) = single byte 0x00
+        let buf = [0x00, 0xaa, 0xbb];
+        let (w, rest) = WitnessRef::pop_from(&buf).unwrap();
+        assert_eq!(w.len(), 0);
+        assert!(w.is_empty());
+        assert_eq!(rest, &[0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn witness_ref_pop_from_two_items() {
+        // count=2, item1=2 bytes [0xde, 0xad], item2=1 byte [0xff]
+        let buf = [
+            0x02, // count
+            0x02, 0xde, 0xad, // item 1
+            0x01, 0xff, // item 2
+            0xcc, // trailing
+        ];
+        let (w, rest) = WitnessRef::pop_from(&buf).unwrap();
+        assert_eq!(w.len(), 2);
+        assert!(!w.is_empty());
+        let items: Vec<&[u8]> = w.iter().collect();
+        assert_eq!(items[0], &[0xde, 0xad]);
+        assert_eq!(items[1], &[0xff]);
+        assert_eq!(rest, &[0xcc]);
+    }
+
+    #[test]
+    fn witness_ref_pop_from_streaming() {
+        // Two witnesses back-to-back
+        let buf = [
+            0x01, 0x03, 0xaa, 0xbb, 0xcc, // witness 0: 1 item, 3 bytes
+            0x01, 0x01, 0xdd, // witness 1: 1 item, 1 byte
+        ];
+        let (w0, rest) = WitnessRef::pop_from(&buf).unwrap();
+        assert_eq!(w0.len(), 1);
+        let (w1, rest) = WitnessRef::pop_from(rest).unwrap();
+        assert_eq!(w1.len(), 1);
+        assert!(rest.is_empty());
+        let items0: Vec<&[u8]> = w0.iter().collect();
+        let items1: Vec<&[u8]> = w1.iter().collect();
+        assert_eq!(items0[0], &[0xaa, 0xbb, 0xcc]);
+        assert_eq!(items1[0], &[0xdd]);
+    }
+
+    #[test]
+    fn witness_ref_pop_from_truncated_fails() {
+        // count=1 but no item data
+        let buf = [0x01];
+        assert!(WitnessRef::pop_from(&buf).is_err());
+    }
 }

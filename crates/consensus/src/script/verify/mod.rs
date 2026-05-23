@@ -1013,7 +1013,7 @@ fn run_witness_v0<T: TxView>(
 /// returns `SigPushOnly` for that case (matching Core, where any parse
 /// failure during the push-only walk is treated as a non-push opcode).
 #[must_use]
-fn is_push_only(script: &[u8]) -> bool {
+pub fn is_push_only(script: &[u8]) -> bool {
     use super::interpreter::reader::ScriptReader;
 
     let mut reader = ScriptReader::new(script);
@@ -1031,7 +1031,7 @@ fn is_push_only(script: &[u8]) -> bool {
 /// A witness program is `OP_n <push of 2..=40 bytes>` where `n` is 0–16.
 /// `OP_0` is byte `0x00`; `OP_1`–`OP_16` are `0x51`–`0x60`.
 #[must_use]
-fn witness_program_of(script: &[u8]) -> Option<(u8, Vec<u8>)> {
+pub fn witness_program_of(script: &[u8]) -> Option<(u8, Vec<u8>)> {
     if script.len() < 4 || script.len() > 42 {
         return None;
     }

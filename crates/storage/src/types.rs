@@ -165,3 +165,92 @@ impl StorageResp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mantle::primitives::BlockHeight;
+    use mantle_consensus::chain_view::TipInfo;
+
+    #[test]
+    fn token_returns_some_for_ok_variants() {
+        let tok = ReqToken(42);
+
+        let resp = StorageResp::LookupCoins(Ok(LookupCoinsResp { token: tok }));
+        assert_eq!(resp.token(), Some(tok));
+
+        let resp = StorageResp::CommitBlock(Ok(CommittedResp {
+            token: tok,
+            tip: TipInfo {
+                hash: Hash256::ZERO,
+                height: BlockHeight::ZERO,
+            },
+        }));
+        assert_eq!(resp.token(), Some(tok));
+
+        let resp = StorageResp::ReadHeader(Ok(ReadHeaderResp {
+            token: tok,
+            header: None,
+        }));
+        assert_eq!(resp.token(), Some(tok));
+    }
+
+    #[test]
+    fn token_returns_none_for_err_and_shutdown() {
+        let err = StorageError::RingFull;
+
+        assert!(StorageResp::LookupCoins(Err(err)).token().is_none());
+        assert!(StorageResp::CommitBlock(Err(err)).token().is_none());
+        assert!(StorageResp::ReadHeader(Err(err)).token().is_none());
+        assert!(StorageResp::Shutdown.token().is_none());
+    }
+
+    #[test]
+    fn storage_error_display_all_variants_non_empty() {
+        let cases: Vec<StorageError> = vec![
+            StorageError::Io(std::io::ErrorKind::NotFound),
+            StorageError::ScriptPubKeyTooLarge,
+            StorageError::ScriptLenOverflow,
+            StorageError::RingFull,
+            StorageError::ThreadGone,
+            StorageError::UnexpectedResponse,
+        ];
+        for e in &cases {
+            assert!(!format!("{e}").is_empty(), "variant {e:?} must format");
+        }
+    }
+
+    #[test]
+    fn storage_error_display_io_includes_kind() {
+        let err = StorageError::Io(std::io::ErrorKind::PermissionDenied);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("storage I/O error"),
+            "Io variant should mention 'storage I/O error', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn storage_error_display_specific_messages() {
+        assert_eq!(
+            format!("{}", StorageError::ScriptPubKeyTooLarge),
+            "script_pubkey exceeds 4 GiB"
+        );
+        assert_eq!(
+            format!("{}", StorageError::ScriptLenOverflow),
+            "script_pubkey length overflows usize"
+        );
+        assert_eq!(
+            format!("{}", StorageError::RingFull),
+            "storage request ring full"
+        );
+        assert_eq!(
+            format!("{}", StorageError::ThreadGone),
+            "storage thread exited unexpectedly"
+        );
+        assert_eq!(
+            format!("{}", StorageError::UnexpectedResponse),
+            "unexpected response from storage thread"
+        );
+    }
+}

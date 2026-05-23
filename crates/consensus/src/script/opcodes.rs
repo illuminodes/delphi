@@ -490,8 +490,12 @@ impl Opcode {
         }
     }
 
-    /// `true` if this opcode is a push (data, `OP_0`, `OP_1NEGATE`, `OP_1`..`OP_16`).
-    /// Used by `SIGPUSHONLY` enforcement on scriptSig.
+    /// `true` if this opcode is a push-type opcode for `SIGPUSHONLY` purposes.
+    ///
+    /// Core's `IsPushOnly` checks `opcode <= OP_16` (0x60), which includes
+    /// `OP_RESERVED` (0x50). Execution of `OP_RESERVED` always fails, so this
+    /// is irrelevant in practice — the scriptSig would fail before the P2SH
+    /// special-case runs — but we must match Core's byte-range semantics.
     #[must_use]
     pub const fn is_push(self) -> bool {
         matches!(
@@ -502,6 +506,7 @@ impl Opcode {
                 | Self::PushData2
                 | Self::PushData4
                 | Self::Op1Negate
+                | Self::OpReserved
                 | Self::OpN(_)
         )
     }

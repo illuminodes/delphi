@@ -280,7 +280,6 @@ struct FileIoWorker<
     slab_writer: SlabWriter<'slab>,
 }
 
-#[allow(clippy::too_many_lines)]
 impl<RReq, RResp> FileIoWorker<'_, RReq, RResp>
 where
     RReq: Deref<Target = MpscRing<FileReq>>,
@@ -292,143 +291,26 @@ where
         while let Some(req) = self.req_rx.pop_block() {
             let resp = match req {
                 FileReq::WriteBlock { height, data } => {
-                    match self.blocks.write(&mut self.ring, height, &data) {
-                        Ok(()) => {
-                            writes_since_flush += 1;
-                            if writes_since_flush >= BLOCK_INDEX_FLUSH_INTERVAL {
-                                let _ = self.blocks.flush_index(&self.data_dir);
-                                writes_since_flush = 0;
-                            }
-                            FileResp::Ok
-                        }
-                        Err(e) => FileResp::Err(e),
-                    }
+                    self.handle_write_block(height, &data, &mut writes_since_flush)
                 }
                 FileReq::WriteBlockAsync { height, data } => {
-                    let _ = self.blocks.write(&mut self.ring, height, &data);
-                    writes_since_flush += 1;
-                    if writes_since_flush >= BLOCK_INDEX_FLUSH_INTERVAL {
-                        let _ = self.blocks.flush_index(&self.data_dir);
-                        writes_since_flush = 0;
-                    }
+                    self.handle_write_block_async(height, &data, &mut writes_since_flush);
                     continue;
                 }
-                FileReq::ReadBlock { height } => match self.blocks.block_location(height) {
-                    Ok((offset, length)) => {
-                        match self.slab_writer.alloc() {
-                            Some(slot) => {
-                                match self.slab_writer.fill_from_disk(
-                                    slot,
-                                    self.blocks.file_store(),
-                                    &mut self.ring,
-                                    offset,
-                                    length,
-                                ) {
-                                    Ok(_token) => {
-                                        let data = self.slab_writer.slot_buf_mut(slot)
-                                            [..length as usize]
-                                            .to_vec();
-                                        self.slab_writer.release(slot);
-                                        FileResp::BlockData(data)
-                                    }
-                                    Err(e) => {
-                                        self.slab_writer.release(slot);
-                                        FileResp::Err(e)
-                                    }
-                                }
-                            }
-                            None => FileResp::Err(io::Error::other("slab full")),
-                        }
-                    }
-                    Err(e) => FileResp::Err(e),
-                },
+                FileReq::ReadBlock { height } => self.handle_read_block(height),
                 FileReq::ReadBlockDecoded {
                     height,
                     expected_hash,
-                } => match self.blocks.block_location(height) {
-                    Ok((offset, length)) => {
-                        match self.slab_writer.alloc() {
-                            Some(slot) => {
-                                match self.slab_writer.fill_from_disk(
-                                    slot,
-                                    self.blocks.file_store(),
-                                    &mut self.ring,
-                                    offset,
-                                    length,
-                                ) {
-                                    Ok(_token) => {
-                                        let data = &self.slab_writer.slot_buf_mut(slot)
-                                            [..length as usize];
-                                        let result = Block::decode(
-                                            &mut std::io::Cursor::new(data),
-                                        );
-                                        self.slab_writer.release(slot);
-                                        match result {
-                                            Ok(block) => {
-                                                if block.header.hash() == expected_hash {
-                                                    FileResp::DecodedBlock(block)
-                                                } else {
-                                                    FileResp::Err(io::Error::other("hash mismatch"))
-                                                }
-                                            }
-                                            Err(e) => FileResp::Err(io::Error::other(
-                                                format!("decode: {e}"),
-                                            )),
-                                        }
-                                    }
-                                    Err(e) => {
-                                        self.slab_writer.release(slot);
-                                        FileResp::Err(e)
-                                    }
-                                }
-                            }
-                            None => FileResp::Err(io::Error::other("slab full")),
-                        }
-                    }
-                    Err(e) => FileResp::Err(e),
-                },
-                FileReq::ReadBlockSlab { height } => match self.blocks.block_location(height) {
-                    Ok((offset, length)) => {
-                        match self.slab_writer.alloc() {
-                            Some(slot) => {
-                                match self.slab_writer.fill_from_disk(
-                                    slot,
-                                    self.blocks.file_store(),
-                                    &mut self.ring,
-                                    offset,
-                                    length,
-                                ) {
-                                    Ok(token) => FileResp::SlabReady(token),
-                                    Err(e) => {
-                                        self.slab_writer.release(slot);
-                                        FileResp::Err(e)
-                                    }
-                                }
-                            }
-                            None => FileResp::Err(io::Error::other("slab full")),
-                        }
-                    }
-                    Err(e) => FileResp::Err(e),
-                },
-                FileReq::HasBlock { height } => {
-                    FileResp::Bool(self.blocks.has_block(height))
-                }
+                } => self.handle_read_block_decoded(height, expected_hash),
+                FileReq::ReadBlockSlab { height } => self.handle_read_block_slab(height),
+                FileReq::HasBlock { height } => self.handle_has_block(height),
                 FileReq::WriteHeaders { start, data } => {
-                    match self.headers.write_raw(&mut self.ring, start, &data) {
-                        Ok(()) => FileResp::Ok,
-                        Err(e) => FileResp::Err(e),
-                    }
+                    self.handle_write_headers(start, &data)
                 }
                 FileReq::LoadCachedHeaders { start } => {
-                    match self.headers.load_cached(&mut self.ring, start) {
-                        Ok(h) => FileResp::Headers(h),
-                        Err(e) => FileResp::Err(e),
-                    }
+                    self.handle_load_cached_headers(start)
                 }
-                FileReq::FlushBlockIndex => match self.blocks.flush_index(&self.data_dir) {
-                    Ok(()) => FileResp::Ok,
-                    Err(e) => FileResp::Err(e),
-                },
+                FileReq::FlushBlockIndex => self.handle_flush_block_index(),
                 FileReq::ReleaseSlab { slot } => {
                     self.slab_writer.release(slot);
                     continue;
@@ -442,5 +324,424 @@ where
                 eprintln!("[file-io] FAILED to push response!");
             }
         }
+    }
+
+    // ── Individual request handlers ─────────────────────────────────────────
+
+    fn handle_write_block(
+        &mut self,
+        height: BlockHeight,
+        data: &[u8],
+        writes_since_flush: &mut u64,
+    ) -> FileResp {
+        match self.blocks.write(&mut self.ring, height, data) {
+            Ok(()) => {
+                *writes_since_flush += 1;
+                if *writes_since_flush >= BLOCK_INDEX_FLUSH_INTERVAL {
+                    let _ = self.blocks.flush_index(&self.data_dir);
+                    *writes_since_flush = 0;
+                }
+                FileResp::Ok
+            }
+            Err(e) => FileResp::Err(e),
+        }
+    }
+
+    fn handle_write_block_async(
+        &mut self,
+        height: BlockHeight,
+        data: &[u8],
+        writes_since_flush: &mut u64,
+    ) {
+        let _ = self.blocks.write(&mut self.ring, height, data);
+        *writes_since_flush += 1;
+        if *writes_since_flush >= BLOCK_INDEX_FLUSH_INTERVAL {
+            let _ = self.blocks.flush_index(&self.data_dir);
+            *writes_since_flush = 0;
+        }
+    }
+
+    fn handle_read_block(&mut self, height: BlockHeight) -> FileResp {
+        match self.blocks.block_location(height) {
+            Ok((offset, length)) => match self.slab_writer.alloc() {
+                Some(slot) => {
+                    match self.slab_writer.fill_from_disk(
+                        slot,
+                        self.blocks.file_store(),
+                        &mut self.ring,
+                        offset,
+                        length,
+                    ) {
+                        Ok(_token) => {
+                            let data = self.slab_writer.slot_buf_mut(slot)
+                                [..length as usize]
+                                .to_vec();
+                            self.slab_writer.release(slot);
+                            FileResp::BlockData(data)
+                        }
+                        Err(e) => {
+                            self.slab_writer.release(slot);
+                            FileResp::Err(e)
+                        }
+                    }
+                }
+                None => FileResp::Err(io::Error::other("slab full")),
+            },
+            Err(e) => FileResp::Err(e),
+        }
+    }
+
+    fn handle_read_block_decoded(
+        &mut self,
+        height: BlockHeight,
+        expected_hash: Hash256,
+    ) -> FileResp {
+        match self.blocks.block_location(height) {
+            Ok((offset, length)) => match self.slab_writer.alloc() {
+                Some(slot) => {
+                    match self.slab_writer.fill_from_disk(
+                        slot,
+                        self.blocks.file_store(),
+                        &mut self.ring,
+                        offset,
+                        length,
+                    ) {
+                        Ok(_token) => {
+                            let data = &self.slab_writer.slot_buf_mut(slot)
+                                [..length as usize];
+                            let result =
+                                Block::decode(&mut std::io::Cursor::new(data));
+                            self.slab_writer.release(slot);
+                            match result {
+                                Ok(block) => {
+                                    if block.header.hash() == expected_hash {
+                                        FileResp::DecodedBlock(block)
+                                    } else {
+                                        FileResp::Err(io::Error::other(
+                                            "hash mismatch",
+                                        ))
+                                    }
+                                }
+                                Err(e) => FileResp::Err(io::Error::other(
+                                    format!("decode: {e}"),
+                                )),
+                            }
+                        }
+                        Err(e) => {
+                            self.slab_writer.release(slot);
+                            FileResp::Err(e)
+                        }
+                    }
+                }
+                None => FileResp::Err(io::Error::other("slab full")),
+            },
+            Err(e) => FileResp::Err(e),
+        }
+    }
+
+    fn handle_read_block_slab(&mut self, height: BlockHeight) -> FileResp {
+        match self.blocks.block_location(height) {
+            Ok((offset, length)) => match self.slab_writer.alloc() {
+                Some(slot) => {
+                    match self.slab_writer.fill_from_disk(
+                        slot,
+                        self.blocks.file_store(),
+                        &mut self.ring,
+                        offset,
+                        length,
+                    ) {
+                        Ok(token) => FileResp::SlabReady(token),
+                        Err(e) => {
+                            self.slab_writer.release(slot);
+                            FileResp::Err(e)
+                        }
+                    }
+                }
+                None => FileResp::Err(io::Error::other("slab full")),
+            },
+            Err(e) => FileResp::Err(e),
+        }
+    }
+
+    fn handle_has_block(&self, height: BlockHeight) -> FileResp {
+        FileResp::Bool(self.blocks.has_block(height))
+    }
+
+    fn handle_write_headers(
+        &mut self,
+        start: BlockHeight,
+        data: &[u8],
+    ) -> FileResp {
+        match self.headers.write_raw(&mut self.ring, start, data) {
+            Ok(()) => FileResp::Ok,
+            Err(e) => FileResp::Err(e),
+        }
+    }
+
+    fn handle_load_cached_headers(&mut self, start: BlockHeight) -> FileResp {
+        match self.headers.load_cached(&mut self.ring, start) {
+            Ok(h) => FileResp::Headers(h),
+            Err(e) => FileResp::Err(e),
+        }
+    }
+
+    fn handle_flush_block_index(&mut self) -> FileResp {
+        match self.blocks.flush_index(&self.data_dir) {
+            Ok(()) => FileResp::Ok,
+            Err(e) => FileResp::Err(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use mantle::codec::Encode;
+    use mantle::primitives::{
+        BlockHeader, BlockTime, BlockVersion, CompactBits, Hash256, Locktime, Nonce, OutPoint,
+        Satoshi, Sequence, Transaction, TxIn, TxOut, TxVersion, Witness,
+    };
+
+    /// Unique temp directory per test to avoid conflicts with parallel runs.
+    fn test_data_dir() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("mantle_block_io_test_{pid}_{id}"));
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        dir
+    }
+
+    fn cleanup(dir: &Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn sample_block() -> Block {
+        Block {
+            header: BlockHeader::new(
+                BlockVersion::new(1),
+                Hash256::ZERO,
+                Hash256::ZERO,
+                BlockTime::new(1_231_006_505),
+                CompactBits::new(0x1d00_ffff),
+                Nonce::new(2_083_236_893),
+            ),
+            transactions: vec![Transaction {
+                version: TxVersion::new(1),
+                inputs: vec![TxIn {
+                    previous_output: OutPoint {
+                        txid: Hash256::ZERO,
+                        vout: 0xffff_ffff,
+                    },
+                    script_sig: vec![0x04].into(),
+                    sequence: Sequence::MAX,
+                    witness: Witness::empty(),
+                }],
+                outputs: vec![TxOut {
+                    value: Satoshi::new(5_000_000_000),
+                    script_pubkey: vec![0xac].into(),
+                }],
+                locktime: Locktime::new(0),
+            }],
+        }
+    }
+
+    #[test]
+    fn write_then_read_block_roundtrips() {
+        let dir = test_data_dir();
+        let block = sample_block();
+        let mut encoded = Vec::new();
+        block.encode(&mut encoded).expect("encode block");
+        let expected = encoded.clone();
+
+        let result = with_file_io(&dir, |handle, _slab_reader| {
+            handle
+                .write_block(BlockHeight::ZERO, encoded)
+                .expect("write_block");
+            let data = handle.read_block(BlockHeight::ZERO).expect("read_block");
+            assert_eq!(data, expected, "read_block should return the written bytes");
+        });
+        assert!(result.is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn read_block_decoded_returns_matching_block() {
+        let dir = test_data_dir();
+        let block = sample_block();
+        let expected_hash = block.header.hash();
+        let mut encoded = Vec::new();
+        block.encode(&mut encoded).expect("encode block");
+
+        let result = with_file_io(&dir, |handle, _slab_reader| {
+            handle
+                .write_block(BlockHeight::ZERO, encoded)
+                .expect("write_block");
+            let decoded = handle
+                .read_block_decoded(BlockHeight::ZERO, expected_hash)
+                .expect("read_block_decoded");
+            assert_eq!(decoded, block, "decoded block should match original");
+        });
+        assert!(result.is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn read_block_decoded_rejects_wrong_hash() {
+        let dir = test_data_dir();
+        let block = sample_block();
+        let wrong_hash = Hash256::from_bytes([0xff; 32]);
+        let mut encoded = Vec::new();
+        block.encode(&mut encoded).expect("encode block");
+
+        let result = with_file_io(&dir, |handle, _slab_reader| {
+            handle
+                .write_block(BlockHeight::ZERO, encoded)
+                .expect("write_block");
+            let err = handle
+                .read_block_decoded(BlockHeight::ZERO, wrong_hash)
+                .expect_err("should fail with wrong hash");
+            assert!(
+                err.to_string().contains("hash mismatch"),
+                "error should mention hash mismatch, got: {err}"
+            );
+        });
+        assert!(result.is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn read_nonexistent_block_returns_error() {
+        let dir = test_data_dir();
+
+        let result = with_file_io(&dir, |handle, _slab_reader| {
+            let err = handle
+                .read_block(BlockHeight::ZERO)
+                .expect_err("reading nonexistent block should fail");
+            assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        });
+        assert!(result.is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn has_block_reports_correctly() {
+        let dir = test_data_dir();
+        let block = sample_block();
+        let mut encoded = Vec::new();
+        block.encode(&mut encoded).expect("encode block");
+
+        let result = with_file_io(&dir, |handle, _slab_reader| {
+            assert!(
+                !handle.has_block(BlockHeight::ZERO),
+                "has_block should be false before write"
+            );
+            handle
+                .write_block(BlockHeight::ZERO, encoded)
+                .expect("write_block");
+            assert!(
+                handle.has_block(BlockHeight::ZERO),
+                "has_block should be true after write"
+            );
+        });
+        assert!(result.is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn write_then_read_block_slab_roundtrips() {
+        let dir = test_data_dir();
+        let block = sample_block();
+        let mut encoded = Vec::new();
+        block.encode(&mut encoded).expect("encode block");
+        let expected_len = encoded.len();
+
+        let result = with_file_io(&dir, |handle, slab_reader| {
+            handle
+                .write_block(BlockHeight::ZERO, encoded)
+                .expect("write_block");
+            let token = handle
+                .read_block_slab(BlockHeight::ZERO)
+                .expect("read_block_slab");
+            let slot = token.slot;
+            let buf_handle = slab_reader.handle(token);
+            assert_eq!(buf_handle.as_slice().len(), expected_len);
+            handle.release_slab(slot);
+        });
+        assert!(result.is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn write_block_async_stores_data() {
+        let dir = test_data_dir();
+        let block = sample_block();
+        let mut encoded = Vec::new();
+        block.encode(&mut encoded).expect("encode block");
+        let expected = encoded.clone();
+
+        let result = with_file_io(&dir, |handle, _slab_reader| {
+            handle
+                .write_block_async(BlockHeight::ZERO, encoded)
+                .expect("write_block_async");
+            // write_block_async is fire-and-forget on the caller side, but the
+            // worker processes it before the next synchronous request.
+            let data = handle.read_block(BlockHeight::ZERO).expect("read_block");
+            assert_eq!(data, expected);
+        });
+        assert!(result.is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn write_and_load_cached_headers_roundtrips() {
+        let dir = test_data_dir();
+        let hdr = sample_block().header;
+        let mut hdr_bytes = Vec::new();
+        hdr.encode(&mut hdr_bytes).expect("encode header");
+
+        let result = with_file_io(&dir, |handle, _slab_reader| {
+            handle
+                .write_headers(BlockHeight::new(5), hdr_bytes.clone())
+                .expect("write_headers");
+            let headers = handle
+                .load_cached_headers(BlockHeight::new(5))
+                .expect("load_cached_headers");
+            assert_eq!(headers.len(), 1);
+            assert_eq!(headers[0].0, BlockHeight::new(5));
+            assert_eq!(headers[0].1, hdr);
+        });
+        assert!(result.is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn flush_block_index_succeeds() {
+        let dir = test_data_dir();
+        let block = sample_block();
+        let mut encoded = Vec::new();
+        block.encode(&mut encoded).expect("encode block");
+
+        let result = with_file_io(&dir, |handle, _slab_reader| {
+            handle
+                .write_block(BlockHeight::ZERO, encoded)
+                .expect("write_block");
+            handle.flush_block_index().expect("flush_block_index");
+        });
+        assert!(result.is_ok());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn shutdown_is_clean() {
+        let dir = test_data_dir();
+
+        let result = with_file_io(&dir, |handle, _slab_reader| {
+            handle.shutdown();
+        });
+        assert!(result.is_ok());
+        cleanup(&dir);
     }
 }

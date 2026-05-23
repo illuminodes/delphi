@@ -332,7 +332,12 @@ pub(super) fn block_subsidy(height: BlockHeight) -> Satoshi {
 ///
 /// `OP_CHECKMULTISIG` / `OP_CHECKMULTISIGVERIFY` each count as 20 (the maximum
 /// allowed pubkeys per multisig), matching Core's pre-segwit counting rule.
-pub(super) fn count_legacy_sigops(script: &[u8]) -> u32 {
+///
+/// # Panics
+/// Panics if an `OP_PUSHDATA4` length field exceeds `usize::MAX` (impossible on
+/// 32-bit or wider platforms).
+#[must_use]
+pub fn count_legacy_sigops(script: &[u8]) -> u32 {
     const OP_CHECKSIG: u8 = 0xac;
     const OP_CHECKSIGVERIFY: u8 = 0xad;
     const OP_CHECKMULTISIG: u8 = 0xae;
@@ -346,11 +351,11 @@ pub(super) fn count_legacy_sigops(script: &[u8]) -> u32 {
             OP_CHECKSIG | OP_CHECKSIGVERIFY => count += 1,
             OP_CHECKMULTISIG | OP_CHECKMULTISIGVERIFY => count += 20,
             // Push data opcodes: skip the pushed bytes.
-            0x01..=0x4b => i += op as usize,
+            0x01..=0x4b => i += usize::from(op),
             0x4c => {
                 // OP_PUSHDATA1: next byte is length
                 if let Some(&len) = script.get(i + 1) {
-                    i += 1 + len as usize;
+                    i += 1 + usize::from(len);
                 } else {
                     break;
                 }
@@ -358,7 +363,7 @@ pub(super) fn count_legacy_sigops(script: &[u8]) -> u32 {
             0x4d => {
                 // OP_PUSHDATA2: next 2 bytes are little-endian length
                 if i + 2 < script.len() {
-                    let len = u16::from_le_bytes([script[i + 1], script[i + 2]]) as usize;
+                    let len = usize::from(u16::from_le_bytes([script[i + 1], script[i + 2]]));
                     i += 2 + len;
                 } else {
                     break;
@@ -367,12 +372,13 @@ pub(super) fn count_legacy_sigops(script: &[u8]) -> u32 {
             0x4e => {
                 // OP_PUSHDATA4: next 4 bytes are little-endian length
                 if i + 4 < script.len() {
-                    let len = u32::from_le_bytes([
+                    let len = usize::try_from(u32::from_le_bytes([
                         script[i + 1],
                         script[i + 2],
                         script[i + 3],
                         script[i + 4],
-                    ]) as usize;
+                    ]))
+                    .expect("script push length overflows usize");
                     i += 4 + len;
                 } else {
                     break;

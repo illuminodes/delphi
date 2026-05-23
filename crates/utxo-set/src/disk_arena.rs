@@ -11,6 +11,8 @@ use mantle_consensus::chain_view::Coin;
 use crate::coin_entry::CoinEntry;
 
 const SLOT_SIZE: u64 = 56;
+const SLOT_SIZE_U32: u32 = SLOT_SIZE as u32;
+const SLOT_SIZE_USIZE: usize = SLOT_SIZE as usize;
 const MAX_INLINE_SPK: usize = 34;
 
 /// On-disk arena span — base slot index + output count.
@@ -80,8 +82,7 @@ impl DiskArena {
             .truncate(false)
             .open(path)?;
         let file_len = file.metadata()?.len();
-        #[allow(clippy::cast_possible_truncation)]
-        let file_slots = (file_len / SLOT_SIZE) as u32;
+        let file_slots = u32::try_from(file_len / SLOT_SIZE).expect("arena file fits u32 slots");
         Ok(Self {
             file,
             file_slots,
@@ -133,14 +134,14 @@ impl DiskArena {
 
     /// Write a coin to a specific slot. Synchronous pwrite.
     pub fn write_coin(&self, slot: u32, coin: &CoinEntry, height: BlockHeight, coinbase: bool) -> io::Result<()> {
-        let mut buf = [0u8; SLOT_SIZE as usize];
+        let mut buf = [0u8; SLOT_SIZE_USIZE];
         encode_slot(&mut buf, coin, height, coinbase);
         pwrite_all(&self.file, &buf, u64::from(slot) * SLOT_SIZE)
     }
 
     /// Read a coin from a specific slot. Synchronous pread.
     pub fn read_coin(&self, slot: u32) -> io::Result<Option<Coin>> {
-        let mut buf = [0u8; SLOT_SIZE as usize];
+        let mut buf = [0u8; SLOT_SIZE_USIZE];
         pread_exact(&self.file, &mut buf, u64::from(slot) * SLOT_SIZE)?;
         Ok(decode_slot(&buf))
     }
@@ -155,7 +156,7 @@ impl DiskArena {
         arena_buf: &mut Vec<u8>,
     ) -> io::Result<()> {
         let count = coins.len();
-        let needed = count * SLOT_SIZE as usize;
+        let needed = count * SLOT_SIZE_USIZE;
         arena_buf.clear();
         arena_buf.resize(needed, 0u8);
 
@@ -164,9 +165,9 @@ impl DiskArena {
         let mut submitted = 0u32;
 
         for (i, (vout, coin, coinbase)) in coins.iter().enumerate() {
-            let buf_start = i * SLOT_SIZE as usize;
+            let buf_start = i * SLOT_SIZE_USIZE;
             encode_slot(
-                (&mut arena_buf[buf_start..buf_start + SLOT_SIZE as usize]).try_into().unwrap(),
+                (&mut arena_buf[buf_start..buf_start + SLOT_SIZE_USIZE]).try_into().expect("slot-aligned slice"),
                 coin,
                 height,
                 *coinbase,
@@ -176,10 +177,10 @@ impl DiskArena {
                 ququmatz::Sqe::write_ptr(
                     fd,
                     arena_buf[buf_start..].as_ptr(),
-                    SLOT_SIZE as u32,
+                    SLOT_SIZE_U32,
                     offset,
                 )
-            }.user_data(i as u64);
+            }.user_data(u64::try_from(i).expect("index fits u64"));
             ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
             submitted += 1;
         }
@@ -201,7 +202,7 @@ impl DiskArena {
         arena_buf: &mut Vec<u8>,
     ) -> io::Result<Vec<Option<Coin>>> {
         let count = vouts.len();
-        let needed = count * SLOT_SIZE as usize;
+        let needed = count * SLOT_SIZE_USIZE;
         arena_buf.clear();
         arena_buf.resize(needed, 0u8);
 
@@ -212,15 +213,15 @@ impl DiskArena {
         for (i, &vout) in vouts.iter().enumerate() {
             if vout >= u32::from(span.count) { continue; }
             let offset = (u64::from(span.base) + u64::from(vout)) * SLOT_SIZE;
-            let buf_start = i * SLOT_SIZE as usize;
+            let buf_start = i * SLOT_SIZE_USIZE;
             let sqe = unsafe {
                 ququmatz::Sqe::read_ptr(
                     fd,
                     arena_buf[buf_start..].as_mut_ptr(),
-                    SLOT_SIZE as u32,
+                    SLOT_SIZE_U32,
                     offset,
                 )
-            }.user_data(i as u64);
+            }.user_data(u64::try_from(i).expect("index fits u64"));
             ring.push(sqe).map_err(|e| io::Error::other(format!("{e:?}")))?;
             submitted += 1;
         }
@@ -233,9 +234,9 @@ impl DiskArena {
 
         let mut results = Vec::with_capacity(count);
         for i in 0..count {
-            let buf_start = i * SLOT_SIZE as usize;
-            let buf: &[u8; SLOT_SIZE as usize] =
-                arena_buf[buf_start..buf_start + SLOT_SIZE as usize].try_into().unwrap();
+            let buf_start = i * SLOT_SIZE_USIZE;
+            let buf: &[u8; SLOT_SIZE_USIZE] =
+                arena_buf[buf_start..buf_start + SLOT_SIZE_USIZE].try_into().expect("slot-aligned slice");
             results.push(decode_slot(buf));
         }
         Ok(results)
@@ -265,13 +266,13 @@ impl DiskArena {
 //   [47]     coinbase (u8)
 //   [48..56] padding (zeroed)
 
-fn encode_slot(buf: &mut [u8; SLOT_SIZE as usize], coin: &CoinEntry, height: BlockHeight, coinbase: bool) {
+fn encode_slot(buf: &mut [u8; SLOT_SIZE_USIZE], coin: &CoinEntry, height: BlockHeight, coinbase: bool) {
     encode_coin_slot(buf, coin.value, height, coinbase, coin.script_pubkey.as_slice());
 }
 
 /// Encode a coin into a 56-byte slot buffer from raw fields.
 pub fn encode_coin_slot(
-    buf: &mut [u8; SLOT_SIZE as usize],
+    buf: &mut [u8; SLOT_SIZE_USIZE],
     value: Satoshi,
     height: BlockHeight,
     coinbase: bool,
@@ -288,7 +289,7 @@ pub fn encode_coin_slot(
     buf[48..56].fill(0);
 }
 
-fn decode_slot(buf: &[u8; SLOT_SIZE as usize]) -> Option<Coin> {
+fn decode_slot(buf: &[u8; SLOT_SIZE_USIZE]) -> Option<Coin> {
     let spk_len = buf[12] as usize;
     if spk_len == 0 && buf[0..8] == [0u8; 8] {
         return None; // tombstone / empty
@@ -405,9 +406,75 @@ mod tests {
     }
 
     #[test]
+    fn write_span_uring_then_read_coins_uring() {
+        let dir = TmpDir::new();
+        let mut arena = DiskArena::open(&dir.path().join("coins.bin")).unwrap();
+        let mut ring = ququmatz::IoUring::new(64).unwrap();
+        let mut arena_buf: Vec<u8> = Vec::new();
+
+        let span = arena.alloc(3);
+        let c0 = coin(1000);
+        let c1 = coin(2000);
+        let c2 = coin(3000);
+
+        let coins_to_write: Vec<(u32, &CoinEntry, bool)> = vec![
+            (0, &c0, false),
+            (1, &c1, true),
+            (2, &c2, false),
+        ];
+
+        arena
+            .write_span_uring(span, &coins_to_write, BlockHeight::new(50), &mut ring, &mut arena_buf)
+            .unwrap();
+
+        // Read back all three vouts via io_uring.
+        let mut read_buf = Vec::new();
+        let results = arena
+            .read_coins_uring(span, &[0, 1, 2], &mut ring, &mut read_buf)
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        let r0 = results[0].as_ref().unwrap();
+        assert_eq!(r0.value, Satoshi::new(1000));
+        assert!(!r0.coinbase);
+        assert_eq!(r0.height, BlockHeight::new(50));
+
+        let r1 = results[1].as_ref().unwrap();
+        assert_eq!(r1.value, Satoshi::new(2000));
+        assert!(r1.coinbase);
+
+        let r2 = results[2].as_ref().unwrap();
+        assert_eq!(r2.value, Satoshi::new(3000));
+        assert!(!r2.coinbase);
+    }
+
+    #[test]
+    fn read_coins_uring_skips_out_of_range_vout() {
+        let dir = TmpDir::new();
+        let mut arena = DiskArena::open(&dir.path().join("coins.bin")).unwrap();
+        let mut ring = ququmatz::IoUring::new(64).unwrap();
+
+        let span = arena.alloc(1);
+        let c = coin(7777);
+        arena.write_coin(span.base, &c, BlockHeight::new(10), false).unwrap();
+
+        // vout 0 is valid, vout 5 is out-of-range (span.count == 1).
+        let mut read_buf = Vec::new();
+        let results = arena
+            .read_coins_uring(span, &[0, 5], &mut ring, &mut read_buf)
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_some());
+        assert_eq!(results[0].as_ref().unwrap().value, Satoshi::new(7777));
+        // Out-of-range vout yields None (buffer is zeroed, decode_slot sees tombstone).
+        assert!(results[1].is_none());
+    }
+
+    #[test]
     fn encode_decode_roundtrip() {
         let c = coin(123_456_789);
-        let mut buf = [0u8; SLOT_SIZE as usize];
+        let mut buf = [0u8; SLOT_SIZE_USIZE];
         encode_slot(&mut buf, &c, BlockHeight::new(800_000), true);
         let decoded = decode_slot(&buf).unwrap();
         assert_eq!(decoded.value, Satoshi::new(123_456_789));

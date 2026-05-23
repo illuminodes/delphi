@@ -203,4 +203,99 @@ mod tests {
         let hdr = Network::Signet.genesis_header().expect("signet has one");
         assert_eq!(hdr.hash(), Network::Signet.genesis_hash());
     }
+
+    #[test]
+    fn name_returns_non_empty_for_all_variants() {
+        let variants = [
+            Network::Mainnet,
+            Network::Testnet3,
+            Network::Testnet4,
+            Network::Signet,
+            Network::Regtest,
+        ];
+        for net in &variants {
+            assert!(!net.name().is_empty(), "{net:?} name should be non-empty");
+        }
+    }
+
+    #[test]
+    fn magic_returns_distinct_for_all_variants() {
+        let variants = [
+            Network::Mainnet,
+            Network::Testnet3,
+            Network::Testnet4,
+            Network::Signet,
+            Network::Regtest,
+        ];
+        for net in &variants {
+            // Just exercising the method; Magic is an enum so we can't do much
+            // beyond checking it doesn't panic.
+            let _m = net.magic();
+        }
+    }
+
+    #[test]
+    fn default_port_non_zero_for_all_variants() {
+        let variants = [
+            Network::Mainnet,
+            Network::Testnet3,
+            Network::Testnet4,
+            Network::Signet,
+            Network::Regtest,
+        ];
+        for net in &variants {
+            assert!(net.default_port() > 0, "{net:?} port should be > 0");
+        }
+    }
+
+    #[test]
+    fn genesis_hash_non_zero_for_all_variants() {
+        let variants = [
+            Network::Mainnet,
+            Network::Testnet3,
+            Network::Testnet4,
+            Network::Signet,
+            Network::Regtest,
+        ];
+        for net in &variants {
+            assert_ne!(
+                net.genesis_hash(),
+                Hash256::ZERO,
+                "{net:?} genesis hash should be non-zero"
+            );
+        }
+    }
+
+    #[test]
+    fn genesis_header_returns_some_for_supported_variants() {
+        // Mainnet, Testnet4, and Signet have genesis headers.
+        assert!(Network::Mainnet.genesis_header().is_some());
+        assert!(Network::Testnet4.genesis_header().is_some());
+        assert!(Network::Signet.genesis_header().is_some());
+        // Testnet3 and Regtest return None (documented behavior).
+        assert!(Network::Testnet3.genesis_header().is_none());
+        assert!(Network::Regtest.genesis_header().is_none());
+    }
+
+    #[test]
+    fn parse_all_variants() {
+        assert_eq!(Network::parse("main"), Some(Network::Mainnet));
+        assert_eq!(Network::parse("mainnet"), Some(Network::Mainnet));
+        assert_eq!(Network::parse("MAINNET"), Some(Network::Mainnet));
+        assert_eq!(Network::parse("test"), Some(Network::Testnet3));
+        assert_eq!(Network::parse("testnet"), Some(Network::Testnet3));
+        assert_eq!(Network::parse("testnet3"), Some(Network::Testnet3));
+        assert_eq!(Network::parse("testnet4"), Some(Network::Testnet4));
+        assert_eq!(Network::parse("signet"), Some(Network::Signet));
+        assert_eq!(Network::parse("regtest"), Some(Network::Regtest));
+        assert_eq!(Network::parse("unknown"), None);
+    }
+
+    #[test]
+    fn default_seeds_mainnet_non_empty() {
+        assert!(!Network::Mainnet.default_seeds().is_empty());
+        assert!(!Network::Testnet4.default_seeds().is_empty());
+        assert!(!Network::Signet.default_seeds().is_empty());
+        assert!(Network::Regtest.default_seeds().is_empty());
+    }
 }

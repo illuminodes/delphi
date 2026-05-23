@@ -735,4 +735,147 @@ mod tests {
             roundtrip_encode(&v);
         }
     }
+
+    // ── decode_from_first_byte tests ─────────────────────────────────────────
+
+    #[test]
+    fn decode_from_first_byte_single_byte() {
+        // Single-byte values: 0x00 through 0xfc are returned directly.
+        for b in [0x00, 0x01, 0x7f, 0xfc] {
+            let mut cursor = Cursor::new(&[] as &[u8]);
+            let vi = VarInt::decode_from_first_byte(b, &mut cursor).unwrap();
+            assert_eq!(vi, VarInt(u64::from(b)));
+        }
+    }
+
+    #[test]
+    fn decode_from_first_byte_fd_prefix() {
+        // 0xfd prefix: next 2 bytes are little-endian u16.
+        let body = 0x0100u16.to_le_bytes();
+        let mut cursor = Cursor::new(body.as_slice());
+        let vi = VarInt::decode_from_first_byte(0xfd, &mut cursor).unwrap();
+        assert_eq!(vi, VarInt(0x0100));
+    }
+
+    #[test]
+    fn decode_from_first_byte_fe_prefix() {
+        // 0xfe prefix: next 4 bytes are little-endian u32.
+        let body = 0x0001_0000u32.to_le_bytes();
+        let mut cursor = Cursor::new(body.as_slice());
+        let vi = VarInt::decode_from_first_byte(0xfe, &mut cursor).unwrap();
+        assert_eq!(vi, VarInt(0x0001_0000));
+    }
+
+    #[test]
+    fn decode_from_first_byte_ff_prefix() {
+        // 0xff prefix: next 8 bytes are little-endian u64.
+        let body = u64::MAX.to_le_bytes();
+        let mut cursor = Cursor::new(body.as_slice());
+        let vi = VarInt::decode_from_first_byte(0xff, &mut cursor).unwrap();
+        assert_eq!(vi, VarInt(u64::MAX));
+    }
+
+    // ── VarInt DecodeRef tests ────────────────────────────────────────────────
+
+    #[test]
+    fn varint_decode_ref_single_byte() {
+        let buf = [0x42, 0xaa];
+        let (vi, rest) = VarInt::decode_ref(&buf).unwrap();
+        assert_eq!(vi, VarInt(0x42));
+        assert_eq!(rest, &[0xaa]);
+    }
+
+    #[test]
+    fn varint_decode_ref_fd_prefix() {
+        let mut buf = vec![0xfd];
+        buf.extend_from_slice(&300u16.to_le_bytes());
+        buf.push(0xbb);
+        let (vi, rest) = VarInt::decode_ref(&buf).unwrap();
+        assert_eq!(vi, VarInt(300));
+        assert_eq!(rest, &[0xbb]);
+    }
+
+    #[test]
+    fn varint_decode_ref_fe_prefix() {
+        let mut buf = vec![0xfe];
+        buf.extend_from_slice(&70_000u32.to_le_bytes());
+        let (vi, rest) = VarInt::decode_ref(&buf).unwrap();
+        assert_eq!(vi, VarInt(70_000));
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn varint_decode_ref_ff_prefix() {
+        let mut buf = vec![0xff];
+        buf.extend_from_slice(&0x1_0000_0000u64.to_le_bytes());
+        let (vi, rest) = VarInt::decode_ref(&buf).unwrap();
+        assert_eq!(vi, VarInt(0x1_0000_0000));
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn varint_decode_ref_truncated_fd() {
+        let buf = [0xfd, 0x01]; // needs 2 bytes after 0xfd, only 1
+        assert!(VarInt::decode_ref(&buf).is_err());
+    }
+
+    #[test]
+    fn varint_decode_ref_truncated_fe() {
+        let buf = [0xfe, 0x01, 0x02]; // needs 4 bytes after 0xfe, only 2
+        assert!(VarInt::decode_ref(&buf).is_err());
+    }
+
+    #[test]
+    fn varint_decode_ref_empty() {
+        let buf: &[u8] = &[];
+        assert!(VarInt::decode_ref(buf).is_err());
+    }
+
+    #[test]
+    fn codec_error_display_all_variants() {
+        let eof = Error::UnexpectedEof;
+        assert!(format!("{eof}").contains("unexpected"));
+
+        let overflow = Error::LengthOverflow(u64::MAX);
+        assert!(format!("{overflow}").contains("overflows"));
+
+        let utf8 = Error::InvalidUtf8(std::str::from_utf8(&[0xff]).unwrap_err());
+        assert!(format!("{utf8}").contains("UTF-8"));
+
+        let io = Error::Io(io::Error::new(io::ErrorKind::Other, "test"));
+        assert!(format!("{io}").contains("I/O"));
+    }
+
+    #[test]
+    fn error_source_unexpected_eof_is_none() {
+        use std::error::Error as StdError;
+        let e = Error::UnexpectedEof;
+        assert!(e.source().is_none());
+    }
+
+    #[test]
+    fn error_source_length_overflow_is_none() {
+        use std::error::Error as StdError;
+        let e = Error::LengthOverflow(42);
+        assert!(e.source().is_none());
+    }
+
+    #[test]
+    fn error_source_invalid_utf8_is_some() {
+        use std::error::Error as StdError;
+        let utf8_err = std::str::from_utf8(&[0xff]).unwrap_err();
+        let e = Error::InvalidUtf8(utf8_err);
+        let src = e.source().expect("InvalidUtf8 must have a source");
+        // The source should be the inner Utf8Error — verify by Display.
+        assert!(format!("{src}").contains("invalid"));
+    }
+
+    #[test]
+    fn error_source_io_is_some() {
+        use std::error::Error as StdError;
+        let io_err = io::Error::new(io::ErrorKind::Other, "disk on fire");
+        let e = Error::Io(io_err);
+        let src = e.source().expect("Io must have a source");
+        assert!(format!("{src}").contains("disk on fire"));
+    }
 }

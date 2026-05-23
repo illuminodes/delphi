@@ -580,4 +580,114 @@ mod tests {
         let materialised = TxView::to_owned_tx(&tx_ref).expect("to_owned_tx");
         assert_eq!(materialised, tx);
     }
+
+    #[test]
+    fn ref_input_iter_iterates_segwit_inputs() {
+        // Exercise RefInputIter::next by iterating all inputs through the
+        // TxView::inputs() method on a TransactionRef.
+        let tx = make_segwit_tx();
+        let bytes = encode_tx(&tx);
+        let mut arena = Vec::new();
+        let (tx_ref, _) = mantle::primitives::transaction_ref_with_arena(&bytes, &mut arena)
+            .expect("arena decode");
+
+        let mut count = 0;
+        for input in TxView::inputs(&tx_ref) {
+            assert_eq!(input.previous_output().txid, Hash256::from_bytes([0x42; 32]));
+            assert_eq!(input.previous_output().vout, 7);
+            assert_eq!(input.sequence(), Sequence::new(0xffff_fffe));
+            // Witness should be populated from the cursor.
+            assert!(!input.witness().is_empty());
+            let wit_items = input.witness().to_vec();
+            assert_eq!(wit_items.len(), 2);
+            assert_eq!(wit_items[0], &[0xab, 0xcd]);
+            assert_eq!(wit_items[1], &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+            count += 1;
+        }
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn ref_input_iter_multi_input_segwit() {
+        // Multi-input segwit tx: exercises the witnesses_cursor advancing
+        // through multiple inputs.
+        let tx = Transaction {
+            version: TxVersion::new(2),
+            inputs: vec![
+                TxIn {
+                    previous_output: OutPoint {
+                        txid: Hash256::from_bytes([0x11; 32]),
+                        vout: 0,
+                    },
+                    script_sig: Vec::<u8>::new().into(),
+                    sequence: Sequence::new(0xffff_ffff),
+                    witness: Witness::from_slice(&[&[0xaa][..], &[0xbb, 0xcc][..]]),
+                },
+                TxIn {
+                    previous_output: OutPoint {
+                        txid: Hash256::from_bytes([0x22; 32]),
+                        vout: 1,
+                    },
+                    script_sig: Vec::<u8>::new().into(),
+                    sequence: Sequence::new(0xffff_fffe),
+                    witness: Witness::from_slice(&[&[0xdd, 0xee, 0xff][..]]),
+                },
+            ],
+            outputs: vec![TxOut {
+                value: Satoshi::new(50_000),
+                script_pubkey: vec![0x6a].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+
+        let bytes = encode_tx(&tx);
+        let mut arena = Vec::new();
+        let (tx_ref, _) = mantle::primitives::transaction_ref_with_arena(&bytes, &mut arena)
+            .expect("arena decode");
+
+        let inputs: Vec<_> = TxView::inputs(&tx_ref).collect();
+        assert_eq!(inputs.len(), 2);
+
+        // First input's witness.
+        let w0 = inputs[0].witness().to_vec();
+        assert_eq!(w0.len(), 2);
+        assert_eq!(w0[0], &[0xaa]);
+        assert_eq!(w0[1], &[0xbb, 0xcc]);
+
+        // Second input's witness.
+        let w1 = inputs[1].witness().to_vec();
+        assert_eq!(w1.len(), 1);
+        assert_eq!(w1[0], &[0xdd, 0xee, 0xff]);
+    }
+
+    #[test]
+    fn ref_input_iter_non_segwit_has_empty_witness() {
+        // Non-segwit tx: RefInputIter should produce empty witnesses.
+        let tx = Transaction {
+            version: TxVersion::new(1),
+            inputs: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Hash256::from_bytes([0x33; 32]),
+                    vout: 0,
+                },
+                script_sig: vec![0x51u8].into(), // OP_1
+                sequence: Sequence::new(0xffff_ffff),
+                witness: Witness::empty(),
+            }],
+            outputs: vec![TxOut {
+                value: Satoshi::new(10_000),
+                script_pubkey: vec![0x6a].into(),
+            }],
+            locktime: Locktime::new(0),
+        };
+
+        let bytes = encode_tx(&tx);
+        let mut arena = Vec::new();
+        let (tx_ref, _) = mantle::primitives::transaction_ref_with_arena(&bytes, &mut arena)
+            .expect("arena decode");
+
+        let inputs: Vec<_> = TxView::inputs(&tx_ref).collect();
+        assert_eq!(inputs.len(), 1);
+        assert!(inputs[0].witness().is_empty());
+    }
 }

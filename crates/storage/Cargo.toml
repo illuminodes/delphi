@@ -17,3 +17,6 @@ mantle-lru = { path = "../lru-cache" }
 mantle-utxo-set = { path = "../utxo-set" }
 quetzalcoatl.workspace = true
 ququmatz.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -6,13 +6,12 @@
 //! with `io_uring` batched I/O.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use mantle::collections::{BuildPrehashedHasher, PrehashedMap};
-use mantle::hash::ByteSliceExt;
 use mantle::primitives::{
-    BlockHeader, BlockHeight, CompactBits, Hash256, OutPoint, Satoshi, ScriptPubKey,
+    BlockHeader, BlockHeight, Hash256, OutPoint, Satoshi, ScriptPubKey,
 };
 use mantle_consensus::chain_view::{Coin, TipInfo};
 
@@ -20,6 +19,7 @@ use super::{Engine, EngineError};
 use crate::types::{CommitBlockReq, Durability, LookupResult};
 
 const BUCKET_SIZE: usize = 88;
+const BUCKET_SIZE_U64: u64 = BUCKET_SIZE as u64;
 const MAGIC: [u8; 8] = *b"MANTLEU\0";
 const FORMAT_VERSION: u32 = 2;
 const INITIAL_SLOT_COUNT: u64 = 1024;
@@ -244,7 +244,7 @@ impl RobinHoodTable {
             .truncate(true)
             .open(path)?;
 
-        let file_size = (slot_count + 1) * BUCKET_SIZE as u64;
+        let file_size = (slot_count + 1) * BUCKET_SIZE_U64;
         file.set_len(file_size)?;
 
         let header = TableHeader {
@@ -286,7 +286,7 @@ impl RobinHoodTable {
     }
 
     fn slot_offset(slot: u64) -> u64 {
-        (slot + 1) * BUCKET_SIZE as u64
+        (slot + 1) * BUCKET_SIZE_U64
     }
 
     fn read_bucket(&self, slot: u64) -> io::Result<Bucket> {
@@ -448,20 +448,19 @@ impl RobinHoodTable {
     }
 
     fn backshift(&self, removed_slot: u64) -> io::Result<()> {
-        let mut prev = removed_slot;
-        let mut slot = (removed_slot + 1) & self.mask;
-        loop {
-            let bucket = self.read_bucket(slot)?;
-            if bucket.is_empty() || bucket.probe_distance == 1 {
-                self.write_empty(prev)?;
-                return Ok(());
-            }
-            let mut shifted = bucket;
-            shifted.probe_distance -= 1;
-            self.write_bucket(prev, &shifted)?;
-            prev = slot;
-            slot = (slot + 1) & self.mask;
-        }
+        mantle_utxo_set::robin_hood::backshift(
+            removed_slot,
+            self.mask,
+            |slot| self.read_bucket(slot),
+            |slot, bucket| self.write_bucket(slot, bucket),
+            |slot| self.write_empty(slot),
+            |b| b.is_empty() || b.probe_distance == 1,
+            |b| {
+                let mut shifted = b.clone();
+                shifted.probe_distance -= 1;
+                shifted
+            },
+        )
     }
 
     fn resize(&mut self) -> io::Result<()> {
@@ -582,7 +581,7 @@ impl RobinHoodTable {
                         offset,
                     )
                 }
-                .user_data(i as u64);
+                .user_data(u64::try_from(i).expect("index fits u64"));
                 flush_if_full(ring, self.apply_fd_flags(sqe), &mut submitted)?;
             }
 
@@ -608,7 +607,7 @@ impl RobinHoodTable {
                 let buf_start = i * BUCKET_SIZE;
                 let buf: &[u8; BUCKET_SIZE] = arena[buf_start..buf_start + BUCKET_SIZE]
                     .try_into()
-                    .unwrap();
+                    .expect("bucket-aligned slice");
                 let existing = Bucket::decode(buf);
 
                 let state = &mut states[i];
@@ -632,7 +631,7 @@ impl RobinHoodTable {
                     if wb + BUCKET_SIZE > write_arena.len() {
                         write_arena.resize(wb + BUCKET_SIZE, 0);
                     }
-                    to_write.encode((&mut write_arena[wb..wb + BUCKET_SIZE]).try_into().unwrap());
+                    to_write.encode((&mut write_arena[wb..wb + BUCKET_SIZE]).try_into().expect("bucket-aligned slice"));
                     writes.push(slot);
                     write_cursor += 1;
                     None // already handled
@@ -653,7 +652,7 @@ impl RobinHoodTable {
                     }
                     state
                         .bucket
-                        .encode((&mut write_arena[wb..wb + BUCKET_SIZE]).try_into().unwrap());
+                        .encode((&mut write_arena[wb..wb + BUCKET_SIZE]).try_into().expect("bucket-aligned slice"));
                     writes.push(slot);
                     write_cursor += 1;
                 }
@@ -701,7 +700,6 @@ impl RobinHoodTable {
     /// Panics only on internal invariant violations that cannot occur in
     /// correct usage (infallible `u32`/`usize` casts on compile-time constants).
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
     pub fn remove_batch_uring(
         &mut self,
         ops: &[OutPoint],
@@ -715,10 +713,29 @@ impl RobinHoodTable {
             return Ok(());
         }
 
+        let found_slots =
+            self.remove_probe_phase(ops, ring, arena, slots, dists, resolved)?;
+
+        self.remove_backshift_phase(&found_slots, ring, arena)
+    }
+
+    /// Phase 1 of [`remove_batch_uring`]: probe the table to locate each
+    /// target slot (mirrors `get_batch_uring`).
+    ///
+    /// Returns `found_slots` where `found_slots[i] == Some(slot)` once the
+    /// entry for `ops[i]` has been located.
+    #[allow(clippy::too_many_arguments)]
+    fn remove_probe_phase(
+        &self,
+        ops: &[OutPoint],
+        ring: &mut ququmatz::IoUring,
+        arena: &mut Vec<u8>,
+        slots: &mut Vec<u64>,
+        dists: &mut Vec<u16>,
+        resolved: &mut Vec<bool>,
+    ) -> io::Result<Vec<Option<u64>>> {
         let n = ops.len();
         let fd = self.uring_fd();
-
-        // ── Phase 1: find each target slot (mirrors get_batch_uring) ─────────
 
         slots.clear();
         slots.extend(ops.iter().map(|op| self.ideal_slot(op)));
@@ -727,7 +744,6 @@ impl RobinHoodTable {
         resolved.clear();
         resolved.resize(n, false);
 
-        // found_slots[i] = Some(slot) once we've located the entry for ops[i].
         let mut found_slots: Vec<Option<u64>> = vec![None; n];
 
         let needed = n * BUCKET_SIZE;
@@ -750,7 +766,7 @@ impl RobinHoodTable {
                         offset,
                     )
                 }
-                .user_data(i as u64);
+                .user_data(u64::try_from(i).expect("index fits u64"));
                 flush_if_full(ring, self.apply_fd_flags(sqe), &mut submitted)?;
             }
 
@@ -774,7 +790,7 @@ impl RobinHoodTable {
                 let buf_start = i * BUCKET_SIZE;
                 let buf: &[u8; BUCKET_SIZE] = arena[buf_start..buf_start + BUCKET_SIZE]
                     .try_into()
-                    .unwrap();
+                    .expect("bucket-aligned slice");
                 let bucket = Bucket::decode(buf);
 
                 if bucket.is_empty() || bucket.probe_distance < dists[i] {
@@ -796,19 +812,28 @@ impl RobinHoodTable {
             }
         }
 
-        // ── Phase 2: backshift chains, interleaved across all found entries ───
-        //
-        // For each found entry we maintain a (prev, next) pair of slots where
-        // `prev` is the slot to blank/overwrite and `next` is the slot to read
-        // next.  Each round we submit one read per active chain; after
-        // completions we either write (blank prev or copy shifted bucket) and
-        // advance, or terminate the chain.
+        Ok(found_slots)
+    }
+
+    /// Phase 2 of [`remove_batch_uring`]: backshift chains, interleaved across
+    /// all found entries.
+    ///
+    /// For each found entry we maintain a (prev, next) pair of slots where
+    /// `prev` is the slot to blank/overwrite and `next` is the slot to read
+    /// next.  Each round we submit one read per active chain; after
+    /// completions we either write (blank prev or copy shifted bucket) and
+    /// advance, or terminate the chain.
+    fn remove_backshift_phase(
+        &mut self,
+        found_slots: &[Option<u64>],
+        ring: &mut ququmatz::IoUring,
+        arena: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        let fd = self.uring_fd();
 
         // Active backshift state: (prev_slot, next_slot).
         // Index j corresponds to the j-th *found* entry (not the original op index).
         let mut shifts: Vec<(u64, u64)> = Vec::new();
-        // We also need a per-shift arena slot; reuse the arena with a separate section.
-        // Re-size arena to hold one bucket per active shift chain.
         let found_count = found_slots.iter().filter(|s| s.is_some()).count();
         if found_count == 0 {
             return Ok(());
@@ -845,7 +870,7 @@ impl RobinHoodTable {
                         offset,
                     )
                 }
-                .user_data(j as u64);
+                .user_data(u64::try_from(j).expect("index fits u64"));
                 flush_if_full(ring, self.apply_fd_flags(sqe), &mut submitted)?;
             }
 
@@ -871,7 +896,7 @@ impl RobinHoodTable {
                 let buf_start = j * BUCKET_SIZE;
                 let buf: &[u8; BUCKET_SIZE] = arena[buf_start..buf_start + BUCKET_SIZE]
                     .try_into()
-                    .unwrap();
+                    .expect("bucket-aligned slice");
                 let next_bucket = Bucket::decode(buf);
                 let (prev, next) = shifts[j];
 
@@ -887,7 +912,7 @@ impl RobinHoodTable {
                     shifted.encode(
                         (&mut write_arena[wbuf_start..wbuf_start + BUCKET_SIZE])
                             .try_into()
-                            .unwrap(),
+                            .expect("bucket-aligned slice"),
                     );
                     write_ops.push((prev, j, false));
                     shifts[j] = (next, (next + 1) & self.mask);
@@ -992,7 +1017,7 @@ impl RobinHoodTable {
                         offset,
                     )
                 }
-                .user_data(i as u64);
+                .user_data(u64::try_from(i).expect("index fits u64"));
                 flush_if_full(ring, self.apply_fd_flags(sqe), &mut submitted)?;
             }
 
@@ -1018,7 +1043,7 @@ impl RobinHoodTable {
                 let buf_start = i * BUCKET_SIZE;
                 let buf: &[u8; BUCKET_SIZE] = arena[buf_start..buf_start + BUCKET_SIZE]
                     .try_into()
-                    .unwrap();
+                    .expect("bucket-aligned slice");
                 let bucket = Bucket::decode(buf);
 
                 if bucket.is_empty() || bucket.probe_distance < dists[i] {
@@ -1051,7 +1076,10 @@ impl RobinHoodTable {
 
 // ── RobinHoodEngine — Engine trait impl ──────────────────────────────────────
 
-const HEADER_RECORD_SIZE: usize = 116;
+use super::header_io::{
+    io_err, parse_header_record, HeaderStore,
+    HEADER_RECORD_SIZE, HEADER_RECORD_SIZE_U64,
+};
 
 const STORAGE_RING_ENTRIES: u32 = 32768;
 
@@ -1091,38 +1119,18 @@ pub struct RobinHoodEngine {
     wb_del_slots: Vec<u64>,
     wb_del_dists: Vec<u16>,
     wb_del_resolved: Vec<bool>,
-    header_file: File,
-    header_write_len: u64,
-    header_index: PrehashedMap<Hash256, u32>,
-    checkpoint_file: File,
-    tip: TipInfo,
+    headers: HeaderStore,
 }
 
 impl RobinHoodEngine {
     #[allow(clippy::missing_errors_doc)]
     pub fn open(data_dir: &Path) -> Result<Self, EngineError> {
-        std::fs::create_dir_all(data_dir).map_err(io_err)?;
+        std::fs::create_dir_all(data_dir)?;
 
         let table_path = data_dir.join("utxo_table.bin");
-        let header_path = data_dir.join("headers.bin");
-        let checkpoint_path = data_dir.join("checkpoint.bin");
 
-        let table = RobinHoodTable::open(&table_path).map_err(io_err)?;
-
-        let header_file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&header_path)
-            .map_err(io_err)?;
-
-        let checkpoint_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&checkpoint_path)
-            .map_err(io_err)?;
+        let table = RobinHoodTable::open(&table_path)?;
+        let headers = HeaderStore::open(data_dir)?;
 
         let mut ring = ququmatz::IoUring::builder(STORAGE_RING_ENTRIES)
             .build()
@@ -1159,21 +1167,10 @@ impl RobinHoodEngine {
             wb_del_slots: Vec::new(),
             wb_del_dists: Vec::new(),
             wb_del_resolved: Vec::new(),
-            header_file,
-            header_write_len: 0,
-            header_index: PrehashedMap::with_hasher(BuildPrehashedHasher),
-            checkpoint_file,
-            tip: TipInfo {
-                hash: Hash256::ZERO,
-                height: BlockHeight::ZERO,
-            },
+            headers,
         };
         engine.recover()?;
         Ok(engine)
-    }
-
-    fn header_path(&self) -> PathBuf {
-        self.data_dir.join("headers.bin")
     }
 
     fn refresh_registered_fd(&mut self) -> Result<(), EngineError> {
@@ -1202,7 +1199,7 @@ impl RobinHoodEngine {
                     &mut self.wb_write_arena,
                     &mut self.wb_insert_states,
                 )
-                .map_err(io_err)?;
+                ?;
             self.wb_pairs.clear();
             self.refresh_registered_fd()?;
         }
@@ -1216,8 +1213,7 @@ impl RobinHoodEngine {
                 &mut self.wb_del_slots,
                 &mut self.wb_del_dists,
                 &mut self.wb_del_resolved,
-            )
-            .map_err(io_err)?;
+            )?;
         self.pending_disk_deletes = deletes;
 
         Ok(())
@@ -1270,8 +1266,7 @@ impl Engine for RobinHoodEngine {
                     &mut self.uring_slots,
                     &mut self.uring_dists,
                     &mut self.uring_resolved,
-                )
-                .map_err(io_err)?;
+                )?;
             for (j, &i) in disk_indices.iter().enumerate() {
                 if let Some(coin) = disk_coins.get(j).and_then(|c| c.as_ref()) {
                     results[i] = Some(coin.clone());
@@ -1327,159 +1322,57 @@ impl Engine for RobinHoodEngine {
             req.prev_hash,
             "CommitBlockReq.header.prev_block must match req.prev_hash"
         );
-        self.header_write_len = write_header_record(
-            &mut self.header_file,
-            req.height,
-            &req.header,
-            req.hash,
-            self.header_write_len,
-        )?;
-        self.header_index.insert(req.hash, req.height.to_u32());
-
-        self.tip = TipInfo {
-            hash: req.hash,
-            height: req.height,
-        };
+        self.headers
+            .write_block_header(req.height, &req.header, req.hash)?;
         Ok(())
     }
 
     fn read_header(&self, hash: &Hash256) -> Result<Option<BlockHeader>, EngineError> {
-        let Some(&height_u32) = self.header_index.get(hash) else {
+        let Some(&height_u32) = self.headers.index.get(hash) else {
             return Ok(None);
         };
         self.read_header_at(BlockHeight::new(height_u32))
     }
 
     fn read_header_at(&self, h: BlockHeight) -> Result<Option<BlockHeader>, EngineError> {
-        let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE as u64;
-        if offset + HEADER_RECORD_SIZE as u64 > self.header_write_len {
+        let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE_U64;
+        if offset + HEADER_RECORD_SIZE_U64 > self.headers.write_len {
             return Ok(None);
         }
         let mut buf = [0u8; HEADER_RECORD_SIZE];
-        pread_exact(&self.header_file, &mut buf, offset).map_err(io_err)?;
-        Ok(Some(decode_header_record(&buf)))
+        pread_exact(self.headers.file(), &mut buf, offset)?;
+        Ok(Some(parse_header_record(&buf)))
     }
 
     fn write_header(&mut self, h: BlockHeight, header: &BlockHeader) -> Result<(), EngineError> {
-        let hash = header.hash();
-        self.header_write_len = write_header_record(
-            &mut self.header_file,
-            h,
-            header,
-            hash,
-            self.header_write_len,
-        )?;
-        self.header_index.insert(hash, h.to_u32());
-        Ok(())
+        self.headers.write_header(h, header)
     }
 
     fn flush(&mut self, d: Durability) -> Result<(), EngineError> {
         if d == Durability::Synced {
             self.flush_write_buffer()?;
-            self.table.sync().map_err(io_err)?;
-            self.header_file.flush().map_err(io_err)?;
-            self.header_file.sync_all().map_err(io_err)?;
-            self.checkpoint_file
-                .seek(SeekFrom::Start(0))
-                .map_err(io_err)?;
-            let h = self.tip.height.to_u32().to_le_bytes();
-            self.checkpoint_file.write_all(&h).map_err(io_err)?;
-            self.checkpoint_file.sync_all().map_err(io_err)?;
+            self.table.sync()?;
+            self.headers.sync_checkpoint()?;
         }
         Ok(())
     }
 
     fn recover(&mut self) -> Result<TipInfo, EngineError> {
-        // Read checkpoint.
-        let mut cp_buf = [0u8; 4];
-        let n = self.checkpoint_file.read(&mut cp_buf).map_err(io_err)?;
-        let checkpoint_height = if n == 4 {
-            u32::from_le_bytes(cp_buf)
-        } else {
-            0
-        };
-
-        // Rebuild header index from headers.bin, up to the checkpoint height.
-        self.header_index.clear();
-        let header_path = self.header_path();
-        if let Ok(mut hf) = File::open(&header_path) {
-            let file_len = hf.seek(SeekFrom::End(0)).map_err(io_err)?;
-            hf.seek(SeekFrom::Start(0)).map_err(io_err)?;
-            let record_count = file_len / HEADER_RECORD_SIZE as u64;
-            for _i in 0..record_count {
-                let mut buf = [0u8; HEADER_RECORD_SIZE];
-                if hf.read_exact(&mut buf).is_err() {
-                    break;
-                }
-                let hash = Hash256::from_bytes(buf.read_hash(0));
-                let height = buf.read_u32_le(112);
-                if height <= checkpoint_height || checkpoint_height == 0 {
-                    self.header_index.insert(hash, height);
-                    self.tip = TipInfo {
-                        hash,
-                        height: BlockHeight::new(height),
-                    };
-                }
-            }
-            self.header_write_len = record_count * HEADER_RECORD_SIZE as u64;
-        }
+        self.headers.recover()?;
 
         // If there's no checkpoint and no headers, the UTXO table is stale —
         // wipe it so a fresh start doesn't inherit data from a previous run.
-        if checkpoint_height == 0 && self.header_index.is_empty() && !self.table.is_empty() {
+        if self.headers.index.is_empty() && !self.table.is_empty() {
             let table_path = self.data_dir.join("utxo_table.bin");
-            self.table = RobinHoodTable::create(&table_path, INITIAL_SLOT_COUNT).map_err(io_err)?;
+            self.table = RobinHoodTable::create(&table_path, INITIAL_SLOT_COUNT)?;
         }
 
-        Ok(self.tip.clone())
+        Ok(self.headers.tip.clone())
     }
 
     fn tip(&self) -> TipInfo {
-        self.tip.clone()
+        self.headers.tip.clone()
     }
-}
-
-// ── Header record serialization (shared with FlatEngine) ─────────────────────
-
-fn write_header_record(
-    f: &mut File,
-    h: BlockHeight,
-    header: &BlockHeader,
-    hash: Hash256,
-    file_len: u64,
-) -> Result<u64, EngineError> {
-    let offset = u64::from(h.to_u32()) * HEADER_RECORD_SIZE as u64;
-    let new_len = if offset > file_len {
-        f.set_len(offset).map_err(io_err)?;
-        offset
-    } else {
-        file_len
-    };
-    f.write_all(hash.as_bytes()).map_err(io_err)?;
-    f.write_all(&header.version().to_le_bytes())
-        .map_err(io_err)?;
-    f.write_all(header.prev_block().as_bytes())
-        .map_err(io_err)?;
-    f.write_all(header.merkle_root().as_bytes())
-        .map_err(io_err)?;
-    f.write_all(&header.time().to_le_bytes()).map_err(io_err)?;
-    f.write_all(&header.bits().to_le_bytes()).map_err(io_err)?;
-    f.write_all(&header.nonce().to_le_bytes()).map_err(io_err)?;
-    f.write_all(&h.to_u32().to_le_bytes()).map_err(io_err)?;
-    Ok(new_len + HEADER_RECORD_SIZE as u64)
-}
-
-#[allow(clippy::cast_possible_wrap)]
-fn decode_header_record(buf: &[u8; HEADER_RECORD_SIZE]) -> BlockHeader {
-    use mantle::primitives::{BlockTime, BlockVersion, Nonce};
-    BlockHeader::new(
-        BlockVersion::new(buf.read_u32_le(32) as i32),
-        Hash256::from_bytes(buf.read_hash(36)),
-        Hash256::from_bytes(buf.read_hash(68)),
-        BlockTime::new(buf.read_u32_le(100)),
-        CompactBits::new(buf.read_u32_le(104)),
-        Nonce::new(buf.read_u32_le(108)),
-    )
 }
 
 // ── Overflow sidecar helpers ────────────────────────────────────────────────
@@ -1521,10 +1414,6 @@ fn read_overflow(file: &File, offset: u64) -> io::Result<Vec<u8>> {
     let mut buf = vec![0u8; len];
     pread_exact(file, &mut buf, offset + 4)?;
     Ok(buf)
-}
-
-fn io_err(e: impl Into<io::Error>) -> EngineError {
-    EngineError::Io(e.into())
 }
 
 fn uring_err(e: impl std::fmt::Debug) -> io::Error {
@@ -1576,7 +1465,7 @@ fn flush_if_full(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mantle::primitives::{BlockTime, BlockVersion, Nonce};
+    use mantle::primitives::{BlockTime, BlockVersion, CompactBits, Nonce};
 
     struct TmpFile(PathBuf);
     impl TmpFile {
@@ -1887,6 +1776,56 @@ mod tests {
             )
             .unwrap();
         assert!(miss_results.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn batched_uring_remove() {
+        let tmp = TmpFile::new("uring-remove");
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), 128).unwrap();
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+
+        let count = 50u8;
+        for i in 0..count {
+            let op = make_op(i);
+            let coin = make_coin(u64::from(i) * 100, &[0x51]);
+            table.insert(&op, &coin).unwrap();
+        }
+        assert_eq!(table.len(), 50);
+
+        // Remove outpoints 10..20 via uring batch.
+        let remove_ops: Vec<OutPoint> = (10..20u8).map(make_op).collect();
+        let (mut slots, mut dists, mut resolved) = (Vec::new(), Vec::new(), Vec::new());
+        table
+            .remove_batch_uring(
+                &remove_ops,
+                &mut ring,
+                &mut arena,
+                &mut slots,
+                &mut dists,
+                &mut resolved,
+            )
+            .unwrap();
+
+        assert_eq!(table.len(), 40);
+
+        // Verify removed entries are gone.
+        for i in 10..20u8 {
+            let op = make_op(i);
+            assert!(
+                table.get(&op).unwrap().is_none(),
+                "outpoint {i} should have been removed"
+            );
+        }
+
+        // Verify remaining entries are still present with correct values.
+        for i in (0..10u8).chain(20..count) {
+            let op = make_op(i);
+            let coin = table.get(&op).unwrap().unwrap_or_else(|| {
+                panic!("outpoint {i} should still be present")
+            });
+            assert_eq!(coin.value.to_u64(), u64::from(i) * 100);
+        }
     }
 
     #[test]
@@ -2560,5 +2499,689 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    #[test]
+    fn recover_rebuilds_tip_from_checkpoint() {
+        let dir = TmpFile::new("recover-tip");
+        std::fs::create_dir_all(dir.path()).unwrap();
+
+        let block_count = 5u32;
+        let last_hash;
+
+        // Phase 1: write blocks and flush with Synced to create a checkpoint.
+        {
+            let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
+            let mut prev_hash = Hash256::ZERO;
+
+            for h in 1..=block_count {
+                let mut hash_bytes = [0u8; 32];
+                hash_bytes[..4].copy_from_slice(&h.to_le_bytes());
+                let block_hash = Hash256::from_bytes(hash_bytes);
+
+                let mut txid_bytes = [0u8; 32];
+                txid_bytes[..4].copy_from_slice(&(h + 100).to_le_bytes());
+                let op = OutPoint {
+                    txid: Hash256::from_bytes(txid_bytes),
+                    vout: 0,
+                };
+
+                eng.write_block(&CommitBlockReq {
+                    token: crate::types::ReqToken(u64::from(h)),
+                    height: BlockHeight::new(h),
+                    hash: block_hash,
+                    prev_hash,
+                    header: {
+                        let mut hdr = make_header(h * 1000);
+                        hdr.set_prev_block(prev_hash);
+                        hdr
+                    },
+                    created: &[mantle_consensus::chain_view::NewCoin {
+                        outpoint: op,
+                        value: Satoshi::new(5_000_000_000),
+                        script_pubkey: &[0x51],
+                        coinbase: true,
+                        height: BlockHeight::new(h),
+                    }],
+                    spent: &[],
+                    block_bytes: None,
+                    durability: Durability::Memory,
+                })
+                .unwrap();
+                prev_hash = block_hash;
+            }
+
+            // Flush with Synced to write checkpoint and persist headers.
+            eng.flush(Durability::Synced).unwrap();
+            last_hash = eng.tip().hash;
+            assert_eq!(eng.tip().height, BlockHeight::new(block_count));
+        }
+
+        // Phase 2: reopen — recover() should rebuild the tip and header index.
+        {
+            let eng = RobinHoodEngine::open(dir.path()).unwrap();
+            let tip = eng.tip();
+
+            assert_eq!(tip.height, BlockHeight::new(block_count));
+            assert_eq!(tip.hash, last_hash);
+
+            // Verify headers are readable by height.
+            for h in 1..=block_count {
+                let hdr = eng.read_header_at(BlockHeight::new(h)).unwrap();
+                assert!(
+                    hdr.is_some(),
+                    "header at height {h} should be recoverable"
+                );
+                assert_eq!(hdr.unwrap().time().to_u32(), h * 1000);
+            }
+
+            // Verify header index by hash.
+            let hdr_by_hash = eng.read_header(&last_hash).unwrap();
+            assert!(hdr_by_hash.is_some(), "last header should be findable by hash");
+        }
+    }
+
+    #[test]
+    fn recover_no_checkpoint_no_headers_wipes_table() {
+        let dir = TmpFile::new("recover-wipe");
+        std::fs::create_dir_all(dir.path()).unwrap();
+
+        // Create a table with some data but no headers or checkpoint.
+        let table_path = dir.path().join("utxo_table.bin");
+        {
+            let mut table = RobinHoodTable::open(&table_path).unwrap();
+            table.insert(&make_op(1), &make_coin(100, &[0x51])).unwrap();
+            table.sync().unwrap();
+            assert_eq!(table.len(), 1);
+        }
+
+        // Opening the engine should detect stale table and wipe it.
+        let eng = RobinHoodEngine::open(dir.path()).unwrap();
+        assert_eq!(eng.tip().height, BlockHeight::ZERO);
+        // The table should have been wiped during recover.
+        assert!(eng.table.is_empty());
+    }
+
+    #[test]
+    fn recover_headers_beyond_checkpoint_truncated() {
+        // Write 10 headers but only checkpoint at height 5.
+        // On recovery, only heights 0..=5 should be in the header index.
+        let dir = TmpFile::new("recover-trunc");
+        std::fs::create_dir_all(dir.path()).unwrap();
+
+        {
+            let mut eng = RobinHoodEngine::open(dir.path()).unwrap();
+            let mut prev_hash = Hash256::ZERO;
+
+            for h in 1..=10u32 {
+                let mut hash_bytes = [0u8; 32];
+                hash_bytes[..4].copy_from_slice(&h.to_le_bytes());
+                let block_hash = Hash256::from_bytes(hash_bytes);
+
+                let mut txid_bytes = [0u8; 32];
+                txid_bytes[..4].copy_from_slice(&(h + 100).to_le_bytes());
+                let op = OutPoint {
+                    txid: Hash256::from_bytes(txid_bytes),
+                    vout: 0,
+                };
+
+                eng.write_block(&CommitBlockReq {
+                    token: crate::types::ReqToken(u64::from(h)),
+                    height: BlockHeight::new(h),
+                    hash: block_hash,
+                    prev_hash,
+                    header: {
+                        let mut hdr = make_header(h * 1000);
+                        hdr.set_prev_block(prev_hash);
+                        hdr
+                    },
+                    created: &[mantle_consensus::chain_view::NewCoin {
+                        outpoint: op,
+                        value: Satoshi::new(1_000),
+                        script_pubkey: &[0x51],
+                        coinbase: true,
+                        height: BlockHeight::new(h),
+                    }],
+                    spent: &[],
+                    block_bytes: None,
+                    durability: Durability::Memory,
+                })
+                .unwrap();
+                prev_hash = block_hash;
+            }
+
+            // Flush at height 5 to create checkpoint at 5.
+            // Then write blocks 6..10 without flushing.
+            // We can't selectively checkpoint, so flush Synced at height 10
+            // but manually overwrite the checkpoint to 5 afterwards.
+            eng.flush(Durability::Synced).unwrap();
+
+            // Manually overwrite checkpoint to height 5.
+            use std::io::Write;
+            let checkpoint_path = dir.path().join("checkpoint.bin");
+            let mut cp = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&checkpoint_path)
+                .unwrap();
+            cp.write_all(&5u32.to_le_bytes()).unwrap();
+            cp.sync_all().unwrap();
+        }
+
+        // Reopen: recover should only include headers up to checkpoint=5.
+        let eng = RobinHoodEngine::open(dir.path()).unwrap();
+        assert_eq!(
+            eng.tip().height,
+            BlockHeight::new(5),
+            "tip should be truncated to checkpoint height"
+        );
+        // Headers beyond checkpoint should not be indexed.
+        let mut h6_bytes = [0u8; 32];
+        h6_bytes[..4].copy_from_slice(&6u32.to_le_bytes());
+        assert!(
+            eng.read_header(&Hash256::from_bytes(h6_bytes)).unwrap().is_none(),
+            "header at height 6 should not be in index after truncation"
+        );
+    }
+
+    #[test]
+    fn remove_backshift_multi_step_chain() {
+        // Insert entries into a small table so they form long probe chains.
+        // Remove one from the middle and verify the chain collapses correctly.
+        let tmp = TmpFile::new("backshift-multi");
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), 16).unwrap();
+
+        // Insert 12 entries into 16 slots — 75% load, lots of collisions.
+        let ops: Vec<OutPoint> = (0..12u8).map(make_op).collect();
+        for (i, op) in ops.iter().enumerate() {
+            let coin = make_coin(u64::try_from(i).unwrap() * 100, &[0x51]);
+            table.insert(op, &coin).unwrap();
+        }
+        assert_eq!(table.len(), 12);
+
+        // Remove entries from the middle of the probe chains.
+        table.remove(&ops[2]).unwrap();
+        table.remove(&ops[5]).unwrap();
+        table.remove(&ops[8]).unwrap();
+        assert_eq!(table.len(), 9);
+
+        // Verify removed entries are gone and remaining are intact.
+        for (i, op) in ops.iter().enumerate() {
+            if i == 2 || i == 5 || i == 8 {
+                assert!(
+                    table.get(op).unwrap().is_none(),
+                    "outpoint {i} should have been removed"
+                );
+            } else {
+                let coin = table
+                    .get(op)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("outpoint {i} should still be present"));
+                assert_eq!(coin.value.to_u64(), u64::try_from(i).unwrap() * 100);
+            }
+        }
+    }
+
+    #[test]
+    fn uring_remove_backshift_multi_step_chain() {
+        // Same as above but using the io_uring batch remove path, which
+        // exercises remove_backshift_phase with multi-step shifts.
+        let tmp = TmpFile::new("uring-backshift-multi");
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), 16).unwrap();
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+
+        let ops: Vec<OutPoint> = (0..12u8).map(make_op).collect();
+        for (i, op) in ops.iter().enumerate() {
+            let coin = make_coin(u64::try_from(i).unwrap() * 100, &[0x51]);
+            table.insert(op, &coin).unwrap();
+        }
+
+        // Remove 4 entries from the middle to force multi-step backshifts.
+        let remove_ops: Vec<OutPoint> = [2u8, 4, 7, 9].iter().map(|&i| make_op(i)).collect();
+        let (mut slots, mut dists, mut resolved) = (Vec::new(), Vec::new(), Vec::new());
+        table
+            .remove_batch_uring(
+                &remove_ops,
+                &mut ring,
+                &mut arena,
+                &mut slots,
+                &mut dists,
+                &mut resolved,
+            )
+            .unwrap();
+
+        assert_eq!(table.len(), 8);
+
+        for (i, op) in ops.iter().enumerate() {
+            if [2, 4, 7, 9].contains(&i) {
+                assert!(
+                    table.get(op).unwrap().is_none(),
+                    "outpoint {i} should have been removed"
+                );
+            } else {
+                let coin = table
+                    .get(op)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("outpoint {i} should still be present"));
+                assert_eq!(coin.value.to_u64(), u64::try_from(i).unwrap() * 100);
+            }
+        }
+    }
+
+    // ── Task 1: insert_batch_uring coverage tests ───────────────────────
+
+    /// Helper: create an OutPoint whose ideal slot (in a table of given
+    /// slot_count) is `target_slot`.  We use a txid where the first 8 bytes
+    /// encode the desired hash directly.
+    fn make_op_for_slot(target_slot: u64, disambig: u8) -> OutPoint {
+        // hash_outpoint reads the first 8 bytes of txid as u64 LE.
+        // ideal_slot = hash & mask.  We build hash = target_slot so
+        // ideal_slot == target_slot for any power-of-two table where
+        // slot_count > target_slot.  `disambig` goes into byte 8+ to
+        // make txids unique when multiple ops target the same slot.
+        let mut txid = [0u8; 32];
+        txid[..8].copy_from_slice(&target_slot.to_le_bytes());
+        txid[8] = disambig;
+        OutPoint {
+            txid: Hash256::from_bytes(txid),
+            vout: 0,
+        }
+    }
+
+    #[test]
+    fn insert_batch_uring_triggers_resize() {
+        // Start with a 16-slot table.  Pre-fill 10 entries synchronously
+        // so the table is at 10/16 = 62.5% load.  Then batch-insert 4
+        // more entries: (10+4)*100 = 1400 > 16*85 = 1360, which triggers
+        // resize to 32 slots.  After resize, 14 entries in 32 slots is
+        // 43.75% — well within capacity.
+        let tmp = TmpFile::new("uring-insert-resize");
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), 16).unwrap();
+        let initial_slots = table.slot_count;
+        assert_eq!(initial_slots, 16);
+
+        // Pre-fill 10 entries.
+        for i in 0..10u8 {
+            table
+                .insert(&make_op(i), &make_coin(u64::from(i) * 10, &[0x51]))
+                .unwrap();
+        }
+        assert_eq!(table.len(), 10);
+
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+        let mut write_arena = Vec::new();
+        let mut states = Vec::new();
+
+        // Batch-insert 4 entries to push past the 85% threshold.
+        let pairs: Vec<(OutPoint, Coin)> = (10..14u8)
+            .map(|i| (make_op(i), make_coin(u64::from(i) * 10, &[0x51])))
+            .collect();
+
+        table
+            .insert_batch_uring(
+                &pairs,
+                &mut ring,
+                &mut arena,
+                &mut write_arena,
+                &mut states,
+            )
+            .unwrap();
+
+        assert_eq!(table.len(), 14);
+        assert!(
+            table.slot_count > initial_slots,
+            "table should have resized from {} slots",
+            initial_slots
+        );
+
+        // Verify every entry (pre-filled + batch) is retrievable.
+        for i in 0..14u8 {
+            let op = make_op(i);
+            let coin = table
+                .get(&op)
+                .unwrap()
+                .unwrap_or_else(|| panic!("entry {i} should be present after batch insert"));
+            assert_eq!(coin.value.to_u64(), u64::from(i) * 10);
+        }
+    }
+
+    #[test]
+    fn insert_batch_uring_multi_round_probing() {
+        // Pre-populate a chain of entries at slots 5..10 so that a
+        // batch-inserted entry targeting slot 5 must probe through the
+        // entire chain before finding an empty slot.  Each batch entry
+        // targets a different ideal slot to avoid intra-batch collisions.
+        let tmp = TmpFile::new("uring-insert-multiround");
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), 64).unwrap();
+
+        // Fill slots 5..10 with entries that each have ideal=their slot.
+        for s in 5..10u64 {
+            let op = make_op_for_slot(s, 0);
+            table
+                .insert(&op, &make_coin(s * 100, &[0x51]))
+                .unwrap();
+        }
+        assert_eq!(table.len(), 5);
+
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+        let mut write_arena = Vec::new();
+        let mut states = Vec::new();
+
+        // Batch: one entry targeting slot 5 (must probe 5,6,7,8,9 before
+        // finding slot 10 empty), one entry targeting slot 20 (resolves
+        // immediately).  The first entry forces multiple uring rounds.
+        let batch_pairs: Vec<(OutPoint, Coin)> = vec![
+            (make_op_for_slot(5, 1), make_coin(5555, &[0x51])),
+            (make_op_for_slot(20, 0), make_coin(2020, &[0x51])),
+        ];
+
+        table
+            .insert_batch_uring(
+                &batch_pairs,
+                &mut ring,
+                &mut arena,
+                &mut write_arena,
+                &mut states,
+            )
+            .unwrap();
+
+        assert_eq!(table.len(), 7);
+
+        // The probed entry should land at slot 10.
+        let coin = table
+            .get(&make_op_for_slot(5, 1))
+            .unwrap()
+            .expect("probed entry should be present");
+        assert_eq!(coin.value.to_u64(), 5555);
+
+        // Quick-resolve entry.
+        let coin = table
+            .get(&make_op_for_slot(20, 0))
+            .unwrap()
+            .expect("quick-resolve entry should be present");
+        assert_eq!(coin.value.to_u64(), 2020);
+
+        // Original entries should be untouched.
+        for s in 5..10u64 {
+            let c = table
+                .get(&make_op_for_slot(s, 0))
+                .unwrap()
+                .expect("pre-existing entry should survive");
+            assert_eq!(c.value.to_u64(), s * 100);
+        }
+    }
+
+    #[test]
+    fn insert_batch_uring_robin_hood_displacement() {
+        // Pre-populate so that a batch-inserted entry has a longer probe
+        // distance than an existing entry, triggering Robin Hood
+        // displacement.  Each batch entry targets a unique ideal slot.
+        let tmp = TmpFile::new("uring-insert-displace");
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), 64).unwrap();
+
+        // Entry A: ideal=10, sits at slot 10 with pd=1.
+        let op_a = make_op_for_slot(10, 0);
+        table.insert(&op_a, &make_coin(100, &[0x51])).unwrap();
+        // Entry B: ideal=11, sits at slot 11 with pd=1.
+        let op_b = make_op_for_slot(11, 0);
+        table.insert(&op_b, &make_coin(200, &[0x51])).unwrap();
+        // Entry C: ideal=12, sits at slot 12 with pd=1.
+        let op_c = make_op_for_slot(12, 0);
+        table.insert(&op_c, &make_coin(300, &[0x51])).unwrap();
+
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+        let mut write_arena = Vec::new();
+        let mut states = Vec::new();
+
+        // Batch-insert one entry targeting slot 10 (different disambig).
+        // Round 1: reads slot 10, finds A (pd=1 vs new pd=1, no steal),
+        //   advances to slot 11.
+        // Round 2: reads slot 11, finds B (pd=1 vs new pd=2 -> steal!),
+        //   writes new entry at slot 11, displaces B to continue at slot 12.
+        // Round 3 (internal): displaced B (pd=2) vs C at slot 12 (pd=1 ->
+        //   steal again), B goes to slot 13.
+        // This exercises the Robin Hood displacement cascade.
+        let batch_pairs = vec![
+            (make_op_for_slot(10, 1), make_coin(999, &[0x51])),
+        ];
+
+        table
+            .insert_batch_uring(
+                &batch_pairs,
+                &mut ring,
+                &mut arena,
+                &mut write_arena,
+                &mut states,
+            )
+            .unwrap();
+
+        assert_eq!(table.len(), 4);
+
+        // All entries should be retrievable.
+        let got_a = table.get(&op_a).unwrap().unwrap();
+        assert_eq!(got_a.value.to_u64(), 100);
+        let got_b = table.get(&op_b).unwrap().unwrap();
+        assert_eq!(got_b.value.to_u64(), 200);
+        let got_c = table.get(&op_c).unwrap().unwrap();
+        assert_eq!(got_c.value.to_u64(), 300);
+        let got_new = table
+            .get(&make_op_for_slot(10, 1))
+            .unwrap()
+            .expect("displaced batch entry should be present");
+        assert_eq!(got_new.value.to_u64(), 999);
+    }
+
+    // ── Task 2: remove_backshift_phase coverage tests ───────────────────
+
+    #[test]
+    fn uring_remove_backshift_wraps_around_table() {
+        // Place entries near the end of the table so that a backshift
+        // chain wraps past slot_count-1 back to slot 0.
+        let tmp = TmpFile::new("uring-backshift-wrap");
+        let slot_count: u64 = 32;
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), slot_count).unwrap();
+        assert_eq!(table.slot_count, slot_count);
+
+        // Insert entries whose ideal slot is near the end: slots 30, 31.
+        // They will occupy slots 30, 31, 0, 1, ... forming a chain that
+        // wraps around.  We use make_op_for_slot to target slot 30.
+        let wrap_ops: Vec<OutPoint> = (0..4u8)
+            .map(|d| make_op_for_slot(30, d))
+            .collect();
+        for (i, op) in wrap_ops.iter().enumerate() {
+            table
+                .insert(op, &make_coin(u64::try_from(i).unwrap() * 77, &[0x51]))
+                .unwrap();
+        }
+        // Also add a few unrelated entries so the table is not trivial.
+        for i in 0..5u8 {
+            table
+                .insert(
+                    &make_op_for_slot(10, i),
+                    &make_coin(u64::from(i) * 11, &[0x51]),
+                )
+                .unwrap();
+        }
+        assert_eq!(table.len(), 9);
+
+        // Remove the first entry (slot 30, ideal=30, pd=1).  The backshift
+        // chain must pull entries from slots 31, 0, 1 backward — wrapping
+        // around the table boundary.
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+        let (mut slots, mut dists, mut resolved) = (Vec::new(), Vec::new(), Vec::new());
+
+        table
+            .remove_batch_uring(
+                &[wrap_ops[0]],
+                &mut ring,
+                &mut arena,
+                &mut slots,
+                &mut dists,
+                &mut resolved,
+            )
+            .unwrap();
+
+        assert_eq!(table.len(), 8);
+        assert!(
+            table.get(&wrap_ops[0]).unwrap().is_none(),
+            "removed entry should be gone"
+        );
+        // The remaining wrap entries should still be retrievable.
+        for d in 1..4u8 {
+            let coin = table
+                .get(&wrap_ops[d as usize])
+                .unwrap()
+                .unwrap_or_else(|| panic!("wrap entry d={d} should survive backshift"));
+            assert_eq!(coin.value.to_u64(), u64::from(d) * 77);
+        }
+        // Unrelated entries should be untouched.
+        for i in 0..5u8 {
+            let op = make_op_for_slot(10, i);
+            assert!(
+                table.get(&op).unwrap().is_some(),
+                "unrelated entry i={i} should be untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn uring_remove_batch_many_entries() {
+        // Remove 5 entries in a single batch call to exercise
+        // remove_backshift_phase with many concurrent backshift chains.
+        let tmp = TmpFile::new("uring-remove-batch-many");
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), 64).unwrap();
+
+        // Insert 30 entries spread across the table.
+        let all_ops: Vec<OutPoint> = (0..30u8).map(make_op).collect();
+        for (i, op) in all_ops.iter().enumerate() {
+            table
+                .insert(op, &make_coin(u64::try_from(i).unwrap() * 50, &[0x51]))
+                .unwrap();
+        }
+        assert_eq!(table.len(), 30);
+
+        // Remove 5 entries scattered across the table.
+        let remove_indices: Vec<u8> = vec![3, 7, 12, 19, 25];
+        let remove_ops: Vec<OutPoint> = remove_indices.iter().map(|&i| make_op(i)).collect();
+
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+        let (mut slots, mut dists, mut resolved) = (Vec::new(), Vec::new(), Vec::new());
+
+        table
+            .remove_batch_uring(
+                &remove_ops,
+                &mut ring,
+                &mut arena,
+                &mut slots,
+                &mut dists,
+                &mut resolved,
+            )
+            .unwrap();
+
+        assert_eq!(table.len(), 25);
+
+        for (i, op) in all_ops.iter().enumerate() {
+            let i_u8 = u8::try_from(i).unwrap();
+            if remove_indices.contains(&i_u8) {
+                assert!(
+                    table.get(op).unwrap().is_none(),
+                    "entry {i} should have been removed"
+                );
+            } else {
+                let coin = table
+                    .get(op)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("entry {i} should still be present"));
+                assert_eq!(coin.value.to_u64(), u64::try_from(i).unwrap() * 50);
+            }
+        }
+    }
+
+    #[test]
+    fn uring_remove_backshift_wrapping_chain_with_batch() {
+        // Combine wrapping backshift with multiple concurrent removals
+        // from independent clusters (non-overlapping probe chains).
+        let tmp = TmpFile::new("uring-remove-wrap-batch");
+        let slot_count: u64 = 32;
+        let mut table = RobinHoodTable::open_with_capacity(tmp.path(), slot_count).unwrap();
+        assert_eq!(table.slot_count, slot_count);
+
+        // Cluster A: 3 entries targeting slot 30 (near end, will wrap
+        // to slots 30, 31, 0).
+        let cluster_a: Vec<OutPoint> = (0..3u8)
+            .map(|d| make_op_for_slot(30, d))
+            .collect();
+        for (i, op) in cluster_a.iter().enumerate() {
+            table
+                .insert(op, &make_coin(u64::try_from(i).unwrap() * 100 + 1000, &[0x51]))
+                .unwrap();
+        }
+        // Cluster B: 3 entries targeting slot 10 (middle, independent).
+        let cluster_b: Vec<OutPoint> = (0..3u8)
+            .map(|d| make_op_for_slot(10, d + 100))
+            .collect();
+        for (i, op) in cluster_b.iter().enumerate() {
+            table
+                .insert(op, &make_coin(u64::try_from(i).unwrap() * 100 + 2000, &[0x51]))
+                .unwrap();
+        }
+        // Cluster C: 3 entries targeting slot 20.
+        let cluster_c: Vec<OutPoint> = (0..3u8)
+            .map(|d| make_op_for_slot(20, d + 200))
+            .collect();
+        for (i, op) in cluster_c.iter().enumerate() {
+            table
+                .insert(op, &make_coin(u64::try_from(i).unwrap() * 100 + 3000, &[0x51]))
+                .unwrap();
+        }
+        assert_eq!(table.len(), 9);
+
+        // Remove the head of each cluster in a single batch.
+        // cluster_a[0] at slot 30: backshift wraps around 31->30, 0->31.
+        // cluster_b[0] at slot 10: standard backshift within the middle.
+        // cluster_c[0] at slot 20: standard backshift.
+        // All three chains are independent (non-overlapping slot ranges).
+        let remove_ops = vec![cluster_a[0], cluster_b[0], cluster_c[0]];
+
+        let mut ring = ququmatz::IoUring::new(256).unwrap();
+        let mut arena = Vec::new();
+        let (mut slots, mut dists, mut resolved) = (Vec::new(), Vec::new(), Vec::new());
+
+        table
+            .remove_batch_uring(
+                &remove_ops,
+                &mut ring,
+                &mut arena,
+                &mut slots,
+                &mut dists,
+                &mut resolved,
+            )
+            .unwrap();
+
+        assert_eq!(table.len(), 6);
+
+        // Removed entries should be gone.
+        assert!(table.get(&cluster_a[0]).unwrap().is_none());
+        assert!(table.get(&cluster_b[0]).unwrap().is_none());
+        assert!(table.get(&cluster_c[0]).unwrap().is_none());
+
+        // Surviving entries should still be present with correct values.
+        let c = table.get(&cluster_a[1]).unwrap().unwrap();
+        assert_eq!(c.value.to_u64(), 1100);
+        let c = table.get(&cluster_a[2]).unwrap().unwrap();
+        assert_eq!(c.value.to_u64(), 1200);
+        let c = table.get(&cluster_b[1]).unwrap().unwrap();
+        assert_eq!(c.value.to_u64(), 2100);
+        let c = table.get(&cluster_b[2]).unwrap().unwrap();
+        assert_eq!(c.value.to_u64(), 2200);
+        let c = table.get(&cluster_c[1]).unwrap().unwrap();
+        assert_eq!(c.value.to_u64(), 3100);
+        let c = table.get(&cluster_c[2]).unwrap().unwrap();
+        assert_eq!(c.value.to_u64(), 3200);
     }
 }

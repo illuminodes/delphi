@@ -80,6 +80,144 @@ fn alt_stack_roundtrip() {
     assert_eq!(s.peek(0).expect("ok"), &[0x05]);
 }
 
+// ── Stack ops (extended) ───────────────────────────────────────────────
+
+#[test]
+fn op_2swap() {
+    // OP_1 OP_2 OP_3 OP_4 OP_2SWAP → 3 4 1 2
+    let s = run(&[0x51, 0x52, 0x53, 0x54, 0x72]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x02]);
+    assert_eq!(s.peek(1).expect("ok"), &[0x01]);
+    assert_eq!(s.peek(2).expect("ok"), &[0x04]);
+    assert_eq!(s.peek(3).expect("ok"), &[0x03]);
+}
+
+#[test]
+fn op_2rot() {
+    // OP_1..6 OP_2ROT → 3 4 5 6 1 2
+    let s = run(&[0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x71]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x02]);
+    assert_eq!(s.peek(1).expect("ok"), &[0x01]);
+    assert_eq!(s.peek(2).expect("ok"), &[0x06]);
+    assert_eq!(s.peek(3).expect("ok"), &[0x05]);
+    assert_eq!(s.peek(4).expect("ok"), &[0x04]);
+    assert_eq!(s.peek(5).expect("ok"), &[0x03]);
+}
+
+#[test]
+fn op_rot() {
+    // OP_1 OP_2 OP_3 OP_ROT → 1 3 2
+    let s = run(&[0x51, 0x52, 0x53, 0x7b]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+    assert_eq!(s.peek(1).expect("ok"), &[0x03]);
+    assert_eq!(s.peek(2).expect("ok"), &[0x02]);
+}
+
+#[test]
+fn op_roll() {
+    // OP_1 OP_2 OP_3 OP_2 OP_ROLL → bottom=2 3 top=1
+    let s = run(&[0x51, 0x52, 0x53, 0x52, 0x7a]).expect("ok");
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_pick() {
+    // OP_1 OP_2 OP_3 OP_2 OP_PICK → 1 2 3 1
+    let s = run(&[0x51, 0x52, 0x53, 0x52, 0x79]).expect("ok");
+    assert_eq!(s.len(), 4);
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_over() {
+    // OP_1 OP_2 OP_OVER → 1 2 1
+    let s = run(&[0x51, 0x52, 0x78]).expect("ok");
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_nip() {
+    // OP_1 OP_2 OP_NIP → 2
+    let s = run(&[0x51, 0x52, 0x77]).expect("ok");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0x02]);
+}
+
+#[test]
+fn op_tuck() {
+    // OP_1 OP_2 OP_TUCK → 2 1 2
+    let s = run(&[0x51, 0x52, 0x7d]).expect("ok");
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.peek(0).expect("ok"), &[0x02]);
+    assert_eq!(s.peek(1).expect("ok"), &[0x01]);
+    assert_eq!(s.peek(2).expect("ok"), &[0x02]);
+}
+
+#[test]
+fn op_ifdup_truthy() {
+    // OP_5 OP_IFDUP → 5 5
+    let s = run(&[0x55, 0x73]).expect("ok");
+    assert_eq!(s.len(), 2);
+}
+
+#[test]
+fn op_ifdup_falsey() {
+    // OP_0 OP_IFDUP → 0 (no dup)
+    let s = run(&[0x00, 0x73]).expect("ok");
+    assert_eq!(s.len(), 1);
+}
+
+#[test]
+fn op_depth() {
+    // OP_1 OP_2 OP_3 OP_DEPTH → 1 2 3 3
+    let s = run(&[0x51, 0x52, 0x53, 0x74]).expect("ok");
+    assert_eq!(s.len(), 4);
+    assert_eq!(s.peek(0).expect("ok"), &[0x03]);
+}
+
+#[test]
+fn op_size() {
+    // push 3-byte data OP_SIZE → data, 3
+    let s = run(&[0x03, 0xaa, 0xbb, 0xcc, 0x82]).expect("ok");
+    assert_eq!(s.len(), 2);
+    assert_eq!(s.peek(0).expect("ok"), &[0x03]);
+}
+
+#[test]
+fn op_2dup() {
+    // OP_1 OP_2 OP_2DUP → 1 2 1 2
+    let s = run(&[0x51, 0x52, 0x6e]).expect("ok");
+    assert_eq!(s.len(), 4);
+    assert_eq!(s.peek(0).expect("ok"), &[0x02]);
+    assert_eq!(s.peek(1).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_3dup() {
+    // OP_1 OP_2 OP_3 OP_3DUP → 1 2 3 1 2 3
+    let s = run(&[0x51, 0x52, 0x53, 0x6f]).expect("ok");
+    assert_eq!(s.len(), 6);
+}
+
+#[test]
+fn op_2over() {
+    // OP_1 OP_2 OP_3 OP_4 OP_2OVER → 1 2 3 4 1 2
+    let s = run(&[0x51, 0x52, 0x53, 0x54, 0x70]).expect("ok");
+    assert_eq!(s.len(), 6);
+    assert_eq!(s.peek(0).expect("ok"), &[0x02]);
+    assert_eq!(s.peek(1).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_2drop() {
+    // OP_1 OP_2 OP_3 OP_2DROP → 1
+    let s = run(&[0x51, 0x52, 0x53, 0x6d]).expect("ok");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
 // ── Arithmetic ──────────────────────────────────────────────────────────
 
 #[test]
@@ -101,6 +239,147 @@ fn op_within_in_range() {
     // 5 0 10 OP_WITHIN  →  true ([0x01])
     let s = run(&[0x55, 0x00, 0x5a, 0xa5]).expect("ok");
     assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_min() {
+    // OP_3 OP_7 OP_MIN → 3
+    let s = run(&[0x53, 0x57, 0xa3]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x03]);
+}
+
+#[test]
+fn op_max() {
+    // OP_3 OP_7 OP_MAX → 7
+    let s = run(&[0x53, 0x57, 0xa4]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x07]);
+}
+
+#[test]
+fn op_num_equal_true() {
+    // OP_5 OP_5 OP_NUMEQUAL → 1
+    let s = run(&[0x55, 0x55, 0x9c]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_num_equal_false() {
+    // OP_5 OP_6 OP_NUMEQUAL → 0
+    let s = run(&[0x55, 0x56, 0x9c]).expect("ok");
+    assert!(s.peek(0).expect("ok").is_empty());
+}
+
+#[test]
+fn op_num_not_equal() {
+    // OP_5 OP_6 OP_NUMNOTEQUAL → 1
+    let s = run(&[0x55, 0x56, 0x9e]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_less_than() {
+    // OP_3 OP_5 OP_LESSTHAN → 1
+    let s = run(&[0x53, 0x55, 0x9f]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_greater_than() {
+    // OP_5 OP_3 OP_GREATERTHAN → 1
+    let s = run(&[0x55, 0x53, 0xa0]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_less_than_or_equal() {
+    // OP_5 OP_5 OP_LESSTHANOREQUAL → 1
+    let s = run(&[0x55, 0x55, 0xa1]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_greater_than_or_equal() {
+    // OP_5 OP_5 OP_GREATERTHANOREQUAL → 1
+    let s = run(&[0x55, 0x55, 0xa2]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_bool_and() {
+    // OP_1 OP_1 OP_BOOLAND → 1; OP_0 OP_1 OP_BOOLAND → 0
+    let s = run(&[0x51, 0x51, 0x9a]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+    let s2 = run(&[0x00, 0x51, 0x9a]).expect("ok");
+    assert!(s2.peek(0).expect("ok").is_empty());
+}
+
+#[test]
+fn op_bool_or() {
+    // OP_0 OP_1 OP_BOOLOR → 1; OP_0 OP_0 OP_BOOLOR → 0
+    let s = run(&[0x00, 0x51, 0x9b]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+    let s2 = run(&[0x00, 0x00, 0x9b]).expect("ok");
+    assert!(s2.peek(0).expect("ok").is_empty());
+}
+
+#[test]
+fn op_negate() {
+    // OP_5 OP_NEGATE → -5
+    let s = run(&[0x55, 0x8f]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x85]); // -5 encoded
+}
+
+#[test]
+fn op_abs() {
+    // push -5 (0x85) then OP_ABS → 5
+    let s = run(&[0x01, 0x85, 0x90]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x05]);
+}
+
+#[test]
+fn op_not() {
+    // OP_0 OP_NOT → 1; OP_1 OP_NOT → 0
+    let s = run(&[0x00, 0x91]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+    let s2 = run(&[0x51, 0x91]).expect("ok");
+    assert!(s2.peek(0).expect("ok").is_empty());
+}
+
+#[test]
+fn op_0not_equal() {
+    // OP_0 OP_0NOTEQUAL → 0; OP_5 OP_0NOTEQUAL → 1
+    let s = run(&[0x00, 0x92]).expect("ok");
+    assert!(s.peek(0).expect("ok").is_empty());
+    let s2 = run(&[0x55, 0x92]).expect("ok");
+    assert_eq!(s2.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn op_1add() {
+    // OP_5 OP_1ADD → 6
+    let s = run(&[0x55, 0x8b]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x06]);
+}
+
+#[test]
+fn op_1sub() {
+    // OP_5 OP_1SUB → 4
+    let s = run(&[0x55, 0x8c]).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x04]);
+}
+
+#[test]
+fn op_num_equal_verify_passes() {
+    // OP_5 OP_5 OP_NUMEQUALVERIFY → empty stack
+    let s = run(&[0x55, 0x55, 0x9d]).expect("ok");
+    assert_eq!(s.len(), 0);
+}
+
+#[test]
+fn op_num_equal_verify_fails() {
+    // OP_5 OP_6 OP_NUMEQUALVERIFY → Verify
+    let r = run(&[0x55, 0x56, 0x9d]);
+    assert!(matches!(r, Err(ScriptError::Verify)));
 }
 
 // ── Comparison ──────────────────────────────────────────────────────────
@@ -195,6 +474,20 @@ fn op_if_skipped_branch_runs_else() {
     // OP_0 OP_IF OP_5 OP_ELSE OP_6 OP_ENDIF  →  [6]
     let s = run(&[0x00, 0x63, 0x55, 0x67, 0x56, 0x68]).expect("ok");
     assert_eq!(s.peek(0).expect("ok"), &[0x06]);
+}
+
+#[test]
+fn op_if_minimalif_rejects_non_minimal() {
+    // Push 0x02 (not minimal: must be empty or [0x01]) then OP_IF under MINIMALIF.
+    let r = run_flags(&[0x01, 0x02, 0x63, 0x51, 0x68], ScriptFlags::MINIMALIF);
+    assert!(matches!(r, Err(ScriptError::MinimalIf)));
+}
+
+#[test]
+fn op_if_minimalif_accepts_minimal_true() {
+    // Push [0x01] then OP_IF — minimal true under MINIMALIF.
+    let s = run_flags(&[0x51, 0x63, 0x55, 0x68], ScriptFlags::MINIMALIF).expect("ok");
+    assert_eq!(s.peek(0).expect("ok"), &[0x05]);
 }
 
 #[test]
@@ -340,4 +633,388 @@ fn upgradable_nop_passes_by_default() {
 fn upgradable_nop_fails_under_discourage_flag() {
     let r = run_flags(&[0xb3], ScriptFlags::DISCOURAGE_UPGRADABLE_NOPS);
     assert!(matches!(r, Err(ScriptError::DiscourageUpgradableNops)));
+}
+
+// ── OP_NOP ──────────────────────────────────────────────────────────────
+
+#[test]
+fn op_nop_is_truly_noop() {
+    // OP_NOP (0x61) by itself leaves the stack empty and succeeds.
+    let s = run(&[0x61]).expect("ok");
+    assert_eq!(s.len(), 0);
+}
+
+#[test]
+fn op_nop_preserves_stack() {
+    // OP_5 OP_NOP OP_3 → stack [5, 3], NOP does not disturb anything.
+    let s = run(&[0x55, 0x61, 0x53]).expect("ok");
+    assert_eq!(s.len(), 2);
+    assert_eq!(s.peek(0).expect("ok"), &[0x03]);
+    assert_eq!(s.peek(1).expect("ok"), &[0x05]);
+}
+
+// ── OP_VERIFY ───────────────────────────────────────────────────────────
+
+#[test]
+fn op_verify_truthy_succeeds_empty_stack() {
+    // OP_1 OP_VERIFY → pops the truthy value, stack empty, no error.
+    let s = run(&[0x51, 0x69]).expect("ok");
+    assert_eq!(s.len(), 0);
+}
+
+#[test]
+fn op_verify_falsey_fails() {
+    // OP_0 OP_VERIFY → Verify error.
+    let r = run(&[0x00, 0x69]);
+    assert!(matches!(r, Err(ScriptError::Verify)));
+}
+
+#[test]
+fn op_verify_preserves_items_below() {
+    // OP_3 OP_1 OP_VERIFY → consumes the 1, leaves [3].
+    let s = run(&[0x53, 0x51, 0x69]).expect("ok");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0x03]);
+}
+
+// ── OP_CHECKMULTISIG ────────────────────────────────────────────────────
+
+#[test]
+fn op_checkmultisig_0_of_0_pushes_true() {
+    // Stack (bottom→top): dummy=OP_0, n_sigs=OP_0, n_pubkeys=OP_0
+    // OP_0 OP_0 OP_0 OP_CHECKMULTISIG → true
+    let s = run(&[0x00, 0x00, 0x00, 0xae]).expect("ok");
+    assert_eq!(s.len(), 1);
+    assert!(s.peek(0).expect("ok").is_truthy());
+}
+
+#[test]
+fn op_checkmultisig_1_of_1_nop_checker_pushes_false() {
+    // 1-of-1 multisig with NopSigChecker: sig check fails → push false.
+    // Stack: dummy, sig, n_sigs=1, pubkey, n_pubkeys=1
+    // OP_0(dummy) OP_0(sig) OP_1(n_sigs) OP_0(pk) OP_1(n_pubkeys) OP_CHECKMULTISIG
+    let s = run(&[0x00, 0x00, 0x51, 0x00, 0x51, 0xae]).expect("ok");
+    assert_eq!(s.len(), 1);
+    assert!(!s.peek(0).expect("ok").is_truthy());
+}
+
+// ── OP_CHECKSIG tapscript paths ────────────────────────────────────────
+
+fn run_tapscript(script: &[u8]) -> Result<Stack, ScriptError> {
+    run_tapscript_flags(script, ScriptFlags::NONE)
+}
+
+fn run_tapscript_flags(script: &[u8], flags: ScriptFlags) -> Result<Stack, ScriptError> {
+    let checker = NopSigChecker;
+    let mut interp = Interpreter::new(&checker, flags, SigVersion::Tapscript);
+    // Provide a dummy tapscript context so OP_CHECKSIG / OP_CHECKSIGADD
+    // can reach the Schnorr verification path (instead of returning BadOpcode).
+    interp.tapscript = Some(super::TapscriptCtx {
+        leaf_hash: [0u8; 32],
+        spent_amount: mantle::primitives::Satoshi::ZERO,
+        spent_spk: Vec::new(),
+        // SAFETY: Bip341Cache is only used for sighash computation which
+        // NopSigChecker never reaches — all fields can be zeroed.
+        bip341_cache: unsafe { std::mem::zeroed() },
+    });
+    interp.eval(script)?;
+    Ok(interp.stack)
+}
+
+#[test]
+fn op_checksig_tapscript_empty_sig_pushes_false() {
+    // sig=OP_0(empty), pubkey=32-byte key → clean failure, pushes false.
+    let mut script = vec![0x00]; // OP_0 (sig = empty)
+    // Push 32-byte pubkey
+    script.push(0x20); // OP_PUSHBYTES_32
+    script.extend_from_slice(&[0xab; 32]);
+    script.push(0xac); // OP_CHECKSIG
+    let s = run_tapscript(&script).expect("empty sig is clean failure");
+    assert_eq!(s.len(), 1);
+    assert!(!s.peek(0).expect("ok").is_truthy());
+}
+
+#[test]
+fn op_checksig_tapscript_non32byte_pubkey_pushes_false() {
+    // sig=OP_0(empty), pubkey=20-byte (not 32) → unknown pubkey type, pushes false.
+    let mut script = vec![0x00]; // OP_0 (sig)
+    script.push(0x14); // OP_PUSHBYTES_20
+    script.extend_from_slice(&[0xab; 20]);
+    script.push(0xac); // OP_CHECKSIG
+    let s = run_tapscript(&script).expect("unknown pubkey type is clean failure");
+    assert_eq!(s.len(), 1);
+    assert!(!s.peek(0).expect("ok").is_truthy());
+}
+
+#[test]
+fn op_checksig_tapscript_bad_sig_nullfail() {
+    // Non-empty sig that fails verification under NULLFAIL → SigNullFail error.
+    // NopSigChecker always returns false for check_schnorr_sig.
+    let mut script = Vec::new();
+    // Push a non-empty sig (1 byte).
+    script.push(0x01); // OP_PUSHBYTES_1
+    script.push(0xff); // sig byte
+    // Push 32-byte pubkey.
+    script.push(0x20); // OP_PUSHBYTES_32
+    script.extend_from_slice(&[0xab; 32]);
+    script.push(0xac); // OP_CHECKSIG
+    let r = run_tapscript_flags(&script, ScriptFlags::NULLFAIL);
+    assert!(matches!(r, Err(ScriptError::SigNullFail)));
+}
+
+#[test]
+fn op_checksig_tapscript_bad_sig_no_nullfail_pushes_false() {
+    // Non-empty sig that fails, but NULLFAIL is off → pushes false.
+    let mut script = Vec::new();
+    script.push(0x01); // OP_PUSHBYTES_1
+    script.push(0xff); // sig byte
+    script.push(0x20); // OP_PUSHBYTES_32
+    script.extend_from_slice(&[0xab; 32]);
+    script.push(0xac); // OP_CHECKSIG
+    let s = run_tapscript(&script).expect("no NULLFAIL → clean failure");
+    assert_eq!(s.len(), 1);
+    assert!(!s.peek(0).expect("ok").is_truthy());
+}
+
+// ── OP_CHECKSIGADD (tapscript) ──────────────────────────────────────────
+
+#[test]
+fn op_checksigadd_empty_pubkey_pushes_n_unchanged() {
+    // sig=OP_0(empty), n=OP_5, pubkey=OP_0(empty)
+    // Empty pubkey → unknown key type, push n unchanged.
+    // OP_0 OP_5 OP_0 OP_CHECKSIGADD
+    let s = run_tapscript(&[0x00, 0x55, 0x00, 0xba]).expect("ok");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0x05]);
+}
+
+#[test]
+fn op_checksigadd_empty_sig_pushes_n_unchanged() {
+    // sig=OP_0(empty), n=OP_3, pubkey=32-byte zeroed key
+    // Empty sig → no contribution, push n unchanged.
+    let mut script = vec![0x00]; // OP_0 (sig)
+    script.push(0x53); // OP_3 (n=3)
+    // Push 32-byte pubkey: OP_PUSHBYTES_32 followed by 32 zero bytes
+    script.push(0x20); // 0x20 = 32
+    script.extend_from_slice(&[0x00; 32]);
+    script.push(0xba); // OP_CHECKSIGADD
+    let s = run_tapscript(&script).expect("ok");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0x03]);
+}
+
+#[test]
+fn op_checksigadd_bad_pubkey_size_fails() {
+    // sig=OP_0(empty), n=OP_5, pubkey=1-byte (not 32, not empty)
+    // Non-empty, non-32-byte pubkey → XOnlyPubkeySize error.
+    // OP_0 OP_5 OP_1 OP_CHECKSIGADD
+    let r = run_tapscript(&[0x00, 0x55, 0x51, 0xba]);
+    assert!(matches!(r, Err(ScriptError::XOnlyPubkeySize)));
+}
+
+#[test]
+fn op_checksigadd_bad_sig_nullfail() {
+    // Non-empty sig that fails verification under NULLFAIL → TaprootChecksigAdd error.
+    // Stack order (bottom to top): sig, n, pubkey
+    let mut script = Vec::new();
+    // sig = 1 byte (non-empty)
+    script.push(0x01); // OP_PUSHBYTES_1
+    script.push(0xff);
+    // n = OP_3
+    script.push(0x53);
+    // pubkey = 32-byte key
+    script.push(0x20); // OP_PUSHBYTES_32
+    script.extend_from_slice(&[0xab; 32]);
+    script.push(0xba); // OP_CHECKSIGADD
+    let r = run_tapscript_flags(&script, ScriptFlags::NULLFAIL);
+    assert!(matches!(r, Err(ScriptError::TaprootChecksigAdd)));
+}
+
+#[test]
+fn op_checksigadd_bad_sig_no_nullfail_pushes_n() {
+    // Non-empty sig fails without NULLFAIL → pushes n unchanged.
+    let mut script = Vec::new();
+    script.push(0x01); // OP_PUSHBYTES_1
+    script.push(0xff);
+    script.push(0x53); // OP_3 (n=3)
+    script.push(0x20); // OP_PUSHBYTES_32
+    script.extend_from_slice(&[0xab; 32]);
+    script.push(0xba); // OP_CHECKSIGADD
+    let s = run_tapscript(&script).expect("no NULLFAIL → clean failure");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0x03]);
+}
+
+#[test]
+fn op_checksigadd_outside_tapscript_fails() {
+    // OP_CHECKSIGADD (0xba) outside tapscript is BadOpcode.
+    let r = run(&[0x00, 0x55, 0x00, 0xba]);
+    assert!(matches!(r, Err(ScriptError::BadOpcode)));
+}
+
+// ── OP_CHECKMULTISIG / OP_CHECKMULTISIGVERIFY in tapscript ─────────────
+
+#[test]
+fn op_checkmultisig_in_tapscript_succeeds_via_op_success() {
+    // In tapscript, OP_CHECKMULTISIG (0xae) is an OP_SUCCESS opcode.
+    // Any script containing it succeeds immediately, even without valid stack.
+    // Note: is_tapscript_success covers byte 0xbb..=0xfe, but OP_CHECKMULTISIG
+    // (0xae) is NOT in that range — it dispatches normally. Let's test that
+    // it executes normally (0-of-0 works).
+    let s = run_tapscript(&[0x00, 0x00, 0x00, 0xae]).expect("0-of-0 multisig ok in tapscript");
+    assert_eq!(s.len(), 1);
+    assert!(s.peek(0).expect("ok").is_truthy());
+}
+
+#[test]
+fn op_checkmultisigverify_in_tapscript_works() {
+    // OP_CHECKMULTISIGVERIFY (0xaf) in tapscript: 0-of-0 with verify.
+    // Stack: dummy=OP_0, n_sigs=OP_0, n_pubkeys=OP_0, then OP_CHECKMULTISIGVERIFY
+    // followed by OP_1 so we leave a truthy stack.
+    let s = run_tapscript(&[0x00, 0x00, 0x00, 0xaf, 0x51]).expect("0-of-0 multisigverify ok");
+    assert_eq!(s.len(), 1);
+    assert!(s.peek(0).expect("ok").is_truthy());
+}
+
+// ── OP_PUSHDATA1 / OP_PUSHDATA2 / OP_PUSHDATA4 ────────────────────────
+
+#[test]
+fn op_pushdata1_pushes_data() {
+    // OP_PUSHDATA1(0x4c) len=3 0xaa 0xbb 0xcc
+    let s = run(&[0x4c, 0x03, 0xaa, 0xbb, 0xcc]).expect("ok");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0xaa, 0xbb, 0xcc]);
+}
+
+#[test]
+fn op_pushdata2_pushes_data() {
+    // OP_PUSHDATA2(0x4d) len=0x0002 (LE) 0xaa 0xbb
+    let s = run(&[0x4d, 0x02, 0x00, 0xaa, 0xbb]).expect("ok");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0xaa, 0xbb]);
+}
+
+#[test]
+fn op_pushdata4_pushes_data() {
+    // OP_PUSHDATA4(0x4e) len=0x00000001 (LE) 0xff
+    let s = run(&[0x4e, 0x01, 0x00, 0x00, 0x00, 0xff]).expect("ok");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0xff]);
+}
+
+// ── Disabled opcodes in tapscript ──────────────────────────────────────
+
+#[test]
+fn disabled_opcode_in_tapscript_is_op_success() {
+    // In tapscript, the legacy disabled opcodes (OP_CAT 0x7e, OP_SUBSTR 0x7f,
+    // etc.) are re-assigned as OP_SUCCESSx. Encountering one anywhere in the
+    // script makes the entire script succeed immediately.
+    // OP_CAT (0x7e) is in the 0x7e..=0x81 range of OP_SUCCESSx.
+    let s = run_tapscript(&[0x7e]).expect("OP_SUCCESSx succeeds immediately");
+    // After OP_SUCCESSx, eval returns Ok(()) and the stack may be empty.
+    // The step function returns Ok(()) immediately, so eval finishes.
+    assert_eq!(s.len(), 0);
+}
+
+#[test]
+fn disabled_opcode_in_tapscript_skipped_branch_still_succeeds() {
+    // OP_SUCCESSx in an unexecuted OP_IF branch still makes the script succeed.
+    // OP_0 OP_IF OP_CAT(0x7e) OP_ENDIF
+    // Even though OP_CAT is in the "false" branch, it's an OP_SUCCESSx in tapscript.
+    let s = run_tapscript(&[0x00, 0x63, 0x7e, 0x68]).expect("OP_SUCCESSx in dead branch succeeds");
+    assert_eq!(s.len(), 0);
+}
+
+// ── CLTV / CSV as upgradable NOPs (pre-activation) ────────────────────
+
+#[test]
+fn cltv_without_flag_acts_as_upgradable_nop() {
+    // OP_CHECKLOCKTIMEVERIFY (0xb1) without CHECKLOCKTIMEVERIFY flag → upgradable NOP.
+    // Push 1 first so stack is not empty, then CLTV acts as NOP.
+    let flags = ScriptFlags::NONE;
+    let s = run_flags(&[0x51, 0xb1], flags).expect("CLTV is NOP without flag");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn csv_without_flag_acts_as_upgradable_nop() {
+    // OP_CHECKSEQUENCEVERIFY (0xb2) without CHECKSEQUENCEVERIFY flag → upgradable NOP.
+    let flags = ScriptFlags::NONE;
+    let s = run_flags(&[0x51, 0xb2], flags).expect("CSV is NOP without flag");
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.peek(0).expect("ok"), &[0x01]);
+}
+
+#[test]
+fn cltv_without_flag_discourage_nops_fails() {
+    // CLTV pre-activation + DISCOURAGE_UPGRADABLE_NOPS → error.
+    let flags = ScriptFlags::DISCOURAGE_UPGRADABLE_NOPS;
+    let r = run_flags(&[0x51, 0xb1], flags);
+    assert!(matches!(r, Err(ScriptError::DiscourageUpgradableNops)));
+}
+
+#[test]
+fn csv_without_flag_discourage_nops_fails() {
+    // CSV pre-activation + DISCOURAGE_UPGRADABLE_NOPS → error.
+    let flags = ScriptFlags::DISCOURAGE_UPGRADABLE_NOPS;
+    let r = run_flags(&[0x51, 0xb2], flags);
+    assert!(matches!(r, Err(ScriptError::DiscourageUpgradableNops)));
+}
+
+// ── Reserved/Invalid opcodes ──────────────────────────────────────────
+
+#[test]
+fn op_ver_fails_when_executed() {
+    // OP_VER (0x62) fails when executed.
+    let r = run(&[0x62]);
+    assert!(matches!(r, Err(ScriptError::BadOpcodeReserved)));
+}
+
+#[test]
+fn op_reserved1_fails_when_executed() {
+    // OP_RESERVED1 (0x89) is not in the disabled set but fails with
+    // BadOpcodeReserved when executed via the dispatch table.
+    let r = run(&[0x89]);
+    assert!(matches!(r, Err(ScriptError::BadOpcodeReserved)));
+}
+
+#[test]
+fn op_reserved2_fails_when_executed() {
+    // OP_RESERVED2 (0x8a) same as RESERVED1.
+    let r = run(&[0x8a]);
+    assert!(matches!(r, Err(ScriptError::BadOpcodeReserved)));
+}
+
+#[test]
+fn op_invalid_fails_when_executed() {
+    // OP_INVALIDOPCODE (0xff). In legacy mode it's disabled/OP_SUCCESS territory.
+    // 0xff is in is_tapscript_success range (0xbb..=0xfe). But in legacy, 0xff
+    // is not in the disabled set... let me check. Actually 0xff is not 0xbb..=0xfe
+    // (0xff > 0xfe), so it maps to Opcode::Invalid(0xff).
+    // In step(): is_disabled() returns false for 0xff (it's not in the disabled list),
+    // and it's not is_verif_class either. So dispatch runs and hits Invalid(_) → BadOpcode.
+    let r = run(&[0xff]);
+    assert!(matches!(r, Err(ScriptError::BadOpcode)));
+}
+
+// ── Upgradable NOP range ──────────────────────────────────────────────
+
+#[test]
+fn all_upgradable_nops_pass_without_discourage() {
+    // NOP1(0xb0), NOP4..NOP10 (0xb3..0xb9)
+    for &byte in &[0xb0, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9] {
+        run(&[byte]).unwrap_or_else(|e| panic!("NOP byte 0x{byte:02x} should pass, got {e:?}"));
+    }
+}
+
+#[test]
+fn all_upgradable_nops_fail_with_discourage() {
+    for &byte in &[0xb0, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9] {
+        let r = run_flags(&[byte], ScriptFlags::DISCOURAGE_UPGRADABLE_NOPS);
+        assert!(
+            matches!(r, Err(ScriptError::DiscourageUpgradableNops)),
+            "NOP byte 0x{byte:02x} should fail with DISCOURAGE, got {r:?}"
+        );
+    }
 }

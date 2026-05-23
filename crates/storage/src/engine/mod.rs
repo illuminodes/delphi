@@ -1,9 +1,11 @@
 pub mod arena;
 pub mod disk_arena;
 pub mod flat;
+pub(crate) mod header_io;
 pub mod production;
 pub mod robin_hood;
 pub mod tx_grouped;
+pub(crate) mod wal_io;
 
 use mantle::primitives::{BlockHeader, BlockHeight, Hash256, OutPoint};
 use mantle_consensus::chain_view::{Coin, TipInfo};
@@ -40,6 +42,12 @@ impl std::error::Error for EngineError {
     }
 }
 
+impl From<std::io::Error> for EngineError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
 pub trait Engine {
     /// # Errors
     /// Returns `EngineError` on I/O failure.
@@ -51,7 +59,13 @@ pub trait Engine {
         &mut self,
         ops: &[OutPoint],
         out: &mut Vec<LookupResult>,
-    ) -> Result<(), EngineError>;
+    ) -> Result<(), EngineError> {
+        for &op in ops {
+            let coin = self.read_coin(&op)?;
+            out.push(LookupResult { outpoint: op, coin });
+        }
+        Ok(())
+    }
 
     /// # Errors
     /// Returns `EngineError` on I/O failure.
@@ -80,4 +94,29 @@ pub trait Engine {
     fn recover(&mut self) -> Result<TipInfo, EngineError>;
 
     fn tip(&self) -> TipInfo;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EngineError;
+
+    #[test]
+    fn engine_error_display_all_variants() {
+        let io = EngineError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        assert!(format!("{io}").contains("engine I/O error"));
+
+        let spk = EngineError::ScriptPubKeyTooLarge;
+        assert!(format!("{spk}").contains("script_pubkey exceeds"));
+
+        let overflow = EngineError::ScriptLenOverflow;
+        assert!(format!("{overflow}").contains("overflows"));
+    }
+
+    #[test]
+    fn engine_error_source() {
+        use std::error::Error;
+        let io = EngineError::Io(std::io::Error::new(std::io::ErrorKind::Other, "x"));
+        assert!(io.source().is_some());
+        assert!(EngineError::ScriptPubKeyTooLarge.source().is_none());
+    }
 }

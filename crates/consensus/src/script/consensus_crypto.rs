@@ -474,4 +474,65 @@ mod tests {
         let pk = [0x04u8; 64]; // uncompressed lead, wrong length
         assert!(!Ecdsa::is_compressed_or_uncompressed(&pk));
     }
+
+    // ── DER edge cases for is_valid_der_encoding ──────────────────────────
+
+    #[test]
+    fn der_s_with_zero_length() {
+        // s_len = 0 → should be rejected (we need at least one s byte).
+        let sig = [0x30, 0x05, 0x02, 0x01, 0x01, 0x02, 0x00];
+        assert!(!Ecdsa::is_valid_der_encoding(&sig));
+    }
+
+    #[test]
+    fn der_s_with_leading_zero_not_needed() {
+        // s = 00 01 — leading zero is redundant since 0x01's high bit is clear.
+        let sig = [0x30, 0x07, 0x02, 0x01, 0x01, 0x02, 0x02, 0x00, 0x01];
+        assert!(!Ecdsa::is_valid_der_encoding(&sig));
+    }
+
+    #[test]
+    fn der_s_negative() {
+        // s = 0x80 — high bit set without leading zero → negative → invalid.
+        let sig = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x80];
+        assert!(!Ecdsa::is_valid_der_encoding(&sig));
+    }
+
+    #[test]
+    fn der_s_with_required_leading_zero() {
+        // s = 00 80 — high bit set, leading zero required to keep s positive.
+        let sig = [0x30, 0x07, 0x02, 0x01, 0x01, 0x02, 0x02, 0x00, 0x80];
+        assert!(Ecdsa::is_valid_der_encoding(&sig));
+    }
+
+    #[test]
+    fn der_wrong_r_tag() {
+        // R tag is 0x03 instead of 0x02.
+        let sig = [0x30, 0x06, 0x03, 0x01, 0x01, 0x02, 0x01, 0x01];
+        assert!(!Ecdsa::is_valid_der_encoding(&sig));
+    }
+
+    #[test]
+    fn der_wrong_s_tag() {
+        // S tag is 0x03 instead of 0x02.
+        let sig = [0x30, 0x06, 0x02, 0x01, 0x01, 0x03, 0x01, 0x01];
+        assert!(!Ecdsa::is_valid_der_encoding(&sig));
+    }
+
+    #[test]
+    fn der_r_len_too_large() {
+        // r_len claims bytes that overflow into where s should be.
+        // sig = [0x30, 0x06, 0x02, 0x04, 0x01, 0x01, 0x01, 0x01]
+        // r_len=4, so r occupies sig[4..8], leaving no room for s header + s.
+        let sig = [0x30, 0x06, 0x02, 0x04, 0x01, 0x01, 0x01, 0x01];
+        assert!(!Ecdsa::is_valid_der_encoding(&sig));
+    }
+
+    #[test]
+    fn der_s_len_wrong_total() {
+        // s_len doesn't make total match: 6 + r_len + s_len != sig.len()
+        // r_len=1, s_len=2, but only 1 byte of s data → total mismatch.
+        let sig = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x02, 0x01];
+        assert!(!Ecdsa::is_valid_der_encoding(&sig));
+    }
 }
