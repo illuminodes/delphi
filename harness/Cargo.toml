@@ -18,6 +18,10 @@ path = "src/main.rs"
 name = "oracle-granularity"
 path = "src/bin/granularity_sweep.rs"
 
+[[bin]]
+name = "mempool-spike"
+path = "src/bin/mempool_spike.rs"
+
 [dependencies]
 mantle = { path = "../crates/mantle" }
 mantle-oracle = { path = "../crates/oracle" }

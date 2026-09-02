@@ -2,11 +2,12 @@ use std::collections::HashSet;
 
 use mantle::amount::Satoshi;
 use mantle::hash::Hash256;
-use mantle::tx::{Transaction, TxHash};
+use mantle::tx::{OutPoint, Transaction, TxHash};
 
 #[derive(Debug, Default)]
 pub struct OutputFilter {
     seen_txids: HashSet<Hash256>,
+    spent_outpoints: HashSet<OutPoint>,
     txid_buffer: Vec<u8>,
 }
 
@@ -27,12 +28,17 @@ impl OutputFilter {
             .inputs
             .iter()
             .any(|input| self.seen_txids.contains(&input.previous_output.txid));
+        let replacement = transaction
+            .inputs
+            .iter()
+            .any(|input| self.spent_outpoints.contains(&input.previous_output));
         let accepted = transaction.inputs.len() <= Self::MAX_INPUTS
             && transaction.outputs.len() == Self::REQUIRED_OUTPUTS
             && !Self::is_coinbase(transaction)
             && !Self::has_op_return(transaction)
             && !Self::has_oversized_witness(transaction)
-            && !same_day_spend;
+            && !same_day_spend
+            && !replacement;
         let outputs = if accepted {
             transaction
                 .outputs
@@ -46,7 +52,17 @@ impl OutputFilter {
         if let Ok(txid) = transaction.txid_into(&mut self.txid_buffer) {
             self.seen_txids.insert(txid);
         }
+        if !Self::is_coinbase(transaction) {
+            for input in &transaction.inputs {
+                self.spent_outpoints.insert(input.previous_output);
+            }
+        }
         outputs.into_iter()
+    }
+
+    #[must_use]
+    pub fn distinct_spends(&self) -> usize {
+        self.spent_outpoints.len()
     }
 
     fn is_coinbase(transaction: &Transaction) -> bool {
@@ -133,6 +149,34 @@ mod tests {
 
         assert_eq!(filter.admit(&parent).count(), 2);
         assert_eq!(filter.admit(&child).count(), 0);
+    }
+
+    #[test]
+    fn rejects_a_replacement_spending_an_already_seen_outpoint() {
+        let mut filter = OutputFilter::new();
+        let original = TransactionFixture::transaction(Hash256::from_bytes([9; 32]));
+        let mut replacement = TransactionFixture::transaction(Hash256::from_bytes([9; 32]));
+        replacement.outputs[0].value = Satoshi::new(49_000);
+
+        assert_eq!(filter.admit(&original).count(), 2);
+        assert_ne!(
+            original.txid().expect("fixture encodes"),
+            replacement.txid().expect("fixture encodes")
+        );
+        assert_eq!(filter.admit(&replacement).count(), 0);
+    }
+
+    #[test]
+    fn counts_distinct_spent_outpoints() {
+        let mut filter = OutputFilter::new();
+        let _ = filter
+            .admit(&TransactionFixture::transaction(Hash256::from_bytes([1; 32])))
+            .count();
+        let _ = filter
+            .admit(&TransactionFixture::transaction(Hash256::from_bytes([2; 32])))
+            .count();
+
+        assert_eq!(filter.distinct_spends(), 2);
     }
 
     #[test]
