@@ -1,17 +1,14 @@
 mod cli;
-mod reference_prices;
-mod score;
-mod window_plan;
 
 use std::process::ExitCode;
 
 use mantle::network::Network;
+use mantle_harness::reference_prices::{ReferenceError, ReferencePrices};
+use mantle_harness::score::Scorecard;
+use mantle_harness::window_plan::WindowPlan;
 use mantle_oracle::{PeerSources, UtcDate, WindowRunner};
 
 use crate::cli::{Args, HELP};
-use crate::reference_prices::{ReferenceError, ReferencePrices};
-use crate::score::Scorecard;
-use crate::window_plan::WindowPlan;
 
 struct HarnessApp;
 

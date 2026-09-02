@@ -6,9 +6,17 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "mantle_harness"
+path = "src/lib.rs"
+
 [[bin]]
 name = "oracle-harness"
 path = "src/main.rs"
+
+[[bin]]
+name = "oracle-granularity"
+path = "src/bin/granularity_sweep.rs"
 
 [dependencies]
 mantle = { path = "../crates/mantle" }

@@ -7,6 +7,8 @@ use mantle::difficulty::BlockTime;
 use mantle::network::Network;
 use mantle_oracle::UtcDate;
 
+use crate::price_series::PriceSeries;
+
 const COINGECKO_RANGE_URL: &str = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range";
 const MS_PER_DAY: u64 = 86_400_000;
 
@@ -142,6 +144,7 @@ impl ReferencePrices {
         let Ok(pairs) = PriceSeries::parse(body) else {
             return;
         };
+
         for (milliseconds, price) in pairs {
             if milliseconds % MS_PER_DAY != 0 {
                 continue;
@@ -151,120 +154,6 @@ impl ReferencePrices {
             };
             let date = UtcDate::containing(BlockTime::new(seconds));
             self.snapshots.insert(date.to_string(), price);
-        }
-    }
-}
-
-struct PriceSeries<'a> {
-    body: &'a str,
-    cursor: usize,
-}
-
-impl<'a> PriceSeries<'a> {
-    fn parse(body: &'a str) -> Result<Vec<(u64, f64)>, ReferenceError> {
-        let mut parser = Self { body, cursor: 0 };
-        parser.expect_literal("\"prices\"")?;
-        parser.expect(b'[')?;
-        let mut pairs = Vec::new();
-        parser.skip_insignificant();
-        if parser.peek() == Some(b']') {
-            return Ok(pairs);
-        }
-        loop {
-            pairs.push(parser.parse_pair()?);
-            parser.skip_insignificant();
-            match parser.peek() {
-                Some(b',') => {
-                    parser.cursor += 1;
-                    parser.skip_insignificant();
-                }
-                Some(b']') => break,
-                _ => {
-                    return Err(ReferenceError::Malformed(
-                        "expected ',' or ']' after a price pair".to_string(),
-                    ))
-                }
-            }
-        }
-        Ok(pairs)
-    }
-
-    fn parse_pair(&mut self) -> Result<(u64, f64), ReferenceError> {
-        self.expect(b'[')?;
-        let milliseconds = self.parse_timestamp()?;
-        self.expect(b',')?;
-        let price = self.parse_number("price")?;
-        self.expect(b']')?;
-        Ok((milliseconds, price))
-    }
-
-    fn parse_timestamp(&mut self) -> Result<u64, ReferenceError> {
-        let token = self.parse_token("timestamp")?;
-        token
-            .parse::<u64>()
-            .map_err(|_| ReferenceError::Malformed(format!("invalid timestamp literal: {token}")))
-    }
-
-    fn parse_number(&mut self, field: &str) -> Result<f64, ReferenceError> {
-        let token = self.parse_token(field)?;
-        token
-            .parse::<f64>()
-            .map_err(|_| ReferenceError::Malformed(format!("invalid {field} literal: {token}")))
-    }
-
-    fn parse_token(&mut self, field: &str) -> Result<&'a str, ReferenceError> {
-        self.skip_insignificant();
-        let bytes = self.body.as_bytes();
-        let start = self.cursor;
-        while let Some(&byte) = bytes.get(self.cursor) {
-            if byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'+' | b'e' | b'E') {
-                self.cursor += 1;
-            } else {
-                break;
-            }
-        }
-        if start == self.cursor {
-            return Err(ReferenceError::Malformed(format!("missing {field} literal")));
-        }
-        Ok(&self.body[start..self.cursor])
-    }
-
-    fn expect(&mut self, delimiter: u8) -> Result<(), ReferenceError> {
-        self.skip_insignificant();
-        if self.peek() == Some(delimiter) {
-            self.cursor += 1;
-            Ok(())
-        } else {
-            Err(ReferenceError::Malformed(format!(
-                "expected '{}' at byte {}",
-                delimiter as char, self.cursor
-            )))
-        }
-    }
-
-    fn expect_literal(&mut self, literal: &str) -> Result<(), ReferenceError> {
-        let found = self.body[self.cursor..]
-            .find(literal)
-            .ok_or_else(|| ReferenceError::Malformed(format!("no {literal} array found")))?;
-        self.cursor += found + literal.len();
-        self.skip_insignificant();
-        while self.peek().is_some_and(|byte| byte != b'[') {
-            self.cursor += 1;
-        }
-        if self.peek() == Some(b'[') {
-            Ok(())
-        } else {
-            Err(ReferenceError::Malformed(format!("no array follows {literal}")))
-        }
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.body.as_bytes().get(self.cursor).copied()
-    }
-
-    fn skip_insignificant(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
-            self.cursor += 1;
         }
     }
 }
@@ -308,7 +197,7 @@ mod tests {
 
     use mantle_oracle::UtcDate;
 
-    use super::{PriceSeries, ReferenceCache, ReferencePrices};
+    use super::{ReferenceCache, ReferencePrices};
 
     struct TempCachePath;
 
@@ -319,35 +208,6 @@ mod tests {
                 std::process::id()
             ))
         }
-    }
-
-    #[test]
-    fn parses_price_pairs_from_a_range_response() {
-        let body = concat!(
-            "{\"prices\":[[1788249600000,77000.5],",
-            "[1788336000000,77370.25],[1788422400000,78001]]}"
-        );
-        let pairs = PriceSeries::parse(body).expect("well-formed body");
-        assert_eq!(
-            pairs,
-            [
-                (1_788_249_600_000, 77_000.5),
-                (1_788_336_000_000, 77_370.25),
-                (1_788_422_400_000, 78_001.0)
-            ]
-        );
-    }
-
-    #[test]
-    fn parses_an_empty_prices_array() {
-        let pairs = PriceSeries::parse("{\"prices\":[]}").expect("empty array is well-formed");
-        assert!(pairs.is_empty());
-    }
-
-    #[test]
-    fn rejects_a_body_without_prices() {
-        assert!(PriceSeries::parse("{\"market_caps\":[[1,2]]}").is_err());
-        assert!(PriceSeries::parse("{\"prices\":[[1788249600000]]}").is_err());
     }
 
     #[test]

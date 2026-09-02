@@ -25,6 +25,8 @@ impl WindowPlan {
         }
     }
 
+    /// # Panics
+    /// Panics if the planned date falls outside the representable range.
     #[must_use]
     pub fn selection(self) -> RangeSelection {
         RangeSelection::UtcDay(self.date.midnight().expect("window date in range"))

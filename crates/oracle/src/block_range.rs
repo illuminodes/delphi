@@ -14,6 +14,10 @@ pub enum RangeSelection {
         start: BlockHeight,
         stop: BlockHeight,
     },
+    TimeSpan {
+        start: BlockTime,
+        stop: BlockTime,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +65,7 @@ impl BlockRange {
             RangeSelection::UtcDay(day_start) => Self::for_utc_day(headers, day_start),
             RangeSelection::RecentBlocks(count) => Self::recent(headers, count),
             RangeSelection::Heights { start, stop } => Self::heights(headers, start, stop),
+            RangeSelection::TimeSpan { start, stop } => Self::for_time_span(headers, start, stop),
         }
     }
 
@@ -107,6 +112,31 @@ impl BlockRange {
             .ok_or(BlockRangeError::EmptySelection)?;
         let stop = matching.next_back().map_or(start, |(height, _)| *height);
         Ok(Self { start, stop })
+    }
+
+    fn for_time_span(
+        headers: &[(BlockHeight, BlockHeader)],
+        start: BlockTime,
+        stop: BlockTime,
+    ) -> Result<Self, BlockRangeError> {
+        let start_time = start.to_u32();
+        let stop_time = stop.to_u32();
+        if start_time >= stop_time {
+            return Err(BlockRangeError::InvalidHeightOrder);
+        }
+        let mut matching = headers.iter().filter(|(_, header)| {
+            let time = header.time().to_u32();
+            time >= start_time && time < stop_time
+        });
+        let first = matching
+            .next()
+            .map(|(height, _)| *height)
+            .ok_or(BlockRangeError::EmptySelection)?;
+        let last = matching.next_back().map_or(first, |(height, _)| *height);
+        Ok(Self {
+            start: first,
+            stop: last,
+        })
     }
 
     fn recent(
@@ -224,6 +254,69 @@ mod tests {
                 RangeSelection::Heights {
                     start: BlockHeight::new(102),
                     stop: BlockHeight::new(101),
+                },
+            ),
+            Err(BlockRangeError::InvalidHeightOrder)
+        );
+    }
+
+    #[test]
+    fn selects_a_sub_day_time_span() {
+        let headers = HeaderFixture::headers(&[86_400, 88_000, 90_000, 92_000]);
+        let range = BlockRange::select(
+            &headers,
+            RangeSelection::TimeSpan {
+                start: BlockTime::new(87_000),
+                stop: BlockTime::new(91_000),
+            },
+        )
+        .expect("span covers blocks");
+
+        assert_eq!(range.start(), BlockHeight::new(101));
+        assert_eq!(range.stop(), BlockHeight::new(102));
+        assert_eq!(range.headers(&headers).len(), 2);
+    }
+
+    #[test]
+    fn time_span_of_one_block_starts_and_stops_together() {
+        let headers = HeaderFixture::headers(&[86_400, 88_000, 90_000]);
+        let range = BlockRange::select(
+            &headers,
+            RangeSelection::TimeSpan {
+                start: BlockTime::new(87_500),
+                stop: BlockTime::new(89_000),
+            },
+        )
+        .expect("span covers one block");
+
+        assert_eq!(range.start(), BlockHeight::new(101));
+        assert_eq!(range.stop(), BlockHeight::new(101));
+    }
+
+    #[test]
+    fn rejects_a_time_span_with_no_blocks() {
+        let headers = HeaderFixture::headers(&[86_400, 88_000]);
+        assert_eq!(
+            BlockRange::select(
+                &headers,
+                RangeSelection::TimeSpan {
+                    start: BlockTime::new(100_000),
+                    stop: BlockTime::new(110_000),
+                },
+            ),
+            Err(BlockRangeError::EmptySelection)
+        );
+    }
+
+    #[test]
+    fn rejects_a_reversed_time_span() {
+        let headers = HeaderFixture::headers(&[86_400, 88_000]);
+        assert_eq!(
+            BlockRange::select(
+                &headers,
+                RangeSelection::TimeSpan {
+                    start: BlockTime::new(88_000),
+                    stop: BlockTime::new(86_400),
                 },
             ),
             Err(BlockRangeError::InvalidHeightOrder)
