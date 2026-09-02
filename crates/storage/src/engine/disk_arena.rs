@@ -65,9 +65,7 @@ impl DiskArenaEngine {
 
         let headers = HeaderStore::open(data_dir)?;
 
-        let ring = ququmatz::IoUring::builder(256)
-            .build()
-            .map_err(|e| EngineError::Io(io::Error::other(format!("{e:?}"))))?;
+        let ring = crate::engine::ring_budget::RingBudget::new(256, 64).build()?;
 
         let mut engine = Self {
             data_dir: data_dir.to_owned(),

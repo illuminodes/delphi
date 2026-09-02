@@ -3,6 +3,7 @@ pub mod disk_arena;
 pub mod flat;
 pub(crate) mod header_io;
 pub mod production;
+pub mod ring_budget;
 pub mod robin_hood;
 pub mod tx_grouped;
 pub(crate) mod wal_io;

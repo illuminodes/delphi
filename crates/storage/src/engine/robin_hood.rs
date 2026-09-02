@@ -1083,6 +1083,11 @@ use super::header_io::{
 
 const STORAGE_RING_ENTRIES: u32 = 32768;
 
+/// Shallowest ring depth accepted when locked-memory pressure forces the
+/// preferred depth down. Submission paths drain and retry on a full queue, so
+/// a shallower ring costs throughput but never correctness.
+const STORAGE_RING_ENTRIES_MIN: u32 = 256;
+
 const WRITE_BUFFER_FLUSH_THRESHOLD: usize = 500_000;
 
 // ── Write buffer ─────────────────────────────────────────────────────────────
@@ -1132,9 +1137,11 @@ impl RobinHoodEngine {
         let table = RobinHoodTable::open(&table_path)?;
         let headers = HeaderStore::open(data_dir)?;
 
-        let mut ring = ququmatz::IoUring::builder(STORAGE_RING_ENTRIES)
-            .build()
-            .map_err(|e| EngineError::Io(uring_err(e)))?;
+        let mut ring = crate::engine::ring_budget::RingBudget::new(
+            STORAGE_RING_ENTRIES,
+            STORAGE_RING_ENTRIES_MIN,
+        )
+        .build()?;
 
         let table_fd = table.fd();
         ring.register_files(&[table_fd.as_i32()])
