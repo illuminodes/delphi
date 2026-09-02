@@ -8,3 +8,4 @@ workspace = true
 
 [dependencies]
 mantle = { path = "../mantle" }
+mantle-fetcher = { path = "../fetcher" }

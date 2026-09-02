@@ -80,10 +80,7 @@ impl BlockRange {
     }
 
     #[must_use]
-    pub fn headers<'a>(
-        self,
-        headers: &'a [(BlockHeight, BlockHeader)],
-    ) -> &'a [(BlockHeight, BlockHeader)] {
+    pub fn headers(self, headers: &[(BlockHeight, BlockHeader)]) -> &[(BlockHeight, BlockHeader)] {
         let start = headers.partition_point(|(height, _)| *height < self.start);
         let stop = headers.partition_point(|(height, _)| *height <= self.stop);
         &headers[start..stop]
@@ -108,7 +105,7 @@ impl BlockRange {
             .next()
             .map(|(height, _)| *height)
             .ok_or(BlockRangeError::EmptySelection)?;
-        let stop = matching.last().map_or(start, |(height, _)| *height);
+        let stop = matching.next_back().map_or(start, |(height, _)| *height);
         Ok(Self { start, stop })
     }
 

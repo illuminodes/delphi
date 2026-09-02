@@ -765,6 +765,7 @@ name = "mantle-oracle"
 version = "0.1.0"
 dependencies = [
  "mantle",
+ "mantle-fetcher",
 ]
 
 [[package]]

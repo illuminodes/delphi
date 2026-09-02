@@ -10,6 +10,7 @@ pub mod pipeline;
 pub mod report;
 pub mod rough_price;
 pub mod stencil;
+pub mod utc_date;
 
 pub use block_range::{BlockRange, BlockRangeError, RangeSelection};
 pub use central_price::{CentralPrice, CentralPriceFinder};
@@ -21,3 +22,4 @@ pub use pipeline::{OracleError, OraclePipeline};
 pub use report::OracleReport;
 pub use rough_price::RoughPriceEstimator;
 pub use stencil::{PriceStencil, SmoothStencil, SpikeStencil};
+pub use utc_date::{UtcDate, UtcDateError};
