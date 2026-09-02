@@ -26,6 +26,10 @@ path = "src/bin/mempool_spike.rs"
 name = "oracle-convergence"
 path = "src/bin/sample_convergence.rs"
 
+[[bin]]
+name = "mempool-convergence"
+path = "src/bin/mempool_convergence.rs"
+
 [dependencies]
 mantle = { path = "../crates/mantle" }
 mantle-oracle = { path = "../crates/oracle" }
