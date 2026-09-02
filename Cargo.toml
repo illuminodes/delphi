@@ -7,12 +7,14 @@ members = [
     "crates/validator",
     "crates/transport",
     "crates/block-io",
+    "crates/fetcher",
     "crates/utxo-set",
     "crates/bloom",
     "crates/lru-cache",
     "bench",
     "conformance",
     "replay",
+    "crates/oracle",
 ]
 
 [workspace.package]
@@ -33,14 +35,7 @@ debug = true
 sha2 = "0.11"
 sha1 = "0.11"
 ripemd = "0.2"
-k256 = { version = "0.14.0-rc.9", default-features = false }
+k256 = { version = "0.14", default-features = false }
 bitcoinconsensus = "0.106.0"
 ququmatz = { path = "/home/cuarentaydos/Code/tooling/ququmatz" }
 quetzalcoatl = { path = "/home/cuarentaydos/Code/tooling/quetzalcoatl" }
-
-[patch.crates-io]
-k256           = { path = "/home/cuarentaydos/Code/forfun/elliptic-curves/k256" }
-primeorder     = { path = "/home/cuarentaydos/Code/forfun/elliptic-curves/primeorder" }
-primefield     = { path = "/home/cuarentaydos/Code/forfun/elliptic-curves/primefield" }
-hash2curve     = { path = "/home/cuarentaydos/Code/forfun/elliptic-curves/hash2curve" }
-elliptic-curve = { path = "/home/cuarentaydos/Code/forfun/rustcrypto-traits/elliptic-curve" }
