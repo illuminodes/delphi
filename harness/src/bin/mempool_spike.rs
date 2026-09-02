@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use mantle::network::Network;
-use mantle_oracle::{MempoolWatcher, OutputFilter, PeerSources};
+use mantle_oracle::{OutputFilter, PeerFanout, PeerSources};
 
 const HELP: &str = "\
 mempool-spike — measure the live mempool's usable output rate
@@ -12,17 +12,20 @@ usage: mempool-spike [options]
 
 options:
   --peer ADDR        Peer to subscribe to (repeatable); default: DNS seeds
+  --peers N          How many peers to fan out across (default 16)
   --seconds N        How long to watch (default 120)
   --help             Print this message
 
-Subscribes to one peer's transaction announcements and reports how many
-transactions arrive and how many survive the oracle's output filter. Nothing
-is written to disk. Answers whether a mempool price is worth building, by
-measuring the sample rate the oracle would actually get.
+Subscribes to several peers' transaction announcements and reports how many
+transactions arrive and how many survive the oracle's output filter. Each
+transaction is requested from the first peer that announced it, so the
+per-peer first-sighting counts show what each peer added. Nothing is written
+to disk.
 ";
 
 struct SpikeArgs {
     peers: Vec<SocketAddrV4>,
+    peer_count: usize,
     seconds: u64,
 }
 
@@ -30,6 +33,7 @@ impl SpikeArgs {
     fn parse() -> Result<Self, String> {
         let raw: Vec<String> = std::env::args().skip(1).collect();
         let mut peers = Vec::new();
+        let mut peer_count = 16;
         let mut seconds = 120;
         let mut index = 0;
         while index < raw.len() {
@@ -46,6 +50,14 @@ impl SpikeArgs {
                             .map_err(|_| format!("invalid peer address {text}"))?,
                     );
                 }
+                "--peers" => {
+                    index += 1;
+                    peer_count = raw
+                        .get(index)
+                        .ok_or("--peers requires N")?
+                        .parse()
+                        .map_err(|_| "invalid --peers".to_string())?;
+                }
                 "--seconds" => {
                     index += 1;
                     seconds = raw
@@ -58,7 +70,11 @@ impl SpikeArgs {
             }
             index += 1;
         }
-        Ok(Self { peers, seconds })
+        Ok(Self {
+            peers,
+            peer_count,
+            seconds,
+        })
     }
 }
 
@@ -91,16 +107,28 @@ impl SpikeTally {
         self.started.elapsed().as_secs_f64().max(1e-9)
     }
 
-    fn report(&self, watcher: &MempoolWatcher, filter: &OutputFilter) {
+    fn report(&self, fanout: &PeerFanout, filter: &OutputFilter) {
         let elapsed = self.elapsed();
         #[allow(clippy::cast_precision_loss)]
         let outputs = self.admitted_outputs as f64;
         #[allow(clippy::cast_precision_loss)]
         let txs = self.transactions as f64;
         println!("\nwatched {elapsed:.0}s");
-        println!("  announced          {}", watcher.announced());
-        println!("  delivered          {}", watcher.delivered());
+        println!(
+            "  peers              {} of {} still live",
+            fanout.live_peers(),
+            fanout.peer_count()
+        );
+        println!("  unique announced   {}", fanout.unique_announced());
+        println!(
+            "  duplicate annce    {}",
+            fanout.duplicate_announcements()
+        );
+        println!("  best single peer   {}", fanout.best_single_peer());
         println!("  decoded            {}", self.transactions);
+        let (refused, undecodable) = fanout.delivery_losses();
+        println!("  notfound           {refused}");
+        println!("  undecodable        {undecodable}");
         println!(
             "  admitted txs       {} ({:.1}%)",
             self.admitted_transactions,
@@ -125,6 +153,31 @@ impl SpikeTally {
             "  ...per 45m window:                        {:.0}",
             outputs / elapsed * 2_700.0
         );
+        Self::report_fanout_gain(fanout);
+    }
+
+    /// The number that decides the question: how much more the fanout saw
+    /// than the single best peer would have on its own.
+    fn report_fanout_gain(fanout: &PeerFanout) {
+        let best = fanout.best_single_peer();
+        if best == 0 {
+            return;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let gain = fanout.unique_announced() as f64 / best as f64;
+        println!("\nfanout gain over best single peer: {gain:.2}x");
+        println!("\nper-peer contribution");
+        for stat in fanout.stats().iter().take(20) {
+            println!(
+                "  {:<22} announced {:>6}  first {:>6}  delivered {:>6} ({:>5.1}%)  {}",
+                stat.address.to_string(),
+                stat.announced,
+                stat.first_sightings,
+                stat.delivered,
+                stat.delivery_rate() * 100.0,
+                if stat.live { "live" } else { "dropped" }
+            );
+        }
     }
 }
 
@@ -151,36 +204,48 @@ impl SpikeApp {
 
     fn run(args: &SpikeArgs) -> Result<(), String> {
         let candidates = Self::candidates(args)?;
-        let mut watcher = Self::connect_any(&candidates)?;
-        eprintln!("subscribed; watching for {}s\n", args.seconds);
+        eprintln!("connecting to up to {} peers...", args.peer_count);
+        let mut fanout = PeerFanout::connect(
+            &candidates,
+            Network::Mainnet,
+            args.peer_count,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+        );
+        if fanout.is_empty() {
+            return Err("could not complete a handshake with any peer".to_string());
+        }
+        eprintln!(
+            "subscribed to {} peers; watching for {}s\n",
+            fanout.peer_count(),
+            args.seconds
+        );
 
         let mut filter = OutputFilter::new();
         let mut tally = SpikeTally::new();
         let deadline = Instant::now() + Duration::from_secs(args.seconds);
         let mut next_tick = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
-            let seen = match watcher.poll() {
-                Ok(seen) => seen,
-                Err(error) => {
-                    eprintln!("peer dropped: {error}");
-                    break;
-                }
-            };
-            for entry in seen {
+            for entry in fanout.poll() {
                 let admitted = filter.admit(&entry.transaction).count();
                 tally.record(admitted);
             }
+            if fanout.live_peers() == 0 {
+                eprintln!("all peers dropped");
+                break;
+            }
             if Instant::now() >= next_tick {
                 eprintln!(
-                    "  {:>4.0}s  {:>6} tx  {:>6} admitted outputs",
+                    "  {:>4.0}s  {:>6} tx  {:>6} admitted outputs  {} peers",
                     tally.elapsed(),
                     tally.transactions,
-                    tally.admitted_outputs
+                    tally.admitted_outputs,
+                    fanout.live_peers()
                 );
                 next_tick += Duration::from_secs(10);
             }
         }
-        tally.report(&watcher, &filter);
+        tally.report(&fanout, &filter);
         Ok(())
     }
 
@@ -194,17 +259,6 @@ impl SpikeApp {
             return Err("no peers discovered; pass --peer ADDR".to_string());
         }
         Ok(peers)
-    }
-
-    fn connect_any(candidates: &[SocketAddrV4]) -> Result<MempoolWatcher, String> {
-        for address in candidates.iter().take(16) {
-            eprintln!("connecting to {address}...");
-            match MempoolWatcher::connect(*address, Network::Mainnet, Duration::from_secs(5)) {
-                Ok(watcher) => return Ok(watcher),
-                Err(error) => eprintln!("  {error}"),
-            }
-        }
-        Err("could not complete a handshake with any peer".to_string())
     }
 }
 

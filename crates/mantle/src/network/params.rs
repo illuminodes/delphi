@@ -148,7 +148,21 @@ impl Network {
 
 /// Seed peers for mainnet bootstrap. Same set used by `mantle-node` and the
 /// bench `fetch-fixtures` tool.
+///
+/// The DNS hostnames come from Bitcoin Core `chainparams.cpp::CMainParams`
+/// and each resolves to many addresses, so callers that need more than a
+/// handful of candidates get them. The literal addresses are kept as a
+/// fallback for when DNS resolution is unavailable.
 const MAINNET_SEEDS: &[&str] = &[
+    "seed.bitcoin.sipa.be:8333",
+    "dnsseed.bluematt.me:8333",
+    "seed.bitcoinstats.com:8333",
+    "seed.bitcoin.jonasschnelli.ch:8333",
+    "seed.btc.petertodd.net:8333",
+    "seed.bitcoin.sprovoost.nl:8333",
+    "dnsseed.emzy.de:8333",
+    "seed.bitcoin.wiz.biz:8333",
+    "seed.mainnet.achownodes.xyz:8333",
     "5.161.244.95:8333",
     "172.105.64.213:8333",
     "61.68.41.135:8333",

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use mantle::codec::{Decode, Encode};
 use mantle::hash::Hash256;
 use mantle::network::{
-    Command, InvEntry, InvMsg, InvType, Magic, MessageHeader, Network, encode_message,
+    Command, InvEntry, InvMsg, InvType, Magic, MessageHeader, Network, Services, encode_message,
 };
 use mantle::tx::Transaction;
 
@@ -40,6 +40,24 @@ pub struct SeenTransaction {
     pub at: Instant,
 }
 
+/// What one peer produced during a single [`MempoolWatcher::poll`].
+///
+/// Announcements and bodies are reported separately so a caller watching
+/// several peers can count every announcement while requesting each
+/// transaction from only one of them.
+#[derive(Default)]
+pub struct PeerBatch {
+    pub announced: Vec<Hash256>,
+    pub transactions: Vec<SeenTransaction>,
+}
+
+impl PeerBatch {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.announced.is_empty() && self.transactions.is_empty()
+    }
+}
+
 /// Single-peer mempool subscription over blocking TCP.
 ///
 /// Announcements arrive as `inv`; this requests each unseen txid with
@@ -52,9 +70,10 @@ pub struct MempoolWatcher {
     recv_buf: Vec<u8>,
     scratch: Vec<u8>,
     chunk: Box<[u8]>,
-    requested: Vec<Hash256>,
     announced: u64,
     delivered: u64,
+    not_found: u64,
+    decode_failures: u64,
 }
 
 impl MempoolWatcher {
@@ -77,20 +96,38 @@ impl MempoolWatcher {
             recv_buf: Vec::with_capacity(RECV_CHUNK),
             scratch: Vec::new(),
             chunk: vec![0u8; RECV_CHUNK].into_boxed_slice(),
-            requested: Vec::new(),
             announced: 0,
             delivered: 0,
+            not_found: 0,
+            decode_failures: 0,
         };
         watcher.handshake()?;
         Ok(watcher)
     }
 
+    /// Bound how long a single [`poll`](Self::poll) may block.
+    ///
+    /// A caller cycling through many peers wants this far below the connect
+    /// timeout, so one idle peer cannot stall the rest of the round.
+    ///
+    /// # Errors
+    /// Returns [`WatchError::Io`] if the socket rejects the timeout.
+    pub fn set_poll_timeout(&mut self, timeout: Duration) -> Result<(), WatchError> {
+        self.stream
+            .set_read_timeout(Some(timeout))
+            .map_err(WatchError::Io)
+    }
+
     /// Bitcoin Core sends no transactions to a peer that set `relay: false`,
-    /// and disconnects one that asks for `mempool` without `NODE_BLOOM`. The
-    /// shared block-fetcher version message wants relay off, so build our own.
+    /// and disconnects one that asks for `mempool` without `NODE_BLOOM`. It
+    /// also refuses `MSG_WITNESS_TX` bodies to a peer that never advertised
+    /// `NODE_WITNESS`, which announces transactions but silently serves none.
+    /// The shared block-fetcher version message wants relay off, so build our
+    /// own.
     fn version_message() -> Result<Vec<u8>, WatchError> {
         let mut message = mantle_transport::our_version(USER_AGENT);
         message.relay = true;
+        message.services = message.services | Services::NODE_WITNESS;
         let mut encoded = Vec::new();
         message
             .encode(&mut encoded)
@@ -125,56 +162,53 @@ impl MempoolWatcher {
         Err(WatchError::Handshake)
     }
 
-    /// Pump the socket once, returning every transaction that arrived.
+    /// Pump the socket once, reporting announcements and delivered bodies.
+    ///
+    /// This does not request anything; the caller decides which announced
+    /// txids to fetch and calls [`request`](Self::request).
     ///
     /// # Errors
     /// Returns [`WatchError::Io`] if the peer disconnects.
-    pub fn poll(&mut self) -> Result<Vec<SeenTransaction>, WatchError> {
-        let mut seen = Vec::new();
-        if !self.fill()? {
-            return Ok(seen);
-        }
+    pub fn poll(&mut self) -> Result<PeerBatch, WatchError> {
+        let mut batch = PeerBatch::default();
+        while self.fill()? && self.recv_buf.len() < MAX_BUFFERED {}
         while let Some((command, payload)) = self.next_frame() {
             match command {
-                Command::Inv => self.on_inv(&payload),
+                Command::Inv => Self::collect_inv(&payload, &mut batch.announced),
                 Command::Tx => {
-                    if let Ok(transaction) =
-                        Transaction::decode(&mut io::Cursor::new(payload.as_slice()))
-                    {
-                        self.delivered += 1;
-                        seen.push(SeenTransaction {
-                            transaction,
-                            at: Instant::now(),
-                        });
+                    match Transaction::decode(&mut io::Cursor::new(payload.as_slice())) {
+                        Ok(transaction) => {
+                            self.delivered += 1;
+                            batch.transactions.push(SeenTransaction {
+                                transaction,
+                                at: Instant::now(),
+                            });
+                        }
+                        Err(_) => self.decode_failures += 1,
+                    }
+                }
+                Command::NotFound => {
+                    if let Ok(inv) = InvMsg::decode(&mut io::Cursor::new(payload.as_slice())) {
+                        self.not_found += inv.0.len() as u64;
                     }
                 }
                 Command::Ping => self.send(Command::Pong, &payload)?,
                 _ => {}
             }
         }
-        self.flush_getdata()?;
-        Ok(seen)
+        self.announced += batch.announced.len() as u64;
+        Ok(batch)
     }
 
-    fn on_inv(&mut self, payload: &[u8]) {
-        let Ok(inv) = InvMsg::decode(&mut io::Cursor::new(payload)) else {
-            return;
-        };
-        for entry in &inv.0 {
-            if matches!(entry.kind(), InvType::Tx | InvType::WitnessTx) {
-                self.announced += 1;
-                self.requested.push(entry.hash());
-            }
-        }
-    }
-
-    fn flush_getdata(&mut self) -> Result<(), WatchError> {
-        while !self.requested.is_empty() {
-            let take = self.requested.len().min(MAX_GETDATA_BATCH);
-            let batch: Vec<InvEntry> = self
-                .requested
-                .drain(..take)
-                .map(|hash| InvEntry::new(InvType::WitnessTx, hash))
+    /// Ask this peer for the bodies of `hashes`, in `getdata` batches.
+    ///
+    /// # Errors
+    /// Returns [`WatchError::Io`] if the peer disconnects.
+    pub fn request(&mut self, hashes: &[Hash256]) -> Result<(), WatchError> {
+        for chunk in hashes.chunks(MAX_GETDATA_BATCH) {
+            let batch: Vec<InvEntry> = chunk
+                .iter()
+                .map(|hash| InvEntry::new(InvType::WitnessTx, *hash))
                 .collect();
             let mut payload = Vec::new();
             InvMsg(batch)
@@ -183,6 +217,17 @@ impl MempoolWatcher {
             self.send(Command::GetData, &payload)?;
         }
         Ok(())
+    }
+
+    fn collect_inv(payload: &[u8], into: &mut Vec<Hash256>) {
+        let Ok(inv) = InvMsg::decode(&mut io::Cursor::new(payload)) else {
+            return;
+        };
+        for entry in &inv.0 {
+            if matches!(entry.kind(), InvType::Tx | InvType::WitnessTx) {
+                into.push(entry.hash());
+            }
+        }
     }
 
     fn send(&mut self, command: Command, payload: &[u8]) -> Result<(), WatchError> {
@@ -249,5 +294,17 @@ impl MempoolWatcher {
     #[must_use]
     pub const fn delivered(&self) -> u64 {
         self.delivered
+    }
+
+    /// Bodies the peer explicitly refused to send.
+    #[must_use]
+    pub const fn not_found(&self) -> u64 {
+        self.not_found
+    }
+
+    /// `tx` frames that arrived but would not parse.
+    #[must_use]
+    pub const fn decode_failures(&self) -> u64 {
+        self.decode_failures
     }
 }
