@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod block_range;
 pub mod central_price;
 pub mod histogram;
 pub mod intraday;
@@ -10,6 +11,7 @@ pub mod report;
 pub mod rough_price;
 pub mod stencil;
 
+pub use block_range::{BlockRange, BlockRangeError, RangeSelection};
 pub use central_price::{CentralPrice, CentralPriceFinder};
 pub use histogram::OutputHistogram;
 pub use intraday::{IntradayPricePoint, IntradayPricePoints};
