@@ -22,6 +22,7 @@ path = "src/rank_peers.rs"
 mantle = { path = "../crates/mantle" }
 mantle-block-io = { path = "../crates/block-io" }
 mantle-consensus = { path = "../crates/consensus" }
+mantle-fetcher = { path = "../crates/fetcher" }
 mantle-storage = { path = "../crates/storage" }
 mantle-transport = { path = "../crates/transport" }
 mantle-validator = { path = "../crates/validator" }

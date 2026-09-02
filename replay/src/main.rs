@@ -20,7 +20,6 @@
 //!                    [--skip-script] [--assume-valid HEX]
 //!                    [--start-height N] [--stop-height N] [--help]`.
 
-mod iouring_fetcher;
 mod report;
 
 use std::net::SocketAddrV4;
@@ -36,8 +35,8 @@ use mantle_storage::StorageHandle;
 use mantle_storage::types::{Durability, ReqToken};
 use mantle_validator::{HeaderSnapshot, PipelineOpts, PrefetchedView, ReplayBufs};
 
-use crate::iouring_fetcher::Fetcher;
 use crate::report::Reporter;
+use mantle_fetcher::Fetcher;
 
 struct ReplayCtx {
     storage: StorageHandle<'static>,
@@ -58,9 +57,11 @@ const SCRIPT_CACHE_ENTRIES: usize = 64 * 1024;
 
 struct Args {
     data_dir: PathBuf,
+    block_cache_dir: Option<PathBuf>,
     network: Network,
     extra_peers: Vec<SocketAddrV4>,
     skip_script: bool,
+    download_only: bool,
     /// Stop validating once `block.hash() == this` is committed (then exit OK).
     /// Phase 1 deliberately does *not* implement Bitcoin Core's "skip script
     /// for ancestors of assume-valid"; a future commit can wire that to
@@ -72,6 +73,7 @@ struct Args {
     /// Last height to validate (inclusive). Defaults to whatever the peer
     /// reports as its current tip after a single `getheaders` page.
     stop_height: Option<BlockHeight>,
+    locator_hash: Option<Hash256>,
 }
 
 const HELP: &str = "\
@@ -81,8 +83,9 @@ Usage:
     mantle-replay [OPTIONS]
 
 Options:
-    --data-dir DIR        Storage + block-cache root
-                          (default: ./data/<network>)
+    --data-dir DIR        Validated storage root (default: ./data/<network>)
+    --block-cache-dir DIR Separate block/header cache for download-only runs.
+                          Defaults to --data-dir.
     --network NAME        mainnet | testnet3 | testnet4 | signet | regtest
                           (default: mainnet). Aliases: main, test, testnet.
     --peer HOST:PORT      Extra P2P peer; may be repeated. Required when the
@@ -94,24 +97,31 @@ Options:
                           writes, or external sources like
                           https://testnet4.achownodes.xyz/seeds.txt.gz.
     --skip-script         Skip script verification (Stage 2; faster bring-up).
+    --download-only       Fetch and cache blocks, without replaying or mutating
+                          validated chain state.
     --assume-valid HEX    Assume the chain leading to this block hash is
                           valid; runs script for descendants only.
                           (Phase 1: parsed but not yet honoured.)
     --start-height N      First height to validate. Default: storage tip + 1.
     --stop-height N       Last height to validate (inclusive).
                           Default: peer tip from one getheaders call.
+    --locator-hash HEX    Hash of the block immediately before START. Required
+                          for historical download-only ranges.
     --help                Print this message and exit.
 ";
 
 #[allow(clippy::too_many_lines)]
 fn parse_args() -> Result<Args, String> {
     let mut data_dir: Option<PathBuf> = None;
+    let mut block_cache_dir: Option<PathBuf> = None;
     let mut network = Network::Mainnet;
     let mut extra_peers: Vec<SocketAddrV4> = Vec::new();
     let mut skip_script = false;
+    let mut download_only = false;
     let mut assume_valid: Option<Hash256> = None;
     let mut start_height: Option<BlockHeight> = None;
     let mut stop_height: Option<BlockHeight> = None;
+    let mut locator_hash: Option<Hash256> = None;
 
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -125,6 +135,11 @@ fn parse_args() -> Result<Args, String> {
                 i += 1;
                 let v = raw.get(i).ok_or("--data-dir requires a path")?;
                 data_dir = Some(PathBuf::from(v));
+            }
+            "--block-cache-dir" => {
+                i += 1;
+                let v = raw.get(i).ok_or("--block-cache-dir requires a path")?;
+                block_cache_dir = Some(PathBuf::from(v));
             }
             "--network" => {
                 i += 1;
@@ -164,8 +179,19 @@ fn parse_args() -> Result<Args, String> {
                 }
                 eprintln!("  loaded {added} peers from {v}");
             }
+            "--locator-hash" => {
+                i += 1;
+                let v = raw.get(i).ok_or("--locator-hash requires a hex hash")?;
+                locator_hash = Some(
+                    Hash256::from_display_hex(v)
+                        .map_err(|e| format!("invalid --locator-hash {v}: {e}"))?,
+                );
+            }
             "--skip-script" => {
                 skip_script = true;
+            }
+            "--download-only" => {
+                download_only = true;
             }
             "--assume-valid" => {
                 i += 1;
@@ -200,12 +226,15 @@ fn parse_args() -> Result<Args, String> {
 
     Ok(Args {
         data_dir,
+        block_cache_dir,
         network,
         extra_peers,
         skip_script,
+        download_only,
         assume_valid,
         start_height,
         stop_height,
+        locator_hash,
     })
 }
 
@@ -363,12 +392,25 @@ fn run(args: &Args) -> Result<(), String> {
             args.network.name()
         ));
     }
-    let mut fetcher = Fetcher::new(args.network, peer_addrs, &args.data_dir)
+    let block_cache_dir = args
+        .block_cache_dir
+        .as_deref()
+        .unwrap_or(&args.data_dir);
+    std::fs::create_dir_all(block_cache_dir)
+        .map_err(|e| format!("create block cache dir {}: {e}", block_cache_dir.display()))?;
+    let mut fetcher = Fetcher::new(args.network, peer_addrs, block_cache_dir)
         .map_err(|e| format!("fetcher init: {e}"))?;
 
     // ── Phase 1: sync all headers to tip ──────────────────────────────────
-    let locator = if start_height.to_u32() <= 1 {
+    let locator = if let Some(locator_hash) = args.locator_hash {
+        locator_hash
+    } else if start_height.to_u32() <= 1 {
         args.network.genesis_hash()
+    } else if args.download_only && args.start_height.is_some() {
+        return Err(
+            "historical --download-only ranges require --locator-hash equal to the block before START"
+                .to_string(),
+        );
     } else {
         tip.hash
     };
@@ -407,6 +449,15 @@ fn run(args: &Args) -> Result<(), String> {
     fetcher
         .fetch_blocks(&header_pairs)
         .map_err(|e| format!("fetch blocks: {e:?}"))?;
+
+    if args.download_only {
+        eprintln!(
+            "download complete: cached blocks {}..={} (no replay performed)",
+            start_height.to_u32(),
+            actual_stop.to_u32(),
+        );
+        return Ok(());
+    }
 
     // ── Phase 3: replay ─────────────────────────────────────────────────
     let headers: Vec<BlockHeader> = header_pairs.iter().map(|(_, h)| *h).collect();

@@ -1,8 +1,12 @@
-//! Single-ring `io_uring` fetcher for `mantle-replay`.
+//! Single-ring `io_uring` block fetcher.
 //!
 //! Uses `mantle-transport` for the `io_uring` peer lifecycle (connect, handshake,
 //! send arena, provided-buffer recv, peer pool) and adds fetcher-specific logic:
 //! header sync, pipelined block download with hedging/reclaim, and file I/O.
+//!
+//! Consumers supply a peer list and a cache directory; [`Fetcher`] resolves
+//! headers over `getheaders`, downloads any blocks missing from the cache, and
+//! serves block bytes back by height.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -173,6 +177,11 @@ pub struct Fetcher<
 }
 
 impl Fetcher {
+    /// Spawn a file-I/O worker rooted at `data_dir` and build a fetcher over it.
+    ///
+    /// # Errors
+    /// Returns an error if the file-I/O worker cannot be spawned or the
+    /// `io_uring` ring cannot be created.
     pub fn new(
         network: Network,
         peer_addrs: Vec<SocketAddrV4>,
@@ -188,6 +197,11 @@ where
     RReq: Deref<Target = MpscRing<FileReq>>,
     RResp: Deref<Target = SpscRing<FileResp>>,
 {
+    /// Build a fetcher over an already-running file-I/O worker.
+    ///
+    /// # Errors
+    /// Returns an error if the `io_uring` ring cannot be created or its
+    /// provided-buffer group cannot be registered.
     pub fn with_handle(
         network: Network,
         peer_addrs: Vec<SocketAddrV4>,
@@ -276,10 +290,20 @@ where
         Ok(Some(peer))
     }
 
+    /// Read the cached raw bytes of the block at `height`.
+    ///
+    /// # Errors
+    /// Returns an error if the block is not cached or cannot be read.
     pub fn read_block_bytes(&mut self, height: BlockHeight) -> io::Result<Vec<u8>> {
         self.file_io.read_block(height)
     }
 
+    /// Read and decode the cached block at `height`, checking it hashes to
+    /// `expected_hash`.
+    ///
+    /// # Errors
+    /// Returns an error if the block is not cached, cannot be read, fails to
+    /// decode, or does not match `expected_hash`.
     pub fn read_block_decoded(
         &mut self,
         height: BlockHeight,
@@ -288,6 +312,16 @@ where
         self.file_io.read_block_decoded(height, expected_hash)
     }
 
+    /// Resolve headers for `start..=end`, serving cached ones from disk and
+    /// requesting the remainder from peers via `getheaders`.
+    ///
+    /// Each page is checked for `prev_block` continuity before being accepted,
+    /// so the returned chain is contiguous from `locator`.
+    ///
+    /// # Errors
+    /// Returns [`FetchError`] if no peers are configured, the peer pool is
+    /// exhausted, a peer serves a discontiguous page, or the phase deadline
+    /// expires.
     pub fn sync_headers(
         &mut self,
         start: BlockHeight,
@@ -299,8 +333,7 @@ where
         }
 
         let mut collected = self.file_io.load_cached_headers(start)?;
-        if !collected.is_empty() {
-            let cached_end = collected.last().unwrap().0;
+        if let Some(&(cached_end, _)) = collected.last() {
             eprintln!(
                 "  headers: loaded {} cached ({}..={})",
                 collected.len(),
@@ -312,15 +345,9 @@ where
             }
         }
 
-        let mut next_height = if collected.is_empty() {
-            start.to_u32()
-        } else {
-            collected.last().unwrap().0.to_u32() + 1
-        };
-        let mut current_locator = if collected.is_empty() {
-            locator
-        } else {
-            collected.last().unwrap().1.hash()
+        let (mut next_height, mut current_locator) = match collected.last() {
+            None => (start.to_u32(), locator),
+            Some((h, hdr)) => (h.to_u32().saturating_add(1), hdr.hash()),
         };
 
         loop {
@@ -330,13 +357,29 @@ where
                 break;
             }
             let page_len = page.len();
-            for hdr in page {
+            let mut expected_prev = current_locator;
+            for (page_index, hdr) in page.into_iter().enumerate() {
+                if hdr.prev_block() != expected_prev {
+                    return Err(FetchError::UringErr(format!(
+                        "header continuity failure at requested height {} (page index {}): expected prev {}, got {}",
+                        next_height,
+                        page_index,
+                        expected_prev,
+                        hdr.prev_block(),
+                    )));
+                }
+                expected_prev = hdr.hash();
                 let h = BlockHeight::new(next_height);
                 if h > end {
                     break;
                 }
                 collected.push((h, hdr));
                 next_height = next_height.wrapping_add(1);
+            }
+            if page_len == 0 {
+                return Err(FetchError::UringErr(
+                    "peer returned an empty header page unexpectedly".to_string(),
+                ));
             }
             eprintln!(
                 "  headers: got {page_len} in page, {} total (height {}..={})",
@@ -363,6 +406,15 @@ where
         Ok(collected)
     }
 
+    /// Download every block in `headers` that is not already cached, then
+    /// flush the block index.
+    ///
+    /// Requests are pipelined across the peer pool with hedging for slow
+    /// peers and reclaim for stalled ones; black-holing peers are evicted.
+    ///
+    /// # Errors
+    /// Returns [`FetchError`] if no peers are configured, the peer pool is
+    /// exhausted, or no block arrives before the no-progress deadline.
     pub fn fetch_blocks(
         &mut self,
         headers: &[(BlockHeight, BlockHeader)],
@@ -934,6 +986,18 @@ where
             }
 
             self.pbr.commit();
+
+            // Recycle dead peers before checking for a stalled pool. A dead
+            // slot remains occupied until removed; without this pass the
+            // downloader can permanently report zero live peers even though
+            // replacement addresses are available.
+            let dead: Vec<u16> = self.peers.dead_slots().to_vec();
+            for slot in dead {
+                self.peers.remove(slot);
+                if let Some(peer) = self.dial_next_inner(slot)? {
+                    self.peers.insert(slot, peer);
+                }
+            }
 
             if self.peers.is_empty() && in_flight.is_empty() && todo.is_empty() {
                 return Ok(());
