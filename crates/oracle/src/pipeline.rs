@@ -1,13 +1,9 @@
 use std::fmt;
 
-use mantle::amount::Satoshi;
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::tx::Transaction;
 
-use crate::{
-    CentralPriceFinder, IntradayPricePoints, OracleReport, OutputFilter, OutputHistogram,
-    RoughPriceEstimator,
-};
+use crate::{AdmittedSample, OracleReport, OutputFilter};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OracleError {
@@ -34,19 +30,10 @@ impl fmt::Display for OracleError {
 
 impl std::error::Error for OracleError {}
 
-#[derive(Debug, Clone, Copy)]
-struct AdmittedOutput {
-    amount: Satoshi,
-    height: BlockHeight,
-    time: BlockTime,
-}
-
 #[derive(Debug, Default)]
 pub struct OraclePipeline {
     filter: OutputFilter,
-    histogram: OutputHistogram,
-    admitted: Vec<AdmittedOutput>,
-    bounds: Option<(BlockHeight, BlockHeight, BlockTime, BlockTime)>,
+    admitted: AdmittedSample,
 }
 
 impl OraclePipeline {
@@ -56,14 +43,8 @@ impl OraclePipeline {
     }
 
     pub fn process(&mut self, height: BlockHeight, time: BlockTime, transaction: &Transaction) {
-        self.update_bounds(height, time);
         for amount in self.filter.admit(transaction) {
-            self.histogram.insert(amount);
-            self.admitted.push(AdmittedOutput {
-                amount,
-                height,
-                time,
-            });
+            self.admitted.push(amount, height, time);
         }
     }
 
@@ -76,45 +57,19 @@ impl OraclePipeline {
         }
     }
 
-    #[allow(clippy::missing_errors_doc)]
-    pub fn finish(mut self) -> Result<OracleReport, OracleError> {
-        let (start_height, stop_height, start_time, stop_time) =
-            self.bounds.ok_or(OracleError::NoTransactions)?;
-        self.histogram.smooth_round_btc_amounts();
-        if !self.histogram.normalize_and_clip() {
-            return Err(OracleError::EmptyHistogram);
-        }
-        let rough_price = RoughPriceEstimator::new()
-            .estimate(&self.histogram)
-            .ok_or(OracleError::RoughPriceUnavailable)?;
-        let mut points = IntradayPricePoints::new();
-        for output in self.admitted {
-            points.insert(output.amount, rough_price, output.height, output.time);
-        }
-        let central = CentralPriceFinder::new()
-            .find(&points, rough_price)
-            .ok_or(OracleError::CentralPriceUnavailable)?;
-        Ok(OracleReport {
-            central_price: central.price,
-            deviation: central.deviation,
-            sample_count: central.sample_count,
-            start_height,
-            stop_height,
-            start_time,
-            stop_time,
-        })
+    #[must_use]
+    pub fn sample(&self) -> &AdmittedSample {
+        &self.admitted
     }
 
-    fn update_bounds(&mut self, height: BlockHeight, time: BlockTime) {
-        self.bounds = Some(match self.bounds {
-            None => (height, height, time, time),
-            Some((start_height, stop_height, start_time, stop_time)) => (
-                start_height.min(height),
-                stop_height.max(height),
-                start_time.min(time),
-                stop_time.max(time),
-            ),
-        });
+    #[must_use]
+    pub fn into_sample(self) -> AdmittedSample {
+        self.admitted
+    }
+
+    #[allow(clippy::missing_errors_doc)]
+    pub fn finish(self) -> Result<OracleReport, OracleError> {
+        self.admitted.price()
     }
 }
 

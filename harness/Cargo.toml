@@ -22,6 +22,10 @@ path = "src/bin/granularity_sweep.rs"
 name = "mempool-spike"
 path = "src/bin/mempool_spike.rs"
 
+[[bin]]
+name = "oracle-convergence"
+path = "src/bin/sample_convergence.rs"
+
 [dependencies]
 mantle = { path = "../crates/mantle" }
 mantle-oracle = { path = "../crates/oracle" }

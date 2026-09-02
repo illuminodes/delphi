@@ -124,11 +124,26 @@ impl CachedWindows {
     /// Returns [`CachedWindowError`] if the selection resolves to no blocks,
     /// a block in the range is not cached, or the pipeline rejects the sample.
     pub fn run(&mut self, selection: RangeSelection) -> Result<OracleReport, CachedWindowError> {
+        let mut pipeline = OraclePipeline::new();
+        self.feed(selection, &mut pipeline)?;
+        pipeline.finish().map_err(CachedWindowError::Pipeline)
+    }
+
+    /// Push every transaction in a selection through a caller-owned pipeline,
+    /// so the admitted outputs can be inspected rather than priced immediately.
+    ///
+    /// # Errors
+    /// Returns [`CachedWindowError`] if the selection resolves to no blocks or
+    /// a block in the range is not cached.
+    pub fn feed(
+        &mut self,
+        selection: RangeSelection,
+        pipeline: &mut OraclePipeline,
+    ) -> Result<(), CachedWindowError> {
         let range =
             BlockRange::select(&self.headers, selection).map_err(CachedWindowError::Range)?;
         let selected: Vec<(BlockHeight, BlockHeader)> =
             range.headers(&self.headers).to_vec();
-        let mut pipeline = OraclePipeline::new();
         for (height, header) in &selected {
             if !self.file_io.has_block(*height) {
                 return Err(CachedWindowError::MissingBlock(*height));
@@ -141,7 +156,7 @@ impl CachedWindows {
                 pipeline.process(*height, header.time(), transaction);
             }
         }
-        pipeline.finish().map_err(CachedWindowError::Pipeline)
+        Ok(())
     }
 }
 

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod admitted_sample;
 pub mod block_range;
 pub mod cached_windows;
 pub mod central_price;
@@ -18,6 +19,7 @@ pub mod stencil;
 pub mod utc_date;
 pub mod window_runner;
 
+pub use admitted_sample::{AdmittedOutput, AdmittedSample};
 pub use block_range::{BlockRange, BlockRangeError, RangeSelection};
 pub use cached_windows::{CachedWindowError, CachedWindows};
 pub use central_price::{CentralPrice, CentralPriceFinder};
