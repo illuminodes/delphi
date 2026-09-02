@@ -8,6 +8,8 @@
 //! headers over `getheaders`, downloads any blocks missing from the cache, and
 //! serves block bytes back by height.
 
+mod peer_book;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::SocketAddrV4;
@@ -22,14 +24,16 @@ use mantle::primitives::{BlockHeader, BlockHeight, Hash256};
 use std::ops::Deref;
 
 use mantle_block_io::{FileIoHandle, FileReq, FileResp};
-use quetzalcoatl::mpsc::RingBuffer as MpscRing;
-use quetzalcoatl::spsc::RingBuffer as SpscRing;
 use mantle_transport::{
     CqeData, IoUringExt, Op, Peer, PeerPool, PeerState, SendArena, consume_handshake_frames,
     encode_version, make_ring,
 };
+use quetzalcoatl::mpsc::RingBuffer as MpscRing;
+use quetzalcoatl::spsc::RingBuffer as SpscRing;
 use ququmatz::IoUring;
 use ququmatz::types::{AddressFamily, SockAddrIn, SocketFlags, SocketType, Timespec};
+
+use crate::peer_book::PeerBook;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -99,6 +103,7 @@ struct FetcherExt {
     delivered_count: u32,
     last_delivery: Instant,
     waiting_headers: bool,
+    discovery_requested: bool,
 }
 
 impl FetcherExt {
@@ -109,6 +114,7 @@ impl FetcherExt {
             delivered_count: 0,
             last_delivery: Instant::now(),
             waiting_headers: false,
+            discovery_requested: false,
         }
     }
 }
@@ -166,8 +172,7 @@ pub struct Fetcher<
     RResp: Deref<Target = SpscRing<FileResp>> = std::sync::Arc<SpscRing<FileResp>>,
 > {
     network: Network,
-    addr_pool: Vec<SocketAddrV4>,
-    next_addr_idx: usize,
+    peer_book: PeerBook,
     connect_timeout: Timespec,
     ring: IoUring,
     pbr: ququmatz::ProvidedBufferRing,
@@ -188,7 +193,9 @@ impl Fetcher {
         data_dir: &std::path::Path,
     ) -> io::Result<Self> {
         let file_io = FileIoHandle::spawn(data_dir)?;
-        Self::with_handle(network, peer_addrs, file_io)
+        let mut fetcher = Self::with_handle(network, peer_addrs.clone(), file_io)?;
+        fetcher.peer_book = PeerBook::persistent(peer_addrs, data_dir)?;
+        Ok(fetcher)
     }
 }
 
@@ -214,8 +221,7 @@ where
 
         Ok(Self {
             network,
-            addr_pool: peer_addrs,
-            next_addr_idx: 0,
+            peer_book: PeerBook::memory(peer_addrs),
             connect_timeout: Timespec::from_millis(CONNECT_TIMEOUT_SECS * 1_000),
             ring,
             pbr,
@@ -227,7 +233,7 @@ where
 
     fn ensure_peers(&mut self) -> Result<(), FetchError> {
         let live = self.peers.live_count();
-        let target = TARGET_LIVE_PEERS.min(self.addr_pool.len());
+        let target = TARGET_LIVE_PEERS.min(self.peer_book.len());
         for _ in live..target {
             let Some(slot) = self.peers.free_slot() else {
                 break;
@@ -328,7 +334,7 @@ where
         end: BlockHeight,
         locator: Hash256,
     ) -> Result<Vec<(BlockHeight, BlockHeader)>, FetchError> {
-        if self.addr_pool.is_empty() {
+        if self.peer_book.is_empty() {
             return Err(FetchError::NoPeers);
         }
 
@@ -357,6 +363,7 @@ where
                 break;
             }
             let page_len = page.len();
+            let mut page_bytes = Vec::with_capacity(page_len * 80);
             let mut expected_prev = current_locator;
             for (page_index, hdr) in page.into_iter().enumerate() {
                 if hdr.prev_block() != expected_prev {
@@ -373,6 +380,7 @@ where
                 if h > end {
                     break;
                 }
+                page_bytes.extend_from_slice(&hdr.to_bytes());
                 collected.push((h, hdr));
                 next_height = next_height.wrapping_add(1);
             }
@@ -381,8 +389,15 @@ where
                     "peer returned an empty header page unexpectedly".to_string(),
                 ));
             }
+            if !page_bytes.is_empty() {
+                if collected.len() == page_bytes.len() / 80 {
+                    self.file_io.write_headers(start, page_bytes)?;
+                } else {
+                    self.file_io.append_headers(page_bytes)?;
+                }
+            }
             eprintln!(
-                "  headers: got {page_len} in page, {} total (height {}..={})",
+                "  headers: got {page_len} in page, {} durable total (height {}..={})",
                 collected.len(),
                 start.to_u32(),
                 next_height.saturating_sub(1),
@@ -394,15 +409,6 @@ where
             current_locator = last.1.hash();
         }
 
-        {
-            let mut sorted: Vec<&(BlockHeight, BlockHeader)> = collected.iter().collect();
-            sorted.sort_by_key(|(h, _)| h.to_u32());
-            let mut out = Vec::with_capacity(sorted.len() * 80);
-            for (_, hdr) in &sorted {
-                out.extend_from_slice(&hdr.to_bytes());
-            }
-            self.file_io.write_headers(start, out)?;
-        }
         Ok(collected)
     }
 
@@ -419,7 +425,7 @@ where
         &mut self,
         headers: &[(BlockHeight, BlockHeader)],
     ) -> Result<(), FetchError> {
-        if self.addr_pool.is_empty() {
+        if self.peer_book.is_empty() {
             return Err(FetchError::NoPeers);
         }
         let needed: Vec<(BlockHeight, Hash256)> = headers
@@ -444,8 +450,9 @@ where
             return Err(FetchError::PoolExhausted);
         }
         eprintln!(
-            "  headers: connecting to {} peers…",
+            "  headers: requesting next page with {} active peers and {} candidates",
             self.peers.live_count(),
+            self.peer_book.len(),
         );
         for (slot, peer) in self.peers.iter_mut() {
             if !peer.recv_armed
@@ -517,6 +524,7 @@ where
 
             // Parse frames: handshake + headers
             let mut got_headers: Option<Vec<BlockHeader>> = None;
+            let mut discovered = Vec::new();
             for (slot, peer) in self.peers.iter_mut() {
                 if peer.state == PeerState::Dead {
                     continue;
@@ -529,6 +537,7 @@ where
                     slot,
                     peer,
                     |cmd, payload| {
+                        discovered.extend(PeerBook::decode(cmd, payload));
                         if waiting && cmd.as_str() == "headers" {
                             let mut headers: Vec<BlockHeader> = Vec::new();
                             if HeadersMsg::decode_into_limited::<2_000>(
@@ -545,6 +554,30 @@ where
                 if got_headers.is_some() {
                     peer.app.waiting_headers = false;
                 }
+                if peer.state == PeerState::Ready && !peer.app.discovery_requested {
+                    let fd = peer.fd().ok_or(FetchError::NoPeers)?;
+                    for command in [Command::SendAddrV2, Command::GetAddr] {
+                        let sequence = self.ring.push_send(
+                            &mut self.send_arena,
+                            self.network,
+                            command,
+                            &[],
+                            slot,
+                            peer.generation,
+                            fd,
+                        )?;
+                        peer.pending_send_seqs.push(sequence);
+                    }
+                    peer.app.discovery_requested = true;
+                }
+            }
+            let added = self.peer_book.extend(discovered)?;
+            if added > 0 {
+                eprintln!(
+                    "  headers: discovered {added} new peers ({} candidates)",
+                    self.peer_book.len()
+                );
+                self.ensure_peers()?;
             }
 
             if let Some(headers) = got_headers {
@@ -640,7 +673,7 @@ where
             if self.peers.live_count() == 0 {
                 eprintln!("  iouring-fetcher: all header peers dead, recycling pool in 5s…");
                 std::thread::sleep(Duration::from_secs(5));
-                self.next_addr_idx = 0;
+                self.peer_book.reset();
                 self.ensure_peers()?;
                 if self.peers.is_empty() {
                     return Err(FetchError::PoolExhausted);
@@ -737,7 +770,8 @@ where
                     continue;
                 }
                 if cqd.op == Op::Send {
-                    self.send_arena.release(CqeData::decode_send_seq(cqe.user_data));
+                    self.send_arena
+                        .release(CqeData::decode_send_seq(cqe.user_data));
                 }
                 if cqd.op == Op::LinkTimeout || cqd.op == Op::Close {
                     continue;
@@ -1005,7 +1039,7 @@ where
             if self.peers.live_count() == 0 {
                 eprintln!("  iouring-fetcher: all peers dead, recycling pool in 5s…");
                 std::thread::sleep(Duration::from_secs(5));
-                self.next_addr_idx = 0;
+                self.peer_book.reset();
                 self.ensure_peers()?;
                 if self.peers.is_empty() {
                     return Err(FetchError::PoolExhausted);
@@ -1015,19 +1049,7 @@ where
     }
 
     fn next_pool_addr(&mut self, avoid: &[SocketAddrV4]) -> Option<SocketAddrV4> {
-        if self.addr_pool.is_empty() {
-            return None;
-        }
-        let len = self.addr_pool.len();
-        for _ in 0..len {
-            let idx = self.next_addr_idx % len;
-            self.next_addr_idx = idx.wrapping_add(1);
-            let addr = self.addr_pool[idx];
-            if !avoid.contains(&addr) {
-                return Some(addr);
-            }
-        }
-        None
+        self.peer_book.next_avoiding(avoid)
     }
 }
 
@@ -1153,9 +1175,7 @@ where
                 }
             }
             (_, "ping") => {
-                if peer.pending_send_seqs.len()
-                    >= mantle_transport::PEER_SEND_OUTSTANDING_CAP
-                {
+                if peer.pending_send_seqs.len() >= mantle_transport::PEER_SEND_OUTSTANDING_CAP {
                     peer.state = PeerState::Dead;
                     peer.close(ring, send_arena);
                     return Ok(());

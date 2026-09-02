@@ -118,11 +118,7 @@ impl BlockStore {
 
     pub fn has_block(&self, height: BlockHeight) -> bool {
         let h = usize::try_from(height.to_u32()).expect("block height fits in usize");
-        self.index
-            .get(h)
-            .copied()
-            .unwrap_or_default()
-            .is_present()
+        self.index.get(h).copied().unwrap_or_default().is_present()
     }
 
     pub fn read(&self, ring: &mut IoUring, height: BlockHeight) -> io::Result<Vec<u8>> {
@@ -132,11 +128,7 @@ impl BlockStore {
 
     pub fn block_location(&self, height: BlockHeight) -> io::Result<(u64, u32)> {
         let h = usize::try_from(height.to_u32()).expect("block height fits in usize");
-        let entry = self
-            .index
-            .get(h)
-            .copied()
-            .unwrap_or_default();
+        let entry = self.index.get(h).copied().unwrap_or_default();
         if !entry.is_present() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -198,21 +190,29 @@ impl HeaderStore {
             return Ok(Vec::new());
         }
         let meta_bytes = self.metadata.uring_read(ring, 0, 4)?;
-        let cached_start =
-            u32::from_le_bytes(meta_bytes[..4].try_into().expect("metadata slice is exactly 4 bytes"));
+        let cached_start = u32::from_le_bytes(
+            meta_bytes[..4]
+                .try_into()
+                .expect("metadata slice is exactly 4 bytes"),
+        );
         if cached_start != start.to_u32() {
             return Ok(Vec::new());
         }
-        let count = usize::try_from(self.store.write_offset).expect("write_offset fits in usize") / HEADER_RECORD_SIZE;
+        let count = usize::try_from(self.store.write_offset).expect("write_offset fits in usize")
+            / HEADER_RECORD_SIZE;
         if count == 0 {
             return Ok(Vec::new());
         }
-        let data = self
-            .store
-            .uring_read(ring, 0, u32::try_from(self.store.write_offset).expect("header file size fits in u32"))?;
+        let data = self.store.uring_read(
+            ring,
+            0,
+            u32::try_from(self.store.write_offset).expect("header file size fits in u32"),
+        )?;
         let mut headers = Vec::with_capacity(count);
         for (i, chunk) in data.chunks_exact(HEADER_RECORD_SIZE).enumerate() {
-            let arr: &[u8; 80] = chunk.try_into().expect("chunks_exact guarantees 80-byte slice");
+            let arr: &[u8; 80] = chunk
+                .try_into()
+                .expect("chunks_exact guarantees 80-byte slice");
             let hdr = BlockHeader::from_slice(arr);
             let idx = u32::try_from(i).expect("header index fits in u32");
             headers.push((BlockHeight::new(start.to_u32() + idx), hdr));
@@ -227,8 +227,15 @@ impl HeaderStore {
         data: &[u8],
     ) -> io::Result<()> {
         self.store.truncate_and_write(ring, data)?;
+        self.store.file.sync_data()?;
         self.metadata
-            .truncate_and_write(ring, &start.to_u32().to_le_bytes())
+            .truncate_and_write(ring, &start.to_u32().to_le_bytes())?;
+        self.metadata.file.sync_data()
+    }
+
+    pub fn append_raw(&mut self, ring: &mut IoUring, data: &[u8]) -> io::Result<()> {
+        self.store.append(ring, data)?;
+        self.store.file.sync_data()
     }
 }
 
@@ -242,8 +249,16 @@ fn load_blocks_index(path: &Path) -> io::Result<Vec<BlockEntry>> {
     let count = data.len() / BLOCK_INDEX_ENTRY_SIZE;
     let mut index = Vec::with_capacity(count);
     for chunk in data.chunks_exact(BLOCK_INDEX_ENTRY_SIZE) {
-        let offset = u64::from_le_bytes(chunk[..8].try_into().expect("index chunk has 8 bytes for offset"));
-        let length = u32::from_le_bytes(chunk[8..12].try_into().expect("index chunk has 4 bytes for length"));
+        let offset = u64::from_le_bytes(
+            chunk[..8]
+                .try_into()
+                .expect("index chunk has 8 bytes for offset"),
+        );
+        let length = u32::from_le_bytes(
+            chunk[8..12]
+                .try_into()
+                .expect("index chunk has 4 bytes for length"),
+        );
         index.push(BlockEntry { offset, length });
     }
     Ok(index)
@@ -264,10 +279,7 @@ mod tests {
 
     #[test]
     fn file_store_open_creates_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "mantle_store_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("mantle_store_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create test dir");
         let path = dir.join("test_store.bin");
 

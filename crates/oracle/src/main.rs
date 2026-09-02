@@ -1,4 +1,5 @@
 mod cli;
+mod data_dir_lock;
 
 use std::process::ExitCode;
 
@@ -7,6 +8,7 @@ use mantle_fetcher::Fetcher;
 use mantle_oracle::{BlockRange, OraclePipeline};
 
 use crate::cli::{Args, HELP};
+use crate::data_dir_lock::DataDirLock;
 
 struct OracleApp;
 
@@ -32,6 +34,8 @@ impl OracleApp {
     fn run(args: &Args) -> Result<(), String> {
         std::fs::create_dir_all(&args.data_dir)
             .map_err(|error| format!("create {}: {error}", args.data_dir.display()))?;
+        let _data_dir_lock = DataDirLock::acquire(&args.data_dir)
+            .map_err(|error| format!("lock data directory: {error}"))?;
         let peers = args.resolve_peers();
         if peers.is_empty() {
             return Err(format!(

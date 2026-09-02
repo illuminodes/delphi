@@ -14,16 +14,41 @@ use crate::slab::{Slab, SlabWriter};
 use crate::store::{BlockStore, HeaderStore};
 
 pub enum FileReq {
-    WriteBlock { height: BlockHeight, data: Vec<u8> },
-    WriteBlockAsync { height: BlockHeight, data: Vec<u8> },
-    ReadBlock { height: BlockHeight },
-    ReadBlockDecoded { height: BlockHeight, expected_hash: Hash256 },
-    ReadBlockSlab { height: BlockHeight },
-    HasBlock { height: BlockHeight },
-    WriteHeaders { start: BlockHeight, data: Vec<u8> },
-    LoadCachedHeaders { start: BlockHeight },
+    WriteBlock {
+        height: BlockHeight,
+        data: Vec<u8>,
+    },
+    WriteBlockAsync {
+        height: BlockHeight,
+        data: Vec<u8>,
+    },
+    ReadBlock {
+        height: BlockHeight,
+    },
+    ReadBlockDecoded {
+        height: BlockHeight,
+        expected_hash: Hash256,
+    },
+    ReadBlockSlab {
+        height: BlockHeight,
+    },
+    HasBlock {
+        height: BlockHeight,
+    },
+    WriteHeaders {
+        start: BlockHeight,
+        data: Vec<u8>,
+    },
+    AppendHeaders {
+        data: Vec<u8>,
+    },
+    LoadCachedHeaders {
+        start: BlockHeight,
+    },
     FlushBlockIndex,
-    ReleaseSlab { slot: u16 },
+    ReleaseSlab {
+        slot: u16,
+    },
     Shutdown,
 }
 
@@ -42,10 +67,8 @@ const BLOCK_INDEX_FLUSH_INTERVAL: u64 = 2_000;
 
 // ── Generic handle ───────────────────────────────────────────────────────────
 
-pub struct FileIoHandle<
-    RReq = Arc<MpscRing<FileReq>>,
-    RResp = Arc<SpscRing<FileResp>>,
-> where
+pub struct FileIoHandle<RReq = Arc<MpscRing<FileReq>>, RResp = Arc<SpscRing<FileResp>>>
+where
     RReq: Deref<Target = MpscRing<FileReq>>,
     RResp: Deref<Target = SpscRing<FileResp>>,
 {
@@ -118,10 +141,7 @@ where
     /// the pre-allocated slab.  After processing, send the slot index
     /// back via [`release_slab`](Self::release_slab) so the worker can
     /// reuse it.
-    pub fn read_block_slab(
-        &mut self,
-        height: BlockHeight,
-    ) -> io::Result<crate::slab::SlabToken> {
+    pub fn read_block_slab(&mut self, height: BlockHeight) -> io::Result<crate::slab::SlabToken> {
         self.tx
             .push(FileReq::ReadBlockSlab { height })
             .map_err(|_| io::Error::other("file-io ring full"))?;
@@ -139,6 +159,17 @@ where
     pub fn write_headers(&mut self, start: BlockHeight, data: Vec<u8>) -> io::Result<()> {
         self.tx
             .push(FileReq::WriteHeaders { start, data })
+            .map_err(|_| io::Error::other("file-io ring full"))?;
+        match self.rx.pop_block() {
+            Some(FileResp::Ok) => Ok(()),
+            Some(FileResp::Err(e)) => Err(e),
+            _ => Err(io::Error::other("file-io unexpected response")),
+        }
+    }
+
+    pub fn append_headers(&mut self, data: Vec<u8>) -> io::Result<()> {
+        self.tx
+            .push(FileReq::AppendHeaders { data })
             .map_err(|_| io::Error::other("file-io ring full"))?;
         match self.rx.pop_block() {
             Some(FileResp::Ok) => Ok(()),
@@ -304,12 +335,9 @@ where
                 } => self.handle_read_block_decoded(height, expected_hash),
                 FileReq::ReadBlockSlab { height } => self.handle_read_block_slab(height),
                 FileReq::HasBlock { height } => self.handle_has_block(height),
-                FileReq::WriteHeaders { start, data } => {
-                    self.handle_write_headers(start, &data)
-                }
-                FileReq::LoadCachedHeaders { start } => {
-                    self.handle_load_cached_headers(start)
-                }
+                FileReq::WriteHeaders { start, data } => self.handle_write_headers(start, &data),
+                FileReq::AppendHeaders { data } => self.handle_append_headers(&data),
+                FileReq::LoadCachedHeaders { start } => self.handle_load_cached_headers(start),
                 FileReq::FlushBlockIndex => self.handle_flush_block_index(),
                 FileReq::ReleaseSlab { slot } => {
                     self.slab_writer.release(slot);
@@ -373,9 +401,8 @@ where
                         length,
                     ) {
                         Ok(_token) => {
-                            let data = self.slab_writer.slot_buf_mut(slot)
-                                [..length as usize]
-                                .to_vec();
+                            let data =
+                                self.slab_writer.slot_buf_mut(slot)[..length as usize].to_vec();
                             self.slab_writer.release(slot);
                             FileResp::BlockData(data)
                         }
@@ -407,24 +434,18 @@ where
                         length,
                     ) {
                         Ok(_token) => {
-                            let data = &self.slab_writer.slot_buf_mut(slot)
-                                [..length as usize];
-                            let result =
-                                Block::decode(&mut std::io::Cursor::new(data));
+                            let data = &self.slab_writer.slot_buf_mut(slot)[..length as usize];
+                            let result = Block::decode(&mut std::io::Cursor::new(data));
                             self.slab_writer.release(slot);
                             match result {
                                 Ok(block) => {
                                     if block.header.hash() == expected_hash {
                                         FileResp::DecodedBlock(block)
                                     } else {
-                                        FileResp::Err(io::Error::other(
-                                            "hash mismatch",
-                                        ))
+                                        FileResp::Err(io::Error::other("hash mismatch"))
                                     }
                                 }
-                                Err(e) => FileResp::Err(io::Error::other(
-                                    format!("decode: {e}"),
-                                )),
+                                Err(e) => FileResp::Err(io::Error::other(format!("decode: {e}"))),
                             }
                         }
                         Err(e) => {
@@ -467,14 +488,17 @@ where
         FileResp::Bool(self.blocks.has_block(height))
     }
 
-    fn handle_write_headers(
-        &mut self,
-        start: BlockHeight,
-        data: &[u8],
-    ) -> FileResp {
+    fn handle_write_headers(&mut self, start: BlockHeight, data: &[u8]) -> FileResp {
         match self.headers.write_raw(&mut self.ring, start, data) {
             Ok(()) => FileResp::Ok,
             Err(e) => FileResp::Err(e),
+        }
+    }
+
+    fn handle_append_headers(&mut self, data: &[u8]) -> FileResp {
+        match self.headers.append_raw(&mut self.ring, data) {
+            Ok(()) => FileResp::Ok,
+            Err(error) => FileResp::Err(error),
         }
     }
 
