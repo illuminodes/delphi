@@ -102,7 +102,7 @@ struct FetcherExt {
     assigned_count: u32,
     delivered_count: u32,
     last_delivery: Instant,
-    waiting_headers: bool,
+    headers_request: Option<(Hash256, Instant)>,
     discovery_requested: bool,
 }
 
@@ -113,7 +113,7 @@ impl FetcherExt {
             assigned_count: 0,
             delivered_count: 0,
             last_delivery: Instant::now(),
-            waiting_headers: false,
+            headers_request: None,
             discovery_requested: false,
         }
     }
@@ -173,6 +173,7 @@ pub struct Fetcher<
 > {
     network: Network,
     peer_book: PeerBook,
+    next_peer_generation: u16,
     connect_timeout: Timespec,
     ring: IoUring,
     pbr: ququmatz::ProvidedBufferRing,
@@ -222,6 +223,7 @@ where
         Ok(Self {
             network,
             peer_book: PeerBook::memory(peer_addrs),
+            next_peer_generation: 1,
             connect_timeout: Timespec::from_millis(CONNECT_TIMEOUT_SECS * 1_000),
             ring,
             pbr,
@@ -272,6 +274,8 @@ where
         };
 
         let fd = sock.fd();
+        let generation = self.next_peer_generation;
+        self.next_peer_generation = self.next_peer_generation.wrapping_add(1).max(1);
         let peer = FPeer {
             addr,
             sock: Some(sock),
@@ -280,7 +284,7 @@ where
             recv_buf: Vec::with_capacity(RECV_BUF_CAPACITY),
             recv_armed: false,
             connected_at: Instant::now(),
-            generation: 0,
+            generation,
             pending_send_seqs: Vec::with_capacity(8),
             app: FetcherExt::new(),
         };
@@ -449,6 +453,11 @@ where
         if self.peers.is_empty() {
             return Err(FetchError::PoolExhausted);
         }
+        for (_slot, peer) in self.peers.iter_mut() {
+            if peer.app.headers_request.is_some_and(|(l, _)| l != locator) {
+                peer.app.headers_request = None;
+            }
+        }
         eprintln!(
             "  headers: requesting next page with {} active peers and {} candidates",
             self.peers.live_count(),
@@ -472,7 +481,6 @@ where
 
         let phase_deadline = Instant::now() + Duration::from_secs(HEADERS_PHASE_DEADLINE_SECS);
         let payload = getheaders_payload(locator);
-        let mut elected: Option<(u16, Instant)> = None;
         let mut version_payload = Vec::new();
         encode_version("/mantle-replay-iouring:0.1.0/", &mut version_payload);
         let mut last_status = Instant::now();
@@ -529,7 +537,7 @@ where
                 if peer.state == PeerState::Dead {
                     continue;
                 }
-                let waiting = peer.app.waiting_headers;
+                let mut peer_headers = None;
                 consume_handshake_frames(
                     &mut self.ring,
                     &mut self.send_arena,
@@ -538,36 +546,42 @@ where
                     peer,
                     |cmd, payload| {
                         discovered.extend(PeerBook::decode(cmd, payload));
-                        if waiting && cmd.as_str() == "headers" {
-                            let mut headers: Vec<BlockHeader> = Vec::new();
+                        if cmd.as_str() == "headers" {
+                            let mut headers = Vec::new();
                             if HeadersMsg::decode_into_limited::<2_000>(
                                 &mut std::io::Cursor::new(payload),
                                 &mut headers,
                             )
                             .is_ok()
+                                && headers
+                                    .first()
+                                    .is_none_or(|h| h.prev_block() == locator)
                             {
-                                got_headers = Some(headers);
+                                peer_headers = Some(headers);
                             }
                         }
                     },
                 )?;
-                if got_headers.is_some() {
-                    peer.app.waiting_headers = false;
+                if peer_headers.is_some() {
+                    peer.app.headers_request = None;
+                }
+                if let Some(headers) = peer_headers
+                    && got_headers.is_none()
+                {
+                    got_headers = Some(headers);
                 }
                 if peer.state == PeerState::Ready && !peer.app.discovery_requested {
                     let fd = peer.fd().ok_or(FetchError::NoPeers)?;
-                    for command in [Command::SendAddrV2, Command::GetAddr] {
-                        let sequence = self.ring.push_send(
-                            &mut self.send_arena,
-                            self.network,
-                            command,
-                            &[],
-                            slot,
-                            peer.generation,
-                            fd,
-                        )?;
-                        peer.pending_send_seqs.push(sequence);
-                    }
+                    let sequence = self.ring.push_send(
+                        &mut self.send_arena,
+                        self.network,
+                        Command::GetAddr,
+                        &[],
+                        slot,
+                        peer.generation,
+                        fd,
+                    )?;
+                    peer.pending_send_seqs.push(sequence);
                     peer.app.discovery_requested = true;
                 }
             }
@@ -617,12 +631,11 @@ where
                 let waiting = self
                     .peers
                     .values()
-                    .filter(|p| p.app.waiting_headers)
+                    .filter(|peer| peer.app.headers_request.is_some())
                     .count();
                 eprintln!(
                     "  headers: ready={ready} connecting={connecting} handshaking={handshaking} \
-                     waiting={waiting} dead={dead} elected={:?}",
-                    elected.map(|(s, _)| s),
+                     waiting={waiting} dead={dead}"
                 );
                 last_status = now;
             }
@@ -650,17 +663,13 @@ where
                 }
             }
 
-            // Headers response timeout for elected peer.
-            if let Some((slot, sent)) = elected
-                && now.duration_since(sent) > Duration::from_secs(HEADERS_RESPONSE_TIMEOUT_SECS)
-            {
-                eprintln!("  iouring-fetcher: elected peer {slot} headers-timeout, demoting");
-                if let Some(peer) = self.peers.get_mut(slot) {
-                    peer.close(&mut self.ring, &mut self.send_arena);
-                    peer.state = PeerState::Dead;
-                    peer.app.waiting_headers = false;
+            for (slot, peer) in self.peers.iter_mut() {
+                if peer.app.headers_request.is_some_and(|(_, sent)| {
+                    now.duration_since(sent) > Duration::from_secs(HEADERS_RESPONSE_TIMEOUT_SECS)
+                }) {
+                    eprintln!("  headers: peer {slot} response timeout; retrying");
+                    peer.app.headers_request = None;
                 }
-                elected = None;
             }
 
             let dead: Vec<u16> = self.peers.dead_slots().to_vec();
@@ -680,14 +689,11 @@ where
                 }
             }
 
-            // Election: pick a Ready peer and send getheaders.
-            if elected.is_none()
-                && let Some((slot, peer)) = self
-                    .peers
-                    .iter_mut()
-                    .find(|(_, p)| p.state == PeerState::Ready && !p.app.waiting_headers)
-            {
-                let seq = self.ring.push_send(
+            for (slot, peer) in self.peers.iter_mut() {
+                if peer.state != PeerState::Ready || peer.app.headers_request.is_some() {
+                    continue;
+                }
+                let sequence = self.ring.push_send(
                     &mut self.send_arena,
                     self.network,
                     Command::GetHeaders,
@@ -696,9 +702,8 @@ where
                     peer.generation,
                     peer.fd().ok_or(FetchError::NoPeers)?,
                 )?;
-                peer.pending_send_seqs.push(seq);
-                peer.app.waiting_headers = true;
-                elected = Some((slot, Instant::now()));
+                peer.pending_send_seqs.push(sequence);
+                peer.app.headers_request = Some((locator, Instant::now()));
             }
 
             // Re-arm recv.
@@ -770,8 +775,11 @@ where
                     continue;
                 }
                 if cqd.op == Op::Send {
-                    self.send_arena
-                        .release(CqeData::decode_send_seq(cqe.user_data));
+                    let send_seq = CqeData::decode_send_seq(cqe.user_data);
+                    self.send_arena.release(send_seq);
+                    if let Some(p) = self.peers.get_mut(cqd.slot) {
+                        p.pending_send_seqs.retain(|s| *s != send_seq);
+                    }
                 }
                 if cqd.op == Op::LinkTimeout || cqd.op == Op::Close {
                     continue;

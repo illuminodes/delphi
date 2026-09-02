@@ -91,6 +91,17 @@ pub fn consume_handshake_frames<T>(
 
         match (peer.state, cmd) {
             (PeerState::HandshakeVersionSent | PeerState::HandshakeRecving, "version") => {
+                let fd = peer.fd().ok_or_else(|| io::Error::other("no fd"))?;
+                let v2_seq = ring.push_send(
+                    send_arena,
+                    network,
+                    Command::SendAddrV2,
+                    &[],
+                    slot,
+                    peer.generation,
+                    fd,
+                )?;
+                peer.pending_send_seqs.push(v2_seq);
                 let seq = ring.push_send(
                     send_arena,
                     network,
@@ -98,7 +109,7 @@ pub fn consume_handshake_frames<T>(
                     &[],
                     slot,
                     peer.generation,
-                    peer.fd().ok_or_else(|| io::Error::other("no fd"))?,
+                    fd,
                 )?;
                 peer.pending_send_seqs.push(seq);
                 peer.state = PeerState::HandshakeRecving;
