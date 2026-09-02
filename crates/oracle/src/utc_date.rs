@@ -2,7 +2,7 @@ use std::fmt;
 
 use mantle::difficulty::BlockTime;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UtcDate {
     year: u32,
     month: u32,
@@ -23,6 +23,16 @@ impl fmt::Display for UtcDateError {
             Self::InvalidDate => formatter.write_str("date is not a valid Gregorian date"),
             Self::TimestampOverflow => formatter.write_str("date is outside the block-time range"),
         }
+    }
+}
+
+impl fmt::Display for UtcDate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{:04}-{:02}-{:02}",
+            self.year, self.month, self.day
+        )
     }
 }
 
@@ -79,6 +89,38 @@ impl UtcDate {
         Ok(BlockTime::new(timestamp))
     }
 
+    /// Returns the calendar day after this one.
+    ///
+    /// # Panics
+    /// Panics when this date is at the edge of the representable range.
+    #[must_use]
+    pub fn next(self) -> Self {
+        let days = u64::from(self.midnight().expect("date in range").to_u32()) / 86_400;
+        Self::from_days(days + 1)
+    }
+
+    #[must_use]
+    pub fn containing(time: BlockTime) -> Self {
+        Self::from_days(u64::from(time.to_u32()) / 86_400)
+    }
+
+    fn from_days(days: u64) -> Self {
+        let z = days + 719_468;
+        let era = z / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + u64::from(month <= 2);
+        Self {
+            year: u32::try_from(year).expect("year fits u32"),
+            month: u32::try_from(month).expect("month fits u32"),
+            day: u32::try_from(day).expect("day fits u32"),
+        }
+    }
+
     const fn is_leap_year(year: u32) -> bool {
         year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
     }
@@ -112,6 +154,51 @@ mod tests {
         assert_eq!(
             UtcDate::parse("2024-01-01").expect("valid date").midnight(),
             Ok(BlockTime::new(1_704_067_200))
+        );
+    }
+
+    #[test]
+    fn resolves_the_date_containing_a_timestamp() {
+        assert_eq!(
+            UtcDate::containing(BlockTime::new(86_399)),
+            UtcDate::parse("1970-01-01").expect("valid date")
+        );
+        assert_eq!(
+            UtcDate::containing(BlockTime::new(86_400)),
+            UtcDate::parse("1970-01-02").expect("valid date")
+        );
+    }
+
+    #[test]
+    fn containing_round_trips_with_midnight() {
+        let date = UtcDate::parse("2024-02-29").expect("valid date");
+        let midnight = date.midnight().expect("in range");
+        assert_eq!(UtcDate::containing(midnight), date);
+        assert_eq!(
+            UtcDate::containing(BlockTime::new(1_767_225_600)).to_string(),
+            "2026-01-01"
+        );
+    }
+
+    #[test]
+    fn displays_iso_format() {
+        let date = UtcDate::parse("2026-08-30").expect("valid date");
+        assert_eq!(date.to_string(), "2026-08-30");
+    }
+
+    #[test]
+    fn steps_to_the_next_day_across_month_and_year_ends() {
+        assert_eq!(
+            UtcDate::parse("2026-08-31").expect("valid date").next(),
+            UtcDate::parse("2026-09-01").expect("valid date")
+        );
+        assert_eq!(
+            UtcDate::parse("2026-12-31").expect("valid date").next(),
+            UtcDate::parse("2027-01-01").expect("valid date")
+        );
+        assert_eq!(
+            UtcDate::parse("2024-02-28").expect("valid date").next(),
+            UtcDate::parse("2024-02-29").expect("valid date")
         );
     }
 

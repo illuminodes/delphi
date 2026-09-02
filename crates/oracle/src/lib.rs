@@ -2,24 +2,30 @@
 
 pub mod block_range;
 pub mod central_price;
+pub mod data_dir_lock;
 pub mod histogram;
 pub mod intraday;
 pub mod log_bin;
 pub mod output_filter;
+pub mod peer_sources;
 pub mod pipeline;
 pub mod report;
 pub mod rough_price;
 pub mod stencil;
 pub mod utc_date;
+pub mod window_runner;
 
 pub use block_range::{BlockRange, BlockRangeError, RangeSelection};
 pub use central_price::{CentralPrice, CentralPriceFinder};
+pub use data_dir_lock::DataDirLock;
 pub use histogram::OutputHistogram;
 pub use intraday::{IntradayPricePoint, IntradayPricePoints};
 pub use log_bin::LogScaleBins;
 pub use output_filter::OutputFilter;
+pub use peer_sources::PeerSources;
 pub use pipeline::{OracleError, OraclePipeline};
 pub use report::OracleReport;
 pub use rough_price::RoughPriceEstimator;
 pub use stencil::{PriceStencil, SmoothStencil, SpikeStencil};
 pub use utc_date::{UtcDate, UtcDateError};
+pub use window_runner::WindowRunner;

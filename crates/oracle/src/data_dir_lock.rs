@@ -7,6 +7,7 @@ pub struct DataDirLock {
 }
 
 impl DataDirLock {
+    #[allow(clippy::missing_errors_doc)]
     pub fn acquire(data_dir: &Path) -> io::Result<Self> {
         let path = data_dir.join("oracle.lock");
         let file = OpenOptions::new()

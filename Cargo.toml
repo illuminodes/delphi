@@ -14,6 +14,7 @@ members = [
     "bench",
     "conformance",
     "replay",
+    "harness",
     "crates/oracle",
 ]
 

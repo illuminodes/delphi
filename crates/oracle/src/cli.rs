@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, SocketAddrV4, ToSocketAddrs};
+use std::net::SocketAddrV4;
 use std::path::PathBuf;
 
 use mantle::difficulty::BlockHeight;
@@ -34,7 +34,8 @@ pub struct Args {
     pub data_dir: PathBuf,
     pub network: Network,
     pub selection: RangeSelection,
-    peers: Vec<SocketAddrV4>,
+    pub peers: Vec<SocketAddrV4>,
+    pub peer_files: Vec<String>,
 }
 
 impl Args {
@@ -43,6 +44,7 @@ impl Args {
         let mut network = Network::Mainnet;
         let mut data_dir = None;
         let mut peers = Vec::new();
+        let mut peer_files = Vec::new();
         let mut date = None;
         let mut recent = None;
         let mut start = None;
@@ -77,8 +79,9 @@ impl Args {
                 }
                 "--peer-file" => {
                     index += 1;
-                    let path = raw.get(index).ok_or("--peer-file requires a path")?;
-                    Self::append_peer_file(path, &mut peers)?;
+                    let path =
+                        raw.get(index).ok_or("--peer-file requires a path")?.clone();
+                    peer_files.push(path);
                 }
                 "--date" => {
                     index += 1;
@@ -121,27 +124,8 @@ impl Args {
             network,
             selection,
             peers,
+            peer_files,
         })
-    }
-
-    pub fn resolve_peers(&self) -> Vec<SocketAddrV4> {
-        let mut peers = self.peers.clone();
-        for seed in self.network.default_seeds() {
-            if let Ok(address) = seed.parse() {
-                peers.push(address);
-                continue;
-            }
-            match seed.to_socket_addrs() {
-                Ok(addresses) => peers.extend(addresses.filter_map(|address| match address {
-                    SocketAddr::V4(address) => Some(address),
-                    SocketAddr::V6(_) => None,
-                })),
-                Err(error) => eprintln!("warning: failed to resolve seed {seed}: {error}"),
-            }
-        }
-        peers.sort_unstable();
-        peers.dedup();
-        peers
     }
 
     fn selection(
@@ -178,20 +162,5 @@ impl Args {
             .parse::<u32>()
             .map(BlockHeight::new)
             .map_err(|error| format!("invalid {option} {value}: {error}"))
-    }
-
-    fn append_peer_file(path: &str, peers: &mut Vec<SocketAddrV4>) -> Result<(), String> {
-        let body = std::fs::read_to_string(path)
-            .map_err(|error| format!("read peer file {path}: {error}"))?;
-        for (line_index, line) in body.lines().enumerate() {
-            let value = line.split('#').next().unwrap_or("").trim();
-            if value.is_empty() {
-                continue;
-            }
-            peers.push(value.parse().map_err(|error| {
-                format!("{path}:{}: invalid peer {value}: {error}", line_index + 1)
-            })?);
-        }
-        Ok(())
     }
 }

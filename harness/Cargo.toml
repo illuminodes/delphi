@@ -1,0 +1,16 @@
+[package]
+name = "mantle-harness"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "oracle-harness"
+path = "src/main.rs"
+
+[dependencies]
+mantle = { path = "../crates/mantle" }
+mantle-oracle = { path = "../crates/oracle" }
+ureq = "3"
