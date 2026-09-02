@@ -1,0 +1,10 @@
+[package]
+name = "mantle-oracle"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mantle = { path = "../mantle" }
