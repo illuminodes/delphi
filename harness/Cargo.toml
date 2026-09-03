@@ -30,6 +30,10 @@ path = "src/bin/sample_convergence.rs"
 name = "mempool-convergence"
 path = "src/bin/mempool_convergence.rs"
 
+[[bin]]
+name = "oracle-volatility"
+path = "src/bin/volatility_probe.rs"
+
 [dependencies]
 mantle = { path = "../crates/mantle" }
 mantle-oracle = { path = "../crates/oracle" }

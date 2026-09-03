@@ -8,6 +8,7 @@ pub mod reference_prices;
 pub mod sample_rng;
 pub mod score;
 pub mod span_plan;
+pub mod volatility;
 pub mod window_plan;
 
 pub use convergence::{ConvergenceRow, ConvergenceTrial};
@@ -18,4 +19,5 @@ pub use reference_prices::{ReferenceError, ReferencePrices};
 pub use sample_rng::SampleRng;
 pub use score::Scorecard;
 pub use span_plan::{SpanPlan, SpanWindow};
+pub use volatility::{VolatilityBand, VolatilityPoint, VolatilityStudy};
 pub use window_plan::WindowPlan;
