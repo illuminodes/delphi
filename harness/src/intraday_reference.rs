@@ -116,6 +116,19 @@ impl IntradayReference {
         Some(total / count)
     }
 
+    /// [`Self::mean_over`] with the window clamped to the covered span, as
+    /// long as neither end lies more than `tolerance` seconds outside it.
+    #[must_use]
+    pub fn mean_near(&self, start: u32, stop: u32, tolerance: u32) -> Option<f64> {
+        if !self.covers(start, stop, tolerance) {
+            return None;
+        }
+        let (first, last) = self.span()?;
+        let clamped_start = start.clamp(first, last);
+        let clamped_stop = stop.clamp(first, last);
+        self.mean_over(clamped_start, clamped_stop.max(clamped_start))
+    }
+
     /// Fetch `start..=stop` from `CoinGecko` unless the cache already covers it.
     ///
     /// # Errors
@@ -243,6 +256,15 @@ mod tests {
     #[test]
     fn mean_is_none_when_the_window_leaves_the_span() {
         assert_eq!(Fixture::hourly().mean_over(500, 3_000), None);
+    }
+
+    #[test]
+    fn mean_near_clamps_a_window_just_past_the_span() {
+        let reference = Fixture::hourly();
+        let mean = reference.mean_near(2_900, 3_200, 300).expect("within tolerance");
+        assert!((mean - 890.0 / 3.0).abs() < 1e-9, "{mean}");
+        assert_eq!(reference.mean_near(3_100, 3_200, 300), Some(300.0));
+        assert_eq!(reference.mean_near(3_100, 3_500, 300), None);
     }
 
     #[test]

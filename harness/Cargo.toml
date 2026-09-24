@@ -31,6 +31,10 @@ name = "mempool-convergence"
 path = "src/bin/mempool_convergence.rs"
 
 [[bin]]
+name = "oracle-sample-compare"
+path = "src/bin/sample_compare.rs"
+
+[[bin]]
 name = "oracle-volatility"
 path = "src/bin/volatility_probe.rs"
 

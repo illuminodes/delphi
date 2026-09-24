@@ -5,6 +5,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::network::Network;
+use mantle_harness::amount_dump::AmountDump;
 use mantle_harness::intraday_reference::IntradayReference;
 use mantle_harness::sample_rng::SampleRng;
 use mantle_oracle::{
@@ -25,6 +26,7 @@ options:
   --cache PATH       Intraday reference cache (default intraday-prices.txt)
   --seed N           PRNG seed for the confirmed subsample (default 20260416)
   --offline          Never contact CoinGecko; use the cache as-is
+  --dump PATH        Save every admitted output as `satoshis unix_seconds`
   -h, --help         Print this message
 
 Collects admitted outputs from the live mempool and prices the running sample
@@ -42,6 +44,7 @@ struct LiveArgs {
     cache: PathBuf,
     seed: u64,
     offline: bool,
+    dump: Option<PathBuf>,
 }
 
 impl LiveArgs {
@@ -56,6 +59,7 @@ impl LiveArgs {
             cache: PathBuf::from("intraday-prices.txt"),
             seed: 20_260_416,
             offline: false,
+            dump: None,
         };
         let mut index = 0;
         while index < raw.len() {
@@ -65,6 +69,12 @@ impl LiveArgs {
                     return Err(String::new());
                 }
                 "--offline" => parsed.offline = true,
+                "--dump" => {
+                    index += 1;
+                    parsed.dump = Some(PathBuf::from(
+                        raw.get(index).ok_or("--dump requires PATH")?,
+                    ));
+                }
                 "--peer" => {
                     index += 1;
                     let text = raw.get(index).ok_or("--peer requires ADDR")?;
@@ -205,8 +215,15 @@ impl LiveApp {
             args.minutes
         );
 
-        let checkpoints = Self::collect(args, &mut fanout, confirmed.as_ref(), reference);
+        let (checkpoints, sample) =
+            Self::collect(args, &mut fanout, confirmed.as_ref(), reference);
         Self::report(&checkpoints, reference, confirmed.as_ref());
+        if let Some(path) = &args.dump {
+            let dump = AmountDump::at(path);
+            dump.write(&sample)
+                .map_err(|error| format!("write {}: {error}", dump.path().display()))?;
+            eprintln!("saved {} outputs to {}", sample.len(), dump.path().display());
+        }
         Ok(())
     }
 
@@ -216,7 +233,7 @@ impl LiveApp {
         fanout: &mut PeerFanout,
         confirmed: Option<&AdmittedSample>,
         reference: f64,
-    ) -> Vec<LiveCheckpoint> {
+    ) -> (Vec<LiveCheckpoint>, AdmittedSample) {
         let mut collector = MempoolCollector::new(BlockHeight::new(0));
         let mut rng = SampleRng::seeded(args.seed);
         let mut results = Vec::new();
@@ -282,7 +299,7 @@ impl LiveApp {
             collector.transactions(),
             collector.admission_rate() * 100.0
         );
-        results
+        (results, collector.into_sample())
     }
 
     fn confirmed_pool(args: &LiveArgs) -> Option<AdmittedSample> {
