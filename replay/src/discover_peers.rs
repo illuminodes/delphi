@@ -209,13 +209,13 @@ fn run(args: &Args) -> Result<(), String> {
         while drained < 1024 {
             let Some(cqe) = ring.complete() else { break };
             drained += 1;
-            let cqd = CqeData::decode(cqe.user_data);
+            let cqd = CqeData::decode(cqe.user_data());
 
             if cqd.op == Op::Tick {
                 continue;
             }
             if cqd.op == Op::Send {
-                let send_seq = CqeData::decode_send_seq(cqe.user_data);
+                let send_seq = CqeData::decode_send_seq(cqe.user_data());
                 send_arena.release(send_seq);
                 if let Some(p) = peers.get_mut(cqd.slot) {
                     p.pending_send_seqs.retain(|s| *s != send_seq);
@@ -225,7 +225,7 @@ fn run(args: &Args) -> Result<(), String> {
                 continue;
             }
 
-            let res = cqe.result;
+            let res = cqe.raw_result();
             let Some(peer) = peers.get_mut(cqd.slot) else {
                 continue;
             };
@@ -262,7 +262,7 @@ fn run(args: &Args) -> Result<(), String> {
                     }
                 }
                 Op::Recv => {
-                    peer.ingest_recv_cqe(&mut pbr, &mut send_arena, cqe.flags, res, &mut ring);
+                    peer.ingest_recv_cqe(&mut pbr, &mut send_arena, cqe.flags(), res, &mut ring);
                 }
                 Op::Send if res < 0 => {
                     peer.state = PeerState::Dead;

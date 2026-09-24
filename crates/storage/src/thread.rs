@@ -104,8 +104,8 @@ where
         &mut crate::handle::StorageHandle<'req, &MpscRing<StorageReq<'req>>, &SpscRing<StorageResp>>,
     ) -> R,
 {
-    let req_ring: MpscRing<StorageReq<'_>> = MpscRing::new(Capacity::exact(RING_CAP));
-    let resp_ring: SpscRing<StorageResp> = SpscRing::new(Capacity::exact(RING_CAP));
+    let mut req_ring: MpscRing<StorageReq<'_>> = MpscRing::new(Capacity::exact(RING_CAP));
+    let mut resp_ring: SpscRing<StorageResp> = SpscRing::new(Capacity::exact(RING_CAP));
     let initial_tip = engine.tip();
 
     let result = std::thread::scope(|s| {

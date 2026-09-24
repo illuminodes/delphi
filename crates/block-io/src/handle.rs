@@ -267,8 +267,8 @@ where
     let data_dir_owned = data_dir.to_owned();
     let slab = Slab::new();
 
-    let req_ring: MpscRing<FileReq> = MpscRing::new(Capacity::exact(FILE_RING_CAP));
-    let resp_ring: SpscRing<FileResp> = SpscRing::new(Capacity::exact(FILE_RING_CAP));
+    let mut req_ring: MpscRing<FileReq> = MpscRing::new(Capacity::exact(FILE_RING_CAP));
+    let mut resp_ring: SpscRing<FileResp> = SpscRing::new(Capacity::exact(FILE_RING_CAP));
 
     let result = std::thread::scope(|s| {
         let (slab_writer, slab_reader) = slab.split();

@@ -595,11 +595,11 @@ impl RobinHoodTable {
             let mut write_cursor: usize = 0;
 
             while let Some(cqe) = ring.complete() {
-                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
+                let i = usize::try_from(cqe.user_data()).expect("user_data index fits usize");
                 if i >= n {
                     continue;
                 }
-                let res = cqe.result;
+                let res = cqe.raw_result();
                 if res < 0 {
                     return Err(io::Error::from_raw_os_error(-res));
                 }
@@ -778,11 +778,11 @@ impl RobinHoodTable {
 
             let mut need_reprobe = false;
             while let Some(cqe) = ring.complete() {
-                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
+                let i = usize::try_from(cqe.user_data()).expect("user_data index fits usize");
                 if i >= n {
                     continue;
                 }
-                let res = cqe.result;
+                let res = cqe.raw_result();
                 if res < 0 {
                     return Err(io::Error::from_raw_os_error(-res));
                 }
@@ -884,11 +884,11 @@ impl RobinHoodTable {
             let mut write_ops: Vec<(u64, usize, bool)> = Vec::new();
 
             while let Some(cqe) = ring.complete() {
-                let j = usize::try_from(cqe.user_data).expect("user_data index fits usize");
+                let j = usize::try_from(cqe.user_data()).expect("user_data index fits usize");
                 if j >= shifts.len() {
                     continue;
                 }
-                let res = cqe.result;
+                let res = cqe.raw_result();
                 if res < 0 {
                     return Err(io::Error::from_raw_os_error(-res));
                 }
@@ -1030,12 +1030,12 @@ impl RobinHoodTable {
             // Process completions.
             let mut need_reprobe = false;
             while let Some(cqe) = ring.complete() {
-                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
+                let i = usize::try_from(cqe.user_data()).expect("user_data index fits usize");
                 if i >= n {
                     continue;
                 }
 
-                let res = cqe.result;
+                let res = cqe.raw_result();
                 if res < 0 {
                     return Err(io::Error::from_raw_os_error(-res));
                 }

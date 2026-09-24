@@ -495,12 +495,12 @@ where
                     break;
                 };
                 drained += 1;
-                let cqd = CqeData::decode(cqe.user_data);
+                let cqd = CqeData::decode(cqe.user_data());
                 if cqd.op == Op::Tick {
                     continue;
                 }
                 if cqd.op == Op::Send {
-                    let send_seq = CqeData::decode_send_seq(cqe.user_data);
+                    let send_seq = CqeData::decode_send_seq(cqe.user_data());
                     self.send_arena.release(send_seq);
                     if let Some(p) = self.peers.get_mut(cqd.slot) {
                         p.pending_send_seqs.retain(|s| *s != send_seq);
@@ -509,7 +509,7 @@ where
                 if cqd.op == Op::LinkTimeout || cqd.op == Op::Close {
                     continue;
                 }
-                let res = cqe.result;
+                let res = cqe.raw_result();
                 let Some(peer) = self.peers.get_mut(cqd.slot) else {
                     continue;
                 };
@@ -525,7 +525,7 @@ where
                     peer,
                     cqd.op,
                     res,
-                    cqe.flags,
+                    cqe.flags(),
                     &version_payload,
                 )?;
             }
@@ -770,12 +770,12 @@ where
                     break;
                 };
                 drained += 1;
-                let cqd = CqeData::decode(cqe.user_data);
+                let cqd = CqeData::decode(cqe.user_data());
                 if cqd.op == Op::Tick {
                     continue;
                 }
                 if cqd.op == Op::Send {
-                    let send_seq = CqeData::decode_send_seq(cqe.user_data);
+                    let send_seq = CqeData::decode_send_seq(cqe.user_data());
                     self.send_arena.release(send_seq);
                     if let Some(p) = self.peers.get_mut(cqd.slot) {
                         p.pending_send_seqs.retain(|s| *s != send_seq);
@@ -798,8 +798,8 @@ where
                     cqd.slot,
                     peer,
                     cqd.op,
-                    cqe.result,
-                    cqe.flags,
+                    cqe.raw_result(),
+                    cqe.flags(),
                     &version_payload,
                 )?;
             }

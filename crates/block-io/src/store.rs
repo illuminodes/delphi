@@ -38,16 +38,17 @@ impl FileStore {
 
     pub fn uring_read(&self, ring: &mut IoUring, offset: u64, len: u32) -> io::Result<Vec<u8>> {
         let mut buf = vec![0u8; usize::try_from(len).expect("read length fits in usize")];
-        let sqe = ququmatz::Sqe::read(self.fd, &mut buf, offset).user_data(u64::MAX);
+        // SAFETY: `buf` outlives the loop below, which blocks until this read completes.
+        let sqe = unsafe { ququmatz::Sqe::read(self.fd, &mut buf, offset) }.user_data(u64::MAX);
         ring.push(sqe)
             .map_err(|e| io::Error::other(format!("{e:?}")))?;
         loop {
             ring.submit_and_wait(1)
                 .map_err(|e| io::Error::other(format!("{e:?}")))?;
             while let Some(cqe) = ring.complete() {
-                if cqe.user_data == u64::MAX {
-                    if cqe.result < 0 {
-                        return Err(io::Error::from_raw_os_error(-cqe.result));
+                if cqe.user_data() == u64::MAX {
+                    if cqe.raw_result() < 0 {
+                        return Err(io::Error::from_raw_os_error(-cqe.raw_result()));
                     }
                     return Ok(buf);
                 }
@@ -56,16 +57,17 @@ impl FileStore {
     }
 
     pub fn uring_write(&self, ring: &mut IoUring, data: &[u8], offset: u64) -> io::Result<()> {
-        let sqe = ququmatz::Sqe::write(self.fd, data, offset).user_data(u64::MAX);
+        // SAFETY: `data` outlives the loop below, which blocks until this write completes.
+        let sqe = unsafe { ququmatz::Sqe::write(self.fd, data, offset) }.user_data(u64::MAX);
         ring.push(sqe)
             .map_err(|e| io::Error::other(format!("{e:?}")))?;
         loop {
             ring.submit_and_wait(1)
                 .map_err(|e| io::Error::other(format!("{e:?}")))?;
             while let Some(cqe) = ring.complete() {
-                if cqe.user_data == u64::MAX {
-                    if cqe.result < 0 {
-                        return Err(io::Error::from_raw_os_error(-cqe.result));
+                if cqe.user_data() == u64::MAX {
+                    if cqe.raw_result() < 0 {
+                        return Err(io::Error::from_raw_os_error(-cqe.raw_result()));
                     }
                     return Ok(());
                 }

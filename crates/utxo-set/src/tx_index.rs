@@ -496,10 +496,10 @@ impl TxIndex {
                 .map_err(|e| io::Error::other(format!("{e:?}")))?;
 
             while let Some(cqe) = ring.complete() {
-                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
+                let i = usize::try_from(cqe.user_data()).expect("user_data index fits usize");
                 if i >= n { continue; }
-                if cqe.result < 0 {
-                    return Err(io::Error::from_raw_os_error(-cqe.result));
+                if cqe.raw_result() < 0 {
+                    return Err(io::Error::from_raw_os_error(-cqe.raw_result()));
                 }
 
                 let buf_start = i * bs;
@@ -587,10 +587,10 @@ impl TxIndex {
             let mut write_cursor: usize = 0;
 
             while let Some(cqe) = ring.complete() {
-                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
+                let i = usize::try_from(cqe.user_data()).expect("user_data index fits usize");
                 if i >= n { continue; }
-                if cqe.result < 0 {
-                    return Err(io::Error::from_raw_os_error(-cqe.result));
+                if cqe.raw_result() < 0 {
+                    return Err(io::Error::from_raw_os_error(-cqe.raw_result()));
                 }
 
                 let buf_start = i * bs;
@@ -715,10 +715,10 @@ impl TxIndex {
                 .map_err(|e| io::Error::other(format!("{e:?}")))?;
 
             while let Some(cqe) = ring.complete() {
-                let i = usize::try_from(cqe.user_data).expect("user_data index fits usize");
+                let i = usize::try_from(cqe.user_data()).expect("user_data index fits usize");
                 if i >= n { continue; }
-                if cqe.result < 0 {
-                    return Err(io::Error::from_raw_os_error(-cqe.result));
+                if cqe.raw_result() < 0 {
+                    return Err(io::Error::from_raw_os_error(-cqe.raw_result()));
                 }
 
                 let buf_start = i * bs;

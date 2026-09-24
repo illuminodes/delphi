@@ -306,13 +306,13 @@ fn run(args: &Args) -> Result<(), String> {
 
         // Drain all available CQEs.
         while let Some(cqe) = ring.complete() {
-            let (slot_idx, op) = split_tag(cqe.user_data);
+            let (slot_idx, op) = split_tag(cqe.user_data());
             let slot_idx = slot_idx as usize;
             if slot_idx >= slots.len() {
                 continue;
             }
             let slot = &mut slots[slot_idx];
-            let res = cqe.result;
+            let res = cqe.raw_result();
 
             match op {
                 Op::Connect => {
@@ -334,8 +334,9 @@ fn run(args: &Args) -> Result<(), String> {
                         let _ = ver.encode(&mut payload);
                         let _ = magic.frame(Command::Version, &payload, &mut framed);
                         slot.version_buf = framed;
+                        // SAFETY: `version_buf` lives in the slot until the send completes.
                         let _ = ring.push(
-                            Sqe::send(fd, &slot.version_buf, MsgFlags::default())
+                            unsafe { Sqe::send(fd, &slot.version_buf, MsgFlags::default()) }
                                 .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::Send)),
                         );
                     }
@@ -351,13 +352,15 @@ fn run(args: &Args) -> Result<(), String> {
                                 )));
                         }
                     } else if let Some(fd) = slot.fd {
+                        // SAFETY: `magic_buf` lives in the slot until the recv completes.
                         let _ = ring.push(
-                            Sqe::recv(fd, &mut slot.magic_buf, MsgFlags::default())
+                            unsafe { Sqe::recv(fd, &mut slot.magic_buf, MsgFlags::default()) }
                                 .user_data(tag(u32::try_from(slot_idx).unwrap_or(0), Op::Recv))
                                 .flags(SqeFlags::IO_LINK),
                         );
+                        // SAFETY: io_uring copies the timespec during link-timeout prep.
                         let _ = ring.push(
-                            Sqe::link_timeout(&timeouts[slot_idx], TimeoutFlags::default())
+                            unsafe { Sqe::link_timeout(&timeouts[slot_idx], TimeoutFlags::default()) }
                                 .user_data(tag(
                                     u32::try_from(slot_idx).unwrap_or(0),
                                     Op::LinkTimeout,
@@ -489,15 +492,17 @@ fn launch_probe(
     // -ECANCELED; on success the timeout CQE arrives with -ECANCELED. Either
     // way we get exactly one of (Connect: success rtt, Connect: failure)
     // plus a benign LinkTimeout CQE.
+    // SAFETY: io_uring copies the sockaddr into kernel memory during connect prep.
     ring.push(
-        Sqe::connect(fd, addr_bytes)
+        unsafe { Sqe::connect(fd, addr_bytes) }
             .user_data(tag(slot_idx, Op::Connect))
             .flags(SqeFlags::IO_LINK),
     )
     .map_err(|e| format!("push connect: {e:?}"))?;
 
+    // SAFETY: io_uring copies the timespec during link-timeout prep.
     ring.push(
-        Sqe::link_timeout(timeout, TimeoutFlags::default())
+        unsafe { Sqe::link_timeout(timeout, TimeoutFlags::default()) }
             .user_data(tag(slot_idx, Op::LinkTimeout)),
     )
     .map_err(|e| format!("push link_timeout: {e:?}"))?;

@@ -63,18 +63,15 @@ impl IoUringExt for IoUring {
         sockaddr: &SockAddrIn,
         timeout: &Timespec,
     ) -> Result<(), io::Error> {
-        let sqe = Sqe::connect(fd, &sockaddr.to_bytes())
+        // SAFETY: io_uring copies the sockaddr into kernel memory during connect prep.
+        let sqe = unsafe { Sqe::connect(fd, &sockaddr.to_bytes()) }
             .user_data(CqeData::encode(slot, g, Op::Connect))
             .flags(SqeFlags::IO_LINK);
         self.push(sqe).map_err(uring_err)?;
-        self.push(
-            Sqe::link_timeout(timeout, TimeoutFlags::default()).user_data(CqeData::encode(
-                slot,
-                g,
-                Op::LinkTimeout,
-            )),
-        )
-        .map_err(uring_err)?;
+        // SAFETY: io_uring copies the timespec during link-timeout prep.
+        let deadline = unsafe { Sqe::link_timeout(timeout, TimeoutFlags::default()) };
+        self.push(deadline.user_data(CqeData::encode(slot, g, Op::LinkTimeout)))
+            .map_err(uring_err)?;
         Ok(())
     }
 
@@ -98,7 +95,8 @@ impl IoUringExt for IoUring {
                 ))
             })?;
         let handle = arena.handle(send_seq);
-        let sqe = Sqe::send(fd, handle.as_slice(), MsgFlags::default())
+        // SAFETY: the arena slot stays reserved until the send completion releases it.
+        let sqe = unsafe { Sqe::send(fd, handle.as_slice(), MsgFlags::default()) }
             .user_data(CqeData::encode_send(slot, g, send_seq));
         let r = self.push(sqe).map_err(uring_err);
         match r {
@@ -127,11 +125,10 @@ impl IoUringExt for IoUring {
 
     fn push_tick(&mut self, dur: Duration) -> Result<(), io::Error> {
         let ts = Timespec::from_millis(u64::try_from(dur.as_millis()).unwrap_or(u64::MAX));
-        self.push(
-            Sqe::timeout(&ts, 1, TimeoutFlags::default())
-                .user_data(CqeData::encode(0, 0, Op::Tick)),
-        )
-        .map_err(uring_err)
+        // SAFETY: io_uring copies the timespec during timeout prep.
+        let tick = unsafe { Sqe::timeout(&ts, 1, TimeoutFlags::default()) };
+        self.push(tick.user_data(CqeData::encode(0, 0, Op::Tick)))
+            .map_err(uring_err)
     }
 }
 
