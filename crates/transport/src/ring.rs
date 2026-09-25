@@ -63,15 +63,18 @@ impl IoUringExt for IoUring {
         sockaddr: &SockAddrIn,
         timeout: &Timespec,
     ) -> Result<(), io::Error> {
-        // SAFETY: io_uring copies the sockaddr into kernel memory during connect prep.
-        let sqe = unsafe { Sqe::connect(fd, &sockaddr.to_bytes()) }
+        let address = sockaddr.to_bytes();
+        // SAFETY: the kernel copies `address` and `timeout` when it prepares
+        // these SQEs, which happens inside the `submit` below, while both are
+        // still borrowed here.
+        let sqe = unsafe { Sqe::connect(fd, &address) }
             .user_data(CqeData::encode(slot, g, Op::Connect))
             .flags(SqeFlags::IO_LINK);
         self.push(sqe).map_err(uring_err)?;
-        // SAFETY: io_uring copies the timespec during link-timeout prep.
         let deadline = unsafe { Sqe::link_timeout(timeout, TimeoutFlags::default()) };
         self.push(deadline.user_data(CqeData::encode(slot, g, Op::LinkTimeout)))
             .map_err(uring_err)?;
+        self.submit().map_err(uring_err)?;
         Ok(())
     }
 
@@ -125,10 +128,12 @@ impl IoUringExt for IoUring {
 
     fn push_tick(&mut self, dur: Duration) -> Result<(), io::Error> {
         let ts = Timespec::from_millis(u64::try_from(dur.as_millis()).unwrap_or(u64::MAX));
-        // SAFETY: io_uring copies the timespec during timeout prep.
+        // SAFETY: the kernel copies `ts` when it prepares the SQE, inside the
+        // `submit` below, while `ts` is still alive.
         let tick = unsafe { Sqe::timeout(&ts, 1, TimeoutFlags::default()) };
         self.push(tick.user_data(CqeData::encode(0, 0, Op::Tick)))
-            .map_err(uring_err)
+            .map_err(uring_err)?;
+        self.submit().map(|_| ()).map_err(uring_err)
     }
 }
 
