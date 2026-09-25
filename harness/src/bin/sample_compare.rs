@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use mantle_harness::amount_dump::AmountDump;
 use mantle_harness::intraday_reference::IntradayReference;
+use mantle_harness::octave_separation::OctaveSeparation;
 use mantle_harness::signal_density::SignalDensity;
 use mantle_harness::span_plan::SpanPlan;
 use mantle_harness::subsample_sweep::{DrawMode, PricedPool, SubsampleSweep};
@@ -21,6 +22,8 @@ options:
   --draws N          Draws per size and mode (default 240)
   --seed N           PRNG seed (default 20260416)
   --offline          Never contact CoinGecko; use the cache as-is
+  --octave           Also report whether the rough estimator's octave ratio
+                     separates octave locks from sound draws
   -h, --help         Print this message
 
 Each DUMP is a file written by `mempool-convergence --dump`. The dumps form
@@ -39,6 +42,7 @@ struct CompareArgs {
     draws: usize,
     seed: u64,
     offline: bool,
+    octave: bool,
 }
 
 impl CompareArgs {
@@ -53,6 +57,7 @@ impl CompareArgs {
             draws: 240,
             seed: 20_260_416,
             offline: false,
+            octave: false,
         };
         let mut index = 0;
         while index < raw.len() {
@@ -62,6 +67,7 @@ impl CompareArgs {
                     return Err(String::new());
                 }
                 "--offline" => parsed.offline = true,
+                "--octave" => parsed.octave = true,
                 "--data-dir" => {
                     index += 1;
                     parsed.data_dir =
@@ -230,6 +236,9 @@ impl CompareApp {
 
         Self::report_density(&[&mempool, &confirmed]);
         Self::report_curves(args, &[&mempool, &confirmed]);
+        if args.octave {
+            Self::report_octave(args, &[&mempool, &confirmed]);
+        }
         Ok(())
     }
 
@@ -320,6 +329,64 @@ impl CompareApp {
                 density.enrichment(),
             );
         }
+    }
+
+    fn report_octave(args: &CompareArgs, populations: &[&Population]) {
+        const THRESHOLDS: [f64; 5] = [0.5, 0.6, 0.7, 0.8, 0.9];
+        println!(
+            "\noctave ratio (rival lead / best lead); locked = error > {:.0}%, sound = error < {:.0}%",
+            OctaveSeparation::LOCK_ERROR * 100.0,
+            OctaveSeparation::SOUND_ERROR * 100.0
+        );
+        print!(
+            "{:>10} {:>7} {:>6} {:>6} {:>6} {:>12} {:>12}",
+            "population", "size", "sound", "locked", "AUC", "sound p50/90", "lock p10/50"
+        );
+        for threshold in THRESHOLDS {
+            print!(" {:>11}", format!("flag>={threshold:.1}"));
+        }
+        println!();
+        for population in populations {
+            let sweep = SubsampleSweep::new(&population.pools, args.draws, args.seed);
+            let mut pooled = OctaveSeparation::new();
+            for size in &args.sizes {
+                let mut separation = OctaveSeparation::new();
+                sweep.separate(*size, DrawMode::Random, &mut separation);
+                sweep.separate(*size, DrawMode::Random, &mut pooled);
+                Self::print_separation(population.label, &size.to_string(), &separation, &THRESHOLDS);
+            }
+            Self::print_separation(population.label, "all", &pooled, &THRESHOLDS);
+        }
+        println!("flag>=t columns: share of sound / share of locked draws a ratio >= t rule rejects");
+    }
+
+    fn print_separation(label: &str, size: &str, separation: &OctaveSeparation, thresholds: &[f64]) {
+        let pair = |low: Option<f64>, high: Option<f64>| match (low, high) {
+            (Some(low), Some(high)) => format!("{low:.2}/{high:.2}"),
+            _ => "-".to_string(),
+        };
+        print!(
+            "{:>10} {:>7} {:>6} {:>6} {:>6} {:>12} {:>12}",
+            label,
+            size,
+            separation.sound(),
+            separation.locked(),
+            separation
+                .auc()
+                .map_or_else(|| "-".to_string(), |auc| format!("{auc:.3}")),
+            pair(separation.sound_quantile(0.5), separation.sound_quantile(0.9)),
+            pair(separation.locked_quantile(0.1), separation.locked_quantile(0.5)),
+        );
+        for threshold in thresholds {
+            let (sound, locked) = separation.flagged_at(*threshold);
+            let cell = if sound.is_nan() || locked.is_nan() {
+                "-".to_string()
+            } else {
+                format!("{:.0}/{:.0}", sound * 100.0, locked * 100.0)
+            };
+            print!(" {cell:>11}");
+        }
+        println!();
     }
 
     fn report_curves(args: &CompareArgs, populations: &[&Population]) {

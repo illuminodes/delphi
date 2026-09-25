@@ -1,6 +1,7 @@
 use mantle_oracle::AdmittedSample;
 
 use crate::convergence::{ConvergenceRow, ConvergenceTrial};
+use crate::octave_separation::OctaveSeparation;
 use crate::sample_rng::SampleRng;
 
 /// A sample of admitted outputs together with the price it should recover.
@@ -74,25 +75,43 @@ impl<'a> SubsampleSweep<'a> {
     /// larger than every pool yields an empty row rather than a skewed one.
     #[must_use]
     pub fn row(&self, size: usize, mode: DrawMode) -> ConvergenceRow {
+        let mut trial = ConvergenceTrial::new(size);
+        self.each_draw(size, mode, |subset, reference| match subset.price() {
+            Ok(report) => trial.record(report.central_price, reference),
+            Err(_) => trial.record_attempt(),
+        });
+        trial.finish()
+    }
+
+    /// Records each priced draw's octave ratio against its error.
+    pub fn separate(&self, size: usize, mode: DrawMode, separation: &mut OctaveSeparation) {
+        self.each_draw(size, mode, |subset, reference| {
+            if let Ok(report) = subset.price() {
+                let ratio = subset
+                    .rough_profile()
+                    .ok()
+                    .and_then(|profile| profile.octave_ratio());
+                let error = (report.central_price - reference).abs() / reference;
+                separation.record(ratio, error);
+            }
+        });
+    }
+
+    fn each_draw(&self, size: usize, mode: DrawMode, mut visit: impl FnMut(&AdmittedSample, f64)) {
         let eligible: Vec<&PricedPool> = self
             .pools
             .iter()
             .filter(|pool| pool.sample.len() >= size)
             .collect();
-        let mut trial = ConvergenceTrial::new(size);
         if eligible.is_empty() {
-            return trial.finish();
+            return;
         }
         let mut rng = SampleRng::seeded(self.seed ^ size as u64);
         for draw in 0..self.draws {
             let pool = eligible[draw % eligible.len()];
             let picks = mode.indices(&mut rng, pool.sample.len(), size);
-            match pool.sample.subset(&picks).price() {
-                Ok(report) => trial.record(report.central_price, pool.reference),
-                Err(_) => trial.record_attempt(),
-            }
+            visit(&pool.sample.subset(&picks), pool.reference);
         }
-        trial.finish()
     }
 }
 

@@ -3,7 +3,7 @@ use mantle::difficulty::{BlockHeight, BlockTime};
 
 use crate::{
     CentralPriceFinder, IntradayPricePoints, OracleError, OracleReport, OutputHistogram,
-    RoughPriceEstimator,
+    RoughPriceEstimator, SlideProfile,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +97,23 @@ impl AdmittedSample {
         })
     }
 
+    /// The rough estimator's score at every slide it searches.
+    ///
+    /// # Errors
+    /// Returns [`OracleError`] when the histogram is empty or too narrow.
+    pub fn rough_profile(&self) -> Result<SlideProfile, OracleError> {
+        RoughPriceEstimator::new()
+            .profile(&self.histogram()?)
+            .ok_or(OracleError::RoughPriceUnavailable)
+    }
+
     fn rough_price(&self) -> Result<f64, OracleError> {
+        RoughPriceEstimator::new()
+            .estimate(&self.histogram()?)
+            .ok_or(OracleError::RoughPriceUnavailable)
+    }
+
+    fn histogram(&self) -> Result<OutputHistogram, OracleError> {
         let mut histogram = OutputHistogram::new();
         for output in &self.outputs {
             histogram.insert(output.amount);
@@ -106,9 +122,7 @@ impl AdmittedSample {
         if !histogram.normalize_and_clip() {
             return Err(OracleError::EmptyHistogram);
         }
-        RoughPriceEstimator::new()
-            .estimate(&histogram)
-            .ok_or(OracleError::RoughPriceUnavailable)
+        Ok(histogram)
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::{OutputHistogram, PriceStencil};
+use crate::{OutputHistogram, PriceStencil, SlideProfile};
 
 #[derive(Debug, Clone)]
 pub struct RoughPriceEstimator {
@@ -23,25 +23,29 @@ impl RoughPriceEstimator {
         }
     }
 
+    /// The stencil score at every slide the estimate searches.
+    #[must_use]
+    pub fn profile(&self, histogram: &OutputHistogram) -> Option<SlideProfile> {
+        let center_start = self.center_start()?;
+        let scores = (Self::MIN_SLIDE..Self::MAX_SLIDE)
+            .map(|slide| {
+                self.window(histogram, center_start, slide)
+                    .map(|curve| self.stencil.score(curve, slide < 150))
+            })
+            .collect::<Option<Vec<f64>>>()?;
+        Some(SlideProfile::new(Self::MIN_SLIDE, scores))
+    }
+
     #[must_use]
     pub fn estimate(&self, histogram: &OutputHistogram) -> Option<f64> {
-        let half_width = self.stencil.len().div_ceil(2);
-        let center_start = Self::CENTER_USD_100_BIN.checked_sub(half_width)?;
-        let mut best_slide = 0;
-        let mut best_score = f64::NEG_INFINITY;
-        let mut total_score = 0.0;
-        let mut score_count = 0_u32;
+        self.estimate_from(histogram, &self.profile(histogram)?)
+    }
 
-        for slide in Self::MIN_SLIDE..Self::MAX_SLIDE {
-            let curve = self.window(histogram, center_start, slide)?;
-            let score = self.stencil.score(curve, slide < 150);
-            if score > best_score {
-                best_score = score;
-                best_slide = slide;
-            }
-            total_score += score;
-            score_count += 1;
-        }
+    /// [`Self::estimate`] reusing a profile already computed for `histogram`.
+    #[must_use]
+    pub fn estimate_from(&self, histogram: &OutputHistogram, profile: &SlideProfile) -> Option<f64> {
+        let center_start = self.center_start()?;
+        let (best_slide, best_score) = profile.best()?;
         if !best_score.is_finite() || best_score <= 0.0 {
             return None;
         }
@@ -59,7 +63,7 @@ impl RoughPriceEstimator {
         };
         let best_price = Self::price_at_slide(histogram, best_slide)?;
         let neighbor_price = Self::price_at_slide(histogram, best_slide + neighbor)?;
-        let average_score = total_score / f64::from(score_count);
+        let average_score = profile.average();
         let best_weight = best_score - average_score;
         let neighbor_weight = (neighbor_score - average_score).abs();
         let weight_sum = best_weight + neighbor_weight;
@@ -68,6 +72,10 @@ impl RoughPriceEstimator {
         } else {
             Some((best_weight * best_price + neighbor_weight * neighbor_price) / weight_sum)
         }
+    }
+
+    fn center_start(&self) -> Option<usize> {
+        Self::CENTER_USD_100_BIN.checked_sub(self.stencil.len().div_ceil(2))
     }
 
     fn window<'a>(
