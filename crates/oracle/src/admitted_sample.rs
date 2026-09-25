@@ -76,9 +76,19 @@ impl AdmittedSample {
     /// Returns [`OracleError`] when the sample is empty or too thin for the
     /// histogram, rough-price, or central-price stages to resolve.
     pub fn price(&self) -> Result<OracleReport, OracleError> {
+        self.price_with(&RoughPriceEstimator::new())
+    }
+
+    /// [`Self::price`] with a caller-chosen rough estimator.
+    ///
+    /// # Errors
+    /// As [`Self::price`].
+    pub fn price_with(&self, estimator: &RoughPriceEstimator) -> Result<OracleReport, OracleError> {
         let (start_height, stop_height, start_time, stop_time) =
             self.bounds.ok_or(OracleError::NoTransactions)?;
-        let rough_price = self.rough_price()?;
+        let rough_price = estimator
+            .estimate(&self.histogram()?)
+            .ok_or(OracleError::RoughPriceUnavailable)?;
         let mut points = IntradayPricePoints::new();
         for output in &self.outputs {
             points.insert(output.amount, rough_price, output.height, output.time);
@@ -104,12 +114,6 @@ impl AdmittedSample {
     pub fn rough_profile(&self) -> Result<SlideProfile, OracleError> {
         RoughPriceEstimator::new()
             .profile(&self.histogram()?)
-            .ok_or(OracleError::RoughPriceUnavailable)
-    }
-
-    fn rough_price(&self) -> Result<f64, OracleError> {
-        RoughPriceEstimator::new()
-            .estimate(&self.histogram()?)
             .ok_or(OracleError::RoughPriceUnavailable)
     }
 

@@ -5,9 +5,10 @@ use mantle_harness::amount_dump::AmountDump;
 use mantle_harness::intraday_reference::IntradayReference;
 use mantle_harness::octave_separation::OctaveSeparation;
 use mantle_harness::signal_density::SignalDensity;
+use mantle_harness::stencil_variant::StencilVariant;
 use mantle_harness::span_plan::SpanPlan;
 use mantle_harness::subsample_sweep::{DrawMode, PricedPool, SubsampleSweep};
-use mantle_oracle::{AdmittedSample, CachedWindows, OraclePipeline};
+use mantle_oracle::{AdmittedSample, CachedWindows, OraclePipeline, RoughPriceEstimator};
 
 const HELP: &str = "\
 oracle-sample-compare — bootstrap live mempool dumps against confirmed windows
@@ -22,6 +23,8 @@ options:
   --draws N          Draws per size and mode (default 240)
   --seed N           PRNG seed (default 20260416)
   --offline          Never contact CoinGecko; use the cache as-is
+  --weights LIST     Smooth-stencil weights to grid over (enables grid mode)
+  --smooth-below LIST  Slides below which the smooth term applies (default 150)
   --octave           Also report whether the rough estimator's octave ratio
                      separates octave locks from sound draws
   -h, --help         Print this message
@@ -43,6 +46,8 @@ struct CompareArgs {
     seed: u64,
     offline: bool,
     octave: bool,
+    weights: Vec<f64>,
+    smooth_below: Vec<i32>,
 }
 
 impl CompareArgs {
@@ -58,6 +63,8 @@ impl CompareArgs {
             seed: 20_260_416,
             offline: false,
             octave: false,
+            weights: Vec::new(),
+            smooth_below: vec![RoughPriceEstimator::DEFAULT_SMOOTH_BELOW],
         };
         let mut index = 0;
         while index < raw.len() {
@@ -68,6 +75,16 @@ impl CompareArgs {
                 }
                 "--offline" => parsed.offline = true,
                 "--octave" => parsed.octave = true,
+                "--weights" => {
+                    index += 1;
+                    parsed.weights =
+                        Self::parse_list(raw.get(index).ok_or("--weights requires LIST")?)?;
+                }
+                "--smooth-below" => {
+                    index += 1;
+                    parsed.smooth_below =
+                        Self::parse_list(raw.get(index).ok_or("--smooth-below requires LIST")?)?;
+                }
                 "--data-dir" => {
                     index += 1;
                     parsed.data_dir =
@@ -118,10 +135,14 @@ impl CompareArgs {
     }
 
     fn parse_sizes(list: &str) -> Result<Vec<usize>, String> {
+        Self::parse_list(list)
+    }
+
+    fn parse_list<T: std::str::FromStr>(list: &str) -> Result<Vec<T>, String> {
         list.split(',')
             .map(str::trim)
             .filter(|token| !token.is_empty())
-            .map(|token| token.parse().map_err(|_| format!("invalid size {token}")))
+            .map(|token| token.parse().map_err(|_| format!("invalid list entry {token}")))
             .collect()
     }
 
@@ -234,6 +255,10 @@ impl CompareApp {
             confirmed.outputs(),
         );
 
+        if !args.weights.is_empty() {
+            Self::report_grid(args, &[&mempool, &confirmed]);
+            return Ok(());
+        }
         Self::report_density(&[&mempool, &confirmed]);
         Self::report_curves(args, &[&mempool, &confirmed]);
         if args.octave {
@@ -328,6 +353,36 @@ impl CompareApp {
                 density.tight_share() * 100.0,
                 density.enrichment(),
             );
+        }
+    }
+
+    fn report_grid(args: &CompareArgs, populations: &[&Population]) {
+        println!("\nrandom draws; each cell is p90 error / share within 1%");
+        print!("{:>10} {:>14}", "population", "variant");
+        for size in &args.sizes {
+            print!(" {size:>15}");
+        }
+        println!();
+        for population in populations {
+            for variant in StencilVariant::grid(&args.weights, &args.smooth_below) {
+                let sweep = SubsampleSweep::new(&population.pools, args.draws, args.seed)
+                    .with_estimator(variant.estimator());
+                print!("{:>10} {:>14}", population.label, variant.label());
+                for size in &args.sizes {
+                    let row = sweep.row(*size, DrawMode::Random);
+                    let cell = if row.priced() == 0 {
+                        "-".to_string()
+                    } else {
+                        format!(
+                            "{:.2}%/{:.0}%",
+                            row.p90_error() * 100.0,
+                            row.within_one_percent() * 100.0
+                        )
+                    };
+                    print!(" {cell:>15}");
+                }
+                println!();
+            }
         }
     }
 

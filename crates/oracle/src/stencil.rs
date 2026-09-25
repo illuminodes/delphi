@@ -91,16 +91,39 @@ impl SpikeStencil {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PriceStencil {
     smooth: SmoothStencil,
     spike: SpikeStencil,
+    smooth_weight: f64,
+}
+
+impl Default for PriceStencil {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PriceStencil {
+    pub const DEFAULT_SMOOTH_WEIGHT: f64 = 0.65;
+
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::with_smooth_weight(Self::DEFAULT_SMOOTH_WEIGHT)
+    }
+
+    #[must_use]
+    pub fn with_smooth_weight(smooth_weight: f64) -> Self {
+        Self {
+            smooth: SmoothStencil::new(),
+            spike: SpikeStencil::new(),
+            smooth_weight,
+        }
+    }
+
+    #[must_use]
+    pub const fn smooth_weight(&self) -> f64 {
+        self.smooth_weight
     }
 
     #[must_use]
@@ -112,7 +135,7 @@ impl PriceStencil {
             .sum();
         if include_smooth {
             spike
-                + 0.65
+                + self.smooth_weight
                     * curve
                         .iter()
                         .zip(self.smooth.weights())
@@ -155,5 +178,16 @@ mod tests {
         let mut curve = vec![0.0; stencil.len()];
         curve[401] = 1.0;
         assert!(stencil.score(&curve, false) > 0.006);
+    }
+
+    #[test]
+    fn smooth_weight_scales_only_the_smooth_term() {
+        let mut curve = vec![0.0; SpikeStencil::LEN];
+        curve[411] = 1.0;
+        let spike_only = PriceStencil::new().score(&curve, false);
+        let light = PriceStencil::with_smooth_weight(1.0).score(&curve, true) - spike_only;
+        let heavy = PriceStencil::with_smooth_weight(3.0).score(&curve, true) - spike_only;
+        assert!((heavy - 3.0 * light).abs() < 1e-12);
+        assert!((PriceStencil::with_smooth_weight(0.0).score(&curve, true) - spike_only).abs() < 1e-12);
     }
 }

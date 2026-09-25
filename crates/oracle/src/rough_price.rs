@@ -3,6 +3,7 @@ use crate::{OutputHistogram, PriceStencil, SlideProfile};
 #[derive(Debug, Clone)]
 pub struct RoughPriceEstimator {
     stencil: PriceStencil,
+    smooth_below: i32,
 }
 
 impl Default for RoughPriceEstimator {
@@ -15,12 +16,31 @@ impl RoughPriceEstimator {
     const CENTER_USD_100_BIN: usize = 601;
     const MIN_SLIDE: i32 = -141;
     const MAX_SLIDE: i32 = 201;
+    pub const DEFAULT_SMOOTH_BELOW: i32 = 150;
 
     #[must_use]
     pub fn new() -> Self {
+        Self::with_stencil(PriceStencil::new())
+    }
+
+    #[must_use]
+    pub const fn with_stencil(stencil: PriceStencil) -> Self {
         Self {
-            stencil: PriceStencil::new(),
+            stencil,
+            smooth_below: Self::DEFAULT_SMOOTH_BELOW,
         }
+    }
+
+    /// Apply the smooth stencil term only at slides below `slide`.
+    #[must_use]
+    pub const fn with_smooth_below(mut self, slide: i32) -> Self {
+        self.smooth_below = slide;
+        self
+    }
+
+    #[must_use]
+    pub const fn stencil(&self) -> &PriceStencil {
+        &self.stencil
     }
 
     /// The stencil score at every slide the estimate searches.
@@ -30,7 +50,7 @@ impl RoughPriceEstimator {
         let scores = (Self::MIN_SLIDE..Self::MAX_SLIDE)
             .map(|slide| {
                 self.window(histogram, center_start, slide)
-                    .map(|curve| self.stencil.score(curve, slide < 150))
+                    .map(|curve| self.stencil.score(curve, slide < self.smooth_below))
             })
             .collect::<Option<Vec<f64>>>()?;
         Some(SlideProfile::new(Self::MIN_SLIDE, scores))

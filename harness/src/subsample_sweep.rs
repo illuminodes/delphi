@@ -1,4 +1,4 @@
-use mantle_oracle::AdmittedSample;
+use mantle_oracle::{AdmittedSample, RoughPriceEstimator};
 
 use crate::convergence::{ConvergenceRow, ConvergenceTrial};
 use crate::octave_separation::OctaveSeparation;
@@ -63,12 +63,24 @@ pub struct SubsampleSweep<'a> {
     pools: &'a [PricedPool],
     draws: usize,
     seed: u64,
+    estimator: RoughPriceEstimator,
 }
 
 impl<'a> SubsampleSweep<'a> {
     #[must_use]
-    pub const fn new(pools: &'a [PricedPool], draws: usize, seed: u64) -> Self {
-        Self { pools, draws, seed }
+    pub fn new(pools: &'a [PricedPool], draws: usize, seed: u64) -> Self {
+        Self {
+            pools,
+            draws,
+            seed,
+            estimator: RoughPriceEstimator::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_estimator(mut self, estimator: RoughPriceEstimator) -> Self {
+        self.estimator = estimator;
+        self
     }
 
     /// Draws cycle through pools that hold at least `size` outputs, so a size
@@ -76,7 +88,8 @@ impl<'a> SubsampleSweep<'a> {
     #[must_use]
     pub fn row(&self, size: usize, mode: DrawMode) -> ConvergenceRow {
         let mut trial = ConvergenceTrial::new(size);
-        self.each_draw(size, mode, |subset, reference| match subset.price() {
+        let estimator = &self.estimator;
+        self.each_draw(size, mode, |subset, reference| match subset.price_with(estimator) {
             Ok(report) => trial.record(report.central_price, reference),
             Err(_) => trial.record_attempt(),
         });
@@ -85,8 +98,9 @@ impl<'a> SubsampleSweep<'a> {
 
     /// Records each priced draw's octave ratio against its error.
     pub fn separate(&self, size: usize, mode: DrawMode, separation: &mut OctaveSeparation) {
+        let estimator = &self.estimator;
         self.each_draw(size, mode, |subset, reference| {
-            if let Ok(report) = subset.price() {
+            if let Ok(report) = subset.price_with(estimator) {
                 let ratio = subset
                     .rough_profile()
                     .ok()
