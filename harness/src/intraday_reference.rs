@@ -39,6 +39,8 @@ pub struct IntradayReference {
 }
 
 impl IntradayReference {
+    pub const MAX_GAP: u32 = 3 * 3_600;
+
     #[must_use]
     pub fn with_cache(path: impl Into<PathBuf>) -> Self {
         Self {
@@ -78,16 +80,33 @@ impl IntradayReference {
     }
 
     /// Whether the cache already covers `start..=stop` with a point no more
-    /// than `tolerance` seconds outside each end.
+    /// than `tolerance` seconds outside each end and no gap wider than
+    /// [`Self::MAX_GAP`] in between.
     #[must_use]
     pub fn covers(&self, start: u32, stop: u32, tolerance: u32) -> bool {
-        self.span().is_some_and(|(first, last)| {
-            first <= start.saturating_add(tolerance) && last.saturating_add(tolerance) >= stop
-        })
+        let Some((&before, _)) = self.points.range(..=start.saturating_add(tolerance)).next_back()
+        else {
+            return false;
+        };
+        let Some((&after, _)) = self.points.range(stop.saturating_sub(tolerance)..).next() else {
+            return false;
+        };
+        if after < before {
+            return true;
+        }
+        let mut previous = before;
+        for &time in self.points.range(before..=after).map(|(time, _)| time) {
+            if time - previous > Self::MAX_GAP {
+                return false;
+            }
+            previous = time;
+        }
+        true
     }
 
     /// The reference price at `at`, interpolated between the two surrounding
-    /// samples. Returns `None` outside the covered span.
+    /// samples. Returns `None` outside the covered span or inside a gap wider
+    /// than [`Self::MAX_GAP`].
     #[must_use]
     pub fn price_at(&self, at: u32) -> Option<f64> {
         if let Some(exact) = self.points.get(&at) {
@@ -97,6 +116,9 @@ impl IntradayReference {
         let (&after_time, &after_price) = self.points.range(at..).next()?;
         if after_time == before_time {
             return Some(before_price);
+        }
+        if after_time - before_time > Self::MAX_GAP {
+            return None;
         }
         let span = f64::from(after_time - before_time);
         let offset = f64::from(at - before_time);
@@ -163,16 +185,26 @@ impl IntradayReference {
     }
 
     fn fetch(from: u64, to: u64) -> Result<String, IntradayError> {
+        const ATTEMPTS: u32 = 4;
+        const BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
         let url = format!("{COINGECKO_RANGE_URL}?vs_currency=usd&from={from}&to={to}");
         let agent = ureq::Agent::new_with_defaults();
-        let mut response = agent
-            .get(&url)
-            .call()
-            .map_err(|error| IntradayError::Http(error.to_string()))?;
-        response
-            .body_mut()
-            .read_to_string()
-            .map_err(|error| IntradayError::Http(error.to_string()))
+        for attempt in 1..=ATTEMPTS {
+            match agent.get(&url).call() {
+                Ok(mut response) => {
+                    return response
+                        .body_mut()
+                        .read_to_string()
+                        .map_err(|error| IntradayError::Http(error.to_string()));
+                }
+                Err(ureq::Error::StatusCode(429)) if attempt < ATTEMPTS => {
+                    eprintln!("coingecko rate limit; retrying in {}s", BACKOFF.as_secs());
+                    std::thread::sleep(BACKOFF);
+                }
+                Err(error) => return Err(IntradayError::Http(error.to_string())),
+            }
+        }
+        Err(IntradayError::Http("rate limited".to_string()))
     }
 }
 
@@ -265,6 +297,18 @@ mod tests {
         assert!((mean - 890.0 / 3.0).abs() < 1e-9, "{mean}");
         assert_eq!(reference.mean_near(3_100, 3_200, 300), Some(300.0));
         assert_eq!(reference.mean_near(3_100, 3_500, 300), None);
+    }
+
+    #[test]
+    fn a_wide_gap_is_neither_covered_nor_interpolated() {
+        let mut reference = IntradayReference::with_cache("/nonexistent/intraday");
+        reference.points.insert(0, 100.0);
+        reference.points.insert(3_600, 100.0);
+        reference.points.insert(1_000_000, 200.0);
+        reference.points.insert(1_003_600, 200.0);
+        assert!(!reference.covers(400_000, 500_000, 3_600));
+        assert_eq!(reference.price_at(500_000), None);
+        assert!(reference.covers(1_000_100, 1_003_000, 0));
     }
 
     #[test]

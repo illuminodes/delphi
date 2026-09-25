@@ -118,6 +118,24 @@ impl CachedWindows {
             .collect()
     }
 
+    /// Every run of consecutive cached heights holding at least `min_blocks`.
+    #[must_use]
+    pub fn contiguous_runs(&mut self, min_blocks: usize) -> Vec<Vec<(BlockHeight, BlockHeader)>> {
+        let cached = self.cached_heights();
+        let heights: Vec<BlockHeight> = cached.iter().map(|(height, _)| *height).collect();
+        ContiguousRun::all(&heights, min_blocks)
+            .into_iter()
+            .filter_map(|run| Some((*run.first()?, *run.last()?)))
+            .map(|(first, last)| {
+                cached
+                    .iter()
+                    .filter(|(height, _)| *height >= first && *height <= last)
+                    .copied()
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Run the oracle over a selection, reading every block from disk.
     ///
     /// # Errors
@@ -173,19 +191,32 @@ impl ContiguousRun {
     #[must_use]
     pub fn longest(heights: &[BlockHeight]) -> &[BlockHeight] {
         let mut best: &[BlockHeight] = &[];
+        for run in Self::all(heights, 1) {
+            if run.len() > best.len() {
+                best = run;
+            }
+        }
+        best
+    }
+
+    /// Every run of consecutive heights holding at least `min_len` entries,
+    /// in order.
+    #[must_use]
+    pub fn all(heights: &[BlockHeight], min_len: usize) -> Vec<&[BlockHeight]> {
+        let mut runs = Vec::new();
         let mut start = 0;
         for index in 1..=heights.len() {
             let broken = index == heights.len()
                 || heights[index].to_u32() != heights[index - 1].to_u32() + 1;
             if broken {
                 let run = &heights[start..index];
-                if run.len() > best.len() {
-                    best = run;
+                if run.len() >= min_len.max(1) {
+                    runs.push(run);
                 }
                 start = index;
             }
         }
-        best
+        runs
     }
 }
 
@@ -228,5 +259,15 @@ mod tests {
     #[test]
     fn an_empty_list_has_no_run() {
         assert!(ContiguousRun::longest(&[]).is_empty());
+        assert!(ContiguousRun::all(&[], 1).is_empty());
+    }
+
+    #[test]
+    fn all_keeps_runs_meeting_the_minimum_in_order() {
+        let heights = Heights::of(&[10, 11, 12, 500, 900, 901, 902, 903]);
+        let runs = ContiguousRun::all(&heights, 3);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].first().copied(), Some(BlockHeight::new(10)));
+        assert_eq!(runs[1].len(), 4);
     }
 }

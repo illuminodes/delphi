@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod amount_dump;
+pub mod confirmed_pools;
 pub mod convergence;
 pub mod granularity;
 pub mod intraday_reference;
@@ -17,6 +18,7 @@ pub mod volatility;
 pub mod window_plan;
 
 pub use amount_dump::AmountDump;
+pub use confirmed_pools::ConfirmedPools;
 pub use convergence::{ConvergenceRow, ConvergenceTrial};
 pub use granularity::{GranularityRow, GranularitySweep};
 pub use intraday_reference::{IntradayError, IntradayReference};

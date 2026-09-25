@@ -35,6 +35,10 @@ name = "oracle-sample-compare"
 path = "src/bin/sample_compare.rs"
 
 [[bin]]
+name = "oracle-stencil-eras"
+path = "src/bin/stencil_eras.rs"
+
+[[bin]]
 name = "oracle-volatility"
 path = "src/bin/volatility_probe.rs"
 

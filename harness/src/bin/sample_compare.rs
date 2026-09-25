@@ -2,13 +2,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use mantle_harness::amount_dump::AmountDump;
+use mantle_harness::confirmed_pools::ConfirmedPools;
 use mantle_harness::intraday_reference::IntradayReference;
 use mantle_harness::octave_separation::OctaveSeparation;
 use mantle_harness::signal_density::SignalDensity;
 use mantle_harness::stencil_variant::StencilVariant;
 use mantle_harness::span_plan::SpanPlan;
 use mantle_harness::subsample_sweep::{DrawMode, PricedPool, SubsampleSweep};
-use mantle_oracle::{AdmittedSample, CachedWindows, OraclePipeline, RoughPriceEstimator};
+use mantle_oracle::{AdmittedSample, CachedWindows, RoughPriceEstimator};
 
 const HELP: &str = "\
 oracle-sample-compare — bootstrap live mempool dumps against confirmed windows
@@ -238,10 +239,9 @@ impl CompareApp {
         }
         let confirmed = Population {
             label: "confirmed",
-            pools: Self::confirmed_pools(
+            pools: ConfirmedPools::of_duration(args.window).gather(
                 &mut windows,
                 &reference,
-                args.window,
                 confirmed_start,
                 confirmed_stop,
             ),
@@ -304,30 +304,6 @@ impl CompareApp {
                 sample.len()
             );
             pools.push(PricedPool::new(sample, price));
-        }
-        pools
-    }
-
-    fn confirmed_pools(
-        windows: &mut CachedWindows,
-        reference: &IntradayReference,
-        duration: u32,
-        first: u32,
-        last: u32,
-    ) -> Vec<PricedPool> {
-        let mut pools = Vec::new();
-        for window in SpanPlan::of_duration(duration).tile(first, last) {
-            let Some(price) = reference.mean_over(window.start(), window.stop()) else {
-                continue;
-            };
-            let mut pipeline = OraclePipeline::new();
-            if windows.feed(window.selection(), &mut pipeline).is_err() {
-                continue;
-            }
-            let sample = pipeline.into_sample();
-            if !sample.is_empty() {
-                pools.push(PricedPool::new(sample, price));
-            }
         }
         pools
     }
