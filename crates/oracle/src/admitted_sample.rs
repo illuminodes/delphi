@@ -33,7 +33,15 @@ impl AdmittedSample {
             height,
             time,
         });
-        self.bounds = Some(match self.bounds {
+        self.bounds = Some(Self::widen(self.bounds, height, time));
+    }
+
+    fn widen(
+        bounds: Option<(BlockHeight, BlockHeight, BlockTime, BlockTime)>,
+        height: BlockHeight,
+        time: BlockTime,
+    ) -> (BlockHeight, BlockHeight, BlockTime, BlockTime) {
+        match bounds {
             None => (height, height, time, time),
             Some((start_height, stop_height, start_time, stop_time)) => (
                 start_height.min(height),
@@ -41,7 +49,15 @@ impl AdmittedSample {
                 start_time.min(time),
                 stop_time.max(time),
             ),
-        });
+        }
+    }
+
+    pub fn evict_oldest(&mut self, count: usize) {
+        self.outputs.drain(..count.min(self.outputs.len()));
+        self.bounds = self
+            .outputs
+            .iter()
+            .fold(None, |bounds, output| Some(Self::widen(bounds, output.height, output.time)));
     }
 
     #[must_use]
@@ -185,6 +201,31 @@ mod tests {
         assert_eq!(subset.len(), 2);
         assert_eq!(subset.outputs()[0].amount, Satoshi::new(20));
         assert_eq!(subset.outputs()[1].amount, Satoshi::new(40));
+    }
+
+    #[test]
+    fn evicting_drops_the_oldest_outputs() {
+        let mut sample = sample_of(&[10, 20, 30, 40]);
+        sample.evict_oldest(2);
+        assert_eq!(sample.len(), 2);
+        assert_eq!(sample.outputs()[0].amount, Satoshi::new(30));
+    }
+
+    #[test]
+    fn evicting_recomputes_the_bounds() {
+        let amounts: Vec<u64> = (1..100).map(|step| 99_000 + step * 30).collect();
+        let mut sample = sample_of(&amounts);
+        sample.evict_oldest(10);
+        let report = sample.price().expect("remaining outputs carry a signal");
+        assert_eq!(report.start_height, BlockHeight::new(900_010));
+    }
+
+    #[test]
+    fn evicting_more_than_held_empties_the_sample() {
+        let mut sample = sample_of(&[10, 20]);
+        sample.evict_oldest(9);
+        assert!(sample.is_empty());
+        assert_eq!(sample.price().unwrap_err(), OracleError::NoTransactions);
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::tx::Transaction;
 
@@ -15,6 +17,8 @@ pub struct MempoolCollector {
     height: BlockHeight,
     transactions: u64,
     admitted_transactions: u64,
+    window: Option<usize>,
+    windowed_outputs: VecDeque<usize>,
 }
 
 impl MempoolCollector {
@@ -26,7 +30,29 @@ impl MempoolCollector {
             height,
             transactions: 0,
             admitted_transactions: 0,
+            window: None,
+            windowed_outputs: VecDeque::new(),
         }
+    }
+
+    /// Keep only the outputs of the most recent `transactions` admitted
+    /// transactions.
+    #[must_use]
+    pub fn with_window(height: BlockHeight, transactions: usize) -> Self {
+        Self {
+            window: Some(transactions),
+            ..Self::new(height)
+        }
+    }
+
+    #[must_use]
+    pub const fn window(&self) -> Option<usize> {
+        self.window
+    }
+
+    #[must_use]
+    pub fn windowed_transactions(&self) -> usize {
+        self.windowed_outputs.len()
     }
 
     /// Filter one transaction, keeping whatever outputs clear, and report how
@@ -39,8 +65,23 @@ impl MempoolCollector {
         }
         if !admitted.is_empty() {
             self.admitted_transactions += 1;
+            self.windowed_outputs.push_back(admitted.len());
+            self.trim_to_window();
         }
         admitted.len()
+    }
+
+    fn trim_to_window(&mut self) {
+        let Some(window) = self.window else {
+            return;
+        };
+        let mut evicted = 0;
+        while self.windowed_outputs.len() > window {
+            evicted += self.windowed_outputs.pop_front().unwrap_or_default();
+        }
+        if evicted > 0 {
+            self.sample.evict_oldest(evicted);
+        }
     }
 
     #[must_use]
@@ -163,6 +204,53 @@ mod tests {
             0
         );
         assert_eq!(collector.sample().len(), 2);
+    }
+
+    #[test]
+    fn a_window_keeps_only_the_latest_admitted_transactions() {
+        let mut collector = MempoolCollector::with_window(BlockHeight::new(900_000), 2);
+        for id in 1_u8..=4 {
+            let transaction = TransactionFixture::spending(
+                Hash256::from_bytes([id; 32]),
+                10_000 * u64::from(id),
+                10_000 * u64::from(id) + 1,
+            );
+            collector.absorb(&transaction, BlockTime::new(1_700_000_000 + u32::from(id)));
+        }
+
+        assert_eq!(collector.windowed_transactions(), 2);
+        assert_eq!(collector.sample().len(), 4);
+        assert_eq!(collector.sample().outputs()[0].amount.to_u64(), 30_000);
+        assert_eq!(collector.admitted_transactions(), 4);
+    }
+
+    #[test]
+    fn rejected_transactions_do_not_consume_the_window() {
+        let mut collector = MempoolCollector::with_window(BlockHeight::new(900_000), 1);
+        let admitted = TransactionFixture::spending(Hash256::from_bytes([5; 32]), 50_000, 70_000);
+        let mut rejected =
+            TransactionFixture::spending(Hash256::from_bytes([6; 32]), 50_000, 70_000);
+        rejected.outputs[0].script_pubkey = ScriptPubKey::from_slice(&[0x6a]);
+
+        collector.absorb(&admitted, BlockTime::new(1_700_000_000));
+        collector.absorb(&rejected, BlockTime::new(1_700_000_001));
+
+        assert_eq!(collector.sample().len(), 2);
+    }
+
+    #[test]
+    fn an_unwindowed_collector_keeps_everything() {
+        let mut collector = collector();
+        for id in 1_u8..=5 {
+            let transaction = TransactionFixture::spending(
+                Hash256::from_bytes([id; 32]),
+                10_000 * u64::from(id),
+                10_000 * u64::from(id) + 1,
+            );
+            collector.absorb(&transaction, BlockTime::new(1_700_000_000));
+        }
+        assert_eq!(collector.sample().len(), 10);
+        assert_eq!(collector.window(), None);
     }
 
     #[test]
