@@ -3,7 +3,7 @@ use mantle::difficulty::{BlockHeight, BlockTime};
 
 use crate::{
     CentralPriceFinder, IntradayPricePoints, OracleError, OracleReport, OutputHistogram,
-    RoughPriceEstimator, SlideProfile,
+    PriceBand, RoughPriceEstimator, SlideProfile,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,11 +100,34 @@ impl AdmittedSample {
     /// # Errors
     /// As [`Self::price`].
     pub fn price_with(&self, estimator: &RoughPriceEstimator) -> Result<OracleReport, OracleError> {
-        let (start_height, stop_height, start_time, stop_time) =
-            self.bounds.ok_or(OracleError::NoTransactions)?;
+        self.bounds.ok_or(OracleError::NoTransactions)?;
         let rough_price = estimator
             .estimate(&self.histogram()?)
             .ok_or(OracleError::RoughPriceUnavailable)?;
+        self.report_from(rough_price)
+    }
+
+    /// [`Self::price_with`] with the rough search limited to `band`, so a
+    /// price the chain already rules out cannot win.
+    ///
+    /// # Errors
+    /// As [`Self::price`], and [`OracleError::RoughPriceUnavailable`] when
+    /// the band lies outside the searched range.
+    pub fn price_within(
+        &self,
+        estimator: &RoughPriceEstimator,
+        band: PriceBand,
+    ) -> Result<OracleReport, OracleError> {
+        self.bounds.ok_or(OracleError::NoTransactions)?;
+        let rough_price = estimator
+            .estimate_within(&self.histogram()?, band)
+            .ok_or(OracleError::RoughPriceUnavailable)?;
+        self.report_from(rough_price)
+    }
+
+    fn report_from(&self, rough_price: f64) -> Result<OracleReport, OracleError> {
+        let (start_height, stop_height, start_time, stop_time) =
+            self.bounds.ok_or(OracleError::NoTransactions)?;
         let mut points = IntradayPricePoints::new();
         for output in &self.outputs {
             points.insert(output.amount, rough_price, output.height, output.time);

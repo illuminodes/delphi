@@ -39,6 +39,10 @@ name = "oracle-stencil-eras"
 path = "src/bin/stencil_eras.rs"
 
 [[bin]]
+name = "oracle-anchor"
+path = "src/bin/anchor_eras.rs"
+
+[[bin]]
 name = "oracle-volatility"
 path = "src/bin/volatility_probe.rs"
 

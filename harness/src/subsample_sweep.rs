@@ -8,12 +8,32 @@ use crate::sample_rng::SampleRng;
 pub struct PricedPool {
     sample: AdmittedSample,
     reference: f64,
+    anchors: Vec<(usize, f64)>,
 }
 
 impl PricedPool {
     #[must_use]
     pub const fn new(sample: AdmittedSample, reference: f64) -> Self {
-        Self { sample, reference }
+        Self {
+            sample,
+            reference,
+            anchors: Vec::new(),
+        }
+    }
+
+    /// Record the chain price computed from the `blocks` blocks before this pool.
+    #[must_use]
+    pub fn with_anchor(mut self, blocks: usize, price: f64) -> Self {
+        self.anchors.push((blocks, price));
+        self
+    }
+
+    #[must_use]
+    pub fn anchor(&self, blocks: usize) -> Option<f64> {
+        self.anchors
+            .iter()
+            .find(|(count, _)| *count == blocks)
+            .map(|(_, price)| *price)
     }
 
     #[must_use]
@@ -83,6 +103,11 @@ impl<'a> SubsampleSweep<'a> {
         self
     }
 
+    #[must_use]
+    pub const fn estimator(&self) -> &RoughPriceEstimator {
+        &self.estimator
+    }
+
     /// Draws cycle through pools that hold at least `size` outputs, so a size
     /// larger than every pool yields an empty row rather than a skewed one.
     #[must_use]
@@ -112,6 +137,15 @@ impl<'a> SubsampleSweep<'a> {
     }
 
     fn each_draw(&self, size: usize, mode: DrawMode, mut visit: impl FnMut(&AdmittedSample, f64)) {
+        self.each_pool_draw(size, mode, |subset, pool| visit(subset, pool.reference));
+    }
+
+    pub fn each_pool_draw(
+        &self,
+        size: usize,
+        mode: DrawMode,
+        mut visit: impl FnMut(&AdmittedSample, &PricedPool),
+    ) {
         let eligible: Vec<&PricedPool> = self
             .pools
             .iter()
@@ -124,7 +158,7 @@ impl<'a> SubsampleSweep<'a> {
         for draw in 0..self.draws {
             let pool = eligible[draw % eligible.len()];
             let picks = mode.indices(&mut rng, pool.sample.len(), size);
-            visit(&pool.sample.subset(&picks), pool.reference);
+            visit(&pool.sample.subset(&picks), pool);
         }
     }
 }

@@ -29,8 +29,14 @@ impl SlideProfile {
     /// The first slide holding the highest score.
     #[must_use]
     pub fn best(&self) -> Option<(i32, f64)> {
+        self.best_where(|_| true)
+    }
+
+    /// The first highest-scoring slide among those `keep` accepts.
+    #[must_use]
+    pub fn best_where(&self, keep: impl Fn(i32) -> bool) -> Option<(i32, f64)> {
         let mut best: Option<(i32, f64)> = None;
-        for (slide, score) in self.slides() {
+        for (slide, score) in self.slides().filter(|(slide, _)| keep(*slide)) {
             if best.is_none_or(|(_, top)| score > top) {
                 best = Some((slide, score));
             }

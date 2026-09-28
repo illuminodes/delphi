@@ -1,5 +1,8 @@
+use mantle::difficulty::BlockHeight;
+use mantle::primitives::BlockHeader;
 use mantle_oracle::{CachedWindows, OraclePipeline};
 
+use crate::chain_anchor::ChainAnchor;
 use crate::intraday_reference::IntradayReference;
 use crate::span_plan::SpanPlan;
 use crate::subsample_sweep::PricedPool;
@@ -33,6 +36,22 @@ impl ConfirmedPools {
         first: u32,
         last: u32,
     ) -> Vec<PricedPool> {
+        self.gather_anchored(windows, reference, first, last, &[], &[])
+    }
+
+    /// [`Self::gather`], also pricing each window's chain anchor from the
+    /// `chain_blocks` blocks of `run` that precede it. A window whose anchor
+    /// cannot be priced simply lacks that anchor.
+    #[must_use]
+    pub fn gather_anchored(
+        &self,
+        windows: &mut CachedWindows,
+        reference: &IntradayReference,
+        first: u32,
+        last: u32,
+        run: &[(BlockHeight, BlockHeader)],
+        chain_blocks: &[usize],
+    ) -> Vec<PricedPool> {
         let mut pools = Vec::new();
         for window in self.plan.tile(first, last) {
             let Some(price) = reference.mean_over(window.start(), window.stop()) else {
@@ -43,9 +62,16 @@ impl ConfirmedPools {
                 continue;
             }
             let sample = pipeline.into_sample();
-            if !sample.is_empty() {
-                pools.push(PricedPool::new(sample, price));
+            if sample.is_empty() {
+                continue;
             }
+            let mut pool = PricedPool::new(sample, price);
+            for blocks in chain_blocks {
+                if let Some(anchor) = ChainAnchor::price(windows, run, window.start(), *blocks) {
+                    pool = pool.with_anchor(*blocks, anchor);
+                }
+            }
+            pools.push(pool);
         }
         pools
     }

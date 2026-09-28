@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 pub mod amount_dump;
+pub mod anchor_comparison;
+pub mod chain_anchor;
 pub mod confirmed_pools;
 pub mod convergence;
 pub mod granularity;
@@ -18,6 +20,8 @@ pub mod volatility;
 pub mod window_plan;
 
 pub use amount_dump::AmountDump;
+pub use anchor_comparison::{AnchorComparison, AnchorRow};
+pub use chain_anchor::ChainAnchor;
 pub use confirmed_pools::ConfirmedPools;
 pub use convergence::{ConvergenceRow, ConvergenceTrial};
 pub use granularity::{GranularityRow, GranularitySweep};
