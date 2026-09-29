@@ -28,7 +28,7 @@ pub use block_plan::{BlockPlan, HeightSpan};
 pub use block_record::BlockRecord;
 pub use chain_pricer::{ChainPricer, ChainSnapshot};
 pub use chain_worker::ChainWorker;
-pub use chain_sync::{ChainSync, SyncReport};
+pub use chain_sync::{ChainSync, ChainSyncSpec, SyncReport};
 pub use chain_window::ChainWindow;
 pub use daemon::Daemon;
 pub use daemon_config::DaemonConfig;

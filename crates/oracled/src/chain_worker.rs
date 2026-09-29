@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use crate::chain_sync::ChainSyncSpec;
 use crate::{ChainPricer, ChainSnapshot, ChainSync, Event};
 
 /// Follows the chain tip and reports the priced windows after each pass.
@@ -11,6 +12,12 @@ use crate::{ChainPricer, ChainSnapshot, ChainSync, Event};
 /// The snapshot is priced again only when the tip has moved. It is sent on
 /// every pass regardless, so the publisher's heartbeat keeps running.
 pub struct ChainWorker {
+    spec: ChainSyncSpec,
+    stop: Arc<AtomicBool>,
+    events: Sender<Event>,
+}
+
+struct ChainPass {
     sync: ChainSync,
     pricer: ChainPricer,
     stop: Arc<AtomicBool>,
@@ -23,26 +30,44 @@ impl ChainWorker {
     pub const RETRY: Duration = Duration::from_secs(20);
 
     #[must_use]
-    pub fn new(sync: ChainSync, stop: Arc<AtomicBool>, events: Sender<Event>) -> Self {
-        Self {
+    pub const fn new(spec: ChainSyncSpec, stop: Arc<AtomicBool>, events: Sender<Event>) -> Self {
+        Self { spec, stop, events }
+    }
+
+    /// Open the sync on this thread and follow the chain until told to stop.
+    /// A sync that cannot open stops the whole daemon.
+    pub fn run(self) {
+        let Self { spec, stop, events } = self;
+        let sync = match spec.open() {
+            Ok(sync) => sync,
+            Err(message) => {
+                let _ = events.send(Event::Notice(format!("chain sync cannot start: {message}")));
+                stop.store(true, Ordering::Relaxed);
+                return;
+            }
+        };
+        ChainPass {
             sync,
             pricer: ChainPricer::new(),
             stop,
             events,
             cached: None,
         }
+        .run();
     }
+}
 
-    pub fn run(mut self) {
+impl ChainPass {
+    fn run(mut self) {
         while !self.stop.load(Ordering::Relaxed) {
             let pause = match self.pass() {
-                Ok(true) => Self::POLL,
+                Ok(true) => ChainWorker::POLL,
                 Ok(false) => Duration::ZERO,
                 Err(message) => {
                     if !self.notice(format!("chain sync failed: {message}")) {
                         return;
                     }
-                    Self::RETRY
+                    ChainWorker::RETRY
                 }
             };
             if !self.sleep(pause) {

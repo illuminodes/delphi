@@ -17,6 +17,33 @@ pub struct SyncReport {
     pub caught_up: bool,
 }
 
+/// Where and how a [`ChainSync`] runs, without the fetcher it will own.
+///
+/// The fetcher holds `io_uring` pointers and cannot cross threads, so a worker
+/// thread receives this description and opens the sync itself.
+#[derive(Debug, Clone)]
+pub struct ChainSyncSpec {
+    pub network: Network,
+    pub peers: Vec<SocketAddrV4>,
+    pub data_dir: PathBuf,
+    pub depth: usize,
+    pub cache_limit_bytes: u64,
+}
+
+impl ChainSyncSpec {
+    /// # Errors
+    /// As [`ChainSync::open`].
+    pub fn open(self) -> Result<ChainSync, String> {
+        ChainSync::open(
+            self.network,
+            self.peers,
+            self.data_dir,
+            self.depth,
+            self.cache_limit_bytes,
+        )
+    }
+}
+
 /// Keeps a [`RecordLog`] level with the chain tip.
 ///
 /// One fetcher serves many passes, because each new fetcher leaks a 16 MiB
