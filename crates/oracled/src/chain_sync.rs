@@ -14,14 +14,16 @@ pub struct SyncReport {
     pub tip: BlockHeight,
     pub appended: usize,
     pub purged_cache: bool,
+    pub caught_up: bool,
 }
 
 /// Keeps a [`RecordLog`] level with the chain tip.
 ///
 /// Every pass builds a fetcher, brings headers and the missing blocks in,
-/// turns each block into a record, and drops the fetcher again. The block
-/// files the fetcher writes are deleted once they pass the cache limit, since
-/// a record holds everything pricing needs from its block.
+/// turns each block into a record, and drops the fetcher again. A pass ends
+/// early once the fetcher's block files pass the cache limit, and the next
+/// pass deletes them first, since a record holds everything pricing needs
+/// from its block. A report with `caught_up` false asks for another pass.
 pub struct ChainSync {
     network: Network,
     peers: Vec<SocketAddrV4>,
@@ -100,10 +102,14 @@ impl ChainSync {
                 tip,
                 appended: 0,
                 purged_cache,
+                caught_up: true,
             });
         };
         let mut appended = 0;
         for batch in self.plan.batches(span) {
+            if self.cache.exceeds_limit() {
+                break;
+            }
             let wanted = batch.headers(&headers);
             fetcher
                 .fetch_blocks(wanted)
@@ -124,6 +130,7 @@ impl ChainSync {
             tip,
             appended,
             purged_cache,
+            caught_up: self.log.tip().map(BlockRecord::height) == Some(tip),
         })
     }
 

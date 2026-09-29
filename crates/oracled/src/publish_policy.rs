@@ -8,9 +8,15 @@ use std::time::{Duration, Instant};
 /// a subscriber can tell a quiet market from a dead daemon.
 #[derive(Debug, Clone)]
 pub struct PublishPolicy {
+    default_rule: Rule,
+    rules: HashMap<String, Rule>,
+    published: HashMap<String, Published>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Rule {
     min_change: f64,
     heartbeat: Duration,
-    published: HashMap<String, Published>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,10 +45,26 @@ impl PublishPolicy {
     #[must_use]
     pub fn new(min_change: f64, heartbeat: Duration) -> Self {
         Self {
-            min_change,
-            heartbeat,
+            default_rule: Rule {
+                min_change,
+                heartbeat,
+            },
+            rules: HashMap::new(),
             published: HashMap::new(),
         }
+    }
+
+    /// Give one window its own threshold and heartbeat.
+    #[must_use]
+    pub fn with_rule(mut self, window: &str, min_change: f64, heartbeat: Duration) -> Self {
+        self.rules.insert(
+            window.to_string(),
+            Rule {
+                min_change,
+                heartbeat,
+            },
+        );
+        self
     }
 
     /// Every update goes out, whatever changed.
@@ -56,11 +78,12 @@ impl PublishPolicy {
         let Some(last) = self.published.get(window) else {
             return Verdict::First;
         };
+        let rule = self.rules.get(window).copied().unwrap_or(self.default_rule);
         let change = (price - last.price).abs() / last.price;
-        if change >= self.min_change && price.to_bits() != last.price.to_bits() {
+        if change >= rule.min_change && price.to_bits() != last.price.to_bits() {
             return Verdict::Moved;
         }
-        if now.saturating_duration_since(last.at) >= self.heartbeat {
+        if now.saturating_duration_since(last.at) >= rule.heartbeat {
             return Verdict::Heartbeat;
         }
         Verdict::Hold
@@ -172,6 +195,17 @@ mod tests {
         policy.reset("w");
 
         assert_eq!(policy.judge("w", 77_000.0, start), Verdict::First);
+    }
+
+    #[test]
+    fn a_window_rule_overrides_the_default() {
+        let mut policy = PolicyFixture::policy().with_rule("chain", 0.0, Duration::ZERO);
+        let start = Instant::now();
+        policy.record("chain", 77_000.0, start);
+        policy.record("other", 77_000.0, start);
+
+        assert!(policy.judge("chain", 77_000.0, start).publishes());
+        assert_eq!(policy.judge("other", 77_000.0, start), Verdict::Hold);
     }
 
     #[test]
