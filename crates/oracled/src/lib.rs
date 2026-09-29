@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod block_plan;
 pub mod block_record;
 pub mod chain_window;
 pub mod price_signer;
@@ -8,6 +9,7 @@ pub mod publish_policy;
 pub mod record_log;
 pub mod relay_publisher;
 
+pub use block_plan::{BlockPlan, HeightSpan};
 pub use block_record::BlockRecord;
 pub use chain_window::ChainWindow;
 pub use price_signer::{PriceSigner, PriceSignerError};
