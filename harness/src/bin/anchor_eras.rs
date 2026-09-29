@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use mantle_harness::anchor_comparison::AnchorComparison;
+use mantle_harness::anchor_spec::AnchorSpec;
 use mantle_harness::confirmed_pools::ConfirmedPools;
 use mantle_harness::convergence::ConvergenceRow;
 use mantle_harness::intraday_reference::IntradayReference;
@@ -21,6 +22,7 @@ options:
   --sizes LIST         Sample sizes in outputs (default 100,150,200,300,400)
   --anchor-blocks LIST Chain window sizes in blocks (default 6,24)
   --tolerances LIST    Anchor band half-widths as ratios (default 0.25)
+  --lags LIST          Hours between the anchor's newest block and the pool (default 0)
   --draws N            Draws per size (default 240)
   --seed N             PRNG seed (default 20260416)
   --offline            Never contact CoinGecko; use the cache as-is
@@ -39,12 +41,28 @@ struct AnchorArgs {
     sizes: Vec<usize>,
     anchor_blocks: Vec<usize>,
     tolerances: Vec<f64>,
+    lags: Vec<f64>,
     draws: usize,
     seed: u64,
     offline: bool,
 }
 
 impl AnchorArgs {
+    fn specs(&self) -> Vec<AnchorSpec> {
+        let mut specs = Vec::new();
+        for lag in &self.lags {
+            for blocks in &self.anchor_blocks {
+                specs.push(AnchorSpec::new(*blocks, Self::seconds(*lag)));
+            }
+        }
+        specs
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn seconds(hours: f64) -> u32 {
+        (hours * 3_600.0).round().max(0.0) as u32
+    }
+
     fn parse() -> Result<Self, String> {
         let raw: Vec<String> = std::env::args().skip(1).collect();
         let mut parsed = Self {
@@ -55,6 +73,7 @@ impl AnchorArgs {
             sizes: vec![100, 150, 200, 300, 400],
             anchor_blocks: vec![6, 24],
             tolerances: vec![0.25],
+            lags: vec![0.0],
             draws: 240,
             seed: 20_260_416,
             offline: false,
@@ -80,6 +99,7 @@ impl AnchorArgs {
                 "--sizes" => parsed.sizes = Self::list(value()?)?,
                 "--anchor-blocks" => parsed.anchor_blocks = Self::list(value()?)?,
                 "--tolerances" => parsed.tolerances = Self::list(value()?)?,
+                "--lags" => parsed.lags = Self::list(value()?)?,
                 "--draws" => parsed.draws = Self::number(value()?, flag)?,
                 "--seed" => parsed.seed = Self::number(value()?, flag)?,
                 other => return Err(format!("unrecognized argument {other}")),
@@ -89,6 +109,7 @@ impl AnchorArgs {
         if parsed.sizes.is_empty()
             || parsed.anchor_blocks.is_empty()
             || parsed.tolerances.is_empty()
+            || parsed.lags.is_empty()
             || parsed.draws == 0
         {
             return Err("--sizes, --anchor-blocks, --tolerances and --draws must be non-empty".to_string());
@@ -201,7 +222,7 @@ impl AnchorApp {
                 first,
                 last,
                 run,
-                &args.anchor_blocks,
+                &args.specs(),
             );
             if pools.is_empty() {
                 continue;
@@ -227,10 +248,11 @@ impl AnchorApp {
     fn report(args: &AnchorArgs, label: &str, pools: &[PricedPool]) {
         let sweep = SubsampleSweep::new(pools, args.draws, args.seed);
         let comparison = AnchorComparison::new(&sweep);
-        for blocks in &args.anchor_blocks {
+        for spec in args.specs() {
             for tolerance in &args.tolerances {
                 println!(
-                    "\n{label}: anchor {blocks} blocks, band +-{:.0}%; cells are p90 error / share within 1%",
+                    "\n{label}: anchor {}, band +-{:.0}%; cells are p90 error / share within 1%",
+                    spec.label(),
                     tolerance * 100.0
                 );
                 println!(
@@ -238,7 +260,7 @@ impl AnchorApp {
                     "size", "chain only", "unanchored", "anchored", "priced"
                 );
                 for size in &args.sizes {
-                    let row = comparison.row(*size, DrawMode::Random, *blocks, *tolerance);
+                    let row = comparison.row(*size, DrawMode::Random, spec, *tolerance);
                     println!(
                         "{:>6} {:>15} {:>15} {:>15} {:>9}",
                         size,

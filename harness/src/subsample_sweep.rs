@@ -1,5 +1,6 @@
 use mantle_oracle::{AdmittedSample, RoughPriceEstimator};
 
+use crate::anchor_spec::AnchorSpec;
 use crate::convergence::{ConvergenceRow, ConvergenceTrial};
 use crate::octave_separation::OctaveSeparation;
 use crate::sample_rng::SampleRng;
@@ -8,7 +9,7 @@ use crate::sample_rng::SampleRng;
 pub struct PricedPool {
     sample: AdmittedSample,
     reference: f64,
-    anchors: Vec<(usize, f64)>,
+    anchors: Vec<(AnchorSpec, f64)>,
 }
 
 impl PricedPool {
@@ -21,18 +22,17 @@ impl PricedPool {
         }
     }
 
-    /// Record the chain price computed from the `blocks` blocks before this pool.
     #[must_use]
-    pub fn with_anchor(mut self, blocks: usize, price: f64) -> Self {
-        self.anchors.push((blocks, price));
+    pub fn with_anchor(mut self, spec: AnchorSpec, price: f64) -> Self {
+        self.anchors.push((spec, price));
         self
     }
 
     #[must_use]
-    pub fn anchor(&self, blocks: usize) -> Option<f64> {
+    pub fn anchor(&self, spec: AnchorSpec) -> Option<f64> {
         self.anchors
             .iter()
-            .find(|(count, _)| *count == blocks)
+            .find(|(candidate, _)| *candidate == spec)
             .map(|(_, price)| *price)
     }
 

@@ -1,5 +1,6 @@
 use mantle_oracle::PriceBand;
 
+use crate::anchor_spec::AnchorSpec;
 use crate::convergence::{ConvergenceRow, ConvergenceTrial};
 use crate::subsample_sweep::{DrawMode, SubsampleSweep};
 
@@ -22,16 +23,16 @@ impl<'a> AnchorComparison<'a> {
         Self { sweep }
     }
 
-    /// Draws from pools without an anchor for `blocks` are skipped in all
-    /// three columns, so they always cover the same draws.
+    /// Draws from pools without the anchor `spec` are skipped in all three
+    /// columns, so they always cover the same draws.
     #[must_use]
-    pub fn row(&self, size: usize, mode: DrawMode, blocks: usize, tolerance: f64) -> AnchorRow {
+    pub fn row(&self, size: usize, mode: DrawMode, spec: AnchorSpec, tolerance: f64) -> AnchorRow {
         let mut chain_only = ConvergenceTrial::new(size);
         let mut unanchored = ConvergenceTrial::new(size);
         let mut anchored = ConvergenceTrial::new(size);
         let estimator = self.sweep.estimator();
         self.sweep.each_pool_draw(size, mode, |subset, pool| {
-            let Some(anchor) = pool.anchor(blocks) else {
+            let Some(anchor) = pool.anchor(spec) else {
                 return;
             };
             let Some(band) = PriceBand::around(anchor, tolerance) else {
@@ -63,6 +64,7 @@ mod tests {
     use mantle_oracle::AdmittedSample;
 
     use super::AnchorComparison;
+    use crate::anchor_spec::AnchorSpec;
     use crate::subsample_sweep::{DrawMode, PricedPool, SubsampleSweep};
 
     fn signal_pool() -> AdmittedSample {
@@ -81,7 +83,7 @@ mod tests {
     fn pools_without_an_anchor_are_skipped_in_every_column() {
         let pools = [PricedPool::new(signal_pool(), 100_000.0)];
         let sweep = SubsampleSweep::new(&pools, 10, 1);
-        let row = AnchorComparison::new(&sweep).row(100, DrawMode::Random, 6, 0.25);
+        let row = AnchorComparison::new(&sweep).row(100, DrawMode::Random, AnchorSpec::new(6, 0), 0.25);
         assert_eq!(row.chain_only.attempted(), 0);
         assert_eq!(row.unanchored.attempted(), 0);
         assert_eq!(row.anchored.attempted(), 0);
@@ -89,9 +91,10 @@ mod tests {
 
     #[test]
     fn an_anchored_pool_is_priced_in_all_three_columns() {
-        let pools = [PricedPool::new(signal_pool(), 100_000.0).with_anchor(6, 100_000.0)];
+        let spec = AnchorSpec::new(6, 0);
+        let pools = [PricedPool::new(signal_pool(), 100_000.0).with_anchor(spec, 100_000.0)];
         let sweep = SubsampleSweep::new(&pools, 10, 1);
-        let row = AnchorComparison::new(&sweep).row(100, DrawMode::Random, 6, 0.25);
+        let row = AnchorComparison::new(&sweep).row(100, DrawMode::Random, spec, 0.25);
         assert_eq!(row.chain_only.attempted(), 10);
         assert_eq!(row.unanchored.attempted(), 10);
         assert_eq!(row.anchored.priced(), 10);
@@ -99,9 +102,10 @@ mod tests {
 
     #[test]
     fn an_anchor_far_from_the_signal_leaves_the_anchored_column_unpriced() {
-        let pools = [PricedPool::new(signal_pool(), 100_000.0).with_anchor(6, 1.0e9)];
+        let spec = AnchorSpec::new(6, 0);
+        let pools = [PricedPool::new(signal_pool(), 100_000.0).with_anchor(spec, 1.0e9)];
         let sweep = SubsampleSweep::new(&pools, 10, 1);
-        let row = AnchorComparison::new(&sweep).row(100, DrawMode::Random, 6, 0.25);
+        let row = AnchorComparison::new(&sweep).row(100, DrawMode::Random, spec, 0.25);
         assert_eq!(row.anchored.attempted(), 10);
         assert_eq!(row.anchored.priced(), 0);
     }

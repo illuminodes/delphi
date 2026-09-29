@@ -2,6 +2,7 @@ use mantle::difficulty::BlockHeight;
 use mantle::primitives::BlockHeader;
 use mantle_oracle::{CachedWindows, OraclePipeline};
 
+use crate::anchor_spec::AnchorSpec;
 use crate::chain_anchor::ChainAnchor;
 use crate::intraday_reference::IntradayReference;
 use crate::span_plan::SpanPlan;
@@ -39,9 +40,9 @@ impl ConfirmedPools {
         self.gather_anchored(windows, reference, first, last, &[], &[])
     }
 
-    /// [`Self::gather`], also pricing each window's chain anchor from the
-    /// `chain_blocks` blocks of `run` that precede it. A window whose anchor
-    /// cannot be priced simply lacks that anchor.
+    /// [`Self::gather`], also pricing each window's chain anchors from the
+    /// blocks of `run` that precede it. A window whose anchor cannot be
+    /// priced simply lacks that anchor.
     #[must_use]
     pub fn gather_anchored(
         &self,
@@ -50,7 +51,7 @@ impl ConfirmedPools {
         first: u32,
         last: u32,
         run: &[(BlockHeight, BlockHeader)],
-        chain_blocks: &[usize],
+        specs: &[AnchorSpec],
     ) -> Vec<PricedPool> {
         let mut pools = Vec::new();
         for window in self.plan.tile(first, last) {
@@ -66,9 +67,10 @@ impl ConfirmedPools {
                 continue;
             }
             let mut pool = PricedPool::new(sample, price);
-            for blocks in chain_blocks {
-                if let Some(anchor) = ChainAnchor::price(windows, run, window.start(), *blocks) {
-                    pool = pool.with_anchor(*blocks, anchor);
+            for spec in specs {
+                let cutoff = spec.cutoff(window.start());
+                if let Some(anchor) = ChainAnchor::price(windows, run, cutoff, spec.blocks()) {
+                    pool = pool.with_anchor(*spec, anchor);
                 }
             }
             pools.push(pool);
