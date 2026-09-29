@@ -1,4 +1,5 @@
 use mantle::difficulty::BlockHeight;
+use mantle::primitives::BlockHeader;
 
 /// An inclusive run of heights to fetch together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +17,14 @@ impl HeightSpan {
     #[must_use]
     pub const fn is_empty(self) -> bool {
         false
+    }
+
+    /// The headers of `headers` (sorted by height) that fall inside this span.
+    #[must_use]
+    pub fn headers(self, headers: &[(BlockHeight, BlockHeader)]) -> &[(BlockHeight, BlockHeader)] {
+        let start = headers.partition_point(|(height, _)| *height < self.start);
+        let stop = headers.partition_point(|(height, _)| *height <= self.stop);
+        &headers[start..stop]
     }
 }
 
@@ -86,6 +95,7 @@ impl BlockPlan {
 #[cfg(test)]
 mod tests {
     use mantle::difficulty::BlockHeight;
+    use mantle::primitives::BlockHeader;
 
     use super::{BlockPlan, HeightSpan};
 
@@ -174,6 +184,19 @@ mod tests {
             assert_eq!(pair[1].start.to_u32(), pair[0].stop.to_u32() + 1);
         }
         assert_eq!(batches.iter().map(|batch| batch.len()).sum::<usize>(), span.len());
+    }
+
+    #[test]
+    fn a_span_selects_its_own_headers() {
+        let headers: Vec<_> = (10..20)
+            .map(|height| (PlanFixture::height(height), BlockHeader::from_slice(&[0; 80])))
+            .collect();
+        let selected = PlanFixture::span(12, 15).headers(&headers);
+
+        assert_eq!(selected.len(), 4);
+        assert_eq!(selected[0].0, PlanFixture::height(12));
+        assert_eq!(selected[3].0, PlanFixture::height(15));
+        assert!(PlanFixture::span(30, 40).headers(&headers).is_empty());
     }
 
     #[test]
