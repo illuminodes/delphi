@@ -66,8 +66,8 @@ impl DaemonConfig {
         --min-outputs N      smallest mempool sample that is priced (default 200)\n\
         --draws N            bootstrap resamples per mempool price (default 30)\n\
         --mempool-peers N    peers to watch for unconfirmed transactions (default 8)\n\
-        --history-blocks N   blocks of history to keep; windows longer than this are\n\
-        \x20                    not published (default 1008, the weekly window)\n\
+        --history-blocks N   blocks of history to keep, which sets how far back each\n\
+        \x20                    timeline reaches (default 1008, seven days)\n\
         --cache-mb N         cap on the fetcher's raw block files (default 1000)\n\
         --dry-run            print notes instead of publishing, with a throwaway key\n\
         --run-seconds N      stop after N seconds\n";

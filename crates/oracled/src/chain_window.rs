@@ -1,22 +1,22 @@
 use std::fmt;
 
 /// A confirmed-chain price window, sized in blocks at the 10-minute target.
+/// Each window is published as a timeline of prices, one per `STEP_BLOCKS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ChainWindow {
     Hourly,
     Daily,
-    Weekly,
 }
 
 impl ChainWindow {
-    pub const ALL: [Self; 3] = [Self::Hourly, Self::Daily, Self::Weekly];
+    pub const ALL: [Self; 2] = [Self::Hourly, Self::Daily];
+    pub const STEP_BLOCKS: usize = 6;
 
     #[must_use]
     pub const fn blocks(self) -> usize {
         match self {
             Self::Hourly => 6,
             Self::Daily => 144,
-            Self::Weekly => 1_008,
         }
     }
 
@@ -26,17 +26,16 @@ impl ChainWindow {
         match self {
             Self::Hourly => "chain-1h",
             Self::Daily => "chain-1d",
-            Self::Weekly => "chain-1w",
         }
     }
 
-    /// The largest window, which sets how many blocks of history are kept.
+    /// The largest window, which sets the least history a timeline needs.
     #[must_use]
     pub fn deepest() -> Self {
         Self::ALL
             .into_iter()
             .max_by_key(|window| window.blocks())
-            .unwrap_or(Self::Weekly)
+            .unwrap_or(Self::Daily)
     }
 }
 
@@ -53,10 +52,9 @@ mod tests {
     use super::ChainWindow;
 
     #[test]
-    fn windows_span_an_hour_a_day_and_a_week_of_blocks() {
+    fn windows_span_an_hour_and_a_day_of_blocks() {
         assert_eq!(ChainWindow::Hourly.blocks(), 6);
         assert_eq!(ChainWindow::Daily.blocks(), 6 * 24);
-        assert_eq!(ChainWindow::Weekly.blocks(), 6 * 24 * 7);
     }
 
     #[test]
@@ -66,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn the_deepest_window_is_the_weekly_one() {
-        assert_eq!(ChainWindow::deepest(), ChainWindow::Weekly);
+    fn the_deepest_window_is_the_daily_one() {
+        assert_eq!(ChainWindow::deepest(), ChainWindow::Daily);
     }
 }

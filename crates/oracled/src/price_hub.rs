@@ -196,9 +196,9 @@ mod tests {
         let snapshot = HubFixture::snapshot(80_000.0, 100, &ChainWindow::ALL);
         let outcomes = hub.apply_chain(&snapshot, Instant::now());
 
-        assert_eq!(outcomes.len(), 3);
+        assert_eq!(outcomes.len(), 2);
         assert!(outcomes.iter().all(|outcome| matches!(outcome, Outcome::Published(_))));
-        assert_eq!(HubFixture::tags(&hub), vec!["chain-1h", "chain-1d", "chain-1w"]);
+        assert_eq!(HubFixture::tags(&hub), vec!["chain-1h", "chain-1d"]);
     }
 
     #[test]

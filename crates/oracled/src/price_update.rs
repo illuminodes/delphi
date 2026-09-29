@@ -1,7 +1,7 @@
-use std::fmt::Write;
-
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle_oracle::OracleReport;
+
+use crate::{JsonObject, SeriesPoint};
 
 /// What a published price was measured from.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,13 +30,15 @@ impl PriceSource {
     }
 }
 
-/// One price for one named window, ready to publish.
+/// One price for one named window, ready to publish. A chain window also
+/// carries its timeline, oldest point first, ending at the headline price.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PriceUpdate {
     window: String,
     price: f64,
     samples: usize,
     source: PriceSource,
+    series: Vec<SeriesPoint>,
 }
 
 impl PriceUpdate {
@@ -47,7 +49,19 @@ impl PriceUpdate {
             price,
             samples,
             source,
+            series: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_series(mut self, series: Vec<SeriesPoint>) -> Self {
+        self.series = series;
+        self
+    }
+
+    #[must_use]
+    pub fn series(&self) -> &[SeriesPoint] {
+        &self.series
     }
 
     #[must_use]
@@ -98,7 +112,10 @@ impl PriceUpdate {
                 ..
             } => band_low.is_finite() && band_high.is_finite() && band_low <= band_high,
         };
-        self.price.is_finite() && self.price > 0.0 && source_finite
+        self.price.is_finite()
+            && self.price > 0.0
+            && source_finite
+            && self.series.iter().all(SeriesPoint::is_publishable)
     }
 
     /// The JSON object carried as the note content.
@@ -133,70 +150,10 @@ impl PriceUpdate {
                 object.float("band_high", band_high);
             }
         }
+        if !self.series.is_empty() {
+            object.raw("points", &SeriesPoint::array_json(&self.series));
+        }
         object.finish()
-    }
-}
-
-/// Writes a flat JSON object with string, integer and float members.
-struct JsonObject {
-    text: String,
-    members: usize,
-}
-
-impl JsonObject {
-    fn new() -> Self {
-        Self {
-            text: String::from("{"),
-            members: 0,
-        }
-    }
-
-    fn key(&mut self, key: &str) {
-        if self.members > 0 {
-            self.text.push(',');
-        }
-        self.members += 1;
-        self.quoted(key);
-        self.text.push(':');
-    }
-
-    fn quoted(&mut self, value: &str) {
-        self.text.push('"');
-        for character in value.chars() {
-            match character {
-                '"' => self.text.push_str("\\\""),
-                '\\' => self.text.push_str("\\\\"),
-                control if control.is_control() => {
-                    let _ = write!(self.text, "\\u{:04x}", u32::from(control));
-                }
-                other => self.text.push(other),
-            }
-        }
-        self.text.push('"');
-    }
-
-    fn text(&mut self, key: &str, value: &str) {
-        self.key(key);
-        self.quoted(value);
-    }
-
-    fn count(&mut self, key: &str, value: usize) {
-        self.key(key);
-        self.text.push_str(&value.to_string());
-    }
-
-    fn float(&mut self, key: &str, value: f64) {
-        self.key(key);
-        if value.is_finite() {
-            let _ = write!(self.text, "{value}");
-        } else {
-            self.text.push_str("null");
-        }
-    }
-
-    fn finish(mut self) -> String {
-        self.text.push('}');
-        self.text
     }
 }
 

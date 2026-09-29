@@ -1,8 +1,11 @@
 use mantle::difficulty::BlockHeight;
 
-use crate::{BlockRecord, ChainWindow, PriceUpdate, RecordLog};
+use crate::{BlockRecord, ChainWindow, PriceUpdate, RecordLog, SeriesPoint};
 
-/// Confirmed-chain prices for every window the record log can fill.
+/// Confirmed-chain timelines for every window the record log can fill.
+///
+/// A timeline holds one price per `ChainWindow::STEP_BLOCKS`, each over a
+/// full window of blocks, from the oldest the log allows up to the tip.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ChainPricer;
 
@@ -43,11 +46,24 @@ impl ChainPricer {
         Some(ChainSnapshot { tip, updates })
     }
 
+    /// The window's timeline, headlined by its newest price. `None` while the
+    /// log cannot fill one window ending at the tip.
     #[must_use]
     pub fn price(&self, log: &RecordLog, window: ChainWindow) -> Option<PriceUpdate> {
-        let sample = log.sample(window.blocks())?;
-        let report = sample.price().ok()?;
-        Some(PriceUpdate::chain(window.tag(), &report))
+        let mut points = Vec::new();
+        let mut headline = None;
+        let mut newer = 0;
+        while let Some(sample) = log.sample_ending_before_tip(window.blocks(), newer) {
+            if let Ok(report) = sample.price() {
+                points.push(SeriesPoint::from_report(&report));
+                if newer == 0 {
+                    headline = Some(report);
+                }
+            }
+            newer += ChainWindow::STEP_BLOCKS;
+        }
+        points.reverse();
+        Some(PriceUpdate::chain(window.tag(), &headline?).with_series(points))
     }
 }
 
@@ -138,6 +154,45 @@ mod tests {
         let windows: Vec<&str> = snapshot.updates.iter().map(PriceUpdate::window).collect();
 
         assert_eq!(windows, vec![ChainWindow::Hourly.tag(), ChainWindow::Daily.tag()]);
+    }
+
+    #[test]
+    fn the_hourly_timeline_steps_one_hour_back_at_a_time() {
+        let fixture = LogFixture::new("timeline");
+        let log = fixture.log_with(30, 400, 80_000.0);
+        let update = ChainPricer::new()
+            .price(&log, ChainWindow::Hourly)
+            .expect("price");
+        let stops: Vec<u32> = update.series().iter().map(|point| point.stop_height.to_u32()).collect();
+
+        assert_eq!(stops, vec![6, 12, 18, 24, 30]);
+        assert_eq!(update.series().last().map(|point| point.price), Some(update.price()));
+    }
+
+    #[test]
+    fn every_point_is_priced_near_the_market() {
+        let fixture = LogFixture::new("timeline-prices");
+        let log = fixture.log_with(30, 400, 80_000.0);
+        let update = ChainPricer::new()
+            .price(&log, ChainWindow::Hourly)
+            .expect("price");
+
+        for point in update.series() {
+            assert!((point.price - 80_000.0).abs() / 80_000.0 < 0.02, "{}", point.price);
+        }
+    }
+
+    #[test]
+    fn the_timeline_json_carries_the_points() {
+        let fixture = LogFixture::new("timeline-json");
+        let log = fixture.log_with(18, 400, 80_000.0);
+        let update = ChainPricer::new()
+            .price(&log, ChainWindow::Hourly)
+            .expect("price");
+        let json: serde_json::Value = serde_json::from_str(&update.to_json()).expect("json");
+
+        assert_eq!(json["points"].as_array().map(Vec::len), Some(3));
+        assert_eq!(json["points"][2]["stop_height"], 18);
     }
 
     #[test]

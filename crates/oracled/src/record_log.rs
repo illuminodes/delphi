@@ -136,11 +136,20 @@ impl RecordLog {
     /// The outputs of the newest `blocks` records, or `None` while fewer are held.
     #[must_use]
     pub fn sample(&self, blocks: usize) -> Option<AdmittedSample> {
-        if blocks == 0 || self.records.len() < blocks {
+        self.sample_ending_before_tip(blocks, 0)
+    }
+
+    /// The outputs of `blocks` records whose newest is `newer` records older
+    /// than the tip, or `None` while the log does not reach that far back.
+    #[must_use]
+    pub fn sample_ending_before_tip(&self, blocks: usize, newer: usize) -> Option<AdmittedSample> {
+        let needed = blocks.checked_add(newer)?;
+        if blocks == 0 || self.records.len() < needed {
             return None;
         }
+        let first = self.records.len() - needed;
         let mut sample = AdmittedSample::new();
-        for record in self.records.iter().skip(self.records.len() - blocks) {
+        for record in self.records.iter().skip(first).take(blocks) {
             record.push_into(&mut sample);
         }
         Some(sample)
