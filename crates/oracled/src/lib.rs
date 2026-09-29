@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod ack_logger;
 pub mod block_cache;
 pub mod block_plan;
 pub mod block_record;
@@ -27,6 +28,7 @@ pub mod stdout_sink;
 #[cfg(test)]
 pub(crate) mod synthetic_market;
 
+pub use ack_logger::AckLogger;
 pub use block_cache::BlockCache;
 pub use block_plan::{BlockPlan, HeightSpan};
 pub use block_record::BlockRecord;

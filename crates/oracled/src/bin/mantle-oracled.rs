@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use mantle::network::Network;
 use mantle_oracle::PeerSources;
 use mantle_oracled::{
-    ChainSyncSpec, ChainWindow, ChainWorker, Daemon, DaemonConfig, KeySource, LogFile, MempoolEstimator,
+    AckLogger, ChainSyncSpec, ChainWindow, ChainWorker, Daemon, DaemonConfig, KeySource, LogFile, MempoolEstimator,
     MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, PublishPolicy, RelayConnector, RelayPublisher,
     StdoutSink,
 };
@@ -66,6 +66,7 @@ impl OracleDaemonApp {
             let relay = RelayConnector::new(&self.config.relay_url, self.config.relay_insecure)
                 .connect(ReconnectConfig::default())?;
             eprintln!("connected to {}", relay.url());
+            AckLogger::new(relay.clone()).spawn()?;
             self.serve(relay, signer)
         }
     }
