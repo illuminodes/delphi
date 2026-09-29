@@ -5,7 +5,7 @@ use mantle::script::{ScriptPubKey, ScriptSig, Witness};
 use mantle::tx::{OutPoint, Transaction, TxIn, TxOut};
 use mantle_oracle::AdmittedSample;
 
-use crate::BootstrapRng;
+use crate::{BlockRecord, BootstrapRng};
 
 /// Payment amounts drawn the way people pay: a third at arbitrary USD values
 /// and the rest at round ones, converted to sats at a fixed price.
@@ -36,6 +36,15 @@ impl SyntheticMarket {
             Self::ROUND_USD[self.rng.below(Self::ROUND_USD.len())]
         };
         Satoshi::new(((usd / self.price * 100_000_000.0).round() as u64).max(2_000))
+    }
+
+    pub fn record(&mut self, height: u32, outputs: usize) -> BlockRecord {
+        let amounts = (0..outputs).map(|_| self.amount()).collect();
+        BlockRecord::new(
+            BlockHeight::new(height),
+            BlockTime::new(1_700_000_000 + height),
+            amounts,
+        )
     }
 
     pub fn sample(&mut self, outputs: usize) -> AdmittedSample {

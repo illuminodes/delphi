@@ -3,6 +3,7 @@
 pub mod block_cache;
 pub mod block_plan;
 pub mod block_record;
+pub mod chain_pricer;
 pub mod chain_sync;
 pub mod chain_window;
 pub mod mempool_estimator;
@@ -18,6 +19,7 @@ pub(crate) mod synthetic_market;
 pub use block_cache::BlockCache;
 pub use block_plan::{BlockPlan, HeightSpan};
 pub use block_record::BlockRecord;
+pub use chain_pricer::{ChainPricer, ChainSnapshot};
 pub use chain_sync::{ChainSync, SyncReport};
 pub use chain_window::ChainWindow;
 pub use mempool_estimator::{BootstrapRng, MempoolEstimate, MempoolEstimator};
