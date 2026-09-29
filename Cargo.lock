@@ -974,6 +974,7 @@ name = "mantle-oracled"
 version = "0.1.0"
 dependencies = [
  "mantle",
+ "mantle-fetcher",
  "mantle-oracle",
  "nostro2",
  "nostro2-relay",
