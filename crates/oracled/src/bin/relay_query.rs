@@ -82,7 +82,13 @@ impl QueryApp {
                     } else {
                         stored += 1;
                     }
-                    let preview: String = note.content.chars().take(160).collect();
+                    let head: String = note.content.chars().take(90).collect();
+                    let tail: String = note.content.chars().rev().take(110).collect::<Vec<_>>().into_iter().rev().collect();
+                    let preview = if note.content.len() > 200 {
+                        format!("{head} … {tail}")
+                    } else {
+                        note.content.clone()
+                    };
                     println!(
                         "{} id {} kind {} created_at {} d={:?} bytes={} {}",
                         if ended { "LIVE  " } else { "STORED" },
