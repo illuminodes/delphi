@@ -979,6 +979,7 @@ dependencies = [
  "nostro2",
  "nostro2-relay",
  "nostro2-signer",
+ "rustix",
  "serde_json",
 ]
 

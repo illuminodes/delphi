@@ -4,6 +4,7 @@ use std::fmt;
 use nostro2::{NostrNote, NostrNoteBuilder};
 use nostro2_signer::NostrKeypair;
 use nostro2_signer::nostro2_traits::NostrKeypair as KeypairTrait;
+use nostro2_signer::nostro2_traits::NostrSigner as SignerTrait;
 
 use crate::PriceUpdate;
 
@@ -56,6 +57,11 @@ impl PriceSigner {
             keypair,
             last_created: HashMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn public_key(&self) -> String {
+        SignerTrait::public_key(&self.keypair)
     }
 
     #[must_use]

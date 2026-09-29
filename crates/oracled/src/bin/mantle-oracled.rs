@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use mantle::network::Network;
 use mantle_oracle::PeerSources;
 use mantle_oracled::{
-    ChainSyncSpec, ChainWindow, ChainWorker, Daemon, DaemonConfig, KeySource, MempoolEstimator,
+    ChainSyncSpec, ChainWindow, ChainWorker, Daemon, DaemonConfig, KeySource, LogFile, MempoolEstimator,
     MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, PublishPolicy, RelayConnector, RelayPublisher,
     StdoutSink,
 };
@@ -47,6 +47,11 @@ impl OracleDaemonApp {
     }
 
     fn run(&self) -> Result<(), String> {
+        if let Some(path) = &self.config.log_file {
+            LogFile::new(path)
+                .redirect_stderr()
+                .map_err(|error| format!("log file {}: {error}", path.display()))?;
+        }
         let source = KeySource::new(&self.config, std::env::var(Self::KEY_VARIABLE).ok());
         let signer = source.resolve().map_err(|error| error.to_string())?;
         let npub = signer.npub().map_err(|error| error.to_string())?;
