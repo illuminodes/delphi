@@ -4,6 +4,7 @@ fuzz/corpus/
 fuzz/artifacts/
 fuzz/*.log
 dhat-heap.json
+*.nsec
 *.svg
 perf*.data
 perf*.data.old

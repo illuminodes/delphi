@@ -7,13 +7,11 @@ use std::time::{Duration, Instant};
 use mantle::network::Network;
 use mantle_oracle::PeerSources;
 use mantle_oracled::{
-    ChainSyncSpec, ChainWindow, ChainWorker, Daemon, DaemonConfig, MempoolEstimator, MempoolWindow,
-    MempoolWorker, NoteSink, PriceHub, PriceSigner, PublishPolicy, RelayConnector, RelayPublisher,
+    ChainSyncSpec, ChainWindow, ChainWorker, Daemon, DaemonConfig, KeySource, MempoolEstimator,
+    MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, PublishPolicy, RelayConnector, RelayPublisher,
     StdoutSink,
 };
 use nostro2_relay::ReconnectConfig;
-use nostro2_signer::NostrKeypair;
-use nostro2_signer::nostro2_traits::NostrKeypair as KeypairTrait;
 
 struct OracleDaemonApp {
     config: DaemonConfig,
@@ -49,8 +47,14 @@ impl OracleDaemonApp {
     }
 
     fn run(&self) -> Result<(), String> {
-        let signer = self.signer()?;
-        eprintln!("publishing as {}", signer.npub().map_err(|error| error.to_string())?);
+        let source = KeySource::new(&self.config, std::env::var(Self::KEY_VARIABLE).ok());
+        let signer = source.resolve().map_err(|error| error.to_string())?;
+        let npub = signer.npub().map_err(|error| error.to_string())?;
+        if self.config.print_npub {
+            println!("{npub}");
+            return Ok(());
+        }
+        eprintln!("publishing as {npub} (key from {})", source.describe());
         if self.config.dry_run {
             self.serve(StdoutSink, signer)
         } else {
@@ -59,15 +63,6 @@ impl OracleDaemonApp {
             eprintln!("connected to {}", relay.url());
             self.serve(relay, signer)
         }
-    }
-
-    fn signer(&self) -> Result<PriceSigner, String> {
-        if self.config.dry_run {
-            return Ok(PriceSigner::new(<NostrKeypair as KeypairTrait>::generate()));
-        }
-        let secret = std::env::var(Self::KEY_VARIABLE)
-            .map_err(|_| format!("set {} to the signing key (nsec, hex or mnemonic)", Self::KEY_VARIABLE))?;
-        PriceSigner::from_secret(&secret).map_err(|error| error.to_string())
     }
 
     fn policy() -> PublishPolicy {

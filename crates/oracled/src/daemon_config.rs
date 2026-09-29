@@ -21,6 +21,8 @@ pub struct DaemonConfig {
     pub history_blocks: usize,
     pub cache_limit_bytes: u64,
     pub dry_run: bool,
+    pub print_npub: bool,
+    pub key_file: Option<PathBuf>,
     pub run_for: Option<Duration>,
 }
 
@@ -38,6 +40,8 @@ impl Default for DaemonConfig {
             history_blocks: 1_008,
             cache_limit_bytes: 1_000_000_000,
             dry_run: false,
+            print_npub: false,
+            key_file: None,
             run_for: None,
         }
     }
@@ -46,8 +50,11 @@ impl Default for DaemonConfig {
 impl DaemonConfig {
     pub const HELP: &'static str = "mantle-oracled [options]\n\
         \n\
-        The signing key is read from ORACLED_NSEC (nsec, hex or mnemonic).\n\
+        The signing key is read from ORACLED_NSEC (nsec, hex or mnemonic), or else\n\
+        from --key-file.\n\
         \n\
+        --key-file PATH      file holding the nsec; created with a new key if absent\n\
+        --print-npub         print the public key of the configured key and exit\n\
         --relay URL          relay to publish to (default wss://rof.illuminodes.com)\n\
         --relay-insecure     skip certificate checks; private-network relay addresses only\n\
         --data-dir DIR       records and header cache (default data/oracled)\n\
@@ -78,6 +85,10 @@ impl DaemonConfig {
                 config.dry_run = true;
                 continue;
             }
+            if flag == "--print-npub" {
+                config.print_npub = true;
+                continue;
+            }
             if flag == "--relay-insecure" {
                 config.relay_insecure = true;
                 continue;
@@ -95,6 +106,7 @@ impl DaemonConfig {
         match flag {
             "--relay" => self.relay_url = value.to_string(),
             "--data-dir" => self.data_dir = PathBuf::from(value),
+            "--key-file" => self.key_file = Some(PathBuf::from(value)),
             "--peer" => self.peers.push(Self::number(flag, value)?),
             "--tolerance" => self.tolerance = Self::number(flag, value)?,
             "--min-outputs" => self.min_outputs = Self::number(flag, value)?,
@@ -157,6 +169,7 @@ mod tests {
             "--relay", "ws://10.0.0.5:4848", "--data-dir", "/tmp/o", "--peer", "1.2.3.4:8333",
             "--peer", "5.6.7.8:8333", "--tolerance", "0.1", "--min-outputs", "300", "--draws", "50",
             "--mempool-peers", "4", "--history-blocks", "144", "--cache-mb", "500", "--dry-run", "--relay-insecure", "--run-seconds", "90",
+            "--print-npub", "--key-file", "/tmp/k.nsec",
         ])
         .expect("parses");
 
@@ -170,6 +183,8 @@ mod tests {
         assert_eq!(config.cache_limit_bytes, 500_000_000);
         assert!(config.dry_run);
         assert!(config.relay_insecure);
+        assert!(config.print_npub);
+        assert_eq!(config.key_file, Some(std::path::PathBuf::from("/tmp/k.nsec")));
         assert_eq!(config.run_for, Some(Duration::from_secs(90)));
     }
 

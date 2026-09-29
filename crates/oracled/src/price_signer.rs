@@ -3,6 +3,7 @@ use std::fmt;
 
 use nostro2::{NostrNote, NostrNoteBuilder};
 use nostro2_signer::NostrKeypair;
+use nostro2_signer::nostro2_traits::NostrKeypair as KeypairTrait;
 
 use crate::PriceUpdate;
 
@@ -55,6 +56,19 @@ impl PriceSigner {
             keypair,
             last_created: HashMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn generate() -> Self {
+        Self::new(<NostrKeypair as KeypairTrait>::generate())
+    }
+
+    /// # Errors
+    /// Returns [`PriceSignerError::Key`] if the key cannot be encoded.
+    pub fn nsec(&self) -> Result<String, PriceSignerError> {
+        self.keypair
+            .nsec()
+            .map_err(|error| PriceSignerError::Key(error.to_string()))
     }
 
     /// # Errors
