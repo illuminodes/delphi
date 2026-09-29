@@ -42,6 +42,10 @@ pub struct PriceUpdate {
 }
 
 impl PriceUpdate {
+    /// Relays refuse notes near 20 KB without saying so, so the timeline is
+    /// trimmed to fit well inside that.
+    pub const SERIES_BUDGET_BYTES: usize = 16_000;
+
     #[must_use]
     pub fn new(window: impl Into<String>, price: f64, samples: usize, source: PriceSource) -> Self {
         Self {
@@ -151,7 +155,10 @@ impl PriceUpdate {
             }
         }
         if !self.series.is_empty() {
-            object.raw("points", &SeriesPoint::array_json(&self.series));
+            object.raw(
+                "points",
+                &SeriesPoint::array_json_within(&self.series, Self::SERIES_BUDGET_BYTES),
+            );
         }
         object.finish()
     }

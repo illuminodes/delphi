@@ -58,6 +58,15 @@ impl JsonObject {
         }
     }
 
+    pub fn fixed(&mut self, key: &str, value: f64, decimals: usize) {
+        self.key(key);
+        if value.is_finite() {
+            let _ = write!(self.text, "{value:.decimals$}");
+        } else {
+            self.text.push_str("null");
+        }
+    }
+
     /// Adds a member whose value is already valid JSON.
     pub fn raw(&mut self, key: &str, json: &str) {
         self.key(key);

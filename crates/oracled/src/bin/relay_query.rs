@@ -82,13 +82,16 @@ impl QueryApp {
                     } else {
                         stored += 1;
                     }
+                    let preview: String = note.content.chars().take(160).collect();
                     println!(
-                        "{} kind {} created_at {} d={:?} {}",
+                        "{} id {} kind {} created_at {} d={:?} bytes={} {}",
                         if ended { "LIVE  " } else { "STORED" },
+                        note.id.as_deref().unwrap_or("?"),
                         note.kind,
                         note.created_at,
                         note.tags.find_tags_ref("d"),
-                        note.content
+                        note.content.len(),
+                        preview
                     );
                 }
                 NostrRelayEvent::EndOfSubscription(..) => ended = true,

@@ -14,6 +14,9 @@ pub struct SeriesPoint {
 }
 
 impl SeriesPoint {
+    pub const PRICE_DECIMALS: usize = 2;
+    pub const DEVIATION_DECIMALS: usize = 4;
+
     #[must_use]
     pub const fn from_report(report: &OracleReport) -> Self {
         Self {
@@ -33,8 +36,8 @@ impl SeriesPoint {
     #[must_use]
     pub fn to_json(&self) -> String {
         let mut object = JsonObject::new();
-        object.float("price", self.price);
-        object.float("deviation", self.deviation);
+        object.fixed("price", self.price, Self::PRICE_DECIMALS);
+        object.fixed("deviation", self.deviation, Self::DEVIATION_DECIMALS);
         object.count("samples", self.samples);
         object.count("stop_height", self.stop_height.to_u32() as usize);
         object.count("stop_time", self.stop_time.to_u32() as usize);
@@ -44,8 +47,25 @@ impl SeriesPoint {
     /// A JSON array of the points, oldest first as given.
     #[must_use]
     pub fn array_json(points: &[Self]) -> String {
-        let encoded: Vec<String> = points.iter().map(Self::to_json).collect();
-        format!("[{}]", encoded.join(","))
+        Self::array_json_within(points, usize::MAX)
+    }
+
+    /// A JSON array of at most `budget` bytes, dropping the oldest points first.
+    #[must_use]
+    pub fn array_json_within(points: &[Self], budget: usize) -> String {
+        let mut kept: Vec<String> = Vec::new();
+        let mut used: usize = 2;
+        for point in points.iter().rev() {
+            let encoded = point.to_json();
+            let cost = encoded.len() + usize::from(!kept.is_empty());
+            if used.saturating_add(cost) > budget {
+                break;
+            }
+            used += cost;
+            kept.push(encoded);
+        }
+        kept.reverse();
+        format!("[{}]", kept.join(","))
     }
 }
 
@@ -81,6 +101,32 @@ mod tests {
         assert!(!point(f64::NAN, 0.02).is_publishable());
         assert!(!point(0.0, 0.02).is_publishable());
         assert!(!point(80_000.0, f64::INFINITY).is_publishable());
+    }
+
+    #[test]
+    fn prices_are_rounded_to_cents_and_deviations_to_four_places() {
+        let text = point(84_459.459_459_459, 0.171_580_237_428).to_json();
+
+        assert!(text.contains("\"price\":84459.46,"), "{text}");
+        assert!(text.contains("\"deviation\":0.1716,"), "{text}");
+    }
+
+    #[test]
+    fn a_budget_drops_the_oldest_points_first() {
+        let points: Vec<SeriesPoint> = (11..=20).map(|index| point(f64::from(index), 0.0)).collect();
+        let one = points[0].to_json().len();
+        let json: serde_json::Value =
+            serde_json::from_str(&SeriesPoint::array_json_within(&points, 3 * one + 4)).expect("json");
+        let kept = json.as_array().expect("array");
+
+        assert_eq!(kept.len(), 3);
+        assert_eq!(kept[0]["price"], 18.0);
+        assert_eq!(kept[2]["price"], 20.0);
+    }
+
+    #[test]
+    fn a_zero_budget_keeps_nothing() {
+        assert_eq!(SeriesPoint::array_json_within(&[point(1.0, 0.0)], 0), "[]");
     }
 
     #[test]

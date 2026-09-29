@@ -3,7 +3,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use mantle_oracled::{NoteSink, PriceSigner, PriceSource, PriceUpdate, RelayConnector};
+use mantle::difficulty::{BlockHeight, BlockTime};
+use mantle_oracled::{NoteSink, PriceSigner, PriceSource, PriceUpdate, RelayConnector, SeriesPoint};
 use nostro2::{NostrRelayEvent, NostrSubscription};
 use nostro2_relay::ReconnectConfig;
 use nostro2_signer::NostrKeypair;
@@ -13,6 +14,7 @@ struct PublishProbe {
     url: String,
     insecure: bool,
     kind: Option<u32>,
+    points: u32,
     keypair: NostrKeypair,
 }
 
@@ -28,6 +30,12 @@ impl PublishProbe {
                 .position(|argument| argument == "--kind")
                 .and_then(|index| arguments.get(index + 1))
                 .and_then(|value| value.parse().ok()),
+            points: arguments
+                .iter()
+                .position(|argument| argument == "--points")
+                .and_then(|index| arguments.get(index + 1))
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
             url: arguments
                 .iter()
                 .find(|argument| argument.starts_with("ws"))
@@ -50,6 +58,15 @@ impl PublishProbe {
     fn run(&self) -> Result<(), String> {
         let relay = RelayConnector::new(&self.url, self.insecure).connect(ReconnectConfig::default())?;
         let mut signer = PriceSigner::new(self.keypair.clone());
+        let series = (0..self.points)
+            .map(|index| SeriesPoint {
+                price: 80_000.0 + f64::from(index) * 0.123_456_789,
+                deviation: 0.171_234_567_891_234,
+                samples: 100_000 + index as usize,
+                stop_height: BlockHeight::new(969_000 + index),
+                stop_time: BlockTime::new(1_790_000_000 + index),
+            })
+            .collect();
         let update = PriceUpdate::new(
             "probe",
             80_000.0,
@@ -59,7 +76,9 @@ impl PublishProbe {
                 band_low: 79_000.0,
                 band_high: 81_000.0,
             },
-        );
+        )
+        .with_series(series);
+        eprintln!("note content is {} bytes", update.to_json().len());
         let mut note = signer.sign(&update).map_err(|error| error.to_string())?;
         if let Some(kind) = self.kind {
             note.kind = kind;
