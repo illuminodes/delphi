@@ -66,7 +66,7 @@ pub struct ChainSync {
 
 impl ChainSync {
     pub const REORG_OVERLAP: u32 = 6;
-    pub const BATCH_BLOCKS: usize = 48;
+    pub const BATCH_BLOCKS: usize = 200;
 
     /// # Errors
     /// Returns a message if the data directory cannot be created or locked,

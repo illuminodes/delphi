@@ -9,6 +9,7 @@ use mantle::network::{AddrMsg, AddrV2Addr, AddrV2Msg, Command, CommandName};
 pub struct PeerBook {
     addresses: Vec<SocketAddrV4>,
     known: HashSet<SocketAddrV4>,
+    banned: HashSet<SocketAddrV4>,
     next_index: usize,
     path: Option<PathBuf>,
 }
@@ -42,6 +43,11 @@ impl PeerBook {
 
     pub fn reset(&mut self) {
         self.next_index = 0;
+        self.banned.clear();
+    }
+
+    pub fn ban(&mut self, address: SocketAddrV4) {
+        self.banned.insert(address);
     }
 
     pub fn next_avoiding(&mut self, avoid: &[SocketAddrV4]) -> Option<SocketAddrV4> {
@@ -50,7 +56,7 @@ impl PeerBook {
             let index = self.next_index % len;
             self.next_index = index.wrapping_add(1);
             let address = self.addresses[index];
-            if !avoid.contains(&address) {
+            if !avoid.contains(&address) && !self.banned.contains(&address) {
                 return Some(address);
             }
         }
@@ -94,6 +100,7 @@ impl PeerBook {
         Self {
             addresses,
             known,
+            banned: HashSet::new(),
             next_index: 0,
             path,
         }
@@ -151,6 +158,20 @@ impl PeerBook {
 #[cfg(test)]
 mod tests {
     use super::PeerBook;
+
+    #[test]
+    fn banned_addresses_are_skipped_until_reset() {
+        let good: std::net::SocketAddrV4 = "127.0.0.1:8333".parse().unwrap();
+        let bad: std::net::SocketAddrV4 = "127.0.0.2:8333".parse().unwrap();
+        let mut book = PeerBook::memory(vec![bad, good]);
+        book.ban(bad);
+        assert_eq!(book.next_avoiding(&[]), Some(good));
+        assert_eq!(book.next_avoiding(&[]), Some(good));
+        book.ban(good);
+        assert_eq!(book.next_avoiding(&[]), None);
+        book.reset();
+        assert_eq!(book.next_avoiding(&[]), Some(bad));
+    }
 
     #[test]
     fn discovered_addresses_are_deduplicated() {

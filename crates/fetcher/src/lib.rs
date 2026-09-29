@@ -9,6 +9,7 @@
 //! serves block bytes back by height.
 
 mod peer_book;
+mod peer_score;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -26,7 +27,7 @@ use std::ops::Deref;
 use mantle_block_io::{FileIoHandle, FileReq, FileResp};
 use mantle_transport::{
     CqeData, IoUringExt, Op, Peer, PeerPool, PeerState, SendArena, consume_handshake_frames,
-    encode_version, make_ring,
+    decode_cqe_buffer_id, encode_version, make_ring,
 };
 use quetzalcoatl::mpsc::RingBuffer as MpscRing;
 use quetzalcoatl::spsc::RingBuffer as SpscRing;
@@ -34,6 +35,7 @@ use ququmatz::IoUring;
 use ququmatz::types::{AddressFamily, SockAddrIn, SocketFlags, SocketType, Timespec};
 
 use crate::peer_book::PeerBook;
+use crate::peer_score::PeerScore;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -41,14 +43,15 @@ const PROVIDED_BUF_SIZE: u32 = 256 * 1024;
 const PROVIDED_BUF_COUNT: u32 = 4_096;
 const PROVIDED_BUF_GROUP_ID: u16 = 1;
 const CQE_DRAIN_CAP: usize = 1024;
-const PEER_INFLIGHT_CAP: usize = 2;
 const CONNECT_TIMEOUT_SECS: u64 = 5;
 const HEADERS_RESPONSE_TIMEOUT_SECS: u64 = 10;
 const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
-const HEDGE_FLOOR_MS: u64 = 5_000;
+const HEDGE_FLOOR_MS: u64 = 2_000;
 const HEDGE_FACTOR: u32 = 2;
 const HEDGE_FANOUT: usize = 2;
-const RECLAIM_FLOOR_MS: u64 = 10_000;
+const HEDGE_FANOUT_TAIL: usize = 6;
+const TRIED_LIMIT: usize = 24;
+const RECLAIM_FLOOR_MS: u64 = 8_000;
 const RECLAIM_FACTOR: u32 = 4;
 const BLACK_HOLE_ASSIGNED_THRESHOLD: u32 = 4;
 const BLACK_HOLE_GRACE_SECS: u64 = 60;
@@ -104,6 +107,7 @@ struct FetcherExt {
     last_delivery: Instant,
     headers_request: Option<(Hash256, Instant)>,
     discovery_requested: bool,
+    score: PeerScore,
 }
 
 impl FetcherExt {
@@ -115,7 +119,27 @@ impl FetcherExt {
             last_delivery: Instant::now(),
             headers_request: None,
             discovery_requested: false,
+            score: PeerScore::new(),
         }
+    }
+
+    fn record_arrival(&mut self, hash: &Hash256) {
+        let now = Instant::now();
+        if let Some((_, issued)) = self.in_flight.iter().find(|(h, _)| h == hash) {
+            self.score.observe(now.duration_since(*issued));
+        }
+    }
+
+    fn oldest_request(&self, now: Instant) -> Option<Duration> {
+        self.in_flight
+            .iter()
+            .map(|(_, issued)| now.duration_since(*issued))
+            .max()
+    }
+
+    fn record_delivery(&mut self) {
+        self.delivered_count = self.delivered_count.saturating_add(1);
+        self.last_delivery = Instant::now();
     }
 }
 
@@ -510,12 +534,17 @@ where
                     continue;
                 }
                 let res = cqe.raw_result();
+                let owned = self
+                    .peers
+                    .get_mut(cqd.slot)
+                    .is_some_and(|peer| peer.generation == cqd.generation);
+                if !owned {
+                    self.recycle_orphan_buffer(cqd.op, cqe.flags());
+                    continue;
+                }
                 let Some(peer) = self.peers.get_mut(cqd.slot) else {
                     continue;
                 };
-                if peer.generation != cqd.generation {
-                    continue;
-                }
                 handle_connect_or_recv(
                     &mut self.ring,
                     &mut self.pbr,
@@ -652,12 +681,7 @@ where
                     peer.close(&mut self.ring, &mut self.send_arena);
                     peer.state = PeerState::Dead;
                 }
-                if matches!(
-                    peer.state,
-                    PeerState::HandshakeVersionSent | PeerState::HandshakeRecving
-                ) && now.duration_since(peer.connected_at)
-                    > Duration::from_secs(HANDSHAKE_TIMEOUT_SECS)
-                {
+                if Self::handshake_stalled(peer, now) {
                     peer.close(&mut self.ring, &mut self.send_arena);
                     peer.state = PeerState::Dead;
                 }
@@ -749,6 +773,8 @@ where
         let mut in_flight: PrehashedMap<Hash256, InFlight> =
             HashMap::with_capacity_and_hasher(needed.len() / 4 + 16, BuildPrehashedHasher);
         let mut ewma = EwmaLatency::new();
+        let mut tried: PrehashedMap<Hash256, Vec<SocketAddrV4>> =
+            HashMap::with_hasher(BuildPrehashedHasher);
 
         let mut saved = 0usize;
         let total = needed.len();
@@ -784,12 +810,17 @@ where
                 if cqd.op == Op::LinkTimeout || cqd.op == Op::Close {
                     continue;
                 }
+                let owned = self
+                    .peers
+                    .get_mut(cqd.slot)
+                    .is_some_and(|peer| peer.generation == cqd.generation);
+                if !owned {
+                    self.recycle_orphan_buffer(cqd.op, cqe.flags());
+                    continue;
+                }
                 let Some(peer) = self.peers.get_mut(cqd.slot) else {
                     continue;
                 };
-                if peer.generation != cqd.generation {
-                    continue;
-                }
                 handle_connect_or_recv(
                     &mut self.ring,
                     &mut self.pbr,
@@ -839,6 +870,9 @@ where
                 }
             }
 
+            for hash in &got_block_hashes {
+                tried.remove(hash);
+            }
             if saved == total {
                 return Ok(());
             }
@@ -858,8 +892,29 @@ where
                     .filter(|p| p.state == PeerState::Ready)
                     .count();
                 let in_flight_count = in_flight.len();
+                let connecting = self
+                    .peers
+                    .values()
+                    .filter(|p| p.state == PeerState::Connecting)
+                    .count();
+                let handshaking = self
+                    .peers
+                    .values()
+                    .filter(|p| {
+                        matches!(
+                            p.state,
+                            PeerState::HandshakeVersionSent | PeerState::HandshakeRecving
+                        )
+                    })
+                    .count();
+                let dead = self
+                    .peers
+                    .values()
+                    .filter(|p| p.state == PeerState::Dead)
+                    .count();
                 eprintln!(
                     "  iouring-fetcher: {saved}/{total}  {bps:.1} blk/s  ready={ready} \
+                     connecting={connecting} handshaking={handshaking} dead={dead} \
                      in_flight={in_flight_count} todo={} ewma={}ms",
                     todo.len(),
                     ewma.as_millis(),
@@ -871,33 +926,50 @@ where
             // Hedge / reclaim.
             let hedge_threshold = ewma.threshold(HEDGE_FLOOR_MS, HEDGE_FACTOR);
             let reclaim_threshold = ewma.threshold(RECLAIM_FLOOR_MS, RECLAIM_FACTOR);
+            let fanout = if todo.is_empty() {
+                HEDGE_FANOUT_TAIL
+            } else {
+                HEDGE_FANOUT
+            };
             let mut to_hedge: Vec<Hash256> = Vec::new();
             let mut to_reclaim: Vec<Hash256> = Vec::new();
             for (hash, info) in &in_flight {
                 let age = now.duration_since(info.first_issued);
-                if age >= reclaim_threshold && info.issued_to.len() >= HEDGE_FANOUT {
+                if age >= reclaim_threshold {
                     to_reclaim.push(*hash);
-                } else if age >= hedge_threshold && info.issued_to.len() < HEDGE_FANOUT {
+                } else if age >= hedge_threshold && info.issued_to.len() < fanout {
                     to_hedge.push(*hash);
                 }
             }
             for hash in to_reclaim {
                 if let Some(info) = in_flight.remove(&hash) {
+                    let age = now.duration_since(info.first_issued);
                     for &s in &info.issued_to {
                         if let Some(peer) = self.peers.get_mut(s) {
+                            peer.app.score.observe(age);
                             peer.app.in_flight.retain(|(h, _)| h != &hash);
                         }
                     }
                 }
+                if tried.get(&hash).is_some_and(|t| t.len() >= TRIED_LIMIT) {
+                    tried.remove(&hash);
+                }
                 todo.push_front(hash);
             }
 
-            // Timeout / black-hole detection.
+            let fleet_median = PeerScore::median_ms(self.peers.values().map(|p| p.app.score));
+
+            // Timeout / black-hole / slow-peer detection.
             for (slot, peer) in self.peers.iter_mut() {
                 if peer.state == PeerState::Connecting
                     && now.duration_since(peer.connected_at)
                         > Duration::from_secs(CONNECT_TIMEOUT_SECS + 2)
                 {
+                    peer.close(&mut self.ring, &mut self.send_arena);
+                    peer.state = PeerState::Dead;
+                    continue;
+                }
+                if Self::handshake_stalled(peer, now) {
                     peer.close(&mut self.ring, &mut self.send_arena);
                     peer.state = PeerState::Dead;
                     continue;
@@ -913,6 +985,25 @@ where
                          (assigned={} delivered=0 grace={}s) — evicting",
                         peer.addr, peer.app.assigned_count, BLACK_HOLE_GRACE_SECS,
                     );
+                    self.peer_book.ban(peer.addr);
+                    peer.close(&mut self.ring, &mut self.send_arena);
+                    peer.state = PeerState::Dead;
+                    continue;
+                }
+                if peer.state == PeerState::Ready
+                    && (peer.app.score.is_slow(fleet_median)
+                        || peer.app.oldest_request(now).is_some_and(|age| {
+                            PeerScore::is_stalled(age, fleet_median)
+                        }))
+                {
+                    eprintln!(
+                        "  iouring-fetcher: peer slot={slot} ({}) is slow \
+                         (expected {}ms, fleet median {}ms) — evicting",
+                        peer.addr,
+                        peer.app.score.expected_ms(),
+                        fleet_median.unwrap_or(0),
+                    );
+                    self.peer_book.ban(peer.addr);
                     peer.close(&mut self.ring, &mut self.send_arena);
                     peer.state = PeerState::Dead;
                 }
@@ -941,9 +1032,10 @@ where
                 let Some(info) = in_flight.get(&hash).cloned() else {
                     continue;
                 };
-                if info.issued_to.len() >= HEDGE_FANOUT {
+                if info.issued_to.len() >= fanout {
                     continue;
                 }
+                let tried_addrs = tried.entry(hash).or_default().clone();
                 let already: PrehashedSet<u16> = {
                     let mut s = HashSet::with_hasher(BuildPrehashedHasher);
                     for &sl in &info.issued_to {
@@ -951,11 +1043,16 @@ where
                     }
                     s
                 };
-                let pick = self.peers.iter_mut().find(|(slot, peer)| {
-                    peer.state == PeerState::Ready
-                        && peer.app.in_flight.len() < PEER_INFLIGHT_CAP
-                        && !already.contains(slot)
-                });
+                let pick = self
+                    .peers
+                    .iter_mut()
+                    .filter(|(slot, peer)| {
+                        peer.state == PeerState::Ready
+                            && peer.app.in_flight.len() < peer.app.score.inflight_cap(fleet_median)
+                            && !already.contains(slot)
+                            && !tried_addrs.contains(&peer.addr)
+                    })
+                    .min_by_key(|(_, peer)| peer.app.score.expected_ms());
                 if let Some((slot, peer)) = pick {
                     let pl = encode_getdata(&[hash]);
                     let seq = self.ring.push_send(
@@ -970,6 +1067,7 @@ where
                     peer.pending_send_seqs.push(seq);
                     peer.app.in_flight.push((hash, now));
                     peer.app.assigned_count = peer.app.assigned_count.saturating_add(1);
+                    tried.entry(hash).or_default().push(peer.addr);
                     if let Some(info) = in_flight.get_mut(&hash) {
                         info.issued_to.push(slot);
                         info.last_issued = now;
@@ -977,15 +1075,32 @@ where
                 }
             }
 
-            // Issue new work to idle peers.
-            for (slot, peer) in self.peers.iter_mut() {
-                if peer.state != PeerState::Ready {
+            let mut by_speed: Vec<u16> = self
+                .peers
+                .iter_mut()
+                .filter(|(_, peer)| peer.state == PeerState::Ready)
+                .map(|(slot, _)| slot)
+                .collect();
+            by_speed.sort_by_key(|slot| {
+                self.peers
+                    .get_mut(*slot)
+                    .map_or(u64::MAX, |peer| peer.app.score.expected_ms())
+            });
+            for slot in by_speed {
+                let Some(peer) = self.peers.get_mut(slot) else {
                     continue;
-                }
-                while peer.app.in_flight.len() < PEER_INFLIGHT_CAP {
-                    let Some(hash) = todo.pop_front() else {
+                };
+                let cap = peer.app.score.inflight_cap(fleet_median);
+                while peer.app.in_flight.len() < cap {
+                    let Some(index) = todo.iter().position(|hash| {
+                        tried.get(hash).is_none_or(|t| !t.contains(&peer.addr))
+                    }) else {
                         break;
                     };
+                    let Some(hash) = todo.remove(index) else {
+                        break;
+                    };
+                    tried.entry(hash).or_default().push(peer.addr);
                     let pl = encode_getdata(&[hash]);
                     let seq = self.ring.push_send(
                         &mut self.send_arena,
@@ -1054,6 +1169,22 @@ where
                 }
             }
         }
+    }
+
+    fn recycle_orphan_buffer(&mut self, op: Op, flags: ququmatz::types::CqeFlags) {
+        if op != Op::Recv {
+            return;
+        }
+        if let Some(buf_id) = decode_cqe_buffer_id(flags) {
+            self.pbr.recycle(buf_id);
+        }
+    }
+
+    fn handshake_stalled(peer: &FPeer, now: Instant) -> bool {
+        matches!(
+            peer.state,
+            PeerState::HandshakeVersionSent | PeerState::HandshakeRecving
+        ) && now.duration_since(peer.connected_at) > Duration::from_secs(HANDSHAKE_TIMEOUT_SECS)
     }
 
     fn next_pool_addr(&mut self, avoid: &[SocketAddrV4]) -> Option<SocketAddrV4> {
@@ -1174,11 +1305,11 @@ where
                     continue;
                 };
                 let hash = block.header.hash();
+                peer.app.record_arrival(&hash);
                 if let Some(height) = pending.remove(&hash) {
                     file_io.write_block_async(height, payload_slice.to_vec())?;
                     *saved += 1;
-                    peer.app.delivered_count = peer.app.delivered_count.saturating_add(1);
-                    peer.app.last_delivery = Instant::now();
+                    peer.app.record_delivery();
                     arrived.push(hash);
                 }
             }
