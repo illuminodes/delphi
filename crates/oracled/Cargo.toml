@@ -1,0 +1,14 @@
+[package]
+name = "mantle-oracled"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mantle = { path = "../mantle" }
+mantle-oracle = { path = "../oracle" }
+nostro2 = { workspace = true }
+nostro2-signer = { workspace = true }
+nostro2-relay = { workspace = true }
