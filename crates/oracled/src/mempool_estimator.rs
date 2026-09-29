@@ -120,37 +120,16 @@ impl MempoolEstimator {
 mod tests {
     use std::time::Instant;
 
-    use mantle::amount::Satoshi;
-    use mantle::difficulty::{BlockHeight, BlockTime};
     use mantle_oracle::{AdmittedSample, PriceBand};
 
     use super::{BootstrapRng, MempoolEstimator};
+    use crate::synthetic_market::SyntheticMarket;
 
     struct SampleFixture;
 
     impl SampleFixture {
-        const ROUND_USD: [f64; 9] = [5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 500.0, 1_000.0];
-
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         fn at_price(price: f64, outputs: usize, seed: u64) -> AdmittedSample {
-            let mut rng = BootstrapRng::seeded(seed);
-            let mut sample = AdmittedSample::new();
-            for index in 0..outputs {
-                let usd = if index % 3 == 0 {
-                    let fraction = f64::from(u32::try_from(rng.next_u64() % 10_000).unwrap_or(0))
-                        / 10_000.0;
-                    5.0 * 400.0_f64.powf(fraction)
-                } else {
-                    Self::ROUND_USD[rng.below(Self::ROUND_USD.len())]
-                };
-                let sats = (usd / price * 100_000_000.0).round() as u64;
-                sample.push(
-                    Satoshi::new(sats.max(2_000)),
-                    BlockHeight::new(1),
-                    BlockTime::new(1),
-                );
-            }
-            sample
+            SyntheticMarket::new(price, seed).sample(outputs)
         }
     }
 

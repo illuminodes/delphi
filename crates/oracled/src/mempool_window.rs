@@ -73,72 +73,20 @@ impl MempoolWindow {
 
 #[cfg(test)]
 mod tests {
-    use mantle::amount::Satoshi;
-    use mantle::difficulty::{BlockHeight, BlockTime, Locktime, Sequence, TxVersion};
-    use mantle::hash::Hash256;
-    use mantle::script::{ScriptPubKey, ScriptSig, Witness};
-    use mantle::tx::{OutPoint, Transaction, TxIn, TxOut};
+    use mantle::difficulty::{BlockHeight, BlockTime};
     use mantle_oracle::PriceBand;
 
     use super::MempoolWindow;
-    use crate::{BootstrapRng, MempoolEstimator, PriceSource};
+    use crate::synthetic_market::SyntheticMarket;
+    use crate::{MempoolEstimator, PriceSource};
 
-    struct PoolFixture {
-        counter: u32,
-        rng: BootstrapRng,
-    }
+    struct PoolFixture;
 
     impl PoolFixture {
-        const ROUND_USD: [f64; 9] = [5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 500.0, 1_000.0];
-
-        fn new() -> Self {
-            Self {
-                counter: 0,
-                rng: BootstrapRng::seeded(11),
-            }
-        }
-
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        fn output(&mut self, price: f64) -> Satoshi {
-            let usd = if self.rng.below(3) == 0 {
-                let fraction =
-                    f64::from(u32::try_from(self.rng.next_u64() % 10_000).unwrap_or(0)) / 10_000.0;
-                5.0 * 400.0_f64.powf(fraction)
-            } else {
-                Self::ROUND_USD[self.rng.below(Self::ROUND_USD.len())]
-            };
-            Satoshi::new(((usd / price * 100_000_000.0).round() as u64).max(2_000))
-        }
-
-        fn transaction(&mut self, price: f64) -> Transaction {
-            self.counter += 1;
-            let mut txid = [0_u8; 32];
-            txid[..4].copy_from_slice(&self.counter.to_le_bytes());
-            let outputs = (0..2)
-                .map(|_| TxOut {
-                    value: self.output(price),
-                    script_pubkey: ScriptPubKey::from_slice(&[0x51]),
-                })
-                .collect();
-            Transaction {
-                version: TxVersion::new(2),
-                inputs: vec![TxIn {
-                    previous_output: OutPoint {
-                        txid: Hash256::from_bytes(txid),
-                        vout: 0,
-                    },
-                    script_sig: ScriptSig::from_slice(&[]),
-                    sequence: Sequence::new(u32::MAX),
-                    witness: Witness::empty(),
-                }],
-                outputs,
-                locktime: Locktime::new(0),
-            }
-        }
-
-        fn fill(&mut self, window: &mut MempoolWindow, transactions: usize, price: f64) {
+        fn fill(window: &mut MempoolWindow, transactions: usize, price: f64) {
+            let mut market = SyntheticMarket::new(price, 11);
             for _ in 0..transactions {
-                let transaction = self.transaction(price);
+                let transaction = market.transaction();
                 window.absorb(&transaction, BlockTime::new(1));
             }
         }
@@ -159,9 +107,8 @@ mod tests {
 
     #[test]
     fn a_thin_window_has_no_update() {
-        let mut fixture = PoolFixture::new();
         let mut window = window();
-        fixture.fill(&mut window, 30, 80_000.0);
+        PoolFixture::fill(&mut window, 30, 80_000.0);
 
         assert!(window.outputs() < 200);
         assert!(window.update(band()).is_none());
@@ -169,9 +116,8 @@ mod tests {
 
     #[test]
     fn a_full_window_prices_near_the_planted_price() {
-        let mut fixture = PoolFixture::new();
         let mut window = window();
-        fixture.fill(&mut window, 300, 80_000.0);
+        PoolFixture::fill(&mut window, 300, 80_000.0);
         let update = window.update(band()).expect("update");
 
         assert_eq!(update.window(), "mempool");
@@ -192,9 +138,8 @@ mod tests {
 
     #[test]
     fn a_new_block_empties_the_window() {
-        let mut fixture = PoolFixture::new();
         let mut window = window();
-        fixture.fill(&mut window, 300, 80_000.0);
+        PoolFixture::fill(&mut window, 300, 80_000.0);
         window.reset(BlockHeight::new(2));
 
         assert_eq!(window.outputs(), 0);
@@ -204,20 +149,18 @@ mod tests {
 
     #[test]
     fn the_window_refills_after_a_reset() {
-        let mut fixture = PoolFixture::new();
         let mut window = window();
-        fixture.fill(&mut window, 300, 80_000.0);
+        PoolFixture::fill(&mut window, 300, 80_000.0);
         window.reset(BlockHeight::new(2));
-        fixture.fill(&mut window, 300, 80_000.0);
+        PoolFixture::fill(&mut window, 300, 80_000.0);
 
         assert!(window.update(band()).is_some());
     }
 
     #[test]
     fn a_band_around_a_far_price_yields_nothing_near_the_true_price() {
-        let mut fixture = PoolFixture::new();
         let mut window = window();
-        fixture.fill(&mut window, 300, 80_000.0);
+        PoolFixture::fill(&mut window, 300, 80_000.0);
         let far = PriceBand::around(160_000.0, 0.05).expect("band");
 
         assert!(window.update(far).is_none_or(|update| far.contains(update.price())));

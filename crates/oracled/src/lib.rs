@@ -12,6 +12,8 @@ pub mod price_update;
 pub mod publish_policy;
 pub mod record_log;
 pub mod relay_publisher;
+#[cfg(test)]
+pub(crate) mod synthetic_market;
 
 pub use block_cache::BlockCache;
 pub use block_plan::{BlockPlan, HeightSpan};
