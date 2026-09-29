@@ -11,6 +11,7 @@ use crate::ChainWindow;
 #[derive(Debug, Clone, PartialEq)]
 pub struct DaemonConfig {
     pub relay_url: String,
+    pub relay_insecure: bool,
     pub data_dir: PathBuf,
     pub peers: Vec<SocketAddrV4>,
     pub tolerance: f64,
@@ -27,6 +28,7 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             relay_url: "wss://rof.illuminodes.com".to_string(),
+            relay_insecure: false,
             data_dir: PathBuf::from("data/oracled"),
             peers: Vec::new(),
             tolerance: 0.15,
@@ -47,6 +49,7 @@ impl DaemonConfig {
         The signing key is read from ORACLED_NSEC (nsec, hex or mnemonic).\n\
         \n\
         --relay URL          relay to publish to (default wss://rof.illuminodes.com)\n\
+        --relay-insecure     skip certificate checks; private-network relay addresses only\n\
         --data-dir DIR       records and header cache (default data/oracled)\n\
         --peer ADDR          bitcoin peer ip:port, repeatable (default DNS seeds)\n\
         --tolerance F        mempool anchor band around the hourly chain price (default 0.15)\n\
@@ -73,6 +76,10 @@ impl DaemonConfig {
             let flag = argument.as_ref();
             if flag == "--dry-run" {
                 config.dry_run = true;
+                continue;
+            }
+            if flag == "--relay-insecure" {
+                config.relay_insecure = true;
                 continue;
             }
             let value = arguments
@@ -149,7 +156,7 @@ mod tests {
         let config = DaemonConfig::parse([
             "--relay", "ws://10.0.0.5:4848", "--data-dir", "/tmp/o", "--peer", "1.2.3.4:8333",
             "--peer", "5.6.7.8:8333", "--tolerance", "0.1", "--min-outputs", "300", "--draws", "50",
-            "--mempool-peers", "4", "--history-blocks", "144", "--cache-mb", "500", "--dry-run", "--run-seconds", "90",
+            "--mempool-peers", "4", "--history-blocks", "144", "--cache-mb", "500", "--dry-run", "--relay-insecure", "--run-seconds", "90",
         ])
         .expect("parses");
 
@@ -162,6 +169,7 @@ mod tests {
         assert_eq!(config.history_blocks, 144);
         assert_eq!(config.cache_limit_bytes, 500_000_000);
         assert!(config.dry_run);
+        assert!(config.relay_insecure);
         assert_eq!(config.run_for, Some(Duration::from_secs(90)));
     }
 

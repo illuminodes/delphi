@@ -8,9 +8,10 @@ use mantle::network::Network;
 use mantle_oracle::PeerSources;
 use mantle_oracled::{
     ChainSyncSpec, ChainWindow, ChainWorker, Daemon, DaemonConfig, MempoolEstimator, MempoolWindow,
-    MempoolWorker, NoteSink, PriceHub, PriceSigner, PublishPolicy, RelayPublisher, StdoutSink,
+    MempoolWorker, NoteSink, PriceHub, PriceSigner, PublishPolicy, RelayConnector, RelayPublisher,
+    StdoutSink,
 };
-use nostro2_relay::{NostrRelay, ReconnectConfig};
+use nostro2_relay::ReconnectConfig;
 use nostro2_signer::NostrKeypair;
 use nostro2_signer::nostro2_traits::NostrKeypair as KeypairTrait;
 
@@ -53,11 +54,8 @@ impl OracleDaemonApp {
         if self.config.dry_run {
             self.serve(StdoutSink, signer)
         } else {
-            let relay = NostrRelay::connect_blocking_with(
-                &self.config.relay_url,
-                ReconnectConfig::default(),
-            )
-            .map_err(|error| format!("connect {}: {error}", self.config.relay_url))?;
+            let relay = RelayConnector::new(&self.config.relay_url, self.config.relay_insecure)
+                .connect(ReconnectConfig::default())?;
             eprintln!("connected to {}", relay.url());
             self.serve(relay, signer)
         }
