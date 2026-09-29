@@ -19,11 +19,13 @@ pub struct SyncReport {
 
 /// Keeps a [`RecordLog`] level with the chain tip.
 ///
-/// Every pass builds a fetcher, brings headers and the missing blocks in,
-/// turns each block into a record, and drops the fetcher again. A pass ends
-/// early once the fetcher's block files pass the cache limit, and the next
-/// pass deletes them first, since a record holds everything pricing needs
-/// from its block. A report with `caught_up` false asks for another pass.
+/// One fetcher serves many passes, because each new fetcher leaks a 16 MiB
+/// slab inside the block-io crate. It is dropped and rebuilt only after a
+/// failed pass or a cache purge. A pass brings headers and the missing blocks
+/// in and turns each block into a record. A pass ends early once the block
+/// files pass the cache limit, and the next pass deletes them first, since a
+/// record holds everything pricing needs from its block. A report with
+/// `caught_up` false asks for another pass.
 pub struct ChainSync {
     network: Network,
     peers: Vec<SocketAddrV4>,
@@ -31,6 +33,7 @@ pub struct ChainSync {
     plan: BlockPlan,
     cache: BlockCache,
     log: RecordLog,
+    fetcher: Option<Fetcher>,
     _lock: DataDirLock,
 }
 
@@ -62,6 +65,7 @@ impl ChainSync {
             cache: BlockCache::new(data_dir.clone(), cache_limit_bytes),
             data_dir,
             log,
+            fetcher: None,
             _lock: lock,
         })
     }
@@ -83,8 +87,21 @@ impl ChainSync {
     /// cannot be fetched or decoded, or a record cannot be stored.
     pub fn sync(&mut self) -> Result<SyncReport, String> {
         let purged_cache = self.purge_if_full()?;
-        let mut fetcher = Fetcher::new(self.network, self.peers.clone(), &self.data_dir)
-            .map_err(|error| format!("initialize fetcher: {error}"))?;
+        let mut fetcher = self.take_fetcher()?;
+        let report = self.sync_with(&mut fetcher, purged_cache)?;
+        self.fetcher = Some(fetcher);
+        Ok(report)
+    }
+
+    fn take_fetcher(&mut self) -> Result<Fetcher, String> {
+        match self.fetcher.take() {
+            Some(fetcher) => Ok(fetcher),
+            None => Fetcher::new(self.network, self.peers.clone(), &self.data_dir)
+                .map_err(|error| format!("initialize fetcher: {error}")),
+        }
+    }
+
+    fn sync_with(&mut self, fetcher: &mut Fetcher, purged_cache: bool) -> Result<SyncReport, String> {
         let headers = fetcher
             .sync_headers(
                 BlockHeight::new(1),
@@ -134,10 +151,11 @@ impl ChainSync {
         })
     }
 
-    fn purge_if_full(&self) -> Result<bool, String> {
+    fn purge_if_full(&mut self) -> Result<bool, String> {
         if !self.cache.exceeds_limit() {
             return Ok(false);
         }
+        self.fetcher = None;
         self.cache
             .purge()
             .map_err(|error| format!("purge block cache: {error}"))?;

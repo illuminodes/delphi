@@ -43,16 +43,19 @@ impl ProbeApp {
             self.depth,
             1_000_000_000,
         )?;
-        let started = Instant::now();
-        let report = sync.sync()?;
-        eprintln!(
-            "synced to {} in {:.1}s: {} records appended, cache purged: {}, block cache {} bytes",
-            report.tip,
-            started.elapsed().as_secs_f64(),
-            report.appended,
-            report.purged_cache,
-            sync.cache().bytes()
-        );
+        for pass in 1..=2 {
+            let started = Instant::now();
+            let report = sync.sync()?;
+            eprintln!(
+                "pass {pass}: synced to {} in {:.1}s: {} records appended, caught up {}, cache purged {}, block cache {} bytes",
+                report.tip,
+                started.elapsed().as_secs_f64(),
+                report.appended,
+                report.caught_up,
+                report.purged_cache,
+                sync.cache().bytes()
+            );
+        }
         for blocks in [1, self.depth] {
             let Some(sample) = sync.log().sample(blocks) else {
                 println!("{blocks:>5} blocks: not enough records");
