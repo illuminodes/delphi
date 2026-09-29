@@ -99,7 +99,7 @@ impl OracleDaemonApp {
             network: Network::Mainnet,
             peers: peers.clone(),
             data_dir: self.config.data_dir.clone(),
-            depth: ChainWindow::deepest().blocks(),
+            depth: self.config.history_blocks,
             cache_limit_bytes: self.config.cache_limit_bytes,
         };
         let publisher = RelayPublisher::new(sink, signer, Self::policy());

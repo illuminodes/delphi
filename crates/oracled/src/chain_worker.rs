@@ -9,8 +9,10 @@ use crate::{ChainPricer, ChainSnapshot, ChainSync, Event};
 
 /// Follows the chain tip and reports the priced windows after each pass.
 ///
-/// The snapshot is priced again only when the tip has moved. It is sent on
-/// every pass regardless, so the publisher's heartbeat keeps running.
+/// A snapshot is sent only once the record log is level with the chain tip,
+/// so a half-filled log never publishes old prices as current. It is priced
+/// again only when the tip has moved, and sent on every caught-up pass so the
+/// publisher's heartbeat keeps running.
 pub struct ChainWorker {
     spec: ChainSyncSpec,
     stop: Arc<AtomicBool>,
@@ -89,6 +91,9 @@ impl ChainPass {
         );
         if !self.notice(notice) {
             return Ok(true);
+        }
+        if !report.caught_up {
+            return Ok(false);
         }
         let stale = self
             .cached

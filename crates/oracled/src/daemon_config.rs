@@ -2,6 +2,8 @@ use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::ChainWindow;
+
 /// Everything the daemon takes from its command line.
 ///
 /// The signing key is deliberately absent: it comes from the environment so
@@ -15,6 +17,7 @@ pub struct DaemonConfig {
     pub min_outputs: usize,
     pub draws: usize,
     pub mempool_peers: usize,
+    pub history_blocks: usize,
     pub cache_limit_bytes: u64,
     pub dry_run: bool,
     pub run_for: Option<Duration>,
@@ -30,6 +33,7 @@ impl Default for DaemonConfig {
             min_outputs: 200,
             draws: 30,
             mempool_peers: 8,
+            history_blocks: 1_008,
             cache_limit_bytes: 1_000_000_000,
             dry_run: false,
             run_for: None,
@@ -49,6 +53,8 @@ impl DaemonConfig {
         --min-outputs N      smallest mempool sample that is priced (default 200)\n\
         --draws N            bootstrap resamples per mempool price (default 30)\n\
         --mempool-peers N    peers to watch for unconfirmed transactions (default 8)\n\
+        --history-blocks N   blocks of history to keep; windows longer than this are\n\
+        \x20                    not published (default 1008, the weekly window)\n\
         --cache-mb N         cap on the fetcher's raw block files (default 1000)\n\
         --dry-run            print notes instead of publishing, with a throwaway key\n\
         --run-seconds N      stop after N seconds\n";
@@ -87,6 +93,7 @@ impl DaemonConfig {
             "--min-outputs" => self.min_outputs = Self::number(flag, value)?,
             "--draws" => self.draws = Self::number(flag, value)?,
             "--mempool-peers" => self.mempool_peers = Self::number(flag, value)?,
+            "--history-blocks" => self.history_blocks = Self::number(flag, value)?,
             "--cache-mb" => {
                 self.cache_limit_bytes = Self::number::<u64>(flag, value)?.saturating_mul(1_000_000);
             }
@@ -114,6 +121,10 @@ impl DaemonConfig {
         if self.mempool_peers == 0 {
             return Err("--mempool-peers must be at least 1".to_string());
         }
+        let shortest = ChainWindow::Hourly.blocks();
+        if self.history_blocks < shortest {
+            return Err(format!("--history-blocks must be at least {shortest}"));
+        }
         Ok(())
     }
 }
@@ -138,7 +149,7 @@ mod tests {
         let config = DaemonConfig::parse([
             "--relay", "ws://10.0.0.5:4848", "--data-dir", "/tmp/o", "--peer", "1.2.3.4:8333",
             "--peer", "5.6.7.8:8333", "--tolerance", "0.1", "--min-outputs", "300", "--draws", "50",
-            "--mempool-peers", "4", "--cache-mb", "500", "--dry-run", "--run-seconds", "90",
+            "--mempool-peers", "4", "--history-blocks", "144", "--cache-mb", "500", "--dry-run", "--run-seconds", "90",
         ])
         .expect("parses");
 
@@ -148,6 +159,7 @@ mod tests {
         assert_eq!(config.min_outputs, 300);
         assert_eq!(config.draws, 50);
         assert_eq!(config.mempool_peers, 4);
+        assert_eq!(config.history_blocks, 144);
         assert_eq!(config.cache_limit_bytes, 500_000_000);
         assert!(config.dry_run);
         assert_eq!(config.run_for, Some(Duration::from_secs(90)));
@@ -180,5 +192,7 @@ mod tests {
         assert!(DaemonConfig::parse(["--tolerance", "NaN"]).is_err());
         assert!(DaemonConfig::parse(["--draws", "0"]).is_err());
         assert!(DaemonConfig::parse(["--mempool-peers", "0"]).is_err());
+        assert!(DaemonConfig::parse(["--history-blocks", "5"]).is_err());
+        assert!(DaemonConfig::parse(["--history-blocks", "6"]).is_ok());
     }
 }
