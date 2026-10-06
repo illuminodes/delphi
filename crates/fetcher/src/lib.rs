@@ -1275,6 +1275,11 @@ where
         }
         let payload_slice = &peer.recv_buf[MessageHeader::ENCODED_LEN..total];
         if Hash256::checksum(payload_slice) != header.checksum() {
+            eprintln!(
+                "  iouring-fetcher: checksum mismatch on {} from slot={slot} ({} bytes) — dropping peer",
+                header.command().as_str(),
+                payload_slice.len()
+            );
             peer.state = PeerState::Dead;
             peer.close(ring, send_arena);
             return Ok(());

@@ -177,6 +177,12 @@ impl<T> Peer<T> {
     ) {
         use ququmatz::types::CqeFlags;
         if res <= 0 {
+            if res < 0 {
+                eprintln!(
+                    "  transport: recv failed for {} with errno {}",
+                    self.addr, -res
+                );
+            }
             self.state = PeerState::Dead;
             self.recv_armed = false;
             self.close(ring, send_arena);
