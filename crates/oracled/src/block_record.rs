@@ -1,5 +1,6 @@
 use mantle::amount::Satoshi;
 use mantle::difficulty::{BlockHeight, BlockTime};
+use mantle::hash::Hash256;
 use mantle::tx::Transaction;
 use mantle_oracle::{AdmittedSample, OutputFilter};
 
@@ -12,18 +13,21 @@ use mantle_oracle::{AdmittedSample, OutputFilter};
 pub struct BlockRecord {
     height: BlockHeight,
     time: BlockTime,
+    hash: Hash256,
     amounts: Vec<Satoshi>,
 }
 
 impl BlockRecord {
-    const HEADER_BYTES: usize = 12;
+    const LEGACY_HEADER_BYTES: usize = 12;
+    const HEADER_BYTES: usize = 44;
     const AMOUNT_BYTES: usize = 8;
 
     #[must_use]
-    pub fn new(height: BlockHeight, time: BlockTime, amounts: Vec<Satoshi>) -> Self {
+    pub fn new(height: BlockHeight, time: BlockTime, hash: Hash256, amounts: Vec<Satoshi>) -> Self {
         Self {
             height,
             time,
+            hash,
             amounts,
         }
     }
@@ -32,6 +36,7 @@ impl BlockRecord {
     pub fn from_transactions<'a>(
         height: BlockHeight,
         time: BlockTime,
+        hash: Hash256,
         transactions: impl IntoIterator<Item = &'a Transaction>,
     ) -> Self {
         let mut filter = OutputFilter::new();
@@ -39,7 +44,7 @@ impl BlockRecord {
             .into_iter()
             .flat_map(|transaction| filter.admit(transaction))
             .collect();
-        Self::new(height, time, amounts)
+        Self::new(height, time, hash, amounts)
     }
 
     #[must_use]
@@ -50,6 +55,21 @@ impl BlockRecord {
     #[must_use]
     pub const fn time(&self) -> BlockTime {
         self.time
+    }
+
+    #[must_use]
+    pub const fn hash(&self) -> Hash256 {
+        self.hash
+    }
+
+    /// Whether the record predates stored hashes and still needs one.
+    #[must_use]
+    pub fn lacks_hash(&self) -> bool {
+        self.hash == Hash256::ZERO
+    }
+
+    pub const fn set_hash(&mut self, hash: Hash256) {
+        self.hash = hash;
     }
 
     #[must_use]
@@ -66,6 +86,7 @@ impl BlockRecord {
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.height.to_u32().to_le_bytes());
         out.extend_from_slice(&self.time.to_u32().to_le_bytes());
+        out.extend_from_slice(self.hash.as_bytes());
         let count = u32::try_from(self.amounts.len()).unwrap_or(u32::MAX);
         out.extend_from_slice(&count.to_le_bytes());
         for amount in self.amounts.iter().take(count as usize) {
@@ -78,17 +99,30 @@ impl BlockRecord {
     #[must_use]
     pub fn decode_prefix(bytes: &[u8]) -> Option<(Self, usize)> {
         let header = bytes.get(..Self::HEADER_BYTES)?;
+        let hash = Hash256::from_bytes(header[8..40].try_into().ok()?);
+        Self::decode_with(bytes, Self::HEADER_BYTES, hash)
+    }
+
+    /// Decode one record written before hashes were stored. The hash comes
+    /// back as [`Hash256::ZERO`] until filled in from a header.
+    #[must_use]
+    pub fn decode_legacy_prefix(bytes: &[u8]) -> Option<(Self, usize)> {
+        Self::decode_with(bytes, Self::LEGACY_HEADER_BYTES, Hash256::ZERO)
+    }
+
+    fn decode_with(bytes: &[u8], header_bytes: usize, hash: Hash256) -> Option<(Self, usize)> {
+        let header = bytes.get(..header_bytes)?;
         let height = BlockHeight::new(Self::word(&header[0..4])?);
         let time = BlockTime::new(Self::word(&header[4..8])?);
-        let count = usize::try_from(Self::word(&header[8..12])?).ok()?;
-        let total = Self::HEADER_BYTES.checked_add(count.checked_mul(Self::AMOUNT_BYTES)?)?;
-        let body = bytes.get(Self::HEADER_BYTES..total)?;
+        let count = usize::try_from(Self::word(&header[header_bytes - 4..header_bytes])?).ok()?;
+        let total = header_bytes.checked_add(count.checked_mul(Self::AMOUNT_BYTES)?)?;
+        let body = bytes.get(header_bytes..total)?;
         let amounts = body
             .chunks_exact(Self::AMOUNT_BYTES)
             .map(|chunk| chunk.try_into().ok().map(u64::from_le_bytes))
             .map(|value| value.map(Satoshi::new))
             .collect::<Option<Vec<_>>>()?;
-        Some((Self::new(height, time, amounts), total))
+        Some((Self::new(height, time, hash, amounts), total))
     }
 
     fn word(bytes: &[u8]) -> Option<u32> {
@@ -100,6 +134,7 @@ impl BlockRecord {
 mod tests {
     use mantle::amount::Satoshi;
     use mantle::difficulty::{BlockHeight, BlockTime};
+    use mantle::hash::Hash256;
     use mantle_oracle::AdmittedSample;
 
     use super::BlockRecord;
@@ -111,9 +146,46 @@ mod tests {
             BlockRecord::new(
                 BlockHeight::new(height),
                 BlockTime::new(1_700_000_000 + height),
+                Hash256::hash(&height.to_le_bytes()),
                 amounts.iter().copied().map(Satoshi::new).collect(),
             )
         }
+
+        fn legacy_bytes(height: u32, time: u32, amounts: &[u64]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&height.to_le_bytes());
+            bytes.extend_from_slice(&time.to_le_bytes());
+            bytes.extend_from_slice(&u32::try_from(amounts.len()).expect("small").to_le_bytes());
+            for amount in amounts {
+                bytes.extend_from_slice(&amount.to_le_bytes());
+            }
+            bytes
+        }
+    }
+
+    #[test]
+    fn a_legacy_record_decodes_without_a_hash() {
+        let bytes = RecordFixture::legacy_bytes(12, 34, &[5_000, 6_000]);
+
+        let (record, used) = BlockRecord::decode_legacy_prefix(&bytes).expect("legacy record");
+
+        assert_eq!(used, bytes.len());
+        assert_eq!(record.height(), BlockHeight::new(12));
+        assert_eq!(record.time(), BlockTime::new(34));
+        assert_eq!(record.amounts().len(), 2);
+        assert!(record.lacks_hash());
+    }
+
+    #[test]
+    fn the_hash_survives_a_round_trip() {
+        let record = RecordFixture::record(3, &[1]);
+        let mut bytes = Vec::new();
+        record.encode_into(&mut bytes);
+
+        let (decoded, _) = BlockRecord::decode_prefix(&bytes).expect("record");
+
+        assert_eq!(decoded.hash(), Hash256::hash(&3_u32.to_le_bytes()));
+        assert!(!decoded.lacks_hash());
     }
 
     #[test]
@@ -137,7 +209,7 @@ mod tests {
         let (decoded, used) = BlockRecord::decode_prefix(&bytes).expect("complete record");
 
         assert_eq!(decoded, record);
-        assert_eq!(used, 12);
+        assert_eq!(used, 44);
     }
 
     #[test]
@@ -155,9 +227,11 @@ mod tests {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&1_u32.to_le_bytes());
         bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 32]);
         bytes.extend_from_slice(&u32::MAX.to_le_bytes());
 
         assert!(BlockRecord::decode_prefix(&bytes).is_none());
+        assert!(BlockRecord::decode_legacy_prefix(&RecordFixture::legacy_bytes(1, 2, &[])[..8]).is_none());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle_oracled::{NoteSink, PriceSigner, PriceSource, PriceUpdate, RelayConnector, SeriesPoint};
-use nostro2::{NostrRelayEvent, NostrSubscription};
+use nostro2::{NostrNote, NostrRelayEvent, NostrSubscription};
 use nostro2_relay::ReconnectConfig;
 use nostro2_signer::NostrKeypair;
 use nostro2_signer::nostro2_traits::NostrKeypair as KeypairTrait;
@@ -14,6 +14,7 @@ struct PublishProbe {
     url: String,
     insecure: bool,
     kind: Option<u32>,
+    age_seconds: i64,
     points: u32,
     keypair: NostrKeypair,
 }
@@ -30,6 +31,12 @@ impl PublishProbe {
                 .position(|argument| argument == "--kind")
                 .and_then(|index| arguments.get(index + 1))
                 .and_then(|value| value.parse().ok()),
+            age_seconds: arguments
+                .iter()
+                .position(|argument| argument == "--age-seconds")
+                .and_then(|index| arguments.get(index + 1))
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
             points: arguments
                 .iter()
                 .position(|argument| argument == "--points")
@@ -55,8 +62,7 @@ impl PublishProbe {
         }
     }
 
-    fn run(&self) -> Result<(), String> {
-        let relay = RelayConnector::new(&self.url, self.insecure).connect(ReconnectConfig::default())?;
+    fn note(&self) -> Result<NostrNote, String> {
         let mut signer = PriceSigner::new(self.keypair.clone());
         let series = (0..self.points)
             .map(|index| SeriesPoint {
@@ -80,10 +86,21 @@ impl PublishProbe {
         .with_series(series);
         eprintln!("note content is {} bytes", update.to_json().len());
         let mut note = signer.sign(&update).map_err(|error| error.to_string())?;
-        if let Some(kind) = self.kind {
-            note.kind = kind;
+        if self.kind.is_some() || self.age_seconds != 0 {
+            if let Some(kind) = self.kind {
+                note.kind = kind;
+            }
+            note.created_at -= self.age_seconds;
+            note.id = None;
+            note.sig = None;
             note.sign_with(&self.keypair).map_err(|error| error.to_string())?;
         }
+        Ok(note)
+    }
+
+    fn run(&self) -> Result<(), String> {
+        let relay = RelayConnector::new(&self.url, self.insecure).connect(ReconnectConfig::default())?;
+        let note = self.note()?;
         let id = note.id.clone().unwrap_or_default();
         let author = note.pubkey.clone();
         let mut watcher = RelayConnector::new(&self.url, self.insecure).connect(ReconnectConfig::default())?;
@@ -113,7 +130,7 @@ impl PublishProbe {
         });
         let accepted = Self::await_ok(&receiver, &id)?;
         eprintln!("relay OK for {id}: {accepted}");
-        let live = Self::await_note(&live_receiver, &id);
+        let live = Self::await_live(&live_receiver, &id);
         eprintln!("note delivered live to a subscriber: {live}");
 
         thread::sleep(Duration::from_secs(1));
@@ -150,7 +167,7 @@ impl PublishProbe {
         eprintln!("note visible on a second connection: {stored}");
         second.close();
         relay.close();
-        if accepted && stored {
+        if accepted && (stored || (Self::is_ephemeral(note.kind) && live)) {
             Ok(())
         } else {
             Err("relay did not accept and return the note".to_string())
@@ -169,6 +186,21 @@ impl PublishProbe {
             }
         }
         Err("no OK from the relay".to_string())
+    }
+
+    const fn is_ephemeral(kind: u32) -> bool {
+        kind >= 20_000 && kind < 30_000
+    }
+
+    fn await_live(receiver: &mpsc::Receiver<NostrRelayEvent>, id: &str) -> bool {
+        while let Ok(event) = receiver.recv_timeout(Self::WAIT) {
+            if let NostrRelayEvent::NewNote(_, _, note) = event
+                && note.id.as_deref() == Some(id)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     fn await_note(receiver: &mpsc::Receiver<NostrRelayEvent>, id: &str) -> bool {

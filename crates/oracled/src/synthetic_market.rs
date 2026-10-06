@@ -43,6 +43,7 @@ impl SyntheticMarket {
         BlockRecord::new(
             BlockHeight::new(height),
             BlockTime::new(1_700_000_000 + height),
+            Hash256::hash(&height.to_le_bytes()),
             amounts,
         )
     }

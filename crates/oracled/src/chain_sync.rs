@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use mantle::difficulty::BlockHeight;
 use mantle::network::Network;
+use mantle::primitives::BlockHeader;
 use mantle_fetcher::Fetcher;
 use mantle_oracle::DataDirLock;
 
@@ -140,6 +141,7 @@ impl ChainSync {
             .last()
             .map(|(height, _)| *height)
             .ok_or_else(|| "peers returned no headers".to_string())?;
+        self.fill_hashes(&headers)?;
         let recorded_tip = self.log.tip().map(BlockRecord::height);
         let Some(span) = self.plan.missing(recorded_tip, tip) else {
             return Ok(SyncReport {
@@ -162,8 +164,12 @@ impl ChainSync {
                 let block = fetcher
                     .read_block_decoded(*height, header.hash())
                     .map_err(|error| format!("decode block {height}: {error}"))?;
-                let record =
-                    BlockRecord::from_transactions(*height, header.time(), &block.transactions);
+                let record = BlockRecord::from_transactions(
+                    *height,
+                    header.time(),
+                    header.hash(),
+                    &block.transactions,
+                );
                 self.log
                     .append(record)
                     .map_err(|error| format!("store record {height}: {error}"))?;
@@ -176,6 +182,23 @@ impl ChainSync {
             purged_cache,
             caught_up: self.log.tip().map(BlockRecord::height) == Some(tip),
         })
+    }
+
+    fn fill_hashes(&mut self, headers: &[(BlockHeight, BlockHeader)]) -> Result<(), String> {
+        let missing = self
+            .log
+            .fill_hashes(|height| {
+                let index = headers.partition_point(|(held, _)| *held < height);
+                headers
+                    .get(index)
+                    .filter(|(held, _)| *held == height)
+                    .map(|(_, header)| header.hash())
+            })
+            .map_err(|error| format!("store record hashes: {error}"))?;
+        if missing > 0 {
+            eprintln!("{missing} records have no header to take a hash from");
+        }
+        Ok(())
     }
 
     fn purge_if_full(&mut self) -> Result<bool, String> {

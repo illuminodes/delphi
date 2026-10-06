@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use mantle::difficulty::BlockHeight;
+use mantle::hash::Hash256;
 use mantle_oracle::AdmittedSample;
 
 use crate::BlockRecord;
@@ -23,6 +24,11 @@ pub struct RecordLog {
 }
 
 impl RecordLog {
+    pub const MAGIC: [u8; 8] = *b"MREC\x02\0\0\0";
+
+    /// A file without [`Self::MAGIC`] holds records without hashes; it is
+    /// read and rewritten in the current format.
+    ///
     /// # Errors
     /// Returns an I/O error if the file cannot be read or opened for append.
     pub fn open(path: impl Into<PathBuf>, capacity: usize) -> io::Result<Self> {
@@ -32,25 +38,58 @@ impl RecordLog {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(error),
         };
+        let current = bytes.starts_with(&Self::MAGIC);
+        let decode = if current {
+            BlockRecord::decode_prefix
+        } else {
+            BlockRecord::decode_legacy_prefix
+        };
         let mut records = VecDeque::new();
-        let mut used = 0;
+        let mut used = if current { Self::MAGIC.len() } else { 0 };
         let mut replayed = 0;
-        while let Some((record, consumed)) = BlockRecord::decode_prefix(&bytes[used..]) {
+        while let Some((record, consumed)) = decode(&bytes[used..]) {
             Self::place(&mut records, capacity, record);
             used += consumed;
             replayed += 1;
         }
-        if used < bytes.len() {
-            OpenOptions::new().write(true).open(&path)?.set_len(used as u64)?;
-        }
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
-        Ok(Self {
+        let mut log = Self {
             path,
             capacity,
             records,
             file,
             file_records: replayed,
-        })
+        };
+        if !current {
+            log.compact()?;
+        } else if used < bytes.len() {
+            OpenOptions::new().write(true).open(&log.path)?.set_len(used as u64)?;
+        }
+        Ok(log)
+    }
+
+    /// Give every held record that lacks a hash the one `lookup` knows for
+    /// its height, rewriting the file when anything changed. Returns how many
+    /// records still lack one.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the file cannot be rewritten.
+    pub fn fill_hashes(&mut self, lookup: impl Fn(BlockHeight) -> Option<Hash256>) -> io::Result<usize> {
+        let mut filled = 0;
+        let mut missing = 0;
+        for record in self.records.iter_mut().filter(|record| record.lacks_hash()) {
+            match lookup(record.height()) {
+                Some(hash) => {
+                    record.set_hash(hash);
+                    filled += 1;
+                }
+                None => missing += 1,
+            }
+        }
+        if filled > 0 {
+            self.compact()?;
+        }
+        Ok(missing)
     }
 
     /// # Errors
@@ -90,7 +129,7 @@ impl RecordLog {
 
     fn compact(&mut self) -> io::Result<()> {
         let temporary = self.path.with_extension("tmp");
-        let mut bytes = Vec::new();
+        let mut bytes = Self::MAGIC.to_vec();
         for record in &self.records {
             record.encode_into(&mut bytes);
         }
@@ -121,6 +160,18 @@ impl RecordLog {
     #[must_use]
     pub fn tip(&self) -> Option<&BlockRecord> {
         self.records.back()
+    }
+
+    #[must_use]
+    pub fn get(&self, height: BlockHeight) -> Option<&BlockRecord> {
+        let oldest = self.oldest_height()?.to_u32();
+        let offset = height.to_u32().checked_sub(oldest)?;
+        self.records.get(usize::try_from(offset).ok()?)
+    }
+
+    /// The held records, oldest first.
+    pub fn records(&self) -> impl Iterator<Item = &BlockRecord> {
+        self.records.iter()
     }
 
     #[must_use]
@@ -163,6 +214,7 @@ mod tests {
 
     use mantle::amount::Satoshi;
     use mantle::difficulty::{BlockHeight, BlockTime};
+    use mantle::hash::Hash256;
 
     use super::RecordLog;
     use crate::BlockRecord;
@@ -187,8 +239,24 @@ mod tests {
             BlockRecord::new(
                 BlockHeight::new(height),
                 BlockTime::new(1_700_000_000 + height),
+                Self::hash(height),
                 vec![Satoshi::new(10_000 + u64::from(height))],
             )
+        }
+
+        fn hash(height: u32) -> Hash256 {
+            Hash256::hash(&height.to_le_bytes())
+        }
+
+        fn write_legacy(&self, heights: std::ops::RangeInclusive<u32>) {
+            let mut bytes = Vec::new();
+            for height in heights {
+                bytes.extend_from_slice(&height.to_le_bytes());
+                bytes.extend_from_slice(&(1_700_000_000 + height).to_le_bytes());
+                bytes.extend_from_slice(&1_u32.to_le_bytes());
+                bytes.extend_from_slice(&(10_000 + u64::from(height)).to_le_bytes());
+            }
+            fs::write(self.path(), bytes).expect("write legacy");
         }
 
         fn heights(log: &RecordLog) -> Vec<u32> {
@@ -266,6 +334,7 @@ mod tests {
         let replacement = BlockRecord::new(
             BlockHeight::new(4),
             BlockTime::new(9),
+            Hash256::ZERO,
             vec![Satoshi::new(77_000)],
         );
         log.append(replacement).expect("append");
@@ -294,14 +363,49 @@ mod tests {
         for height in 1..=200 {
             log.append(LogFixture::record(height)).expect("append");
         }
-        let one_record = 12 + 8;
+        let one_record = 44 + 8;
         let size = fs::metadata(fixture.path()).expect("stat").len();
 
-        assert!(size <= (5 * 2 + 1) * one_record, "file grew to {size}");
+        assert!(size <= 8 + (5 * 2 + 1) * one_record, "file grew to {size}");
         drop(log);
         let log = RecordLog::open(fixture.path(), 5).expect("reopen");
         assert_eq!(log.oldest_height(), Some(BlockHeight::new(196)));
         assert_eq!(log.len(), 5);
+    }
+
+    #[test]
+    fn a_legacy_file_is_migrated_and_its_hashes_filled_from_headers() {
+        let fixture = LogFixture::new("legacy");
+        fixture.write_legacy(1..=4);
+        let mut log = RecordLog::open(fixture.path(), 10).expect("open legacy");
+
+        assert_eq!(LogFixture::heights(&log), vec![1, 2, 3, 4]);
+        assert!(log.records().all(BlockRecord::lacks_hash));
+        let missing = log
+            .fill_hashes(|height| (height.to_u32() != 2).then(|| LogFixture::hash(height.to_u32())))
+            .expect("fill");
+        assert_eq!(missing, 1);
+        log.append(LogFixture::record(5)).expect("append");
+        drop(log);
+
+        let log = RecordLog::open(fixture.path(), 10).expect("reopen");
+        assert_eq!(LogFixture::heights(&log), vec![1, 2, 3, 4, 5]);
+        assert_eq!(log.get(BlockHeight::new(3)).map(BlockRecord::hash), Some(LogFixture::hash(3)));
+        assert!(log.get(BlockHeight::new(2)).is_some_and(BlockRecord::lacks_hash));
+        assert_eq!(log.get(BlockHeight::new(5)).map(BlockRecord::hash), Some(LogFixture::hash(5)));
+    }
+
+    #[test]
+    fn get_finds_records_by_height_only_inside_the_window() {
+        let fixture = LogFixture::new("get");
+        let mut log = RecordLog::open(fixture.path(), 3).expect("open");
+        for height in 1..=5 {
+            log.append(LogFixture::record(height)).expect("append");
+        }
+
+        assert!(log.get(BlockHeight::new(2)).is_none());
+        assert_eq!(log.get(BlockHeight::new(4)).map(BlockRecord::height), Some(BlockHeight::new(4)));
+        assert!(log.get(BlockHeight::new(6)).is_none());
     }
 
     #[test]
