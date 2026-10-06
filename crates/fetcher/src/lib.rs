@@ -1300,9 +1300,16 @@ where
             }
             (PeerState::Ready, "block") => {
                 use mantle::primitives::Block;
-                let Ok(block) = Block::decode(&mut std::io::Cursor::new(payload_slice)) else {
-                    peer.recv_buf.drain(..total);
-                    continue;
+                let block = match Block::decode(&mut std::io::Cursor::new(payload_slice)) {
+                    Ok(block) => block,
+                    Err(error) => {
+                        eprintln!(
+                            "  iouring-fetcher: undecodable block from slot={slot} ({} bytes): {error}",
+                            payload_slice.len()
+                        );
+                        peer.recv_buf.drain(..total);
+                        continue;
+                    }
                 };
                 let hash = block.header.hash();
                 peer.app.record_arrival(&hash);

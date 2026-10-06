@@ -128,8 +128,10 @@ impl<const N: usize> Encode for ScriptBuf<N> {
 }
 
 impl<const N: usize> Decode for ScriptBuf<N> {
+    /// Bounded by the block weight: the 10 000-byte script limit applies at
+    /// execution, and output scripts above it are valid on chain.
     fn decode(r: &mut impl Read) -> Result<Self, Error> {
-        VarInt::decode_bytes_limited::<10_000>(r).map(Self::from)
+        VarInt::decode_bytes_limited::<{ 4 * 1024 * 1024 }>(r).map(Self::from)
     }
 }
 
@@ -326,6 +328,23 @@ mod tests {
         let bytes = encode_val(&s);
         let decoded: ScriptSig = decode_val(&bytes);
         assert_eq!(s, decoded);
+    }
+
+    #[test]
+    fn an_output_script_above_the_execution_limit_still_decodes() {
+        let data = vec![0x6au8; 80_000];
+        let s = ScriptPubKey::from_slice(&data);
+        let decoded: ScriptPubKey = decode_val(&encode_val(&s));
+        assert_eq!(decoded.len(), 80_000);
+    }
+
+    #[test]
+    fn a_script_longer_than_a_block_is_refused() {
+        let mut bytes = Vec::new();
+        VarInt::from(4_usize * 1024 * 1024 + 1)
+            .encode(&mut bytes)
+            .expect("Vec<u8> write cannot fail");
+        assert!(ScriptPubKey::decode(&mut Cursor::new(&bytes)).is_err());
     }
 
     #[test]
