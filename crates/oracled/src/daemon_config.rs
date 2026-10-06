@@ -2,7 +2,7 @@ use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::ChainWindow;
+use crate::{ChainWindow, TransactionStream};
 
 /// Everything the daemon takes from its command line.
 ///
@@ -20,6 +20,7 @@ pub struct DaemonConfig {
     pub mempool_peers: usize,
     pub history_blocks: usize,
     pub cache_limit_bytes: u64,
+    pub tx_notes_per_second: u32,
     pub dry_run: bool,
     pub print_npub: bool,
     pub key_file: Option<PathBuf>,
@@ -40,6 +41,7 @@ impl Default for DaemonConfig {
             mempool_peers: 8,
             history_blocks: 1_008,
             cache_limit_bytes: 1_000_000_000,
+            tx_notes_per_second: TransactionStream::DEFAULT_PER_SECOND,
             dry_run: false,
             print_npub: false,
             key_file: None,
@@ -69,6 +71,7 @@ impl DaemonConfig {
         --history-blocks N   blocks of history to keep, which sets how far back each\n\
         \x20                    timeline reaches (default 1008, seven days)\n\
         --cache-mb N         cap on the fetcher's raw block files (default 1000)\n\
+        --tx-notes N         per-transaction verdict notes per second, 0 for none (default 20)\n\
         --dry-run            print notes instead of publishing, with a throwaway key\n\
         --run-seconds N      stop after N seconds\n";
 
@@ -117,6 +120,7 @@ impl DaemonConfig {
             "--draws" => self.draws = Self::number(flag, value)?,
             "--mempool-peers" => self.mempool_peers = Self::number(flag, value)?,
             "--history-blocks" => self.history_blocks = Self::number(flag, value)?,
+            "--tx-notes" => self.tx_notes_per_second = Self::number(flag, value)?,
             "--cache-mb" => {
                 self.cache_limit_bytes = Self::number::<u64>(flag, value)?.saturating_mul(1_000_000);
             }
@@ -172,7 +176,7 @@ mod tests {
         let config = DaemonConfig::parse([
             "--relay", "ws://10.0.0.5:4848", "--data-dir", "/tmp/o", "--peer", "1.2.3.4:8333",
             "--peer", "5.6.7.8:8333", "--tolerance", "0.1", "--min-outputs", "300", "--draws", "50",
-            "--mempool-peers", "4", "--history-blocks", "144", "--cache-mb", "500", "--dry-run", "--relay-insecure", "--run-seconds", "90",
+            "--mempool-peers", "4", "--history-blocks", "144", "--cache-mb", "500", "--tx-notes", "0", "--dry-run", "--relay-insecure", "--run-seconds", "90",
             "--print-npub", "--key-file", "/tmp/k.nsec", "--log-file", "/tmp/o.log",
         ])
         .expect("parses");
@@ -185,6 +189,7 @@ mod tests {
         assert_eq!(config.mempool_peers, 4);
         assert_eq!(config.history_blocks, 144);
         assert_eq!(config.cache_limit_bytes, 500_000_000);
+        assert_eq!(config.tx_notes_per_second, 0);
         assert!(config.dry_run);
         assert!(config.relay_insecure);
         assert!(config.print_npub);

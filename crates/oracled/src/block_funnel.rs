@@ -1,6 +1,6 @@
 use mantle::amount::Satoshi;
-use mantle::difficulty::{BlockHeight, BlockTime};
-use mantle_oracle::{CentralPriceFinder, IntradayPricePoints};
+
+use crate::OutputReading;
 
 /// How many of a block's admitted outputs the price model used, measured against one price:
 /// those within reach of a round-USD amount, and those whose implied price lies inside the
@@ -14,24 +14,11 @@ pub struct BlockFunnel {
 impl BlockFunnel {
     #[must_use]
     pub fn of(amounts: &[Satoshi], price: f64) -> Self {
-        let lower = price * (1.0 - CentralPriceFinder::DEVIATION_RANGE);
-        let upper = price * (1.0 + CentralPriceFinder::DEVIATION_RANGE);
-        let mut funnel = Self {
-            near_round_usd: 0,
-            inside_band: 0,
-        };
-        for amount in amounts {
-            let mut points = IntradayPricePoints::new();
-            points.insert(*amount, price, BlockHeight::new(0), BlockTime::new(0));
-            if points.is_empty() {
-                continue;
-            }
-            funnel.near_round_usd += 1;
-            if points.as_slice().iter().any(|point| point.price > lower && point.price < upper) {
-                funnel.inside_band += 1;
-            }
+        let readings: Vec<OutputReading> = amounts.iter().map(|amount| OutputReading::of(*amount, price)).collect();
+        Self {
+            near_round_usd: readings.iter().filter(|reading| reading.near_round_usd()).count(),
+            inside_band: readings.iter().filter(|reading| reading.inside_band).count(),
         }
-        funnel
     }
 }
 

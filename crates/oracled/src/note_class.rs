@@ -5,6 +5,9 @@ pub enum NoteClass {
     Audit,
     /// Forwarded to subscribers and never stored.
     Live,
+    /// Forwarded and never stored like [`Self::Live`], under its own kind so the per-transaction
+    /// stream reaches only those who ask for it.
+    Transaction,
     /// Stored, one per window, each replacing the last.
     Addressable,
 }
@@ -15,6 +18,7 @@ impl NoteClass {
         match self {
             Self::Audit => 8_078,
             Self::Live => 20_078,
+            Self::Transaction => 20_079,
             Self::Addressable => 30_078,
         }
     }
@@ -23,6 +27,7 @@ impl NoteClass {
     #[must_use]
     pub const fn of_kind(kind: u32) -> Self {
         match kind {
+            20_079 => Self::Transaction,
             20_000..30_000 => Self::Live,
             30_000..40_000 => Self::Addressable,
             _ => Self::Audit,
@@ -34,7 +39,7 @@ impl NoteClass {
     pub const fn window_tag(self) -> &'static str {
         match self {
             Self::Addressable => "d",
-            Self::Audit | Self::Live => "w",
+            Self::Audit | Self::Live | Self::Transaction => "w",
         }
     }
 }
@@ -47,12 +52,14 @@ mod tests {
     fn kinds_fall_in_the_ranges_relays_treat_differently() {
         assert!((1_000..10_000).contains(&NoteClass::Audit.kind()));
         assert!((20_000..30_000).contains(&NoteClass::Live.kind()));
+        assert!((20_000..30_000).contains(&NoteClass::Transaction.kind()));
+        assert_ne!(NoteClass::Live.kind(), NoteClass::Transaction.kind());
         assert!((30_000..40_000).contains(&NoteClass::Addressable.kind()));
     }
 
     #[test]
     fn a_kind_maps_back_to_its_class() {
-        for class in [NoteClass::Audit, NoteClass::Live, NoteClass::Addressable] {
+        for class in [NoteClass::Audit, NoteClass::Live, NoteClass::Transaction, NoteClass::Addressable] {
             assert_eq!(NoteClass::of_kind(class.kind()), class);
         }
     }

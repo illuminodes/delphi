@@ -7,7 +7,7 @@ use mantle_oracle::PriceBand;
 
 use crate::{
     AuditLedger, AuditRecord, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
-    NoteSink, Outcome, RecentBlocks, RelayPublisher,
+    NoteSink, Outcome, RecentBlocks, RelayPublisher, TransactionNote, TransactionStream,
 };
 
 /// Joins the chain prices, the live mempool window and the publisher.
@@ -16,7 +16,8 @@ use crate::{
 /// else is live: the mempool price and its fit at each check, the chain fits
 /// and the newest blocks at each block and again every `repeat`, and the
 /// daemon status every `repeat`. Nothing is priced from the mempool before
-/// the chain anchors it.
+/// the chain anchors it. Each mempool transaction goes out as its own note, tagged with the
+/// filter's verdict, as far as the [`TransactionStream`] allows.
 pub struct PriceHub<S: NoteSink> {
     publisher: RelayPublisher<S>,
     ledger: Arc<Mutex<AuditLedger>>,
@@ -29,6 +30,7 @@ pub struct PriceHub<S: NoteSink> {
     tip: Option<BlockHeight>,
     chain_fits: Vec<FitUpdate>,
     blocks: RecentBlocks,
+    stream: TransactionStream,
     last_tick: Option<Instant>,
     last_repeat: Option<Instant>,
 }
@@ -69,6 +71,7 @@ impl<S: NoteSink> PriceHub<S> {
             tip: None,
             chain_fits: Vec::new(),
             blocks: RecentBlocks::default(),
+            stream: TransactionStream::default(),
             last_tick: None,
             last_repeat: None,
         }
@@ -77,6 +80,12 @@ impl<S: NoteSink> PriceHub<S> {
     #[must_use]
     pub const fn with_repeat(mut self, repeat: Duration) -> Self {
         self.repeat = repeat;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_transaction_stream(mut self, stream: TransactionStream) -> Self {
+        self.stream = stream;
         self
     }
 
@@ -141,8 +150,15 @@ impl<S: NoteSink> PriceHub<S> {
         (payload.window().to_string(), self.publisher.offer(payload))
     }
 
-    pub fn absorb(&mut self, transaction: &Transaction, at: BlockTime) {
-        self.window.absorb(transaction, at);
+    /// Add a mempool transaction to the window and, when the stream lets it through, publish
+    /// its verdict.
+    pub fn absorb(&mut self, transaction: &Transaction, at: BlockTime, now: Instant) -> Option<(String, Outcome)> {
+        let (verdict, admitted) = self.window.absorb(transaction, at);
+        if !self.stream.admit(now) {
+            return None;
+        }
+        let note = TransactionNote::new(transaction, at, verdict, admitted, self.anchor);
+        Some(self.offer(&note))
     }
 
     /// Stream the mempool price and fit once the interval has passed and an
@@ -193,6 +209,8 @@ impl<S: NoteSink> PriceHub<S> {
             mempool_outputs: self.window.outputs(),
             mempool_transactions: self.window.admitted_transactions(),
             audits_published: self.publisher.tally().audit,
+            transaction_notes: self.publisher.tally().transactions,
+            transaction_notes_dropped: self.stream.dropped(),
             uptime: now.saturating_duration_since(self.started),
         }
     }
@@ -233,7 +251,8 @@ mod tests {
     use crate::synthetic_market::SyntheticMarket;
     use crate::{
         AuditLedger, AuditRecord, AuditStatus, BlockDigest, ChainSnapshot, ChainWindow, MempoolEstimator,
-        MempoolWindow, NoteClass, NoteSink, PriceSigner, RecentBlocks, RelayPublisher,
+        MempoolWindow, NoteClass, NoteSink, PriceSigner, RecentBlocks, RelayPublisher, TransactionNote,
+        TransactionStream,
     };
 
     #[derive(Default)]
@@ -266,6 +285,7 @@ mod tests {
                 3,
             );
             PriceHub::new(publisher, ledger, window, 0.15, Self::INTERVAL)
+                .with_transaction_stream(TransactionStream::new(0))
         }
 
         fn audit(window: ChainWindow, price: f64, stop: u32) -> AuditRecord {
@@ -296,8 +316,9 @@ mod tests {
 
         fn fill(hub: &mut PriceHub<RecordingSink>, transactions: usize, price: f64) {
             let mut market = SyntheticMarket::new(price, 17);
+            let now = Instant::now();
             for _ in 0..transactions {
-                hub.absorb(&market.transaction(), BlockTime::new(1));
+                hub.absorb(&market.transaction(), BlockTime::new(1), now);
             }
         }
 
@@ -441,6 +462,27 @@ mod tests {
 
         let live = HubFixture::windows(&hub, NoteClass::Live);
         assert_eq!(live.iter().filter(|window| *window == RecentBlocks::WINDOW).count(), 2);
+    }
+
+    #[test]
+    fn each_streamed_transaction_carries_its_verdict_up_to_the_limit() {
+        let mut hub = HubFixture::hub().with_transaction_stream(TransactionStream::new(5));
+        hub.apply_chain(&HubFixture::snapshot(80_000.0, 100, &[]));
+        HubFixture::fill(&mut hub, 8, 80_000.0);
+
+        let notes = hub.publisher().sink().notes.borrow();
+        let streamed: Vec<_> = notes
+            .iter()
+            .filter(|note| note.kind == NoteClass::Transaction.kind())
+            .collect();
+        assert_eq!(streamed.len(), 5);
+        assert!(streamed.iter().all(|note| note.tags.find_tags_ref("w") == [TransactionNote::WINDOW]));
+        assert!(streamed.iter().all(|note| note.tags.find_tags_ref(TransactionNote::VERDICT_TAG).len() == 1));
+        assert!(streamed.iter().all(|note| note.tags.find_tags_ref(TransactionNote::STAGE_TAG).len() == 1));
+        drop(notes);
+        let status = hub.status(Instant::now());
+        assert_eq!(status.transaction_notes, 5);
+        assert_eq!(status.transaction_notes_dropped, 3);
     }
 
     #[test]

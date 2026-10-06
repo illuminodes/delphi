@@ -1,6 +1,7 @@
+use mantle::amount::Satoshi;
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::tx::Transaction;
-use mantle_oracle::{MempoolCollector, PriceBand, RoughPriceEstimator};
+use mantle_oracle::{MempoolCollector, PriceBand, RoughPriceEstimator, TransactionVerdict};
 
 use crate::{BootstrapRng, FitUpdate, MempoolEstimator, PriceUpdate};
 
@@ -32,8 +33,8 @@ impl MempoolWindow {
         }
     }
 
-    pub fn absorb(&mut self, transaction: &Transaction, at: BlockTime) -> usize {
-        self.collector.absorb(transaction, at)
+    pub fn absorb(&mut self, transaction: &Transaction, at: BlockTime) -> (TransactionVerdict, Vec<Satoshi>) {
+        self.collector.screen(transaction, at)
     }
 
     /// Discard the pool and start counting from a new tip.

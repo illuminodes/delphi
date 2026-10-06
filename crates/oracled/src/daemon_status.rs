@@ -15,6 +15,8 @@ pub struct DaemonStatus {
     pub mempool_outputs: usize,
     pub mempool_transactions: u64,
     pub audits_published: u64,
+    pub transaction_notes: u64,
+    pub transaction_notes_dropped: u64,
     pub uptime: Duration,
 }
 
@@ -56,6 +58,8 @@ impl NotePayload for DaemonStatus {
         object.count("mempool_outputs", self.mempool_outputs);
         object.raw("mempool_transactions", &self.mempool_transactions.to_string());
         object.raw("audits_published", &self.audits_published.to_string());
+        object.raw("transaction_notes", &self.transaction_notes.to_string());
+        object.raw("transaction_notes_dropped", &self.transaction_notes_dropped.to_string());
         object.raw("uptime", &self.uptime.as_secs().to_string());
         object.finish()
     }
@@ -80,6 +84,8 @@ mod tests {
             mempool_outputs: 812,
             mempool_transactions: 400,
             audits_published: 12,
+            transaction_notes: 30,
+            transaction_notes_dropped: 4,
             uptime: Duration::from_secs(90),
         };
         let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
@@ -88,6 +94,8 @@ mod tests {
         assert_eq!(json["anchor"], 80_000.0);
         assert_eq!(json["mempool_outputs"], 812);
         assert_eq!(json["audits_published"], 12);
+        assert_eq!(json["transaction_notes"], 30);
+        assert_eq!(json["transaction_notes_dropped"], 4);
         assert_eq!(json["uptime"], 90);
         assert!(json["band_low"].as_f64().expect("low") < 80_000.0);
         assert_eq!(status.class(), NoteClass::Live);
@@ -102,6 +110,8 @@ mod tests {
             mempool_outputs: 0,
             mempool_transactions: 0,
             audits_published: 0,
+            transaction_notes: 0,
+            transaction_notes_dropped: 0,
             uptime: Duration::ZERO,
         };
         let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");

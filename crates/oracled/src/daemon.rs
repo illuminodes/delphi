@@ -47,7 +47,11 @@ impl<S: NoteSink> Daemon<S> {
     fn handle(&mut self, event: Event) {
         match event {
             Event::Chain(snapshot) => self.apply(&snapshot),
-            Event::Transaction(transaction, at) => self.hub.absorb(&transaction, at),
+            Event::Transaction(transaction, at) => {
+                if let Some((window, outcome)) = self.hub.absorb(&transaction, at, Instant::now()) {
+                    Self::report(&window, &outcome);
+                }
+            }
             Event::Notice(message) => eprintln!("{message}"),
         }
     }
@@ -60,7 +64,7 @@ impl<S: NoteSink> Daemon<S> {
 
     fn report(window: &str, outcome: &Outcome) {
         match outcome {
-            Outcome::Published(NoteClass::Live, _) => {}
+            Outcome::Published(NoteClass::Live | NoteClass::Transaction, _) => {}
             Outcome::Published(class, id) => eprintln!("published {window} ({class:?} {id})"),
             Outcome::Rejected(error) => eprintln!("rejected {window}: {error}"),
             Outcome::Undelivered(message) => eprintln!("undelivered {window}: {message}"),
@@ -83,7 +87,7 @@ mod tests {
     use crate::synthetic_market::SyntheticMarket;
     use crate::{
         AuditLedger, AuditRecord, ChainSnapshot, ChainWindow, Event, MempoolEstimator, MempoolWindow, NoteSink,
-        PriceHub, PriceSigner, RecentBlocks, RelayPublisher,
+        PriceHub, PriceSigner, RecentBlocks, RelayPublisher, TransactionStream,
     };
 
     #[derive(Default)]
@@ -110,7 +114,9 @@ mod tests {
                 3,
             );
             let ledger = Arc::new(Mutex::new(AuditLedger::volatile()));
-            Daemon::new(PriceHub::new(publisher, ledger, window, 0.15, interval))
+            Daemon::new(
+                PriceHub::new(publisher, ledger, window, 0.15, interval).with_transaction_stream(TransactionStream::new(0)),
+            )
         }
 
         fn chain_event(price: f64, tip: u32) -> Event {

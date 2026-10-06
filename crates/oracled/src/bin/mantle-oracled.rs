@@ -9,6 +9,7 @@ use mantle_oracle::PeerSources;
 use mantle_oracled::{
     AckLogger, AuditLedger, ChainSyncSpec, ChainWorker, Daemon, DaemonConfig, KeySource, LogFile, MempoolEstimator,
     MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, RelayConnector, RelayPublisher, StdoutSink,
+    TransactionStream,
 };
 use nostro2_relay::ReconnectConfig;
 
@@ -118,7 +119,8 @@ impl OracleDaemonApp {
             window,
             self.config.tolerance,
             Self::MEMPOOL_INTERVAL,
-        );
+        )
+        .with_transaction_stream(TransactionStream::new(self.config.tx_notes_per_second));
 
         let stop = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::channel();
@@ -148,8 +150,8 @@ impl OracleDaemonApp {
         let _ = mempool.join();
         let tally = daemon.hub().publisher().tally();
         eprintln!(
-            "stopped: {} audit, {} live, {} other, {} rejected, {} undelivered",
-            tally.audit, tally.live, tally.other, tally.rejected, tally.undelivered
+            "stopped: {} audit, {} live, {} transaction, {} other, {} rejected, {} undelivered",
+            tally.audit, tally.live, tally.transactions, tally.other, tally.rejected, tally.undelivered
         );
         Ok(())
     }

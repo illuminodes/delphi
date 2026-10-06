@@ -3,7 +3,9 @@ use std::collections::VecDeque;
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::tx::Transaction;
 
-use crate::{AdmittedSample, OutputFilter};
+use mantle::amount::Satoshi;
+
+use crate::{AdmittedSample, OutputFilter, TransactionVerdict};
 
 /// Accumulates admitted outputs from unconfirmed transactions.
 ///
@@ -58,8 +60,13 @@ impl MempoolCollector {
     /// Filter one transaction, keeping whatever outputs clear, and report how
     /// many were kept.
     pub fn absorb(&mut self, transaction: &Transaction, at: BlockTime) -> usize {
+        self.screen(transaction, at).1.len()
+    }
+
+    /// [`Self::absorb`], returning the filter's verdict and the outputs kept.
+    pub fn screen(&mut self, transaction: &Transaction, at: BlockTime) -> (TransactionVerdict, Vec<Satoshi>) {
         self.transactions += 1;
-        let admitted: Vec<_> = self.filter.admit(transaction).collect();
+        let (verdict, admitted) = self.filter.screen(transaction);
         for amount in &admitted {
             self.sample.push(*amount, self.height, at);
         }
@@ -68,7 +75,7 @@ impl MempoolCollector {
             self.windowed_outputs.push_back(admitted.len());
             self.trim_to_window();
         }
-        admitted.len()
+        (verdict, admitted)
     }
 
     fn trim_to_window(&mut self) {

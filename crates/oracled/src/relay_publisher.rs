@@ -37,6 +37,7 @@ impl Outcome {
 pub struct PublishTally {
     pub audit: u64,
     pub live: u64,
+    pub transactions: u64,
     pub other: u64,
     pub rejected: u64,
     pub undelivered: u64,
@@ -45,13 +46,14 @@ pub struct PublishTally {
 impl PublishTally {
     #[must_use]
     pub const fn published(&self) -> u64 {
-        self.audit + self.live + self.other
+        self.audit + self.live + self.transactions + self.other
     }
 
     const fn count(&mut self, class: NoteClass) {
         match class {
             NoteClass::Audit => self.audit += 1,
             NoteClass::Live => self.live += 1,
+            NoteClass::Transaction => self.transactions += 1,
             NoteClass::Addressable => self.other += 1,
         }
     }
@@ -179,6 +181,7 @@ mod tests {
             PublishTally {
                 audit: 0,
                 live: 1,
+                transactions: 0,
                 other: 0,
                 rejected: 1,
                 undelivered: 1,
