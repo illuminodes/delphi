@@ -13,6 +13,10 @@ struct QueryApp {
     key_file: String,
     watch: Duration,
     kind: Option<u32>,
+    window: Option<String>,
+    since_seconds: Option<u64>,
+    limit: u32,
+    quiet: bool,
 }
 
 impl QueryApp {
@@ -39,6 +43,10 @@ impl QueryApp {
                     .unwrap_or(15),
             ),
             kind: value_of("--kind").and_then(|kind| kind.parse().ok()),
+            window: value_of("--window"),
+            since_seconds: value_of("--since-seconds").and_then(|seconds| seconds.parse().ok()),
+            limit: value_of("--limit").and_then(|limit| limit.parse().ok()).unwrap_or(50),
+            quiet: arguments.iter().any(|argument| argument == "--quiet"),
         }
     }
 
@@ -59,9 +67,18 @@ impl QueryApp {
         let author = signer.public_key();
         eprintln!("relay {} author {author}", self.url);
         let relay = RelayConnector::new(&self.url, self.insecure).connect(ReconnectConfig::default())?;
-        let mut filter = NostrSubscription::new().author(&author).limit(50);
+        let mut filter = NostrSubscription::new().author(&author).limit(self.limit);
         if let Some(kind) = self.kind {
             filter = filter.kind(kind);
+        }
+        if let Some(window) = &self.window {
+            filter.add_tag("w", window);
+        }
+        if let Some(seconds) = self.since_seconds {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            filter.since = Some(now.saturating_sub(seconds));
         }
         relay.send(filter).map_err(|error| error.to_string())?;
         let mut reader = relay.clone();
@@ -93,6 +110,9 @@ impl QueryApp {
                     } else {
                         note.content.clone()
                     };
+                    if self.quiet {
+                        continue;
+                    }
                     println!(
                         "{} id {} kind {} created_at {} d={:?} w={:?} bytes={} {}",
                         if ended { "LIVE  " } else { "STORED" },
