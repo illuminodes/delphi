@@ -12,6 +12,7 @@ struct QueryApp {
     insecure: bool,
     key_file: String,
     watch: Duration,
+    kind: Option<u32>,
 }
 
 impl QueryApp {
@@ -37,6 +38,7 @@ impl QueryApp {
                     .and_then(|seconds| seconds.parse().ok())
                     .unwrap_or(15),
             ),
+            kind: value_of("--kind").and_then(|kind| kind.parse().ok()),
         }
     }
 
@@ -57,9 +59,11 @@ impl QueryApp {
         let author = signer.public_key();
         eprintln!("relay {} author {author}", self.url);
         let relay = RelayConnector::new(&self.url, self.insecure).connect(ReconnectConfig::default())?;
-        relay
-            .send(NostrSubscription::new().author(&author).limit(50))
-            .map_err(|error| error.to_string())?;
+        let mut filter = NostrSubscription::new().author(&author).limit(50);
+        if let Some(kind) = self.kind {
+            filter = filter.kind(kind);
+        }
+        relay.send(filter).map_err(|error| error.to_string())?;
         let mut reader = relay.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
