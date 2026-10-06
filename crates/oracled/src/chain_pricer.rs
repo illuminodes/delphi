@@ -1,7 +1,7 @@
 use mantle::difficulty::BlockHeight;
 use mantle_oracle::RoughPriceEstimator;
 
-use crate::{AuditRecord, BlockRecord, ChainWindow, FitUpdate, RecordLog};
+use crate::{AuditRecord, BlockRecord, ChainWindow, FitUpdate, RecentBlocks, RecordLog};
 
 /// Prices chain windows out of the record log.
 #[derive(Debug, Clone, Copy, Default)]
@@ -17,6 +17,8 @@ pub struct ChainSnapshot {
     pub audits: Vec<AuditRecord>,
     /// The evidence behind each window's price at the tip.
     pub fits: Vec<FitUpdate>,
+    /// The newest blocks read, newest first.
+    pub blocks: RecentBlocks,
 }
 
 impl ChainPricer {

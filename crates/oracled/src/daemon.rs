@@ -83,7 +83,7 @@ mod tests {
     use crate::synthetic_market::SyntheticMarket;
     use crate::{
         AuditLedger, AuditRecord, ChainSnapshot, ChainWindow, Event, MempoolEstimator, MempoolWindow, NoteSink,
-        PriceHub, PriceSigner, RelayPublisher,
+        PriceHub, PriceSigner, RecentBlocks, RelayPublisher,
     };
 
     #[derive(Default)]
@@ -132,6 +132,7 @@ mod tests {
                     Hash256::hash(&tip.to_le_bytes()),
                 )],
                 fits: Vec::new(),
+                blocks: RecentBlocks::default(),
             })
         }
 

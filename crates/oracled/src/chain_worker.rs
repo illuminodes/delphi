@@ -147,6 +147,7 @@ impl ChainPass {
             anchor: self.pricer.anchor(log),
             audits,
             fits: if moved { self.pricer.fits(log) } else { Vec::new() },
+            blocks: self.sync.recent().clone(),
         })
     }
 

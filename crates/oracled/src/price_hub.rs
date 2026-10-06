@@ -7,15 +7,16 @@ use mantle_oracle::PriceBand;
 
 use crate::{
     AuditLedger, AuditRecord, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
-    NoteSink, Outcome, RelayPublisher,
+    NoteSink, Outcome, RecentBlocks, RelayPublisher,
 };
 
 /// Joins the chain prices, the live mempool window and the publisher.
 ///
 /// Every audit record goes out once and is entered in the ledger. Everything
 /// else is live: the mempool price and its fit at each check, the chain fits
-/// at each block and again every `repeat`, and the daemon status every
-/// `repeat`. Nothing is priced from the mempool before the chain anchors it.
+/// and the newest blocks at each block and again every `repeat`, and the
+/// daemon status every `repeat`. Nothing is priced from the mempool before
+/// the chain anchors it.
 pub struct PriceHub<S: NoteSink> {
     publisher: RelayPublisher<S>,
     ledger: Arc<Mutex<AuditLedger>>,
@@ -27,6 +28,7 @@ pub struct PriceHub<S: NoteSink> {
     anchor: Option<f64>,
     tip: Option<BlockHeight>,
     chain_fits: Vec<FitUpdate>,
+    blocks: RecentBlocks,
     last_tick: Option<Instant>,
     last_repeat: Option<Instant>,
 }
@@ -66,6 +68,7 @@ impl<S: NoteSink> PriceHub<S> {
             anchor: None,
             tip: None,
             chain_fits: Vec::new(),
+            blocks: RecentBlocks::default(),
             last_tick: None,
             last_repeat: None,
         }
@@ -103,6 +106,10 @@ impl<S: NoteSink> PriceHub<S> {
         if !snapshot.fits.is_empty() {
             self.chain_fits.clone_from(&snapshot.fits);
             outcomes.extend(self.send_chain_fits());
+        }
+        if !snapshot.blocks.is_empty() && snapshot.blocks != self.blocks {
+            self.blocks.clone_from(&snapshot.blocks);
+            outcomes.push(self.offer(&self.blocks.clone()));
         }
         outcomes
     }
@@ -149,6 +156,9 @@ impl<S: NoteSink> PriceHub<S> {
             self.last_repeat = Some(now);
             outcomes.push(self.offer(&self.status(now)));
             outcomes.extend(self.send_chain_fits());
+            if !self.blocks.is_empty() {
+                outcomes.push(self.offer(&self.blocks.clone()));
+            }
         }
         if self
             .last_tick
@@ -222,8 +232,8 @@ mod tests {
     use super::PriceHub;
     use crate::synthetic_market::SyntheticMarket;
     use crate::{
-        AuditLedger, AuditRecord, AuditStatus, ChainSnapshot, ChainWindow, MempoolEstimator, MempoolWindow,
-        NoteClass, NoteSink, PriceSigner, RelayPublisher,
+        AuditLedger, AuditRecord, AuditStatus, BlockDigest, ChainSnapshot, ChainWindow, MempoolEstimator,
+        MempoolWindow, NoteClass, NoteSink, PriceSigner, RecentBlocks, RelayPublisher,
     };
 
     #[derive(Default)]
@@ -280,6 +290,7 @@ mod tests {
                 anchor: Some(price),
                 audits: windows.iter().map(|window| Self::audit(*window, price, tip)).collect(),
                 fits: Vec::new(),
+                blocks: RecentBlocks::default(),
             }
         }
 
@@ -398,6 +409,35 @@ mod tests {
         let live = HubFixture::windows(&hub, NoteClass::Live);
         assert_eq!(live.iter().filter(|window| *window == "fit-chain-1h").count(), 3);
         assert_eq!(live.iter().filter(|window| *window == "status").count(), 2);
+    }
+
+    #[test]
+    fn new_blocks_go_out_once_and_again_each_repeat() {
+        let mut hub = HubFixture::hub();
+        let start = Instant::now();
+        hub.tick(start);
+        let mut snapshot = HubFixture::snapshot(80_000.0, 100, &[]);
+        snapshot.blocks.record(BlockDigest {
+            height: BlockHeight::new(100),
+            hash: "h".to_string(),
+            previous: String::new(),
+            time: 1,
+            version: 1,
+            difficulty: 1.0,
+            transactions: 1,
+            outputs: 1,
+            size: 100,
+            weight: 400,
+            output_value: mantle::amount::Satoshi::new(0),
+            coinbase_value: mantle::amount::Satoshi::new(0),
+            subsidy: mantle::amount::Satoshi::new(0),
+        });
+        hub.apply_chain(&snapshot);
+        hub.apply_chain(&snapshot);
+        hub.tick(start + PriceHub::<RecordingSink>::REPEAT);
+
+        let live = HubFixture::windows(&hub, NoteClass::Live);
+        assert_eq!(live.iter().filter(|window| *window == RecentBlocks::WINDOW).count(), 2);
     }
 
     #[test]

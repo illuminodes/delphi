@@ -7,7 +7,7 @@ use mantle::primitives::BlockHeader;
 use mantle_fetcher::Fetcher;
 use mantle_oracle::DataDirLock;
 
-use crate::{BlockCache, BlockPlan, BlockRecord, RecordLog};
+use crate::{BlockCache, BlockDigest, BlockPlan, BlockRecord, RecentBlocks, RecordLog};
 
 /// What one synchronization pass did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +61,7 @@ pub struct ChainSync {
     plan: BlockPlan,
     cache: BlockCache,
     log: RecordLog,
+    recent: RecentBlocks,
     fetcher: Option<Fetcher>,
     _lock: DataDirLock,
 }
@@ -93,6 +94,7 @@ impl ChainSync {
             cache: BlockCache::new(data_dir.clone(), cache_limit_bytes),
             data_dir,
             log,
+            recent: RecentBlocks::default(),
             fetcher: None,
             _lock: lock,
         })
@@ -101,6 +103,12 @@ impl ChainSync {
     #[must_use]
     pub const fn log(&self) -> &RecordLog {
         &self.log
+    }
+
+    /// The newest blocks read since the sync opened.
+    #[must_use]
+    pub const fn recent(&self) -> &RecentBlocks {
+        &self.recent
     }
 
     #[must_use]
@@ -170,6 +178,7 @@ impl ChainSync {
                     header.hash(),
                     &block.transactions,
                 );
+                self.recent.record(BlockDigest::of(*height, &block));
                 self.log
                     .append(record)
                     .map_err(|error| format!("store record {height}: {error}"))?;
