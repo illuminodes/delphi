@@ -1,16 +1,14 @@
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use mantle::network::Network;
 use mantle_oracle::PeerSources;
 use mantle_oracled::{
-    AckLogger, ChainSyncSpec, ChainWindow, ChainWorker, Daemon, DaemonConfig, FitUpdate, KeySource, LogFile,
-    MempoolEstimator,
-    MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, PublishPolicy, RelayConnector, RelayPublisher,
-    StdoutSink,
+    AckLogger, AuditLedger, ChainSyncSpec, ChainWorker, Daemon, DaemonConfig, KeySource, LogFile, MempoolEstimator,
+    MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, RelayConnector, RelayPublisher, StdoutSink,
 };
 use nostro2_relay::ReconnectConfig;
 
@@ -21,9 +19,8 @@ struct OracleDaemonApp {
 impl OracleDaemonApp {
     const KEY_VARIABLE: &'static str = "ORACLED_NSEC";
     const MEMPOOL_INTERVAL: Duration = Duration::from_secs(10);
-    const MEMPOOL_MIN_CHANGE: f64 = 0.001;
-    const HEARTBEAT: Duration = Duration::from_mins(1);
-    const CHAIN_HEARTBEAT: Duration = Duration::from_mins(10);
+    const LEDGER_FILE: &'static str = "audit.ledger";
+    const DRY_LEDGER_FILE: &'static str = "audit-dry.ledger";
 
     fn execute() -> ExitCode {
         let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -72,17 +69,16 @@ impl OracleDaemonApp {
         }
     }
 
-    fn policy() -> PublishPolicy {
-        let mut policy = PublishPolicy::new(Self::MEMPOOL_MIN_CHANGE, Self::HEARTBEAT);
-        for window in ChainWindow::ALL {
-            policy = policy.with_rule(window.tag(), 0.0, Self::CHAIN_HEARTBEAT);
-            policy = policy.with_rule(
-                &format!("{}{}", FitUpdate::PREFIX, window.tag()),
-                0.0,
-                Self::CHAIN_HEARTBEAT,
-            );
-        }
-        policy
+    fn ledger(&self) -> Result<AuditLedger, String> {
+        let name = if self.config.dry_run {
+            Self::DRY_LEDGER_FILE
+        } else {
+            Self::LEDGER_FILE
+        };
+        std::fs::create_dir_all(&self.config.data_dir)
+            .map_err(|error| format!("create {}: {error}", self.config.data_dir.display()))?;
+        let path = self.config.data_dir.join(name);
+        AuditLedger::open(&path).map_err(|error| format!("audit ledger {}: {error}", path.display()))
     }
 
     fn peers(&self) -> Result<Vec<std::net::SocketAddrV4>, String> {
@@ -107,19 +103,27 @@ impl OracleDaemonApp {
             depth: self.config.history_blocks,
             cache_limit_bytes: self.config.cache_limit_bytes,
         };
-        let publisher = RelayPublisher::new(sink, signer, Self::policy());
+        let ledger = Arc::new(Mutex::new(self.ledger()?));
+        eprintln!("{} audit notes already published", ledger.lock().map_or(0, |held| held.len()));
+        let publisher = RelayPublisher::new(sink, signer);
         let window = MempoolWindow::new(
             "mempool",
             mantle::difficulty::BlockHeight::new(0),
             MempoolEstimator::new(self.config.min_outputs, self.config.draws),
             0x6d65_6d70,
         );
-        let hub = PriceHub::new(publisher, window, self.config.tolerance, Self::MEMPOOL_INTERVAL);
+        let hub = PriceHub::new(
+            publisher,
+            Arc::clone(&ledger),
+            window,
+            self.config.tolerance,
+            Self::MEMPOOL_INTERVAL,
+        );
 
         let stop = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::channel();
         let chain = {
-            let worker = ChainWorker::new(spec, Arc::clone(&stop), sender.clone());
+            let worker = ChainWorker::new(spec, ledger, Arc::clone(&stop), sender.clone());
             thread::Builder::new()
                 .name("chain".into())
                 .spawn(move || worker.run())
@@ -135,6 +139,7 @@ impl OracleDaemonApp {
 
         let deadline = self.config.run_for.map(|span| Instant::now() + span);
         let mut daemon = Daemon::new(hub);
+        daemon.retire_addressable();
         daemon.run(&receiver, deadline);
 
         stop.store(true, Ordering::Relaxed);
@@ -143,8 +148,8 @@ impl OracleDaemonApp {
         let _ = mempool.join();
         let tally = daemon.hub().publisher().tally();
         eprintln!(
-            "stopped: {} published, {} held, {} rejected, {} undelivered",
-            tally.published, tally.held, tally.rejected, tally.undelivered
+            "stopped: {} audit, {} live, {} other, {} rejected, {} undelivered",
+            tally.audit, tally.live, tally.other, tally.rejected, tally.undelivered
         );
         Ok(())
     }

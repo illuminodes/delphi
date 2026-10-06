@@ -90,12 +90,13 @@ impl QueryApp {
                         note.content.clone()
                     };
                     println!(
-                        "{} id {} kind {} created_at {} d={:?} bytes={} {}",
+                        "{} id {} kind {} created_at {} d={:?} w={:?} bytes={} {}",
                         if ended { "LIVE  " } else { "STORED" },
                         note.id.as_deref().unwrap_or("?"),
                         note.kind,
                         note.created_at,
                         note.tags.find_tags_ref("d"),
+                        note.tags.find_tags_ref("w"),
                         note.content.len(),
                         preview
                     );

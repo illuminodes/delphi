@@ -1,9 +1,7 @@
-use std::time::Instant;
-
 use nostro2::NostrNote;
 use nostro2_relay::NostrRelay;
 
-use crate::{NotePayload, PriceSigner, PriceSignerError, PublishPolicy, Verdict};
+use crate::{NoteClass, NotePayload, PriceSigner, PriceSignerError};
 
 /// Where signed notes go.
 pub trait NoteSink {
@@ -18,71 +16,84 @@ impl NoteSink for NostrRelay {
     }
 }
 
-/// What happened to one offered update.
+/// What happened to one offered payload.
 #[derive(Debug)]
 pub enum Outcome {
-    Published(Verdict),
-    Held,
+    /// Handed to the sink, with the note id.
+    Published(NoteClass, String),
     Rejected(PriceSignerError),
     Undelivered(String),
+}
+
+impl Outcome {
+    #[must_use]
+    pub const fn is_published(&self) -> bool {
+        matches!(self, Self::Published(..))
+    }
 }
 
 /// Counts of outcomes since the publisher started.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PublishTally {
-    pub published: u64,
-    pub held: u64,
+    pub audit: u64,
+    pub live: u64,
+    pub other: u64,
     pub rejected: u64,
     pub undelivered: u64,
 }
 
-/// Signs price updates and sends the ones the policy allows.
-///
-/// A window is recorded as published only after the sink accepted the note,
-/// so a failed delivery is retried on the next update instead of waiting out
-/// a heartbeat.
+impl PublishTally {
+    #[must_use]
+    pub const fn published(&self) -> u64 {
+        self.audit + self.live + self.other
+    }
+
+    const fn count(&mut self, class: NoteClass) {
+        match class {
+            NoteClass::Audit => self.audit += 1,
+            NoteClass::Live => self.live += 1,
+            NoteClass::Addressable => self.other += 1,
+        }
+    }
+}
+
+/// Signs payloads and hands them to the sink.
 pub struct RelayPublisher<S: NoteSink> {
     sink: S,
     signer: PriceSigner,
-    policy: PublishPolicy,
     tally: PublishTally,
 }
 
 impl<S: NoteSink> RelayPublisher<S> {
     #[must_use]
-    pub fn new(sink: S, signer: PriceSigner, policy: PublishPolicy) -> Self {
+    pub fn new(sink: S, signer: PriceSigner) -> Self {
         Self {
             sink,
             signer,
-            policy,
             tally: PublishTally::default(),
         }
     }
 
-    pub fn offer(&mut self, update: &impl NotePayload, now: Instant) -> Outcome {
-        if !update.is_publishable() {
-            self.tally.rejected += 1;
-            return Outcome::Rejected(PriceSignerError::Unpublishable(update.window().to_string()));
-        }
-        let verdict = self.policy.judge(update.window(), update.price(), now);
-        if !verdict.publishes() {
-            self.tally.held += 1;
-            return Outcome::Held;
-        }
-        let note = match self.signer.sign(update) {
+    pub fn offer(&mut self, payload: &impl NotePayload) -> Outcome {
+        let note = match self.signer.sign(payload) {
             Ok(note) => note,
             Err(error) => {
                 self.tally.rejected += 1;
                 return Outcome::Rejected(error);
             }
         };
-        if let Err(message) = self.sink.deliver(&note) {
+        self.send(&note)
+    }
+
+    /// Deliver a note signed elsewhere, such as a deletion request.
+    pub fn send(&mut self, note: &NostrNote) -> Outcome {
+        if let Err(message) = self.sink.deliver(note) {
             self.tally.undelivered += 1;
             return Outcome::Undelivered(message);
         }
-        self.policy.record(update.window(), update.price(), now);
-        self.tally.published += 1;
-        Outcome::Published(verdict)
+        let class = NoteClass::of_kind(note.kind);
+        self.tally.count(class);
+        Outcome::Published(class, note.id.clone().unwrap_or_default())
     }
 
     #[must_use]
@@ -104,14 +115,11 @@ impl<S: NoteSink> RelayPublisher<S> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::time::{Duration, Instant};
 
     use nostro2::NostrNote;
-    use nostro2_signer::NostrKeypair;
-    use nostro2_signer::nostro2_traits::NostrKeypair as KeypairTrait;
 
     use super::{NoteSink, Outcome, PublishTally, RelayPublisher};
-    use crate::{PriceSigner, PriceSource, PriceUpdate, PublishPolicy, Verdict};
+    use crate::{NoteClass, PriceSigner, PriceUpdate};
 
     #[derive(Default)]
     struct RecordingSink {
@@ -133,100 +141,49 @@ mod tests {
 
     impl PublisherFixture {
         fn publisher() -> RelayPublisher<RecordingSink> {
-            RelayPublisher::new(
-                RecordingSink::default(),
-                PriceSigner::new(<NostrKeypair as KeypairTrait>::generate()),
-                PublishPolicy::new(0.001, Duration::from_mins(1)),
-            )
+            RelayPublisher::new(RecordingSink::default(), PriceSigner::generate())
         }
 
-        fn update(window: &str, price: f64) -> PriceUpdate {
-            PriceUpdate::new(
-                window,
-                price,
-                300,
-                PriceSource::Mempool {
-                    transactions: 150,
-                    band_low: price * 0.99,
-                    band_high: price * 1.01,
-                },
-            )
+        fn update(price: f64) -> PriceUpdate {
+            PriceUpdate::new("mempool", price, 300, 150, price * 0.99, price * 1.01)
         }
     }
 
     #[test]
-    fn the_first_update_is_signed_and_delivered() {
+    fn every_offer_is_signed_and_delivered_with_its_id() {
         let mut publisher = PublisherFixture::publisher();
-        let outcome = publisher.offer(&PublisherFixture::update("w", 77_000.0), Instant::now());
+        let first = publisher.offer(&PublisherFixture::update(77_000.0));
+        let second = publisher.offer(&PublisherFixture::update(77_000.0));
 
-        assert!(matches!(outcome, Outcome::Published(Verdict::First)));
-        assert_eq!(publisher.sink().notes.borrow().len(), 1);
-    }
-
-    #[test]
-    fn an_unchanged_price_is_held_back() {
-        let mut publisher = PublisherFixture::publisher();
-        let start = Instant::now();
-        publisher.offer(&PublisherFixture::update("w", 77_000.0), start);
-        let outcome = publisher.offer(&PublisherFixture::update("w", 77_000.0), start);
-
-        assert!(matches!(outcome, Outcome::Held));
-        assert_eq!(publisher.sink().notes.borrow().len(), 1);
-    }
-
-    #[test]
-    fn a_moved_price_is_published_again() {
-        let mut publisher = PublisherFixture::publisher();
-        let start = Instant::now();
-        publisher.offer(&PublisherFixture::update("w", 77_000.0), start);
-        let outcome = publisher.offer(&PublisherFixture::update("w", 77_500.0), start);
-
-        assert!(matches!(outcome, Outcome::Published(Verdict::Moved)));
-    }
-
-    #[test]
-    fn a_failed_delivery_is_retried_on_the_next_update() {
-        let mut publisher = PublisherFixture::publisher();
-        let start = Instant::now();
-        *publisher.sink().failing.borrow_mut() = true;
-        let failed = publisher.offer(&PublisherFixture::update("w", 77_000.0), start);
-        *publisher.sink().failing.borrow_mut() = false;
-        let retried = publisher.offer(&PublisherFixture::update("w", 77_000.0), start);
-
-        assert!(matches!(failed, Outcome::Undelivered(_)));
-        assert!(matches!(retried, Outcome::Published(Verdict::First)));
-    }
-
-    #[test]
-    fn an_unpublishable_update_is_rejected_and_not_recorded() {
-        let mut publisher = PublisherFixture::publisher();
-        let start = Instant::now();
-        let outcome = publisher.offer(&PublisherFixture::update("w", f64::NAN), start);
-        let next = publisher.offer(&PublisherFixture::update("w", 77_000.0), start);
-
-        assert!(matches!(outcome, Outcome::Rejected(_)));
-        assert!(matches!(next, Outcome::Published(Verdict::First)));
-        assert_eq!(publisher.sink().notes.borrow().len(), 1);
+        let notes = publisher.sink().notes.borrow();
+        assert_eq!(notes.len(), 2);
+        let Outcome::Published(class, id) = first else {
+            panic!("published expected");
+        };
+        assert_eq!(class, NoteClass::Live);
+        assert_eq!(Some(id), notes[0].id.clone());
+        assert!(second.is_published());
     }
 
     #[test]
     fn the_tally_counts_every_outcome() {
         let mut publisher = PublisherFixture::publisher();
-        let start = Instant::now();
-        publisher.offer(&PublisherFixture::update("w", 77_000.0), start);
-        publisher.offer(&PublisherFixture::update("w", 77_000.0), start);
-        publisher.offer(&PublisherFixture::update("w", f64::NAN), start);
+        publisher.offer(&PublisherFixture::update(77_000.0));
+        publisher.offer(&PublisherFixture::update(f64::NAN));
         *publisher.sink().failing.borrow_mut() = true;
-        publisher.offer(&PublisherFixture::update("w", 90_000.0), start);
+        let failed = publisher.offer(&PublisherFixture::update(90_000.0));
 
+        assert!(matches!(failed, Outcome::Undelivered(_)));
         assert_eq!(
             publisher.tally(),
             PublishTally {
-                published: 1,
-                held: 1,
+                audit: 0,
+                live: 1,
+                other: 0,
                 rejected: 1,
                 undelivered: 1,
             }
         );
+        assert_eq!(publisher.tally().published(), 1);
     }
 }

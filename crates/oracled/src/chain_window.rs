@@ -1,7 +1,7 @@
 use std::fmt;
 
 /// A confirmed-chain price window, sized in blocks at the 10-minute target.
-/// Each window is published as a timeline of prices, one per `STEP_BLOCKS`.
+/// Each block gets one audited price per window, over the blocks ending there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ChainWindow {
     Hourly,
@@ -10,7 +10,11 @@ pub enum ChainWindow {
 
 impl ChainWindow {
     pub const ALL: [Self; 2] = [Self::Hourly, Self::Daily];
-    pub const STEP_BLOCKS: usize = 6;
+
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|window| window.tag() == tag)
+    }
 
     #[must_use]
     pub const fn blocks(self) -> usize {
@@ -20,7 +24,7 @@ impl ChainWindow {
         }
     }
 
-    /// The addressable-event `d` tag under which this window is published.
+    /// The window name carried in every note about this window.
     #[must_use]
     pub const fn tag(self) -> &'static str {
         match self {
@@ -61,6 +65,14 @@ mod tests {
     fn every_window_has_its_own_tag() {
         let tags: HashSet<_> = ChainWindow::ALL.iter().map(|window| window.tag()).collect();
         assert_eq!(tags.len(), ChainWindow::ALL.len());
+    }
+
+    #[test]
+    fn a_tag_names_its_window() {
+        for window in ChainWindow::ALL {
+            assert_eq!(ChainWindow::from_tag(window.tag()), Some(window));
+        }
+        assert_eq!(ChainWindow::from_tag("chain-1w"), None);
     }
 
     #[test]

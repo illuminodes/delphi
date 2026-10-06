@@ -2,10 +2,10 @@ use std::fmt::Write;
 
 use mantle_oracle::{DenominationFit, PriceBand, PriceFit};
 
-use crate::{JsonObject, NotePayload};
+use crate::{JsonObject, NoteClass, NotePayload};
 
-/// The evidence behind one window's price, published beside the price note
-/// under the `d` tag `fit-<window>`.
+/// The evidence behind one window's price, streamed live under the window
+/// name `fit-<window>`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FitUpdate {
     window: String,
@@ -103,6 +103,10 @@ impl NotePayload for FitUpdate {
 
     fn price(&self) -> f64 {
         self.fit.report.central_price
+    }
+
+    fn class(&self) -> NoteClass {
+        NoteClass::Live
     }
 
     fn is_publishable(&self) -> bool {

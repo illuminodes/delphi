@@ -1,7 +1,7 @@
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use crate::{ChainSnapshot, Event, NoteSink, Outcome, PriceHub};
+use crate::{ChainSnapshot, Event, NoteClass, NoteSink, Outcome, PriceHub};
 
 /// Owns the price hub and drives it from the worker threads' events.
 pub struct Daemon<S: NoteSink> {
@@ -38,6 +38,12 @@ impl<S: NoteSink> Daemon<S> {
         }
     }
 
+    /// Ask relays to drop what earlier versions published as addressable notes.
+    pub fn retire_addressable(&mut self) {
+        let (window, outcome) = self.hub.retire_addressable();
+        Self::report(&window, &outcome);
+    }
+
     fn handle(&mut self, event: Event) {
         match event {
             Event::Chain(snapshot) => self.apply(&snapshot),
@@ -47,15 +53,15 @@ impl<S: NoteSink> Daemon<S> {
     }
 
     fn apply(&mut self, snapshot: &ChainSnapshot) {
-        for (window, outcome) in self.hub.apply_chain(snapshot, Instant::now()) {
+        for (window, outcome) in self.hub.apply_chain(snapshot) {
             Self::report(&window, &outcome);
         }
     }
 
     fn report(window: &str, outcome: &Outcome) {
         match outcome {
-            Outcome::Published(verdict) => eprintln!("published {window} ({verdict:?})"),
-            Outcome::Held => {}
+            Outcome::Published(NoteClass::Live, _) => {}
+            Outcome::Published(class, id) => eprintln!("published {window} ({class:?} {id})"),
             Outcome::Rejected(error) => eprintln!("rejected {window}: {error}"),
             Outcome::Undelivered(message) => eprintln!("undelivered {window}: {message}"),
         }
@@ -65,20 +71,19 @@ impl<S: NoteSink> Daemon<S> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex, mpsc};
     use std::time::{Duration, Instant};
 
     use mantle::difficulty::{BlockHeight, BlockTime};
+    use mantle::hash::Hash256;
     use mantle_oracle::OracleReport;
     use nostro2::NostrNote;
-    use nostro2_signer::NostrKeypair;
-    use nostro2_signer::nostro2_traits::NostrKeypair as KeypairTrait;
 
     use super::Daemon;
     use crate::synthetic_market::SyntheticMarket;
     use crate::{
-        ChainSnapshot, ChainWindow, Event, MempoolEstimator, MempoolWindow, NoteSink, PriceHub,
-        PriceSigner, PriceUpdate, PublishPolicy, RelayPublisher,
+        AuditLedger, AuditRecord, ChainSnapshot, ChainWindow, Event, MempoolEstimator, MempoolWindow, NoteSink,
+        PriceHub, PriceSigner, RelayPublisher,
     };
 
     #[derive(Default)]
@@ -97,18 +102,15 @@ mod tests {
 
     impl DaemonFixture {
         fn daemon(interval: Duration) -> Daemon<RecordingSink> {
-            let publisher = RelayPublisher::new(
-                RecordingSink::default(),
-                PriceSigner::new(<NostrKeypair as KeypairTrait>::generate()),
-                PublishPolicy::new(0.001, Duration::from_mins(1)),
-            );
+            let publisher = RelayPublisher::new(RecordingSink::default(), PriceSigner::generate());
             let window = MempoolWindow::new(
                 "mempool",
                 BlockHeight::new(0),
                 MempoolEstimator::new(200, 10),
                 3,
             );
-            Daemon::new(PriceHub::new(publisher, window, 0.15, interval))
+            let ledger = Arc::new(Mutex::new(AuditLedger::volatile()));
+            Daemon::new(PriceHub::new(publisher, ledger, window, 0.15, interval))
         }
 
         fn chain_event(price: f64, tip: u32) -> Event {
@@ -123,7 +125,12 @@ mod tests {
             };
             Event::Chain(ChainSnapshot {
                 tip: BlockHeight::new(tip),
-                updates: vec![PriceUpdate::chain(ChainWindow::Hourly.tag(), &report)],
+                anchor: Some(price),
+                audits: vec![AuditRecord::new(
+                    ChainWindow::Hourly,
+                    report,
+                    Hash256::hash(&tip.to_le_bytes()),
+                )],
                 fits: Vec::new(),
             })
         }
@@ -136,7 +143,7 @@ mod tests {
                 .notes
                 .borrow()
                 .iter()
-                .map(|note| note.tags.find_tags_ref("d")[0].to_string())
+                .map(|note| note.tags.find_tags_ref("w")[0].to_string())
                 .collect()
         }
     }

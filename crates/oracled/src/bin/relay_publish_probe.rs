@@ -3,8 +3,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use mantle::difficulty::{BlockHeight, BlockTime};
-use mantle_oracled::{NoteSink, PriceSigner, PriceSource, PriceUpdate, RelayConnector, SeriesPoint};
+use mantle_oracled::{NotePayload, NoteSink, PriceSigner, PriceUpdate, RelayConnector};
 use nostro2::{NostrNote, NostrRelayEvent, NostrSubscription};
 use nostro2_relay::ReconnectConfig;
 use nostro2_signer::NostrKeypair;
@@ -15,7 +14,7 @@ struct PublishProbe {
     insecure: bool,
     kind: Option<u32>,
     age_seconds: i64,
-    points: u32,
+    pad: usize,
     keypair: NostrKeypair,
 }
 
@@ -37,9 +36,9 @@ impl PublishProbe {
                 .and_then(|index| arguments.get(index + 1))
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0),
-            points: arguments
+            pad: arguments
                 .iter()
-                .position(|argument| argument == "--points")
+                .position(|argument| argument == "--pad")
                 .and_then(|index| arguments.get(index + 1))
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0),
@@ -64,29 +63,14 @@ impl PublishProbe {
 
     fn note(&self) -> Result<NostrNote, String> {
         let mut signer = PriceSigner::new(self.keypair.clone());
-        let series = (0..self.points)
-            .map(|index| SeriesPoint {
-                price: 80_000.0 + f64::from(index) * 0.123_456_789,
-                deviation: 0.171_234_567_891_234,
-                samples: 100_000 + index as usize,
-                stop_height: BlockHeight::new(969_000 + index),
-                stop_time: BlockTime::new(1_790_000_000 + index),
-            })
-            .collect();
-        let update = PriceUpdate::new(
-            "probe",
-            80_000.0,
-            1,
-            PriceSource::Mempool {
-                transactions: 1,
-                band_low: 79_000.0,
-                band_high: 81_000.0,
-            },
-        )
-        .with_series(series);
-        eprintln!("note content is {} bytes", update.to_json().len());
+        let update = PriceUpdate::new("probe", 80_000.0, 1, 1, 79_000.0, 81_000.0);
         let mut note = signer.sign(&update).map_err(|error| error.to_string())?;
-        if self.kind.is_some() || self.age_seconds != 0 {
+        if self.pad > 0 {
+            let body = update.to_json();
+            note.content = format!("{},\"pad\":\"{}\"}}", &body[..body.len() - 1], "x".repeat(self.pad));
+        }
+        eprintln!("note content is {} bytes", note.content.len());
+        if self.kind.is_some() || self.age_seconds != 0 || self.pad > 0 {
             if let Some(kind) = self.kind {
                 note.kind = kind;
             }

@@ -2,7 +2,7 @@ use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::tx::Transaction;
 use mantle_oracle::{MempoolCollector, PriceBand, RoughPriceEstimator};
 
-use crate::{BootstrapRng, FitUpdate, MempoolEstimator, PriceSource, PriceUpdate};
+use crate::{BootstrapRng, FitUpdate, MempoolEstimator, PriceUpdate};
 
 /// Unconfirmed transactions seen since the last confirmed block.
 ///
@@ -73,12 +73,9 @@ impl MempoolWindow {
             self.name.clone(),
             estimate.price,
             estimate.outputs,
-            PriceSource::Mempool {
-                transactions: usize::try_from(self.collector.admitted_transactions())
-                    .unwrap_or(usize::MAX),
-                band_low: estimate.band_low,
-                band_high: estimate.band_high,
-            },
+            usize::try_from(self.collector.admitted_transactions()).unwrap_or(usize::MAX),
+            estimate.band_low,
+            estimate.band_high,
         ))
     }
 }
@@ -90,7 +87,7 @@ mod tests {
 
     use super::MempoolWindow;
     use crate::synthetic_market::SyntheticMarket;
-    use crate::{MempoolEstimator, PriceSource};
+    use crate::{MempoolEstimator, NotePayload};
 
     struct PoolFixture;
 
@@ -135,15 +132,8 @@ mod tests {
         assert_eq!(update.window(), "mempool");
         assert!((update.price() - 80_000.0).abs() / 80_000.0 < 0.02, "{}", update.price());
         assert_eq!(update.samples(), window.outputs());
-        let PriceSource::Mempool {
-            transactions,
-            band_low,
-            band_high,
-        } = *update.source()
-        else {
-            panic!("mempool source expected");
-        };
-        assert_eq!(transactions as u64, window.admitted_transactions());
+        let (band_low, band_high) = update.band();
+        assert_eq!(update.transactions() as u64, window.admitted_transactions());
         assert!(band_low <= update.price() + 1.0 && update.price() <= band_high + 1.0);
         assert!(update.is_publishable());
     }

@@ -1,12 +1,9 @@
 use mantle::difficulty::BlockHeight;
 use mantle_oracle::RoughPriceEstimator;
 
-use crate::{BlockRecord, ChainWindow, FitUpdate, PriceUpdate, RecordLog, SeriesPoint};
+use crate::{AuditRecord, BlockRecord, ChainWindow, FitUpdate, RecordLog};
 
-/// Confirmed-chain timelines for every window the record log can fill.
-///
-/// A timeline holds one price per `ChainWindow::STEP_BLOCKS`, each over a
-/// full window of blocks, from the oldest the log allows up to the tip.
+/// Prices chain windows out of the record log.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ChainPricer;
 
@@ -14,72 +11,57 @@ pub struct ChainPricer;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainSnapshot {
     pub tip: BlockHeight,
-    pub updates: Vec<PriceUpdate>,
+    /// The hourly price at the tip, which anchors the mempool estimate.
+    pub anchor: Option<f64>,
+    /// Audit records not yet published, newest first.
+    pub audits: Vec<AuditRecord>,
+    /// The evidence behind each window's price at the tip.
     pub fits: Vec<FitUpdate>,
-}
-
-impl ChainSnapshot {
-    /// The shortest window's price, which anchors the mempool estimate.
-    #[must_use]
-    pub fn anchor_price(&self) -> Option<f64> {
-        let hourly = ChainWindow::Hourly.tag();
-        self.updates
-            .iter()
-            .find(|update| update.window() == hourly)
-            .map(PriceUpdate::price)
-    }
 }
 
 impl ChainPricer {
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
-    /// A price for each window with enough records behind it. Windows that
-    /// are not yet full, or whose outputs cannot be priced, are left out.
+    /// The window's final price over the blocks ending at `height`, or `None`
+    /// while the log does not hold them all, the stop block has no hash, or
+    /// the outputs cannot be priced.
     #[must_use]
-    pub fn snapshot(&self, log: &RecordLog) -> Option<ChainSnapshot> {
-        let tip = log.tip().map(BlockRecord::height)?;
-        let updates = ChainWindow::ALL
-            .into_iter()
-            .filter_map(|window| self.price(log, window))
-            .collect();
-        let fits = ChainWindow::ALL
-            .into_iter()
-            .filter_map(|window| self.fit(log, window))
-            .collect();
-        Some(ChainSnapshot { tip, updates, fits })
+    pub fn audit(&self, log: &RecordLog, window: ChainWindow, height: BlockHeight) -> Option<AuditRecord> {
+        let stop = log.get(height).filter(|record| !record.lacks_hash())?;
+        let tip = log.tip().map(BlockRecord::height)?.to_u32();
+        let newer = usize::try_from(tip.checked_sub(height.to_u32())?).ok()?;
+        let report = log
+            .sample_ending_before_tip(window.blocks(), newer)?
+            .price()
+            .ok()?;
+        Some(AuditRecord::new(window, report, stop.hash()))
     }
 
-    /// The evidence behind the window's newest price.
+    #[must_use]
+    pub fn anchor(&self, log: &RecordLog) -> Option<f64> {
+        let report = log.sample(ChainWindow::Hourly.blocks())?.price().ok()?;
+        Some(report.central_price)
+    }
+
+    /// The evidence behind every window's price at the tip.
+    #[must_use]
+    pub fn fits(&self, log: &RecordLog) -> Vec<FitUpdate> {
+        ChainWindow::ALL
+            .into_iter()
+            .filter_map(|window| self.fit(log, window))
+            .collect()
+    }
+
     #[must_use]
     pub fn fit(&self, log: &RecordLog, window: ChainWindow) -> Option<FitUpdate> {
         let fit = log
-            .sample_ending_before_tip(window.blocks(), 0)?
+            .sample(window.blocks())?
             .fit(&RoughPriceEstimator::new(), None)
             .ok()?;
         Some(FitUpdate::new(window.tag(), "chain", fit))
-    }
-
-    /// The window's timeline, headlined by its newest price. `None` while the
-    /// log cannot fill one window ending at the tip.
-    #[must_use]
-    pub fn price(&self, log: &RecordLog, window: ChainWindow) -> Option<PriceUpdate> {
-        let mut points = Vec::new();
-        let mut headline = None;
-        let mut newer = 0;
-        while let Some(sample) = log.sample_ending_before_tip(window.blocks(), newer) {
-            if let Ok(report) = sample.price() {
-                points.push(SeriesPoint::from_report(&report));
-                if newer == 0 {
-                    headline = Some(report);
-                }
-            }
-            newer += ChainWindow::STEP_BLOCKS;
-        }
-        points.reverse();
-        Some(PriceUpdate::chain(window.tag(), &headline?).with_series(points))
     }
 }
 
@@ -89,10 +71,11 @@ mod tests {
     use std::path::PathBuf;
 
     use mantle::difficulty::BlockHeight;
+    use mantle::hash::Hash256;
 
     use super::ChainPricer;
     use crate::synthetic_market::SyntheticMarket;
-    use crate::{ChainWindow, PriceSource, PriceUpdate, RecordLog};
+    use crate::{BlockRecord, ChainWindow, NotePayload, RecordLog};
 
     struct LogFixture {
         dir: PathBuf,
@@ -123,124 +106,64 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_log_has_no_snapshot() {
-        let fixture = LogFixture::new("empty");
-        let log = fixture.log_with(0, 0, 80_000.0);
+    fn an_audit_covers_exactly_the_window_ending_at_its_height() {
+        let fixture = LogFixture::new("audit");
+        let log = fixture.log_with(20, 400, 80_000.0);
+        let record = ChainPricer::new()
+            .audit(&log, ChainWindow::Hourly, BlockHeight::new(12))
+            .expect("audit");
 
-        assert!(ChainPricer::new().snapshot(&log).is_none());
+        assert_eq!(record.report().start_height, BlockHeight::new(7));
+        assert_eq!(record.report().stop_height, BlockHeight::new(12));
+        assert_eq!(record.stop_hash(), Hash256::hash(&12_u32.to_le_bytes()));
+        assert!((record.price() - 80_000.0).abs() / 80_000.0 < 0.02, "{}", record.price());
     }
 
     #[test]
-    fn only_windows_the_log_can_fill_are_priced() {
-        let fixture = LogFixture::new("partial");
-        let log = fixture.log_with(10, 400, 80_000.0);
-        let snapshot = ChainPricer::new().snapshot(&log).expect("snapshot");
-        let windows: Vec<&str> = snapshot.updates.iter().map(PriceUpdate::window).collect();
+    fn an_audit_needs_the_whole_window_in_the_log() {
+        let fixture = LogFixture::new("audit-short");
+        let log = fixture.log_with(20, 400, 80_000.0);
+        let pricer = ChainPricer::new();
 
-        assert_eq!(windows, vec![ChainWindow::Hourly.tag()]);
-        assert_eq!(snapshot.tip, BlockHeight::new(10));
+        assert!(pricer.audit(&log, ChainWindow::Hourly, BlockHeight::new(5)).is_none());
+        assert!(pricer.audit(&log, ChainWindow::Hourly, BlockHeight::new(6)).is_some());
+        assert!(pricer.audit(&log, ChainWindow::Hourly, BlockHeight::new(21)).is_none());
+        assert!(pricer.audit(&log, ChainWindow::Daily, BlockHeight::new(20)).is_none());
     }
 
     #[test]
-    fn the_hourly_price_uses_exactly_the_newest_blocks() {
-        let fixture = LogFixture::new("hourly");
+    fn a_stop_block_without_a_hash_is_not_audited() {
+        let fixture = LogFixture::new("audit-nohash");
+        let mut log = fixture.log_with(10, 400, 80_000.0);
+        let mut market = SyntheticMarket::new(80_000.0, 4);
+        let tip = market.record(11, 400);
+        log.append(BlockRecord::new(tip.height(), tip.time(), Hash256::ZERO, tip.amounts().to_vec()))
+            .expect("append");
+
+        assert!(ChainPricer::new().audit(&log, ChainWindow::Hourly, BlockHeight::new(11)).is_none());
+    }
+
+    #[test]
+    fn the_anchor_is_the_hourly_price_at_the_tip() {
+        let fixture = LogFixture::new("anchor");
         let log = fixture.log_with(12, 400, 80_000.0);
-        let update = ChainPricer::new()
-            .price(&log, ChainWindow::Hourly)
-            .expect("price");
-        let PriceSource::Chain {
-            start_height,
-            stop_height,
-            ..
-        } = *update.source()
-        else {
-            panic!("chain source expected");
-        };
+        let pricer = ChainPricer::new();
+        let at_tip = pricer
+            .audit(&log, ChainWindow::Hourly, BlockHeight::new(12))
+            .expect("audit");
 
-        assert_eq!(start_height, BlockHeight::new(7));
-        assert_eq!(stop_height, BlockHeight::new(12));
-        assert!((update.price() - 80_000.0).abs() / 80_000.0 < 0.02, "{}", update.price());
+        assert_eq!(pricer.anchor(&log), Some(at_tip.price()));
+        let empty = LogFixture::new("anchor-empty");
+        assert!(pricer.anchor(&empty.log_with(0, 0, 1.0)).is_none());
     }
 
     #[test]
-    fn a_daily_window_appears_once_144_blocks_are_held() {
-        let fixture = LogFixture::new("daily");
-        let log = fixture.log_with(150, 60, 80_000.0);
-        let snapshot = ChainPricer::new().snapshot(&log).expect("snapshot");
-        let windows: Vec<&str> = snapshot.updates.iter().map(PriceUpdate::window).collect();
-
-        assert_eq!(windows, vec![ChainWindow::Hourly.tag(), ChainWindow::Daily.tag()]);
-    }
-
-    #[test]
-    fn the_hourly_timeline_steps_one_hour_back_at_a_time() {
-        let fixture = LogFixture::new("timeline");
-        let log = fixture.log_with(30, 400, 80_000.0);
-        let update = ChainPricer::new()
-            .price(&log, ChainWindow::Hourly)
-            .expect("price");
-        let stops: Vec<u32> = update.series().iter().map(|point| point.stop_height.to_u32()).collect();
-
-        assert_eq!(stops, vec![6, 12, 18, 24, 30]);
-        assert_eq!(update.series().last().map(|point| point.price), Some(update.price()));
-    }
-
-    #[test]
-    fn every_point_is_priced_near_the_market() {
-        let fixture = LogFixture::new("timeline-prices");
-        let log = fixture.log_with(30, 400, 80_000.0);
-        let update = ChainPricer::new()
-            .price(&log, ChainWindow::Hourly)
-            .expect("price");
-
-        for point in update.series() {
-            assert!((point.price - 80_000.0).abs() / 80_000.0 < 0.02, "{}", point.price);
-        }
-    }
-
-    #[test]
-    fn the_timeline_json_carries_the_points() {
-        let fixture = LogFixture::new("timeline-json");
-        let log = fixture.log_with(18, 400, 80_000.0);
-        let update = ChainPricer::new()
-            .price(&log, ChainWindow::Hourly)
-            .expect("price");
-        let json: serde_json::Value = serde_json::from_str(&update.to_json()).expect("json");
-
-        assert_eq!(json["points"].as_array().map(Vec::len), Some(3));
-        assert_eq!(json["points"][2]["stop_height"], 18);
-    }
-
-    #[test]
-    fn each_priced_window_gets_a_fit_at_its_headline_price() {
+    fn each_window_the_log_can_fill_gets_a_fit() {
         let fixture = LogFixture::new("fits");
         let log = fixture.log_with(150, 60, 80_000.0);
-        let snapshot = ChainPricer::new().snapshot(&log).expect("snapshot");
-        let windows: Vec<&str> = snapshot.fits.iter().map(crate::NotePayload::window).collect();
+        let fits = ChainPricer::new().fits(&log);
+        let windows: Vec<&str> = fits.iter().map(NotePayload::window).collect();
 
         assert_eq!(windows, vec!["fit-chain-1h", "fit-chain-1d"]);
-        for (update, fit) in snapshot.updates.iter().zip(&snapshot.fits) {
-            assert!((fit.fit().report.central_price - update.price()).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn the_anchor_is_the_hourly_price() {
-        let fixture = LogFixture::new("anchor");
-        let log = fixture.log_with(150, 60, 80_000.0);
-        let snapshot = ChainPricer::new().snapshot(&log).expect("snapshot");
-        let hourly = snapshot.updates[0].price();
-
-        assert_eq!(snapshot.anchor_price(), Some(hourly));
-    }
-
-    #[test]
-    fn a_snapshot_without_an_hourly_window_has_no_anchor() {
-        let fixture = LogFixture::new("no-anchor");
-        let log = fixture.log_with(3, 400, 80_000.0);
-        let snapshot = ChainPricer::new().snapshot(&log).expect("snapshot");
-
-        assert!(snapshot.updates.is_empty());
-        assert!(snapshot.anchor_price().is_none());
     }
 }
