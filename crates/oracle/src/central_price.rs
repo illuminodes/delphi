@@ -13,8 +13,8 @@ pub struct CentralPrice {
 pub struct CentralPriceFinder;
 
 impl CentralPriceFinder {
-    const TIGHT_RANGE: f64 = 0.05;
-    const DEVIATION_RANGE: f64 = 0.10;
+    pub const TIGHT_RANGE: f64 = 0.05;
+    pub const DEVIATION_RANGE: f64 = 0.10;
 
     #[must_use]
     pub const fn new() -> Self {

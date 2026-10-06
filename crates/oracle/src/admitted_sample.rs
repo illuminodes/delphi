@@ -2,8 +2,9 @@ use mantle::amount::Satoshi;
 use mantle::difficulty::{BlockHeight, BlockTime};
 
 use crate::{
-    CentralPriceFinder, IntradayPricePoints, OracleError, OracleReport, OutputHistogram,
-    PriceBand, RoughPriceEstimator, SlideProfile,
+    CentralPriceFinder, DenominationFit, ImpliedHistogram, IntradayPricePoints, OracleError,
+    OracleReport, OutputHistogram, PriceBand, PriceFit, RoughPriceEstimator, ScoreCurve,
+    SlideProfile,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,13 +126,58 @@ impl AdmittedSample {
         self.report_from(rough_price)
     }
 
-    fn report_from(&self, rough_price: f64) -> Result<OracleReport, OracleError> {
-        let (start_height, stop_height, start_time, stop_time) =
-            self.bounds.ok_or(OracleError::NoTransactions)?;
+    /// The price and the evidence behind it, with the rough search limited
+    /// to `band` when one is given.
+    ///
+    /// # Errors
+    /// As [`Self::price_within`].
+    pub fn fit(
+        &self,
+        estimator: &RoughPriceEstimator,
+        band: Option<PriceBand>,
+    ) -> Result<PriceFit, OracleError> {
+        self.bounds.ok_or(OracleError::NoTransactions)?;
+        let histogram = self.histogram()?;
+        let profile = estimator
+            .profile(&histogram)
+            .ok_or(OracleError::RoughPriceUnavailable)?;
+        let rough_price = estimator
+            .estimate_bounded(&histogram, &profile, band)
+            .ok_or(OracleError::RoughPriceUnavailable)?;
+        let points = self.implied_points(rough_price);
+        let report = self.report_from(rough_price)?;
+        let curve = ScoreCurve::from_profile(&histogram, &profile)
+            .ok_or(OracleError::RoughPriceUnavailable)?;
+        let implied = ImpliedHistogram::build(
+            points.as_slice(),
+            report.central_price,
+            ImpliedHistogram::DEFAULT_REACH,
+            ImpliedHistogram::DEFAULT_BINS,
+        )
+        .ok_or(OracleError::CentralPriceUnavailable)?;
+        Ok(PriceFit {
+            rough_price,
+            band,
+            octave_ratio: profile.octave_ratio(),
+            curve,
+            implied,
+            denominations: DenominationFit::per_amount(points.as_slice(), report.central_price),
+            report,
+        })
+    }
+
+    fn implied_points(&self, rough_price: f64) -> IntradayPricePoints {
         let mut points = IntradayPricePoints::new();
         for output in &self.outputs {
             points.insert(output.amount, rough_price, output.height, output.time);
         }
+        points
+    }
+
+    fn report_from(&self, rough_price: f64) -> Result<OracleReport, OracleError> {
+        let (start_height, stop_height, start_time, stop_time) =
+            self.bounds.ok_or(OracleError::NoTransactions)?;
+        let points = self.implied_points(rough_price);
         let central = CentralPriceFinder::new()
             .find(&points, rough_price)
             .ok_or(OracleError::CentralPriceUnavailable)?;
@@ -254,6 +300,34 @@ mod tests {
     #[test]
     fn a_subset_ignores_out_of_range_indices() {
         assert_eq!(sample_of(&[10, 20]).subset(&[0, 9]).len(), 1);
+    }
+
+    #[test]
+    fn a_fit_reports_the_same_price_as_pricing() {
+        let amounts: Vec<u64> = (1..100).map(|step| 99_000 + step * 30).collect();
+        let sample = sample_of(&amounts);
+        let fit = sample
+            .fit(&crate::RoughPriceEstimator::new(), None)
+            .expect("outputs carry a signal");
+
+        assert_eq!(fit.report, sample.price().expect("price"));
+        assert!(fit.implied.total() > 0);
+        assert_eq!(
+            fit.denominations.iter().map(|row| row.inside).sum::<usize>(),
+            fit.report.sample_count
+        );
+    }
+
+    #[test]
+    fn a_banded_fit_matches_banded_pricing() {
+        let amounts: Vec<u64> = (1..100).map(|step| 99_000 + step * 30).collect();
+        let sample = sample_of(&amounts);
+        let estimator = crate::RoughPriceEstimator::new();
+        let band = crate::PriceBand::around(100_000.0, 0.15).expect("band");
+        let fit = sample.fit(&estimator, Some(band)).expect("fit");
+
+        assert_eq!(fit.report, sample.price_within(&estimator, band).expect("price"));
+        assert_eq!(fit.band, Some(band));
     }
 
     #[test]

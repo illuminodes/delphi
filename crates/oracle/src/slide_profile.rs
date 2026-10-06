@@ -21,6 +21,16 @@ impl SlideProfile {
     }
 
     #[must_use]
+    pub const fn first_slide(&self) -> i32 {
+        self.first_slide
+    }
+
+    #[must_use]
+    pub fn scores(&self) -> &[f64] {
+        &self.scores
+    }
+
+    #[must_use]
     pub fn score_at(&self, slide: i32) -> Option<f64> {
         let index = usize::try_from(slide - self.first_slide).ok()?;
         self.scores.get(index).copied()

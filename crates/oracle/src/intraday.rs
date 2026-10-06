@@ -4,6 +4,7 @@ use mantle::difficulty::{BlockHeight, BlockTime};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IntradayPricePoint {
     pub price: f64,
+    pub usd: u32,
     pub height: BlockHeight,
     pub time: BlockTime,
 }
@@ -14,7 +15,7 @@ pub struct IntradayPricePoints {
 }
 
 impl IntradayPricePoints {
-    const ROUND_USD_AMOUNTS: [u32; 14] = [
+    pub const ROUND_USD_AMOUNTS: [u32; 14] = [
         5, 10, 15, 20, 25, 30, 40, 50, 100, 150, 200, 300, 500, 1_000,
     ];
     const WIDE_RANGE: f64 = 0.25;
@@ -44,6 +45,7 @@ impl IntradayPricePoints {
             {
                 self.points.push(IntradayPricePoint {
                     price: f64::from(usd) / btc,
+                    usd,
                     height,
                     time,
                 });
@@ -101,6 +103,7 @@ mod tests {
 
         assert_eq!(points.len(), 1);
         assert!((points.as_slice()[0].price - 99_008.920_703).abs() < 0.01);
+        assert_eq!(points.as_slice()[0].usd, 100);
     }
 
     #[test]

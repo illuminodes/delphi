@@ -70,11 +70,24 @@ impl RoughPriceEstimator {
     /// [`Self::estimate`] restricted to slides whose price lies inside `band`.
     #[must_use]
     pub fn estimate_within(&self, histogram: &OutputHistogram, band: PriceBand) -> Option<f64> {
-        let profile = self.profile(histogram)?;
+        self.estimate_bounded(histogram, &self.profile(histogram)?, Some(band))
+    }
+
+    /// The estimate from a profile already computed for `histogram`, limited
+    /// to `band` when one is given.
+    #[must_use]
+    pub fn estimate_bounded(
+        &self,
+        histogram: &OutputHistogram,
+        profile: &SlideProfile,
+        band: Option<PriceBand>,
+    ) -> Option<f64> {
         let best = profile.best_where(|slide| {
-            Self::price_at_slide(histogram, slide).is_some_and(|price| band.contains(price))
+            band.is_none_or(|band| {
+                Self::price_at_slide(histogram, slide).is_some_and(|price| band.contains(price))
+            })
         })?;
-        self.refine(histogram, &profile, best)
+        self.refine(histogram, profile, best)
     }
 
     fn refine(
@@ -126,11 +139,9 @@ impl RoughPriceEstimator {
         histogram.counts().get(start..start + self.stencil.len())
     }
 
-    fn price_at_slide(histogram: &OutputHistogram, slide: i32) -> Option<f64> {
-        let index = usize::try_from(
-            i32::try_from(Self::CENTER_USD_100_BIN).expect("center bin fits i32") + slide,
-        )
-        .ok()?;
+    #[must_use]
+    pub fn price_at_slide(histogram: &OutputHistogram, slide: i32) -> Option<f64> {
+        let index = usize::try_from(i32::try_from(Self::CENTER_USD_100_BIN).ok()? + slide).ok()?;
         let btc = histogram.bins().btc_at(index)?;
         (btc > 0.0).then_some(100.0 / btc)
     }
