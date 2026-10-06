@@ -6,7 +6,7 @@ use nostro2_signer::NostrKeypair;
 use nostro2_signer::nostro2_traits::NostrKeypair as KeypairTrait;
 use nostro2_signer::nostro2_traits::NostrSigner as SignerTrait;
 
-use crate::PriceUpdate;
+use crate::NotePayload;
 
 #[derive(Debug)]
 pub enum PriceSignerError {
@@ -88,17 +88,17 @@ impl PriceSigner {
     /// # Errors
     /// Returns [`PriceSignerError::Unpublishable`] for a non-finite price and
     /// [`PriceSignerError::Sign`] if signing fails.
-    pub fn sign(&mut self, update: &PriceUpdate) -> Result<NostrNote, PriceSignerError> {
-        if !update.is_publishable() {
-            return Err(PriceSignerError::Unpublishable(update.window().to_string()));
+    pub fn sign(&mut self, payload: &impl NotePayload) -> Result<NostrNote, PriceSignerError> {
+        if !payload.is_publishable() {
+            return Err(PriceSignerError::Unpublishable(payload.window().to_string()));
         }
         let mut note = NostrNoteBuilder::new()
             .kind(Self::KIND)
-            .content(update.to_json())
-            .tag("d", update.window())
-            .tag("t", update.source().label())
+            .content(payload.to_json())
+            .tag("d", payload.window())
+            .tag("t", payload.label())
             .build();
-        note.created_at = self.next_timestamp(update.window(), note.created_at);
+        note.created_at = self.next_timestamp(payload.window(), note.created_at);
         note.sign_with(&self.keypair)
             .map_err(|error| PriceSignerError::Sign(error.to_string()))?;
         Ok(note)

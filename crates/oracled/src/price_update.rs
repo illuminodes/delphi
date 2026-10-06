@@ -1,7 +1,7 @@
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle_oracle::OracleReport;
 
-use crate::{JsonObject, SeriesPoint};
+use crate::{JsonObject, NotePayload, SeriesPoint};
 
 /// What a published price was measured from.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -161,6 +161,28 @@ impl PriceUpdate {
             );
         }
         object.finish()
+    }
+}
+
+impl NotePayload for PriceUpdate {
+    fn window(&self) -> &str {
+        &self.window
+    }
+
+    fn label(&self) -> &str {
+        self.source.label()
+    }
+
+    fn price(&self) -> f64 {
+        self.price
+    }
+
+    fn is_publishable(&self) -> bool {
+        Self::is_publishable(self)
+    }
+
+    fn to_json(&self) -> String {
+        Self::to_json(self)
     }
 }
 

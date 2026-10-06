@@ -3,7 +3,7 @@ use std::time::Instant;
 use nostro2::NostrNote;
 use nostro2_relay::NostrRelay;
 
-use crate::{PriceSigner, PriceSignerError, PriceUpdate, PublishPolicy, Verdict};
+use crate::{NotePayload, PriceSigner, PriceSignerError, PublishPolicy, Verdict};
 
 /// Where signed notes go.
 pub trait NoteSink {
@@ -59,7 +59,7 @@ impl<S: NoteSink> RelayPublisher<S> {
         }
     }
 
-    pub fn offer(&mut self, update: &PriceUpdate, now: Instant) -> Outcome {
+    pub fn offer(&mut self, update: &impl NotePayload, now: Instant) -> Outcome {
         if !update.is_publishable() {
             self.tally.rejected += 1;
             return Outcome::Rejected(PriceSignerError::Unpublishable(update.window().to_string()));

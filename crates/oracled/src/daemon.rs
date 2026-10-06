@@ -32,8 +32,8 @@ impl<S: NoteSink> Daemon<S> {
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
-            if let Some(outcome) = self.hub.tick(Instant::now()) {
-                Self::report("mempool", &outcome);
+            for (window, outcome) in self.hub.tick(Instant::now()) {
+                Self::report(&window, &outcome);
             }
         }
     }
@@ -47,9 +47,8 @@ impl<S: NoteSink> Daemon<S> {
     }
 
     fn apply(&mut self, snapshot: &ChainSnapshot) {
-        let outcomes = self.hub.apply_chain(snapshot, Instant::now());
-        for (update, outcome) in snapshot.updates.iter().zip(&outcomes) {
-            Self::report(update.window(), outcome);
+        for (window, outcome) in self.hub.apply_chain(snapshot, Instant::now()) {
+            Self::report(&window, &outcome);
         }
     }
 
@@ -125,6 +124,7 @@ mod tests {
             Event::Chain(ChainSnapshot {
                 tip: BlockHeight::new(tip),
                 updates: vec![PriceUpdate::chain(ChainWindow::Hourly.tag(), &report)],
+                fits: Vec::new(),
             })
         }
 

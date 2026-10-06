@@ -1,8 +1,8 @@
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::tx::Transaction;
-use mantle_oracle::{MempoolCollector, PriceBand};
+use mantle_oracle::{MempoolCollector, PriceBand, RoughPriceEstimator};
 
-use crate::{BootstrapRng, MempoolEstimator, PriceSource, PriceUpdate};
+use crate::{BootstrapRng, FitUpdate, MempoolEstimator, PriceSource, PriceUpdate};
 
 /// Unconfirmed transactions seen since the last confirmed block.
 ///
@@ -49,6 +49,18 @@ impl MempoolWindow {
     #[must_use]
     pub fn admitted_transactions(&self) -> u64 {
         self.collector.admitted_transactions()
+    }
+
+    /// The evidence behind the window's price inside `band`, under the same
+    /// minimum sample size as [`Self::update`].
+    #[must_use]
+    pub fn fit(&self, band: PriceBand) -> Option<FitUpdate> {
+        let sample = self.collector.sample();
+        if sample.len() < self.estimator.min_outputs() {
+            return None;
+        }
+        let fit = sample.fit(&RoughPriceEstimator::new(), Some(band)).ok()?;
+        Some(FitUpdate::new(&self.name, "mempool", fit))
     }
 
     /// The window's current price inside `band`, or `None` while the sample
@@ -134,6 +146,25 @@ mod tests {
         assert_eq!(transactions as u64, window.admitted_transactions());
         assert!(band_low <= update.price() + 1.0 && update.price() <= band_high + 1.0);
         assert!(update.is_publishable());
+    }
+
+    #[test]
+    fn a_full_window_fits_at_its_published_price() {
+        let mut window = window();
+        PoolFixture::fill(&mut window, 300, 80_000.0);
+        let update = window.update(band()).expect("update");
+        let fit = window.fit(band()).expect("fit");
+
+        assert!((fit.fit().report.central_price - update.price()).abs() < 1e-6);
+        assert_eq!(fit.fit().band, Some(band()));
+    }
+
+    #[test]
+    fn a_thin_window_has_no_fit() {
+        let mut window = window();
+        PoolFixture::fill(&mut window, 30, 80_000.0);
+
+        assert!(window.fit(band()).is_none());
     }
 
     #[test]

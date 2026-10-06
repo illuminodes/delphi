@@ -1,6 +1,7 @@
 use mantle::difficulty::BlockHeight;
+use mantle_oracle::RoughPriceEstimator;
 
-use crate::{BlockRecord, ChainWindow, PriceUpdate, RecordLog, SeriesPoint};
+use crate::{BlockRecord, ChainWindow, FitUpdate, PriceUpdate, RecordLog, SeriesPoint};
 
 /// Confirmed-chain timelines for every window the record log can fill.
 ///
@@ -14,6 +15,7 @@ pub struct ChainPricer;
 pub struct ChainSnapshot {
     pub tip: BlockHeight,
     pub updates: Vec<PriceUpdate>,
+    pub fits: Vec<FitUpdate>,
 }
 
 impl ChainSnapshot {
@@ -43,7 +45,21 @@ impl ChainPricer {
             .into_iter()
             .filter_map(|window| self.price(log, window))
             .collect();
-        Some(ChainSnapshot { tip, updates })
+        let fits = ChainWindow::ALL
+            .into_iter()
+            .filter_map(|window| self.fit(log, window))
+            .collect();
+        Some(ChainSnapshot { tip, updates, fits })
+    }
+
+    /// The evidence behind the window's newest price.
+    #[must_use]
+    pub fn fit(&self, log: &RecordLog, window: ChainWindow) -> Option<FitUpdate> {
+        let fit = log
+            .sample_ending_before_tip(window.blocks(), 0)?
+            .fit(&RoughPriceEstimator::new(), None)
+            .ok()?;
+        Some(FitUpdate::new(window.tag(), "chain", fit))
     }
 
     /// The window's timeline, headlined by its newest price. `None` while the
@@ -193,6 +209,19 @@ mod tests {
 
         assert_eq!(json["points"].as_array().map(Vec::len), Some(3));
         assert_eq!(json["points"][2]["stop_height"], 18);
+    }
+
+    #[test]
+    fn each_priced_window_gets_a_fit_at_its_headline_price() {
+        let fixture = LogFixture::new("fits");
+        let log = fixture.log_with(150, 60, 80_000.0);
+        let snapshot = ChainPricer::new().snapshot(&log).expect("snapshot");
+        let windows: Vec<&str> = snapshot.fits.iter().map(crate::NotePayload::window).collect();
+
+        assert_eq!(windows, vec!["fit-chain-1h", "fit-chain-1d"]);
+        for (update, fit) in snapshot.updates.iter().zip(&snapshot.fits) {
+            assert!((fit.fit().report.central_price - update.price()).abs() < 1e-6);
+        }
     }
 
     #[test]

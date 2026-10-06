@@ -4,7 +4,7 @@ use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::tx::Transaction;
 use mantle_oracle::PriceBand;
 
-use crate::{ChainSnapshot, MempoolWindow, NoteSink, Outcome, RelayPublisher};
+use crate::{ChainSnapshot, MempoolWindow, NotePayload, NoteSink, Outcome, RelayPublisher};
 
 /// Joins the chain prices, the live mempool window and the publisher.
 ///
@@ -41,19 +41,23 @@ impl<S: NoteSink> PriceHub<S> {
         }
     }
 
-    /// Publish every chain window in the snapshot, and restart the mempool
-    /// window if the tip is not the one it was counting from.
-    pub fn apply_chain(&mut self, snapshot: &ChainSnapshot, now: Instant) -> Vec<Outcome> {
+    /// Publish every chain window and fit in the snapshot, and restart the
+    /// mempool window if the tip is not the one it was counting from.
+    pub fn apply_chain(&mut self, snapshot: &ChainSnapshot, now: Instant) -> Vec<(String, Outcome)> {
         self.anchor = snapshot.anchor_price().or(self.anchor);
         if self.tip != Some(snapshot.tip) {
             self.window.reset(snapshot.tip);
             self.tip = Some(snapshot.tip);
         }
-        snapshot
-            .updates
-            .iter()
-            .map(|update| self.publisher.offer(update, now))
-            .collect()
+        let prices = snapshot.updates.iter().map(|update| self.offer(update, now));
+        let prices: Vec<(String, Outcome)> = prices.collect();
+        let fits = snapshot.fits.iter().map(|fit| self.offer(fit, now));
+        let fits: Vec<(String, Outcome)> = fits.collect();
+        prices.into_iter().chain(fits).collect()
+    }
+
+    fn offer(&mut self, payload: &impl NotePayload, now: Instant) -> (String, Outcome) {
+        (payload.window().to_string(), self.publisher.offer(payload, now))
     }
 
     pub fn absorb(&mut self, transaction: &Transaction, at: BlockTime) {
@@ -61,18 +65,29 @@ impl<S: NoteSink> PriceHub<S> {
     }
 
     /// Price the mempool window if the interval has passed and an anchor
-    /// exists. `None` means nothing was offered to the publisher.
-    pub fn tick(&mut self, now: Instant) -> Option<Outcome> {
+    /// exists, and publish its fit whenever the price itself goes out. Empty
+    /// means nothing was offered to the publisher.
+    pub fn tick(&mut self, now: Instant) -> Vec<(String, Outcome)> {
         if self
             .last_tick
             .is_some_and(|last| now.saturating_duration_since(last) < self.interval)
         {
-            return None;
+            return Vec::new();
         }
         self.last_tick = Some(now);
-        let band = PriceBand::around(self.anchor?, self.tolerance)?;
-        let update = self.window.update(band)?;
-        Some(self.publisher.offer(&update, now))
+        let Some(band) = self.anchor.and_then(|anchor| PriceBand::around(anchor, self.tolerance)) else {
+            return Vec::new();
+        };
+        let Some(update) = self.window.update(band) else {
+            return Vec::new();
+        };
+        let price = self.offer(&update, now);
+        let published = matches!(price.1, Outcome::Published(_));
+        let mut outcomes = vec![price];
+        if published && let Some(fit) = self.window.fit(band) {
+            outcomes.push(self.offer(&fit, now));
+        }
+        outcomes
     }
 
     #[must_use]
@@ -135,6 +150,7 @@ mod tests {
             let mut policy = PublishPolicy::new(0.001, Duration::from_mins(1));
             for window in ChainWindow::ALL {
                 policy = policy.with_rule(window.tag(), 0.0, Duration::from_mins(5));
+                policy = policy.with_rule(&format!("fit-{}", window.tag()), 0.0, Duration::from_mins(5));
             }
             let publisher = RelayPublisher::new(
                 RecordingSink::default(),
@@ -169,6 +185,7 @@ mod tests {
                     .iter()
                     .map(|window| PriceUpdate::chain(window.tag(), &Self::report(price, tip)))
                     .collect(),
+                fits: Vec::new(),
             }
         }
 
@@ -197,7 +214,7 @@ mod tests {
         let outcomes = hub.apply_chain(&snapshot, Instant::now());
 
         assert_eq!(outcomes.len(), 2);
-        assert!(outcomes.iter().all(|outcome| matches!(outcome, Outcome::Published(_))));
+        assert!(outcomes.iter().all(|(_, outcome)| matches!(outcome, Outcome::Published(_))));
         assert_eq!(HubFixture::tags(&hub), vec!["chain-1h", "chain-1d"]);
     }
 
@@ -220,8 +237,8 @@ mod tests {
         let held = hub.apply_chain(&snapshot, start + Duration::from_secs(30));
         let beat = hub.apply_chain(&snapshot, start + Duration::from_mins(5));
 
-        assert!(matches!(held[0], Outcome::Held));
-        assert!(matches!(beat[0], Outcome::Published(_)));
+        assert!(matches!(held[0].1, Outcome::Held));
+        assert!(matches!(beat[0].1, Outcome::Published(_)));
     }
 
     #[test]
@@ -246,7 +263,7 @@ mod tests {
         let mut hub = HubFixture::hub();
         HubFixture::fill(&mut hub, 300, 80_000.0);
 
-        assert!(hub.tick(Instant::now()).is_none());
+        assert!(hub.tick(Instant::now()).is_empty());
         assert!(HubFixture::tags(&hub).is_empty());
     }
 
@@ -256,12 +273,14 @@ mod tests {
         let now = Instant::now();
         hub.apply_chain(&HubFixture::snapshot(81_000.0, 100, &[ChainWindow::Hourly]), now);
         HubFixture::fill(&mut hub, 300, 80_000.0);
-        let outcome = hub.tick(now).expect("offered");
+        let outcomes = hub.tick(now);
 
-        assert!(matches!(outcome, Outcome::Published(_)));
+        assert!(matches!(outcomes[0].1, Outcome::Published(_)));
         let notes = hub.publisher().sink().notes.borrow();
-        let note = notes.last().expect("note");
-        assert_eq!(note.tags.find_tags_ref("d"), vec!["mempool"]);
+        let note = notes
+            .iter()
+            .find(|note| note.tags.find_tags_ref("d") == ["mempool"])
+            .expect("note");
         assert!(note.content.contains("\"band_low\""));
         assert!(note.content.contains("\"transactions\""));
     }
@@ -274,8 +293,8 @@ mod tests {
         HubFixture::fill(&mut hub, 300, 80_000.0);
         hub.tick(start);
 
-        assert!(hub.tick(start + Duration::from_secs(5)).is_none());
-        assert!(hub.tick(start + HubFixture::INTERVAL).is_some());
+        assert!(hub.tick(start + Duration::from_secs(5)).is_empty());
+        assert!(!hub.tick(start + HubFixture::INTERVAL).is_empty());
     }
 
     #[test]
@@ -285,11 +304,24 @@ mod tests {
         hub.apply_chain(&HubFixture::snapshot(81_000.0, 100, &[ChainWindow::Hourly]), start);
         HubFixture::fill(&mut hub, 300, 80_000.0);
         hub.tick(start);
-        let second = hub.tick(start + HubFixture::INTERVAL).expect("offered");
-        let third = hub.tick(start + Duration::from_mins(1)).expect("offered");
+        let second = hub.tick(start + HubFixture::INTERVAL);
+        let third = hub.tick(start + Duration::from_mins(1));
 
-        assert!(matches!(second, Outcome::Held));
-        assert!(matches!(third, Outcome::Published(_)));
+        assert_eq!(second.len(), 1);
+        assert!(matches!(second[0].1, Outcome::Held));
+        assert!(matches!(third[0].1, Outcome::Published(_)));
+    }
+
+    #[test]
+    fn a_published_mempool_price_is_followed_by_its_fit() {
+        let mut hub = HubFixture::hub();
+        let now = Instant::now();
+        hub.apply_chain(&HubFixture::snapshot(81_000.0, 100, &[ChainWindow::Hourly]), now);
+        HubFixture::fill(&mut hub, 300, 80_000.0);
+        let windows: Vec<String> = hub.tick(now).into_iter().map(|(window, _)| window).collect();
+
+        assert_eq!(windows, vec!["mempool", "fit-mempool"]);
+        assert!(HubFixture::tags(&hub).contains(&"fit-mempool".to_string()));
     }
 
     #[test]

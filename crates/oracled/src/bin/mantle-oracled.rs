@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use mantle::network::Network;
 use mantle_oracle::PeerSources;
 use mantle_oracled::{
-    AckLogger, ChainSyncSpec, ChainWindow, ChainWorker, Daemon, DaemonConfig, KeySource, LogFile, MempoolEstimator,
+    AckLogger, ChainSyncSpec, ChainWindow, ChainWorker, Daemon, DaemonConfig, FitUpdate, KeySource, LogFile,
+    MempoolEstimator,
     MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, PublishPolicy, RelayConnector, RelayPublisher,
     StdoutSink,
 };
@@ -75,6 +76,11 @@ impl OracleDaemonApp {
         let mut policy = PublishPolicy::new(Self::MEMPOOL_MIN_CHANGE, Self::HEARTBEAT);
         for window in ChainWindow::ALL {
             policy = policy.with_rule(window.tag(), 0.0, Self::CHAIN_HEARTBEAT);
+            policy = policy.with_rule(
+                &format!("{}{}", FitUpdate::PREFIX, window.tag()),
+                0.0,
+                Self::CHAIN_HEARTBEAT,
+            );
         }
         policy
     }
