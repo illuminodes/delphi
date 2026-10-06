@@ -2,7 +2,7 @@ use mantle::amount::Satoshi;
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::hash::Hash256;
 use mantle::tx::Transaction;
-use mantle_oracle::{AdmittedSample, OutputFilter};
+use mantle_oracle::{AdmittedSample, OutputFilter, TransactionTally};
 
 /// The outputs one block contributes to the price, after filtering.
 ///
@@ -39,12 +39,26 @@ impl BlockRecord {
         hash: Hash256,
         transactions: impl IntoIterator<Item = &'a Transaction>,
     ) -> Self {
+        Self::screened(height, time, hash, transactions).0
+    }
+
+    /// [`Self::from_transactions`] together with the verdict on every transaction.
+    #[must_use]
+    pub fn screened<'a>(
+        height: BlockHeight,
+        time: BlockTime,
+        hash: Hash256,
+        transactions: impl IntoIterator<Item = &'a Transaction>,
+    ) -> (Self, TransactionTally) {
         let mut filter = OutputFilter::new();
-        let amounts = transactions
-            .into_iter()
-            .flat_map(|transaction| filter.admit(transaction))
-            .collect();
-        Self::new(height, time, hash, amounts)
+        let mut tally = TransactionTally::default();
+        let mut amounts = Vec::new();
+        for transaction in transactions {
+            let (verdict, admitted) = filter.screen(transaction);
+            tally.record(verdict, transaction.outputs.len(), admitted.len());
+            amounts.extend(admitted);
+        }
+        (Self::new(height, time, hash, amounts), tally)
     }
 
     #[must_use]

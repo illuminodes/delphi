@@ -20,6 +20,16 @@ impl RecentBlocks {
         self.digests.truncate(Self::KEEP);
     }
 
+    /// A copy with every block measured against `price`, or unmeasured when there is none.
+    #[must_use]
+    pub fn measured(&self, price: Option<f64>) -> Self {
+        let mut measured = self.clone();
+        for digest in &mut measured.digests {
+            digest.measure(price.unwrap_or(f64::NAN));
+        }
+        measured
+    }
+
     #[must_use]
     pub fn digests(&self) -> &[BlockDigest] {
         &self.digests
@@ -67,6 +77,7 @@ impl NotePayload for RecentBlocks {
 mod tests {
     use mantle::amount::Satoshi;
     use mantle::difficulty::BlockHeight;
+    use mantle_oracle::TransactionTally;
 
     use super::RecentBlocks;
     use crate::{BlockDigest, NoteClass, NotePayload};
@@ -89,6 +100,9 @@ mod tests {
                 output_value: Satoshi::new(0),
                 coinbase_value: Satoshi::new(0),
                 subsidy: Satoshi::new(0),
+                tally: TransactionTally::default(),
+                admitted: vec![Satoshi::new(100_000), Satoshi::new(100_300)],
+                funnel: None,
             }
         }
     }
@@ -126,5 +140,17 @@ mod tests {
         assert_eq!(recent.class(), NoteClass::Live);
         assert_eq!(json["blocks"][0]["hash"], "b");
         assert_eq!(json["blocks"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn measuring_reaches_every_block_and_leaves_the_original_alone() {
+        let mut recent = RecentBlocks::default();
+        recent.record(RecentFixture::digest(2, "b"));
+        recent.record(RecentFixture::digest(1, "a"));
+        let measured = recent.measured(Some(100_000.0));
+
+        assert!(measured.digests().iter().all(|digest| digest.funnel.is_some_and(|(_, funnel)| funnel.near_round_usd == 1)));
+        assert!(recent.digests().iter().all(|digest| digest.funnel.is_none()));
+        assert!(recent.measured(None).digests().iter().all(|digest| digest.funnel.is_none()));
     }
 }

@@ -431,6 +431,9 @@ mod tests {
             output_value: mantle::amount::Satoshi::new(0),
             coinbase_value: mantle::amount::Satoshi::new(0),
             subsidy: mantle::amount::Satoshi::new(0),
+            tally: mantle_oracle::TransactionTally::default(),
+            admitted: Vec::new(),
+            funnel: None,
         });
         hub.apply_chain(&snapshot);
         hub.apply_chain(&snapshot);

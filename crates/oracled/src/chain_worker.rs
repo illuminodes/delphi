@@ -142,12 +142,13 @@ impl ChainPass {
             return None;
         }
         self.priced_tip = Some(tip);
+        let anchor = self.pricer.anchor(log);
         Some(ChainSnapshot {
             tip,
-            anchor: self.pricer.anchor(log),
+            anchor,
             audits,
             fits: if moved { self.pricer.fits(log) } else { Vec::new() },
-            blocks: self.sync.recent().clone(),
+            blocks: self.sync.recent().measured(anchor),
         })
     }
 

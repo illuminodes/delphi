@@ -3,8 +3,9 @@ use mantle::codec::VarInt;
 use mantle::difficulty::{BlockHeight, CompactBits};
 use mantle::primitives::{Block, BlockHeader};
 use mantle::tx::Transaction;
+use mantle_oracle::{TransactionTally, TransactionVerdict};
 
-use crate::JsonObject;
+use crate::{BlockFunnel, JsonObject};
 
 /// What one block says about itself, read from the block alone.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,6 +23,9 @@ pub struct BlockDigest {
     pub output_value: Satoshi,
     pub coinbase_value: Satoshi,
     pub subsidy: Satoshi,
+    pub tally: TransactionTally,
+    pub admitted: Vec<Satoshi>,
+    pub funnel: Option<(f64, BlockFunnel)>,
 }
 
 impl BlockDigest {
@@ -31,7 +35,7 @@ impl BlockDigest {
     const DIFFICULTY_ONE_MANTISSA: f64 = 65_535.0;
 
     #[must_use]
-    pub fn of(height: BlockHeight, block: &Block) -> Self {
+    pub fn of(height: BlockHeight, block: &Block, tally: TransactionTally, admitted: Vec<Satoshi>) -> Self {
         let header = &block.header;
         let coinbase_value = block.transactions.first().map_or(Satoshi::new(0), Self::paid);
         let output_value = block
@@ -56,7 +60,15 @@ impl BlockDigest {
             output_value: Satoshi::new(output_value),
             coinbase_value,
             subsidy: Self::subsidy_at(height),
+            tally,
+            admitted,
+            funnel: None,
         }
+    }
+
+    /// Measures the admitted outputs against `price`, which a finite positive price replaces.
+    pub fn measure(&mut self, price: f64) {
+        self.funnel = (price.is_finite() && price > 0.0).then(|| (price, BlockFunnel::of(&self.admitted, price)));
     }
 
     /// The fees the miner collected: what the coinbase paid beyond the subsidy.
@@ -104,6 +116,24 @@ impl BlockDigest {
         object.raw("coinbase_value", &self.coinbase_value.to_u64().to_string());
         object.raw("subsidy", &self.subsidy.to_u64().to_string());
         object.raw("fees", &self.fees().to_u64().to_string());
+        object.raw("filter", &self.filter_json());
+        object.finish()
+    }
+
+    fn filter_json(&self) -> String {
+        let mut verdicts = JsonObject::new();
+        for verdict in TransactionVerdict::ALL {
+            verdicts.count(verdict.key(), self.tally.count(verdict));
+        }
+        let mut object = JsonObject::new();
+        object.raw("verdicts", &verdicts.finish());
+        object.count("accepted_outputs", self.tally.accepted_outputs());
+        object.count("admitted_outputs", self.tally.admitted_outputs());
+        if let Some((price, funnel)) = self.funnel {
+            object.fixed("price", price, 2);
+            object.count("near_round_usd", funnel.near_round_usd);
+            object.count("inside_band", funnel.inside_band);
+        }
         object.finish()
     }
 }
@@ -116,6 +146,7 @@ mod tests {
     use mantle::primitives::{Block, BlockHeader};
     use mantle::script::Witness;
     use mantle::tx::{OutPoint, Transaction, TxIn, TxOut};
+    use mantle_oracle::{TransactionTally, TransactionVerdict};
 
     use super::BlockDigest;
 
@@ -162,11 +193,24 @@ mod tests {
                 ],
             }
         }
+
+        fn digest() -> BlockDigest {
+            let mut tally = TransactionTally::default();
+            tally.record(TransactionVerdict::Coinbase, 1, 0);
+            tally.record(TransactionVerdict::Accepted, 2, 2);
+            tally.record(TransactionVerdict::NotTwoOutputs, 1, 0);
+            BlockDigest::of(
+                BlockHeight::new(840_000),
+                &Self::block(),
+                tally,
+                vec![Satoshi::new(100_300), Satoshi::new(118_000)],
+            )
+        }
     }
 
     #[test]
     fn a_block_is_counted_and_its_fees_come_from_the_coinbase() {
-        let digest = BlockDigest::of(BlockHeight::new(840_000), &DigestFixture::block());
+        let digest = DigestFixture::digest();
 
         assert_eq!(digest.transactions, 3);
         assert_eq!(digest.outputs, 4);
@@ -194,11 +238,27 @@ mod tests {
     }
 
     #[test]
+    fn measuring_against_a_price_adds_the_round_amount_stage() {
+        let mut digest = DigestFixture::digest();
+        digest.measure(100_000.0);
+        let json: serde_json::Value = serde_json::from_str(&digest.to_json()).expect("json");
+
+        assert_eq!(json["filter"]["near_round_usd"], 2);
+        assert_eq!(json["filter"]["inside_band"], 1);
+        digest.measure(f64::NAN);
+        assert!(digest.funnel.is_none());
+    }
+
+    #[test]
     fn the_json_carries_every_field() {
-        let digest = BlockDigest::of(BlockHeight::new(840_000), &DigestFixture::block());
+        let digest = DigestFixture::digest();
         let json: serde_json::Value = serde_json::from_str(&digest.to_json()).expect("json");
 
         assert_eq!(json["height"], 840_000);
+        assert_eq!(json["filter"]["verdicts"]["accepted"], 1);
+        assert_eq!(json["filter"]["verdicts"]["not_two_outputs"], 1);
+        assert_eq!(json["filter"]["admitted_outputs"], 2);
+        assert!(json["filter"].get("near_round_usd").is_none());
         assert_eq!(json["transactions"], 3);
         assert_eq!(json["fees"], 20_000);
         assert_eq!(json["hash"].as_str().map(str::len), Some(64));

@@ -4,6 +4,8 @@ use mantle::amount::Satoshi;
 use mantle::hash::Hash256;
 use mantle::tx::{OutPoint, Transaction, TxHash};
 
+use crate::TransactionVerdict;
+
 #[derive(Debug, Default)]
 pub struct OutputFilter {
     seen_txids: HashSet<Hash256>,
@@ -24,22 +26,15 @@ impl OutputFilter {
     }
 
     pub fn admit(&mut self, transaction: &Transaction) -> impl Iterator<Item = Satoshi> + use<> {
-        let same_day_spend = transaction
-            .inputs
-            .iter()
-            .any(|input| self.seen_txids.contains(&input.previous_output.txid));
-        let replacement = transaction
-            .inputs
-            .iter()
-            .any(|input| self.spent_outpoints.contains(&input.previous_output));
-        let accepted = transaction.inputs.len() <= Self::MAX_INPUTS
-            && transaction.outputs.len() == Self::REQUIRED_OUTPUTS
-            && !Self::is_coinbase(transaction)
-            && !Self::has_op_return(transaction)
-            && !Self::has_oversized_witness(transaction)
-            && !same_day_spend
-            && !replacement;
-        let outputs = if accepted {
+        self.screen(transaction).1.into_iter()
+    }
+
+    /// The verdict on `transaction` with the outputs it contributes, which are none unless it
+    /// is accepted. The transaction is remembered either way, so later spends of it or of its
+    /// inputs are caught.
+    pub fn screen(&mut self, transaction: &Transaction) -> (TransactionVerdict, Vec<Satoshi>) {
+        let verdict = self.verdict(transaction);
+        let outputs = if verdict.is_accepted() {
             transaction
                 .outputs
                 .iter()
@@ -49,6 +44,39 @@ impl OutputFilter {
         } else {
             Vec::new()
         };
+        self.remember(transaction);
+        (verdict, outputs)
+    }
+
+    fn verdict(&self, transaction: &Transaction) -> TransactionVerdict {
+        if Self::is_coinbase(transaction) {
+            TransactionVerdict::Coinbase
+        } else if transaction.inputs.len() > Self::MAX_INPUTS {
+            TransactionVerdict::TooManyInputs
+        } else if transaction.outputs.len() != Self::REQUIRED_OUTPUTS {
+            TransactionVerdict::NotTwoOutputs
+        } else if Self::has_op_return(transaction) {
+            TransactionVerdict::OpReturn
+        } else if Self::has_oversized_witness(transaction) {
+            TransactionVerdict::OversizedWitness
+        } else if transaction
+            .inputs
+            .iter()
+            .any(|input| self.seen_txids.contains(&input.previous_output.txid))
+        {
+            TransactionVerdict::SpendsUnconfirmedParent
+        } else if transaction
+            .inputs
+            .iter()
+            .any(|input| self.spent_outpoints.contains(&input.previous_output))
+        {
+            TransactionVerdict::Replacement
+        } else {
+            TransactionVerdict::Accepted
+        }
+    }
+
+    fn remember(&mut self, transaction: &Transaction) {
         if let Ok(txid) = transaction.txid_into(&mut self.txid_buffer) {
             self.seen_txids.insert(txid);
         }
@@ -57,7 +85,6 @@ impl OutputFilter {
                 self.spent_outpoints.insert(input.previous_output);
             }
         }
-        outputs.into_iter()
     }
 
     #[must_use]
@@ -98,6 +125,7 @@ mod tests {
     use mantle::tx::{OutPoint, Transaction, TxHash, TxIn, TxOut};
 
     use super::OutputFilter;
+    use crate::TransactionVerdict;
 
     struct TransactionFixture;
 
@@ -189,5 +217,39 @@ mod tests {
 
         assert_eq!(filter.admit(&op_return).count(), 0);
         assert_eq!(filter.admit(&oversized).count(), 0);
+    }
+
+    #[test]
+    fn each_rejection_names_its_rule() {
+        let mut filter = OutputFilter::new();
+        let parent = TransactionFixture::transaction(Hash256::from_bytes([1; 32]));
+        let child = TransactionFixture::transaction(parent.txid().expect("fixture encodes"));
+        let mut three_outputs = TransactionFixture::transaction(Hash256::from_bytes([3; 32]));
+        three_outputs.outputs.push(three_outputs.outputs[0].clone());
+        let mut wide = TransactionFixture::transaction(Hash256::from_bytes([4; 32]));
+        wide.inputs = vec![wide.inputs[0].clone(); 6];
+        let mut coinbase = TransactionFixture::transaction(Hash256::ZERO);
+        coinbase.inputs[0].previous_output.vout = u32::MAX;
+        let replacement = TransactionFixture::transaction(Hash256::from_bytes([1; 32]));
+
+        assert_eq!(filter.screen(&parent).0, TransactionVerdict::Accepted);
+        assert_eq!(filter.screen(&child).0, TransactionVerdict::SpendsUnconfirmedParent);
+        assert_eq!(filter.screen(&three_outputs).0, TransactionVerdict::NotTwoOutputs);
+        assert_eq!(filter.screen(&wide).0, TransactionVerdict::TooManyInputs);
+        assert_eq!(filter.screen(&coinbase).0, TransactionVerdict::Coinbase);
+        let (verdict, outputs) = filter.screen(&replacement);
+        assert_eq!(verdict, TransactionVerdict::Replacement);
+        assert!(outputs.is_empty());
+    }
+
+    #[test]
+    fn an_accepted_transaction_drops_outputs_outside_the_amount_limits() {
+        let mut filter = OutputFilter::new();
+        let mut dust = TransactionFixture::transaction(Hash256::from_bytes([5; 32]));
+        dust.outputs[0].value = OutputFilter::MIN_OUTPUT;
+        let (verdict, outputs) = filter.screen(&dust);
+
+        assert_eq!(verdict, TransactionVerdict::Accepted);
+        assert_eq!(outputs, vec![Satoshi::new(100_000)]);
     }
 }

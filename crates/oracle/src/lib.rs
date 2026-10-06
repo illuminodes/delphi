@@ -24,6 +24,8 @@ pub mod rough_price;
 pub mod score_curve;
 pub mod slide_profile;
 pub mod stencil;
+pub mod transaction_tally;
+pub mod transaction_verdict;
 pub mod utc_date;
 pub mod window_runner;
 
@@ -51,5 +53,7 @@ pub use rough_price::RoughPriceEstimator;
 pub use score_curve::ScoreCurve;
 pub use slide_profile::SlideProfile;
 pub use stencil::{PriceStencil, SmoothStencil, SpikeStencil};
+pub use transaction_tally::TransactionTally;
+pub use transaction_verdict::TransactionVerdict;
 pub use utc_date::{UtcDate, UtcDateError};
 pub use window_runner::WindowRunner;

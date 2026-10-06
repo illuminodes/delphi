@@ -172,13 +172,10 @@ impl ChainSync {
                 let block = fetcher
                     .read_block_decoded(*height, header.hash())
                     .map_err(|error| format!("decode block {height}: {error}"))?;
-                let record = BlockRecord::from_transactions(
-                    *height,
-                    header.time(),
-                    header.hash(),
-                    &block.transactions,
-                );
-                self.recent.record(BlockDigest::of(*height, &block));
+                let (record, tally) =
+                    BlockRecord::screened(*height, header.time(), header.hash(), &block.transactions);
+                self.recent
+                    .record(BlockDigest::of(*height, &block, tally, record.amounts().to_vec()));
                 self.log
                     .append(record)
                     .map_err(|error| format!("store record {height}: {error}"))?;
