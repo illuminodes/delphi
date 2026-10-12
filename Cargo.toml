@@ -1,19 +1,6 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/mantle",
-    "crates/consensus",
-    "crates/storage",
-    "crates/validator",
-    "crates/transport",
-    "crates/block-io",
-    "crates/fetcher",
-    "crates/utxo-set",
-    "crates/bloom",
-    "crates/lru-cache",
-    "bench",
-    "conformance",
-    "replay",
     "harness",
     "crates/oracle",
     "crates/oracled",
@@ -29,18 +16,14 @@ perf = "warn"
 pedantic = "warn"
 style = "warn"
 
-# cargo-fuzz requires debug info in release builds to get useful stack traces.
 [profile.release]
 debug = true
 
 [workspace.dependencies]
-sha2 = "0.11"
-sha1 = "0.11"
-ripemd = "0.2"
-k256 = { version = "0.14", default-features = false }
-bitcoinconsensus = "0.106.0"
-ququmatz = { path = "/home/cuarentaydos/Code/tooling/ququmatz" }
-quetzalcoatl = { path = "/home/cuarentaydos/Code/tooling/quetzalcoatl" }
+mantle = { path = "../mantle/crates/mantle" }
+mantle-block-io = { path = "../mantle/crates/block-io" }
+mantle-fetcher = { path = "../mantle/crates/fetcher" }
+mantle-transport = { path = "../mantle/crates/transport" }
 nostro2 = { path = "/home/cuarentaydos/Code/illuminodes/NostrO2/crates/core", default-features = false, features = ["serde", "k256"] }
 nostro2-signer = { path = "/home/cuarentaydos/Code/illuminodes/NostrO2/crates/signer", default-features = false, features = ["serde", "k256"] }
 nostro2-relay = { path = "/home/cuarentaydos/Code/illuminodes/NostrO2/crates/relay" }

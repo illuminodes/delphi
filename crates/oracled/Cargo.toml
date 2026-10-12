@@ -7,8 +7,8 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-mantle = { path = "../mantle" }
-mantle-fetcher = { path = "../fetcher" }
+mantle = { workspace = true }
+mantle-fetcher = { workspace = true }
 mantle-oracle = { path = "../oracle" }
 nostro2 = { workspace = true }
 nostro2-signer = { workspace = true }

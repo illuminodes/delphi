@@ -47,6 +47,6 @@ name = "oracle-volatility"
 path = "src/bin/volatility_probe.rs"
 
 [dependencies]
-mantle = { path = "../crates/mantle" }
+mantle = { workspace = true }
 mantle-oracle = { path = "../crates/oracle" }
 ureq = "3"
