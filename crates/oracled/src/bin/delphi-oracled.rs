@@ -25,6 +25,22 @@ impl OracleDaemonApp {
     const DRY_LEDGER_FILE: &'static str = "audit-dry.ledger";
     const RETIRED_MARKER: &'static str = "addressable.retired";
     const ESTIMATOR_SEED: u64 = 0x6d65_6d70;
+    const CHAIN_JOIN_LIMIT: Duration = Duration::from_secs(10);
+
+    /// Wait up to `limit` for `thread`. A chain sync stuck in a peer
+    /// deadline is left to the process exit; the record log drops a torn
+    /// tail on the next start.
+    fn join_within(thread: thread::JoinHandle<()>, limit: Duration) {
+        let started = Instant::now();
+        while !thread.is_finished() {
+            if started.elapsed() >= limit {
+                eprintln!("chain worker still syncing after {}s; exiting without it", limit.as_secs());
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let _ = thread.join();
+    }
 
     fn execute() -> ExitCode {
         let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -172,8 +188,8 @@ impl OracleDaemonApp {
         stop.store(true, Ordering::Relaxed);
         drop(receiver);
         let _ = ticker.join();
-        let _ = chain.join();
         let _ = mempool.join();
+        Self::join_within(chain, Self::CHAIN_JOIN_LIMIT);
         if let Some(relay) = acks {
             relay.close();
         }
