@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Live Bitcoin price windows from the mantle on-chain oracle." />
+    <meta name="theme-color" content="#0f1216" />
+    <title>Mantle oracle</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icon.svg" />
+    <link data-trunk rel="copy-file" href="public/manifest.webmanifest" />
+    <link data-trunk rel="copy-file" href="public/icon.svg" />
+    <link data-trunk rel="copy-file" href="public/sw.js" />
+    <link data-trunk rel="copy-dir" href="public/stone" />
+    <link data-trunk rel="copy-dir" href="public/three" />
+    <link data-trunk rel="copy-dir" href="public/fumes" />
+    <link data-trunk rel="copy-dir" href="public/oracle" />
+    <script type="importmap">
+        { "imports": { "three": "./three/three.module.min.js", "three/addons/": "./three/addons/" } }
+    </script>
+    <link data-trunk rel="css" href="styles/delphi.css" />
+    <link data-trunk rel="css" href="styles/marble.css" />
+    <link data-trunk rel="css" href="styles/etched.css" />
+    <link data-trunk rel="css" href="styles/fumes.css" />
+    <link data-trunk rel="css" href="styles/oracle.css" />
+    <link data-trunk rel="css" href="styles/main.css" />
+    <link data-trunk rel="rust" data-bin="mantle-dash" data-cargo-profile-release="wasm-release" data-wasm-opt="z" />
+</head>
+<body>
+    <noscript>This dashboard needs JavaScript and WebAssembly.</noscript>
+    <script>
+        if ("serviceWorker" in navigator) {
+            window.addEventListener("load", function () {
+                navigator.serviceWorker.register("sw.js").catch(function () {});
+            });
+        }
+    </script>
+</body>
+</html>

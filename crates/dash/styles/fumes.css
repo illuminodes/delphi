@@ -1,0 +1,87 @@
+.fume-page {
+    position: fixed;
+    inset: 0;
+    background: #0c0a09;
+    overflow: hidden;
+    font-family: var(--delphi-font-text, sans-serif);
+    color: #e8dfcf;
+}
+
+.fume-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.fume-legend {
+    position: absolute;
+    top: 1.25rem;
+    left: 1.5rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    letter-spacing: 0.04em;
+}
+
+.fume-legend li {
+    display: grid;
+    grid-template-columns: 0.8rem 8rem auto;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.fume-swatch {
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 50%;
+    background: var(--fume);
+    box-shadow: 0 0 0.6rem var(--fume);
+}
+
+.fume-legend .scattered .fume-swatch {
+    box-shadow: none;
+    opacity: 0.6;
+}
+
+.fume-name {
+    color: #9c8d7b;
+}
+
+.fume-count {
+    font-family: var(--delphi-font-figures, monospace);
+    font-variant-numeric: tabular-nums;
+}
+
+.fume-note {
+    position: absolute;
+    right: 1.5rem;
+    bottom: 1rem;
+    margin: 0;
+    font-size: 0.75rem;
+    color: #5c5048;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+}
+
+.fume-harvest {
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    color: #9c8d7b;
+    background: transparent;
+    border: 1px solid #3a312b;
+    border-radius: 3px;
+    padding: 0.25rem 0.6rem;
+    cursor: pointer;
+}
+
+.fume-harvest:hover {
+    color: #e8dfcf;
+    border-color: #6b5e50;
+}

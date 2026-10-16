@@ -1,0 +1,14 @@
+glass-flask.png    Silhouette traced from a terracotta flask, Cypriot, Late Bronze Age,
+                   ca. 1400-1375 BCE. The Metropolitan Museum of Art, The Cesnola Collection,
+                   Purchased by subscription, 1874-76 (74.51.771). Open Access image, CC0 1.0.
+                   Rendered as hanging glass by tools/amphora-cut --glass 360 --bright 60;
+                   none of the photograph's surface is kept.
+
+glass-flask-mask.png
+                   The same silhouette as solid white, cut by tools/amphora-cut
+                   --glass 720 --bright 60 --silhouette; clips the gas to the glass.
+
+bronze-tripod.png  Bronze tripod, Etruscan, Archaic, ca. 525-500 BCE. The Metropolitan
+                   Museum of Art, Fletcher Fund, 1960 (60.11.11). Open Access image, CC0 1.0.
+                   Cut from the backdrop by tools/amphora-cut --pocket 0.00002 and scaled to
+                   720 wide with ffmpeg (lanczos).

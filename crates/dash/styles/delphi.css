@@ -1,0 +1,145 @@
+@import url("https://fonts.googleapis.com/css2?family=Marcellus+SC&family=Alegreya+Sans:ital,wght@0,400;0,500;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+
+:root {
+    --delphi-obsidian: #0c0a09;
+    --delphi-iron: #171412;
+    --delphi-soot: #221d1a;
+    --delphi-ash: #3a312b;
+    --delphi-dust: #9c8d7b;
+    --delphi-bone: #e8dfcf;
+
+    --delphi-aurum: #c9a24a;
+    --delphi-helios: #e6c875;
+    --delphi-altar: #8a1e1e;
+    --delphi-hearth: #e8604a;
+
+    --delphi-chasm: #2a1d45;
+    --delphi-pneuma: #4a2d6b;
+    --delphi-vapour: #a68fd0;
+    --delphi-castalia: #5aaba3;
+    --delphi-sulfur: #cfc04a;
+
+    --delphi-font-display: "Marcellus SC", "Trajan Pro", serif;
+    --delphi-font-text: "Alegreya Sans", "Gill Sans", sans-serif;
+    --delphi-font-figures: "IBM Plex Mono", ui-monospace, monospace;
+
+    --delphi-radius: 2px;
+    --delphi-track-display: 0.18em;
+    --delphi-track-label: 0.12em;
+}
+
+.delphi-sheet {
+    position: fixed;
+    inset: 0;
+    overflow: auto;
+    background:
+        radial-gradient(ellipse 70% 45% at 50% -10%, color-mix(in srgb, var(--delphi-aurum) 14%, transparent), transparent 70%),
+        radial-gradient(ellipse 90% 50% at 50% 115%, color-mix(in srgb, var(--delphi-pneuma) 40%, transparent), transparent 70%),
+        var(--delphi-obsidian);
+    color: var(--delphi-bone);
+    font: 16px/1.55 var(--delphi-font-text);
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.delphi-sheet .page { max-width: 72rem; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+
+.delphi-sheet a { color: var(--delphi-helios); }
+.delphi-sheet .back { font-size: 0.85rem; letter-spacing: var(--delphi-track-label); text-transform: uppercase; text-decoration: none; color: var(--delphi-dust); }
+.delphi-sheet .back:hover { color: var(--delphi-helios); }
+
+.delphi-sheet .hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 1rem; padding: 3rem 0 2rem; }
+.delphi-sheet .hero .mark { width: 9rem; height: 9rem; filter: drop-shadow(0 0 2.5rem color-mix(in srgb, var(--delphi-vapour) 35%, transparent)); }
+.delphi-sheet .mark .wisp { animation: delphi-rise 6s ease-in-out infinite; }
+.delphi-sheet .mark .wisp.late { animation-delay: -3s; }
+@keyframes delphi-rise { 0%, 100% { opacity: 0.35; transform: translateY(3px); } 50% { opacity: 0.9; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .delphi-sheet .mark .wisp { animation: none; } }
+.delphi-sheet .wordmark { margin: 0; font: 400 clamp(3rem, 10vw, 6.5rem)/1 var(--delphi-font-display); letter-spacing: var(--delphi-track-display); padding-left: var(--delphi-track-display); color: var(--delphi-bone); }
+.delphi-sheet .tagline { margin: 0; font: 400 0.95rem var(--delphi-font-display); letter-spacing: 0.3em; text-transform: uppercase; color: var(--delphi-aurum); }
+.delphi-sheet .inscription { margin: 0; font: 400 0.85rem var(--delphi-font-display); letter-spacing: 0.4em; color: var(--delphi-dust); }
+
+.delphi-sheet .meander { display: block; width: 100%; height: 14px; margin: 2.5rem 0 1.5rem; color: var(--delphi-aurum); opacity: 0.7; }
+
+.delphi-sheet section > h2 { margin: 0 0 0.25rem; font: 400 1.5rem var(--delphi-font-display); letter-spacing: var(--delphi-track-display); text-transform: uppercase; color: var(--delphi-helios); }
+.delphi-sheet section > .lede { margin: 0 0 1.5rem; color: var(--delphi-dust); max-width: 46rem; }
+
+.delphi-sheet .camps { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 1.25rem; }
+.delphi-sheet .camp { background: var(--delphi-iron); border: 1px solid var(--delphi-ash); border-radius: var(--delphi-radius); padding: 1rem; }
+.delphi-sheet .camp.apollo { border-top: 3px solid var(--delphi-aurum); }
+.delphi-sheet .camp.pythia { border-top: 3px solid var(--delphi-vapour); }
+.delphi-sheet .camp.ground { border-top: 3px solid var(--delphi-ash); }
+.delphi-sheet .camp h3 { margin: 0; font: 400 1.05rem var(--delphi-font-display); letter-spacing: var(--delphi-track-label); text-transform: uppercase; }
+.delphi-sheet .camp > p { margin: 0.2rem 0 0.9rem; font-size: 0.88rem; color: var(--delphi-dust); }
+.delphi-sheet .swatches { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.delphi-sheet .swatch { display: grid; grid-template-columns: 3rem 1fr auto; align-items: center; gap: 0.75rem; }
+.delphi-sheet .chip { width: 3rem; height: 3rem; border-radius: var(--delphi-radius); border: 1px solid color-mix(in srgb, var(--delphi-bone) 12%, transparent); }
+.delphi-sheet .swatch .name { font: 400 0.82rem var(--delphi-font-display); letter-spacing: var(--delphi-track-label); text-transform: uppercase; }
+.delphi-sheet .swatch .role { display: block; font-size: 0.82rem; color: var(--delphi-dust); }
+.delphi-sheet .swatch code { font: 500 0.78rem var(--delphi-font-figures); color: var(--delphi-dust); text-align: right; }
+.delphi-sheet .swatch code span { display: block; opacity: 0.7; }
+
+.delphi-sheet .faces { display: flex; flex-direction: column; gap: 1rem; }
+.delphi-sheet .face { display: grid; grid-template-columns: 13rem 1fr; gap: 1.25rem; padding: 1.1rem 1rem; background: var(--delphi-iron); border: 1px solid var(--delphi-ash); border-radius: var(--delphi-radius); }
+.delphi-sheet .face-meta { display: flex; flex-direction: column; gap: 0.25rem; }
+.delphi-sheet .face-meta .role { font: 600 0.75rem var(--delphi-font-text); letter-spacing: var(--delphi-track-label); text-transform: uppercase; color: var(--delphi-aurum); }
+.delphi-sheet .face-meta .family { font-weight: 700; font-size: 1.05rem; }
+.delphi-sheet .face-meta .note { font-size: 0.82rem; color: var(--delphi-dust); }
+.delphi-sheet .face-meta code { font: 0.72rem var(--delphi-font-figures); color: var(--delphi-dust); overflow-wrap: anywhere; }
+.delphi-sheet .specimen { margin: 0; align-self: center; font-size: 1.6rem; line-height: 1.3; overflow-wrap: anywhere; }
+.delphi-sheet .specimen.display { letter-spacing: var(--delphi-track-label); }
+
+.delphi-sheet .scale { list-style: none; margin: 1.5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.delphi-sheet .scale li { display: grid; grid-template-columns: 6rem 1fr; align-items: baseline; gap: 1rem; border-bottom: 1px solid var(--delphi-ash); padding-bottom: 0.5rem; }
+.delphi-sheet .scale code { font: 0.75rem var(--delphi-font-figures); color: var(--delphi-dust); }
+
+.delphi-sheet .t-display { font: 400 2.75rem/1.1 var(--delphi-font-display); letter-spacing: var(--delphi-track-display); text-transform: uppercase; }
+.delphi-sheet .t-heading { font: 400 1.4rem/1.2 var(--delphi-font-display); letter-spacing: var(--delphi-track-label); text-transform: uppercase; color: var(--delphi-helios); }
+.delphi-sheet .t-figure { font: 500 2.25rem/1.1 var(--delphi-font-figures); font-variant-numeric: tabular-nums; }
+.delphi-sheet .t-body { font: 400 1rem/1.55 var(--delphi-font-text); }
+.delphi-sheet .t-label { font: 600 0.75rem var(--delphi-font-text); letter-spacing: var(--delphi-track-label); text-transform: uppercase; color: var(--delphi-dust); }
+.delphi-sheet .t-mono { font: 400 0.82rem var(--delphi-font-figures); color: var(--delphi-dust); }
+
+.delphi-sheet .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1.25rem; }
+.delphi-sheet .exhibit { display: flex; flex-direction: column; gap: 0.9rem; }
+.delphi-sheet .exhibit > h3 { margin: 0; font: 600 0.75rem var(--delphi-font-text); letter-spacing: var(--delphi-track-label); text-transform: uppercase; color: var(--delphi-dust); }
+.delphi-sheet .row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+
+.delphi-sheet .btn { font: 400 0.82rem var(--delphi-font-display); letter-spacing: var(--delphi-track-label); text-transform: uppercase; padding: 0.55rem 1.1rem; border-radius: var(--delphi-radius); cursor: pointer; border: 1px solid transparent; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+.delphi-sheet .btn.primary { background: var(--delphi-aurum); color: var(--delphi-obsidian); }
+.delphi-sheet .btn.primary:hover { background: var(--delphi-helios); }
+.delphi-sheet .btn.ghost { background: transparent; color: var(--delphi-bone); border-color: var(--delphi-ash); }
+.delphi-sheet .btn.ghost:hover { border-color: var(--delphi-aurum); color: var(--delphi-helios); }
+.delphi-sheet .btn.danger { background: var(--delphi-altar); color: var(--delphi-bone); }
+.delphi-sheet .btn.danger:hover { background: color-mix(in srgb, var(--delphi-altar) 80%, var(--delphi-hearth)); }
+
+.delphi-sheet .seal { display: inline-flex; align-items: center; gap: 0.45rem; font: 600 0.72rem var(--delphi-font-text); letter-spacing: var(--delphi-track-label); text-transform: uppercase; padding: 0.25rem 0.65rem; border: 1px solid currentColor; border-radius: var(--delphi-radius); }
+.delphi-sheet .seal::before { content: ""; width: 0.5rem; height: 0.5rem; transform: rotate(45deg); background: currentColor; }
+.delphi-sheet .seal.open { color: var(--delphi-castalia); }
+.delphi-sheet .seal.connecting { color: var(--delphi-sulfur); }
+.delphi-sheet .seal.closed { color: var(--delphi-hearth); }
+.delphi-sheet .seal.chain { color: var(--delphi-aurum); }
+.delphi-sheet .seal.mempool { color: var(--delphi-vapour); background: color-mix(in srgb, var(--delphi-chasm) 70%, transparent); }
+
+.delphi-sheet .tablet { position: relative; background: var(--delphi-iron); border: 1px solid var(--delphi-ash); border-radius: var(--delphi-radius); padding: 1rem 1.1rem; }
+.delphi-sheet .tablet::before { content: ""; position: absolute; left: -1px; right: -1px; top: -1px; height: 3px; background: var(--delphi-aurum); }
+.delphi-sheet .tablet.mempool { background: linear-gradient(180deg, var(--delphi-iron), color-mix(in srgb, var(--delphi-chasm) 55%, var(--delphi-iron))); }
+.delphi-sheet .tablet.mempool::before { background: linear-gradient(90deg, var(--delphi-pneuma), var(--delphi-vapour), var(--delphi-pneuma)); }
+.delphi-sheet .tablet header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
+.delphi-sheet .tablet h4 { margin: 0; font: 400 1rem var(--delphi-font-display); letter-spacing: var(--delphi-track-label); text-transform: uppercase; }
+.delphi-sheet .tablet .figure { margin: 0.6rem 0 0.4rem; font: 500 2rem/1 var(--delphi-font-figures); font-variant-numeric: tabular-nums; color: var(--delphi-ash); }
+.delphi-sheet .tablet .rule { height: 2.25rem; border-bottom: 1px dashed var(--delphi-ash); }
+
+.delphi-sheet .field { display: flex; flex-direction: column; gap: 0.35rem; }
+.delphi-sheet .field input { font: 0.9rem var(--delphi-font-figures); color: var(--delphi-bone); background: var(--delphi-soot); border: 1px solid var(--delphi-ash); border-radius: var(--delphi-radius); padding: 0.55rem 0.7rem; }
+.delphi-sheet .field input:focus { outline: none; border-color: var(--delphi-aurum); box-shadow: 0 0 0 3px color-mix(in srgb, var(--delphi-aurum) 25%, transparent); }
+.delphi-sheet .field input::placeholder { color: var(--delphi-dust); opacity: 0.6; }
+
+.delphi-sheet .delta { font: 600 1rem var(--delphi-font-figures); }
+.delphi-sheet .delta.up { color: var(--delphi-castalia); }
+.delphi-sheet .delta.down { color: var(--delphi-hearth); }
+
+.delphi-sheet footer { margin-top: 3rem; text-align: center; font: 400 0.8rem var(--delphi-font-display); letter-spacing: 0.3em; color: var(--delphi-dust); }
+
+@media (max-width: 40rem) {
+    .delphi-sheet .face { grid-template-columns: 1fr; }
+    .delphi-sheet .scale li { grid-template-columns: 1fr; }
+}

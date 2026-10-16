@@ -1,0 +1,9 @@
+[package]
+name = "stone-fetch"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Downloads a marble photograph for the Delphi etched wireframe"
+
+[dependencies]
+ureq = "2"

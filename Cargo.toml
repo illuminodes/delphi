@@ -4,6 +4,10 @@ members = [
     "harness",
     "crates/oracle",
     "crates/oracled",
+    "crates/dash",
+    "tools/vein-preview",
+    "tools/amphora-cut",
+    "tools/stone-fetch",
 ]
 
 [workspace.package]
@@ -18,6 +22,15 @@ style = "warn"
 
 [profile.release]
 debug = true
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true
 
 [workspace.dependencies]
 mantle = { path = "../mantle/crates/mantle" }

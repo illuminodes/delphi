@@ -1,6 +1,7 @@
 /target
+/crates/dash/dist
 *.nsec
-*.svg
+/*.svg
 perf*.data
 perf*.data.old
 data/

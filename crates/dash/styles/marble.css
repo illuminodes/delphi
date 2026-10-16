@@ -1,0 +1,88 @@
+.marble-slab {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border-radius: 3px;
+    min-height: 12rem;
+    background: var(--slab-base);
+    box-shadow:
+        inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+        inset 0 -3px 8px color-mix(in srgb, black 45%, transparent),
+        0 1px 0 color-mix(in srgb, black 60%, transparent),
+        0 14px 34px -10px color-mix(in srgb, black 80%, transparent);
+}
+
+.marble-slab .board,
+.marble-slab .vein { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.marble-slab .vein { z-index: 0; opacity: 0; transition: opacity 0.4s ease; }
+.marble-slab .vein.ready { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .marble-slab .vein { transition: none; } }
+.marble-slab::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background:
+        linear-gradient(115deg, color-mix(in srgb, white 9%, transparent) 0%, transparent 38%, transparent 70%, color-mix(in srgb, white 5%, transparent) 100%),
+        radial-gradient(ellipse 120% 90% at 50% 50%, transparent 55%, color-mix(in srgb, black 35%, transparent) 100%);
+}
+.marble-slab .board { z-index: 2; cursor: crosshair; }
+
+.marble-slab.nero {
+    --slab-base: #1a1a1c;
+    --slab-chalk: #f1ead9;
+    --slab-ochre: #e2bd68;
+    --slab-vapour: #c3aeea;
+    --slab-hearth: #f28468;
+    --slab-label: #c2b6a2;
+}
+
+.marble-slab.parian {
+    --slab-base: #f3f1ef;
+    --slab-chalk: #26201b;
+    --slab-ochre: #7a5617;
+    --slab-vapour: #4e3380;
+    --slab-hearth: #96281c;
+    --slab-label: #5a5046;
+}
+
+.marble-slab.aurum {
+    --slab-base: #c4965a;
+    --slab-chalk: #21140a;
+    --slab-ochre: #4a2806;
+    --slab-vapour: #33195c;
+    --slab-hearth: #6e150c;
+    --slab-label: #3a2614;
+}
+
+.marble-slab.tone-chalk { --chalk-ink: var(--slab-chalk); }
+.marble-slab.tone-ochre { --chalk-ink: var(--slab-ochre); }
+.marble-slab.tone-vapour { --chalk-ink: var(--slab-vapour); }
+.marble-slab.tone-hearth { --chalk-ink: var(--slab-hearth); }
+
+.board .rule { fill: none; stroke: var(--chalk-ink); stroke-width: 1; opacity: 0.22; }
+.board .cursor { fill: none; stroke: var(--chalk-ink); stroke-width: 1; stroke-dasharray: 2 5; opacity: 0.5; }
+.board .ring { fill: none; stroke: var(--chalk-ink); stroke-width: 1.8; stroke-linecap: round; opacity: 0.95; }
+.board .label { fill: var(--slab-label); font: 500 11px var(--delphi-font-text); letter-spacing: 0.06em; }
+.board .label.y { text-anchor: end; font-family: var(--delphi-font-figures); font-size: 10.5px; letter-spacing: 0; }
+
+.marble-chart { display: flex; flex-direction: column; gap: 0.65rem; }
+.marble-chart > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem 1rem; }
+.marble-chart > header h4 { margin: 0; font: 400 1.05rem var(--delphi-font-display); letter-spacing: var(--delphi-track-label); text-transform: uppercase; color: var(--delphi-bone); }
+.marble-chart > header .detail { font: 600 0.72rem var(--delphi-font-text); letter-spacing: var(--delphi-track-label); text-transform: uppercase; color: var(--delphi-dust); }
+.marble-chart > header .readout { margin-left: auto; display: flex; align-items: baseline; gap: 0.75rem; font-family: var(--delphi-font-figures); font-variant-numeric: tabular-nums; }
+.marble-chart > header .readout .price { font-size: 1.25rem; font-weight: 500; color: var(--delphi-bone); }
+.marble-chart > header .readout .when { font-size: 0.75rem; color: var(--delphi-dust); }
+.marble-chart > header .readout .up { color: var(--delphi-castalia); }
+.marble-chart > header .readout .down { color: var(--delphi-hearth); }
+.marble-chart .marble-slab { height: var(--slab-height, 18rem); }
+
+.chart-playground { display: flex; flex-direction: column; gap: 1.25rem; }
+.chart-playground .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1.5rem; }
+.chart-playground .choice { display: flex; align-items: center; gap: 0.35rem; }
+.chart-playground .choice > span { margin-right: 0.35rem; }
+.chart-playground .choice button { font: 400 0.78rem var(--delphi-font-display); letter-spacing: var(--delphi-track-label); text-transform: uppercase; padding: 0.35rem 0.75rem; border-radius: var(--delphi-radius); border: 1px solid var(--delphi-ash); background: transparent; color: var(--delphi-dust); cursor: pointer; }
+.chart-playground .choice button:hover { color: var(--delphi-bone); border-color: var(--delphi-aurum); }
+.chart-playground .choice button.active { color: var(--delphi-obsidian); background: var(--delphi-aurum); border-color: var(--delphi-aurum); }
+.chart-playground .trio { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 1.25rem; --slab-height: 11rem; }

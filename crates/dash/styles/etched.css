@@ -1,0 +1,31 @@
+.etched-wireframe {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+}
+
+.etched-wireframe .slab {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+}
+
+.etched-wireframe .slab.ready { opacity: 1; }
+
+.etched-wireframe .stone-switch {
+    position: absolute;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+}
+
+.etched-wireframe .stone-switch:focus-visible { outline: 1px dashed currentColor; outline-offset: 2px; }
+.etched-wireframe.nero .stone-switch { color: #e8dfcf; }
+.etched-wireframe.parian .stone-switch { color: #3a312b; }
+
+@media (prefers-reduced-motion: reduce) { .etched-wireframe .slab { transition: none; } }

@@ -1,0 +1,25 @@
+.oracle-page {
+    position: fixed;
+    inset: 0;
+    background: #0e0b09;
+    overflow: hidden;
+}
+
+.oracle-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.oracle-note {
+    position: absolute;
+    left: 1.25rem;
+    bottom: 0.9rem;
+    margin: 0;
+    font-family: var(--delphi-font-figures, monospace);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(201, 163, 90, 0.45);
+}
