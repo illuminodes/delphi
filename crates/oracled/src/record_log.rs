@@ -24,11 +24,8 @@ pub struct RecordLog {
 }
 
 impl RecordLog {
-    pub const MAGIC: [u8; 8] = *b"MREC\x02\0\0\0";
+    pub const MAGIC: [u8; 8] = *b"MREC\x03\0\0\0";
 
-    /// A file without [`Self::MAGIC`] holds records without hashes; it is
-    /// read and rewritten in the current format.
-    ///
     /// # Errors
     /// Returns an I/O error if the file cannot be read or opened for append.
     pub fn open(path: impl Into<PathBuf>, capacity: usize) -> io::Result<Self> {
@@ -39,18 +36,15 @@ impl RecordLog {
             Err(error) => return Err(error),
         };
         let current = bytes.starts_with(&Self::MAGIC);
-        let decode = if current {
-            BlockRecord::decode_prefix
-        } else {
-            BlockRecord::decode_legacy_prefix
-        };
         let mut records = VecDeque::new();
         let mut used = if current { Self::MAGIC.len() } else { 0 };
         let mut replayed = 0;
-        while let Some((record, consumed)) = decode(&bytes[used..]) {
-            Self::place(&mut records, capacity, record);
-            used += consumed;
-            replayed += 1;
+        if current {
+            while let Some((record, consumed)) = BlockRecord::decode_prefix(&bytes[used..]) {
+                Self::place(&mut records, capacity, record);
+                used += consumed;
+                replayed += 1;
+            }
         }
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let mut log = Self {
@@ -374,25 +368,27 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_file_is_migrated_and_its_hashes_filled_from_headers() {
+    fn legacy_records_are_not_treated_as_verified() {
         let fixture = LogFixture::new("legacy");
         fixture.write_legacy(1..=4);
         let mut log = RecordLog::open(fixture.path(), 10).expect("open legacy");
-
-        assert_eq!(LogFixture::heights(&log), vec![1, 2, 3, 4]);
-        assert!(log.records().all(BlockRecord::lacks_hash));
-        let missing = log
-            .fill_hashes(|height| (height.to_u32() != 2).then(|| LogFixture::hash(height.to_u32())))
-            .expect("fill");
-        assert_eq!(missing, 1);
+        assert!(log.is_empty());
+        assert!(log.sample(1).is_none());
         log.append(LogFixture::record(5)).expect("append");
         drop(log);
-
         let log = RecordLog::open(fixture.path(), 10).expect("reopen");
-        assert_eq!(LogFixture::heights(&log), vec![1, 2, 3, 4, 5]);
-        assert_eq!(log.get(BlockHeight::new(3)).map(BlockRecord::hash), Some(LogFixture::hash(3)));
-        assert!(log.get(BlockHeight::new(2)).is_some_and(BlockRecord::lacks_hash));
-        assert_eq!(log.get(BlockHeight::new(5)).map(BlockRecord::hash), Some(LogFixture::hash(5)));
+        assert_eq!(LogFixture::heights(&log), vec![5]);
+    }
+
+    #[test]
+    fn pre_validation_records_with_hashes_are_discarded() {
+        let fixture = LogFixture::new("pre-validation");
+        let mut bytes = b"MREC\x02\0\0\0".to_vec();
+        LogFixture::record(10).encode_into(&mut bytes);
+        fs::write(fixture.path(), bytes).expect("write old log");
+        let log = RecordLog::open(fixture.path(), 10).expect("open");
+        assert!(log.is_empty());
+        assert_eq!(fs::read(fixture.path()).expect("read"), RecordLog::MAGIC);
     }
 
     #[test]

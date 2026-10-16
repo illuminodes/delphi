@@ -35,6 +35,7 @@ strip = true
 [workspace.dependencies]
 mantle = { path = "../mantle/crates/mantle" }
 mantle-block-io = { path = "../mantle/crates/block-io" }
+mantle-consensus = { path = "../mantle/crates/consensus" }
 mantle-fetcher = { path = "../mantle/crates/fetcher" }
 mantle-transport = { path = "../mantle/crates/transport" }
 nostro2 = { path = "/home/cuarentaydos/Code/illuminodes/NostrO2/crates/core", default-features = false, features = ["serde", "k256"] }

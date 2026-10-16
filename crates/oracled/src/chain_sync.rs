@@ -3,10 +3,10 @@ use std::path::PathBuf;
 
 use mantle::difficulty::BlockHeight;
 use mantle::network::Network;
-use mantle::primitives::BlockHeader;
 use mantle_fetcher::Fetcher;
 use delphi_oracle::DataDirLock;
 
+use crate::chain_proof::ChainProof;
 use crate::{BlockCache, BlockDigest, BlockPlan, BlockRecord, RecentBlocks, RecordLog};
 
 /// What one synchronization pass did.
@@ -138,18 +138,20 @@ impl ChainSync {
     }
 
     fn sync_with(&mut self, fetcher: &mut Fetcher, purged_cache: bool) -> Result<SyncReport, String> {
+        let mut proof = ChainProof::new(self.network)?;
         let headers = fetcher
-            .sync_headers(
+            .sync_headers_admitted(
                 BlockHeight::new(1),
                 BlockHeight::new(u32::MAX),
                 self.network.genesis_hash(),
+                &mut proof,
             )
             .map_err(|error| format!("synchronize headers: {error}"))?;
+        proof.finish(&headers)?;
         let tip = headers
             .last()
             .map(|(height, _)| *height)
             .ok_or_else(|| "peers returned no headers".to_string())?;
-        self.fill_hashes(&headers)?;
         let recorded_tip = self.log.tip().map(BlockRecord::height);
         let Some(span) = self.plan.missing(recorded_tip, tip) else {
             return Ok(SyncReport {
@@ -172,6 +174,7 @@ impl ChainSync {
                 let block = fetcher
                     .read_block_decoded(*height, header.hash())
                     .map_err(|error| format!("decode block {height}: {error}"))?;
+                proof.check_block(*height, &block)?;
                 let (record, tally) =
                     BlockRecord::screened(*height, header.time(), header.hash(), &block.transactions);
                 self.recent
@@ -188,23 +191,6 @@ impl ChainSync {
             purged_cache,
             caught_up: self.log.tip().map(BlockRecord::height) == Some(tip),
         })
-    }
-
-    fn fill_hashes(&mut self, headers: &[(BlockHeight, BlockHeader)]) -> Result<(), String> {
-        let missing = self
-            .log
-            .fill_hashes(|height| {
-                let index = headers.partition_point(|(held, _)| *held < height);
-                headers
-                    .get(index)
-                    .filter(|(held, _)| *held == height)
-                    .map(|(_, header)| header.hash())
-            })
-            .map_err(|error| format!("store record hashes: {error}"))?;
-        if missing > 0 {
-            eprintln!("{missing} records have no header to take a hash from");
-        }
-        Ok(())
     }
 
     fn purge_if_full(&mut self) -> Result<bool, String> {

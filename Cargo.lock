@@ -315,6 +315,7 @@ version = "0.1.0"
 dependencies = [
  "delphi-oracle",
  "mantle",
+ "mantle-consensus",
  "mantle-fetcher",
  "nostro2 0.9.0",
  "nostro2-relay",
@@ -365,6 +366,7 @@ dependencies = [
  "der",
  "digest",
  "elliptic-curve",
+ "rfc6979",
  "signature",
  "spki",
  "zeroize",
@@ -1187,6 +1189,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mantle-consensus"
+version = "0.1.0"
+dependencies = [
+ "k256",
+ "mantle",
+ "ripemd",
+ "sha1",
+ "sha2",
+]
+
+[[package]]
 name = "mantle-fetcher"
 version = "0.1.0"
 dependencies = [
@@ -1658,6 +1671,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "rfc6979"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4a459cddafb3fe76b31fd8f1108007566c40301feb64dc7b54656eb7388172b"
+dependencies = [
+ "crypto-bigint",
+ "hmac",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1669,6 +1692,15 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "ripemd"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dd4211456b4172d7e44261920c25acf07367c4f04bb5f5d54fc21b090d9b159"
+dependencies = [
+ "digest",
 ]
 
 [[package]]
@@ -1831,6 +1863,17 @@ checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
 dependencies = [
  "base16ct",
  "serde",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]

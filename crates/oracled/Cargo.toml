@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 mantle = { workspace = true }
 mantle-fetcher = { workspace = true }
+mantle-consensus = { workspace = true }
 delphi-oracle = { path = "../oracle" }
 nostro2 = { workspace = true }
 nostro2-signer = { workspace = true }
