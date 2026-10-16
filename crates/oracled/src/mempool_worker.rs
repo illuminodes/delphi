@@ -1,6 +1,5 @@
 use std::net::SocketAddrV4;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -9,7 +8,7 @@ use mantle::difficulty::BlockTime;
 use mantle::network::Network;
 use delphi_oracle::PeerFanout;
 
-use crate::Event;
+use crate::{Event, EventSender};
 
 /// Streams unconfirmed transactions from a set of peers, reconnecting when
 /// every peer has dropped.
@@ -17,7 +16,7 @@ pub struct MempoolWorker {
     candidates: Vec<SocketAddrV4>,
     want: usize,
     stop: Arc<AtomicBool>,
-    events: Sender<Event>,
+    events: EventSender,
 }
 
 impl MempoolWorker {
@@ -30,7 +29,7 @@ impl MempoolWorker {
         candidates: Vec<SocketAddrV4>,
         want: usize,
         stop: Arc<AtomicBool>,
-        events: Sender<Event>,
+        events: EventSender,
     ) -> Self {
         Self {
             candidates,
@@ -61,11 +60,7 @@ impl MempoolWorker {
             }
             while !self.stop.load(Ordering::Relaxed) && fanout.live_peers() > 0 {
                 for seen in fanout.poll() {
-                    if self
-                        .events
-                        .send(Event::Transaction(seen.transaction, Self::now()))
-                        .is_err()
-                    {
+                    if !self.events.send(Event::Transaction(seen.transaction, Self::now())) {
                         return;
                     }
                 }
@@ -77,7 +72,7 @@ impl MempoolWorker {
     }
 
     fn notice(&self, message: String) -> bool {
-        self.events.send(Event::Notice(message)).is_ok()
+        self.events.send(Event::Notice(message))
     }
 
     fn pause(&self, total: Duration) {

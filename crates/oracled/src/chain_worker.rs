@@ -1,5 +1,4 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -7,7 +6,7 @@ use std::time::Duration;
 use mantle::difficulty::BlockHeight;
 
 use crate::chain_sync::ChainSyncSpec;
-use crate::{AuditBackfill, AuditLedger, BlockRecord, ChainPricer, ChainSnapshot, ChainSync, Event};
+use crate::{AuditBackfill, AuditLedger, BlockRecord, ChainPricer, ChainSnapshot, ChainSync, Event, EventSender};
 
 /// Follows the chain tip and reports what to publish after each pass.
 ///
@@ -19,7 +18,7 @@ pub struct ChainWorker {
     spec: ChainSyncSpec,
     ledger: Arc<Mutex<AuditLedger>>,
     stop: Arc<AtomicBool>,
-    events: Sender<Event>,
+    events: EventSender,
 }
 
 struct ChainPass {
@@ -27,7 +26,7 @@ struct ChainPass {
     pricer: ChainPricer,
     backfill: AuditBackfill,
     stop: Arc<AtomicBool>,
-    events: Sender<Event>,
+    events: EventSender,
     priced_tip: Option<BlockHeight>,
 }
 
@@ -42,7 +41,7 @@ impl ChainWorker {
         spec: ChainSyncSpec,
         ledger: Arc<Mutex<AuditLedger>>,
         stop: Arc<AtomicBool>,
-        events: Sender<Event>,
+        events: EventSender,
     ) -> Self {
         Self {
             spec,
@@ -66,6 +65,7 @@ impl ChainWorker {
             Err(message) => {
                 let _ = events.send(Event::Notice(format!("chain sync cannot start: {message}")));
                 stop.store(true, Ordering::Relaxed);
+                let _ = events.send(Event::Stop);
                 return;
             }
         };
@@ -119,7 +119,7 @@ impl ChainPass {
         let snapshot = self.snapshot();
         let backlog = snapshot.as_ref().is_some_and(|snapshot| snapshot.audits.len() >= ChainWorker::AUDIT_BATCH);
         if let Some(snapshot) = snapshot
-            && self.events.send(Event::Chain(snapshot)).is_err()
+            && !self.events.send(Event::Chain(snapshot))
         {
             self.stop.store(true, Ordering::Relaxed);
         }
@@ -153,7 +153,7 @@ impl ChainPass {
     }
 
     fn notice(&self, message: String) -> bool {
-        self.events.send(Event::Notice(message)).is_ok()
+        self.events.send(Event::Notice(message))
     }
 
     fn sleep(&self, total: Duration) -> bool {

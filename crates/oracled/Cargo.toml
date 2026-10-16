@@ -14,6 +14,7 @@ delphi-oracle = { path = "../oracle" }
 nostro2 = { workspace = true }
 nostro2-signer = { workspace = true }
 nostro2-relay = { workspace = true }
+quetzalcoatl = { workspace = true }
 rustix = { version = "1", features = ["stdio"] }
 signal-hook = { version = "0.4", default-features = false }
 

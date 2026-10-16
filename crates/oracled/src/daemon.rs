@@ -1,8 +1,6 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use crate::{ChainSnapshot, Event, NoteClass, NoteSink, Outcome, PriceHub};
+use crate::{ChainSnapshot, Event, EventReceiver, NoteClass, NoteSink, Outcome, PriceHub};
 
 /// Owns the price hub and drives it from the worker threads' events.
 pub struct Daemon<S: NoteSink> {
@@ -10,6 +8,7 @@ pub struct Daemon<S: NoteSink> {
 }
 
 impl<S: NoteSink> Daemon<S> {
+    /// How often the [`crate::Ticker`] should wake the hub.
     pub const WAKE: Duration = Duration::from_millis(500);
 
     #[must_use]
@@ -22,20 +21,23 @@ impl<S: NoteSink> Daemon<S> {
         &self.hub
     }
 
-    /// Handle events until the deadline passes, `stop` is set, or every
-    /// sender is gone.
-    pub fn run(&mut self, events: &Receiver<Event>, deadline: Option<Instant>, stop: &AtomicBool) {
-        loop {
-            if deadline.is_some_and(|limit| Instant::now() >= limit) || stop.load(Ordering::Relaxed) {
-                return;
-            }
-            match events.recv_timeout(Self::WAKE) {
-                Ok(event) => self.handle(event),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
-            for (window, outcome) in self.hub.tick(Instant::now()) {
-                Self::report(&window, &outcome);
+    /// Handle events until a [`Event::Stop`] arrives or every sender is gone.
+    pub fn run(&mut self, events: &mut EventReceiver) {
+        let mut reported_drops = 0;
+        while let Some(event) = events.recv() {
+            match event {
+                Event::Stop => return,
+                Event::Tick(now) => {
+                    for (window, outcome) in self.hub.tick(now) {
+                        Self::report(&window, &outcome);
+                    }
+                    let dropped = events.dropped();
+                    if dropped >= reported_drops + 1_000 {
+                        eprintln!("{dropped} mempool transactions dropped while the hub was busy");
+                        reported_drops = dropped;
+                    }
+                }
+                other => self.handle(other),
             }
         }
     }
@@ -55,6 +57,7 @@ impl<S: NoteSink> Daemon<S> {
                 }
             }
             Event::Notice(message) => eprintln!("{message}"),
+            Event::Tick(_) | Event::Stop => {}
             Event::Ack { id, accepted, message } => {
                 if let Some(audit) = self.hub.acknowledge(&id, accepted) {
                     if !accepted {
@@ -90,8 +93,7 @@ impl<S: NoteSink> Daemon<S> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{Arc, Mutex, mpsc};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use mantle::difficulty::{BlockHeight, BlockTime};
@@ -102,7 +104,7 @@ mod tests {
     use super::Daemon;
     use crate::synthetic_market::SyntheticMarket;
     use crate::{
-        AuditLedger, AuditRecord, ChainSnapshot, ChainWindow, Event, MempoolEstimator, MempoolWindow, NoteSink,
+        AuditLedger, AuditRecord, ChainSnapshot, ChainWindow, Event, EventBus, MempoolEstimator, MempoolWindow, NoteSink,
         PriceHub, PriceSigner, RecentBlocks, RelayPublisher, TransactionStream,
     };
 
@@ -174,17 +176,19 @@ mod tests {
     #[test]
     fn events_flow_through_to_published_notes() {
         let mut daemon = DaemonFixture::daemon(Duration::from_millis(600));
-        let (sender, receiver) = mpsc::channel();
-        sender.send(DaemonFixture::chain_event(81_000.0, 100)).expect("send");
+        let (sender, mut receiver) = EventBus::open(1_024);
+        assert!(sender.send(DaemonFixture::chain_event(81_000.0, 100)));
         let mut market = SyntheticMarket::new(80_000.0, 5);
         for _ in 0..300 {
-            sender
-                .send(Event::Transaction(market.transaction(), BlockTime::new(1)))
-                .expect("send");
+            assert!(sender.send(Event::Transaction(market.transaction(), BlockTime::new(1))));
         }
-        sender.send(Event::Notice("hello".to_string())).expect("send");
+        assert!(sender.send(Event::Notice("hello".to_string())));
+        let start = Instant::now();
+        assert!(sender.send(Event::Tick(start)));
+        assert!(sender.send(Event::Tick(start + Duration::from_millis(600))));
+        assert!(sender.send(Event::Stop));
 
-        daemon.run(&receiver, Some(Instant::now() + Duration::from_millis(1_800)), &AtomicBool::new(false));
+        daemon.run(&mut receiver);
         let windows = DaemonFixture::windows(&daemon);
 
         assert!(windows.contains(&"chain-1h".to_string()), "{windows:?}");
@@ -194,53 +198,37 @@ mod tests {
     #[test]
     fn the_loop_ends_when_every_sender_is_gone() {
         let mut daemon = DaemonFixture::daemon(Duration::from_secs(10));
-        let (sender, receiver) = mpsc::channel::<Event>();
+        let (sender, mut receiver) = EventBus::open(4);
         drop(sender);
-        let started = Instant::now();
 
-        daemon.run(&receiver, None, &AtomicBool::new(false));
-
-        assert!(started.elapsed() < Duration::from_secs(2));
+        daemon.run(&mut receiver);
     }
 
     #[test]
-    fn the_loop_ends_at_its_deadline_with_senders_alive() {
+    fn the_loop_ends_at_a_stop_with_senders_alive_and_leaves_the_rest() {
         let mut daemon = DaemonFixture::daemon(Duration::from_secs(10));
-        let (_sender, receiver) = mpsc::channel::<Event>();
-        let started = Instant::now();
+        let (sender, mut receiver) = EventBus::open(8);
+        assert!(sender.send(Event::Stop));
+        assert!(sender.send(DaemonFixture::chain_event(80_000.0, 100)));
 
-        daemon.run(&receiver, Some(started + Duration::from_millis(700)), &AtomicBool::new(false));
+        daemon.run(&mut receiver);
 
-        assert!(started.elapsed() >= Duration::from_millis(700));
-        assert!(started.elapsed() < Duration::from_secs(3));
-    }
-
-    #[test]
-    fn the_loop_ends_when_stop_is_set_with_senders_alive() {
-        let mut daemon = DaemonFixture::daemon(Duration::from_secs(10));
-        let (_sender, receiver) = mpsc::channel::<Event>();
-        let started = Instant::now();
-
-        daemon.run(&receiver, None, &AtomicBool::new(true));
-
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(daemon.hub().tip(), None);
     }
 
     #[test]
     fn a_new_block_event_restarts_the_mempool_window() {
         let mut daemon = DaemonFixture::daemon(Duration::from_secs(10));
-        let (sender, receiver) = mpsc::channel();
-        sender.send(DaemonFixture::chain_event(80_000.0, 100)).expect("send");
+        let (sender, mut receiver) = EventBus::open(1_024);
+        assert!(sender.send(DaemonFixture::chain_event(80_000.0, 100)));
         let mut market = SyntheticMarket::new(80_000.0, 5);
         for _ in 0..50 {
-            sender
-                .send(Event::Transaction(market.transaction(), BlockTime::new(1)))
-                .expect("send");
+            assert!(sender.send(Event::Transaction(market.transaction(), BlockTime::new(1))));
         }
-        sender.send(DaemonFixture::chain_event(80_000.0, 101)).expect("send");
+        assert!(sender.send(DaemonFixture::chain_event(80_000.0, 101)));
         drop(sender);
 
-        daemon.run(&receiver, None, &AtomicBool::new(false));
+        daemon.run(&mut receiver);
 
         assert_eq!(daemon.hub().mempool_outputs(), 0);
         assert_eq!(daemon.hub().tip(), Some(BlockHeight::new(101)));

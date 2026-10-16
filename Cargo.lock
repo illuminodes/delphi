@@ -320,6 +320,7 @@ dependencies = [
  "nostro2 0.9.0",
  "nostro2-relay",
  "nostro2-signer 0.8.0",
+ "quetzalcoatl",
  "rustix",
  "serde_json",
  "signal-hook",

@@ -1,15 +1,15 @@
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use mantle::network::Network;
 use delphi_oracle::PeerSources;
 use delphi_oracled::{
-    AckLogger, AuditLedger, ChainSync, ChainSyncSpec, ChainWorker, Daemon, DaemonConfig, KeySource, LogFile, MempoolEstimator,
-    MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, RelayConnector, RelayPublisher, StdoutSink,
-    TransactionStream,
+    AckLogger, AuditLedger, ChainSync, ChainSyncSpec, ChainWorker, Daemon, DaemonConfig, EventBus, KeySource, LogFile,
+    MempoolEstimator, MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, RelayConnector, RelayPublisher,
+    StdoutSink, Ticker, TransactionStream,
 };
 use nostro2_relay::{NostrRelay, ReconnectConfig};
 
@@ -127,7 +127,9 @@ impl OracleDaemonApp {
         let stop = Arc::new(AtomicBool::new(false));
         delphi_oracled::shutdown_signal::ShutdownSignal::arm(&stop)
             .map_err(|error| format!("install signal handlers: {error}"))?;
-        let (sender, receiver) = mpsc::channel();
+        let (sender, mut receiver) = EventBus::open(EventBus::CAPACITY);
+        let deadline = self.config.run_for.map(|span| Instant::now() + span);
+        let ticker = Ticker::new(Daemon::<S>::WAKE, deadline, Arc::clone(&stop), sender.clone()).spawn()?;
         let ack_reader = match acks {
             Some(relay) => Some(AckLogger::new(relay.clone(), sender.clone()).spawn()?),
             None => None,
@@ -147,7 +149,6 @@ impl OracleDaemonApp {
                 .map_err(|error| format!("spawn mempool worker: {error}"))?
         };
 
-        let deadline = self.config.run_for.map(|span| Instant::now() + span);
         let mut daemon = Daemon::new(hub);
         let retired_marker = self.config.data_dir.join(Self::RETIRED_MARKER);
         if !retired_marker.exists() {
@@ -158,10 +159,11 @@ impl OracleDaemonApp {
                 eprintln!("{}: {error}", retired_marker.display());
             }
         }
-        daemon.run(&receiver, deadline, &stop);
+        daemon.run(&mut receiver);
 
         stop.store(true, Ordering::Relaxed);
         drop(receiver);
+        let _ = ticker.join();
         let _ = chain.join();
         let _ = mempool.join();
         if let Some(relay) = acks {

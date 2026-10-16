@@ -41,6 +41,7 @@ mantle-transport = { path = "../mantle/crates/transport" }
 nostro2 = { path = "/home/cuarentaydos/Code/illuminodes/NostrO2/crates/core", default-features = false, features = ["serde", "k256"] }
 nostro2-signer = { path = "/home/cuarentaydos/Code/illuminodes/NostrO2/crates/signer", default-features = false, features = ["serde", "k256"] }
 nostro2-relay = { path = "/home/cuarentaydos/Code/illuminodes/NostrO2/crates/relay" }
+quetzalcoatl = "0.15.2"
 
 [patch.crates-io]
 quetzalcoatl = { path = "/home/cuarentaydos/Code/tooling/quetzalcoatl" }
