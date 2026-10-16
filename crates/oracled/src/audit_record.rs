@@ -101,6 +101,7 @@ impl NotePayload for AuditRecord {
         object.count("blocks", self.window.blocks());
         object.fixed("price", report.central_price, 2);
         object.fixed("deviation", report.deviation, 6);
+        object.fixed("mad_usd", report.median_absolute_deviation(), 2);
         object.count("samples", report.sample_count);
         object.count("start_height", report.start_height.to_u32() as usize);
         object.count("stop_height", report.stop_height.to_u32() as usize);
@@ -153,6 +154,8 @@ mod tests {
         assert_eq!(json["window"], "chain-1d");
         assert_eq!(json["blocks"], 144);
         assert_eq!(json["price"], 77_160.46);
+        let mad = json["mad_usd"].as_f64().expect("mad");
+        assert!((mad - 0.012_345_678 * 0.2 * 77_160.456).abs() < 0.01, "{mad}");
         assert_eq!(json["stop_height"], 965_218);
         assert_eq!(json["stop_hash"], AuditFixture::hash().to_display_hex());
         assert_eq!(json["algorithm"]["name"], "delphi-oracle");

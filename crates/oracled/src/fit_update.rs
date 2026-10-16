@@ -126,6 +126,7 @@ impl NotePayload for FitUpdate {
         object.fixed("price", report.central_price, 2);
         object.fixed("rough_price", fit.rough_price, 2);
         object.fixed("deviation", report.deviation, 4);
+        object.fixed("mad_usd", report.median_absolute_deviation(), 2);
         object.count("samples", report.sample_count);
         object.count("stop_height", report.stop_height.to_u32() as usize);
         object.count("stop_time", report.stop_time.to_u32() as usize);

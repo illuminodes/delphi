@@ -5,12 +5,24 @@ use mantle::difficulty::{BlockHeight, BlockTime};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OracleReport {
     pub central_price: f64,
+    /// The median absolute deviation of the implied prices within 10% of
+    /// the central price, divided by 20% of the central price. It is a
+    /// dispersion score between 0 and 0.5, not a standard error of the price;
+    /// [`Self::median_absolute_deviation`] gives the same spread in dollars.
     pub deviation: f64,
     pub sample_count: usize,
     pub start_height: BlockHeight,
     pub stop_height: BlockHeight,
     pub start_time: BlockTime,
     pub stop_time: BlockTime,
+}
+
+impl OracleReport {
+    /// The median absolute deviation of the implied prices, in dollars.
+    #[must_use]
+    pub fn median_absolute_deviation(&self) -> f64 {
+        self.deviation * 2.0 * crate::CentralPriceFinder::DEVIATION_RANGE * self.central_price
+    }
 }
 
 impl fmt::Display for OracleReport {
