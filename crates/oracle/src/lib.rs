@@ -13,6 +13,8 @@ pub mod log_bin;
 pub mod mempool_fanout;
 pub mod mempool_sample;
 pub mod frame_buffer;
+pub mod mempool_ring;
+pub mod mempool_session;
 pub mod mempool_watch;
 pub mod oracle_windows;
 pub mod output_filter;
