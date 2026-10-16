@@ -1,29 +1,27 @@
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, PoisonError};
 
 use mantle::difficulty::BlockHeight;
 use mantle::hash::Hash256;
 
-use crate::{AuditLedger, AuditRecord, AuditStatus, ChainPricer, ChainWindow, RecordLog};
+use crate::{AuditRecord, ChainPricer, ChainWindow, RecordLog};
 
-/// Finds the audit records the ledger has not seen, newest first, so the tip
-/// goes out before the history behind it.
+/// Finds the audit records not yet published, newest first, so the tip goes
+/// out before the history behind it.
 ///
-/// A record handed out once is not handed out again, even before the ledger
-/// confirms it, and neither is a block that cannot be priced.
+/// It starts from the ledger's published set as it was at startup and adds
+/// each record it hands out, so nothing is handed out twice. The hub, which
+/// owns the ledger, decides whether a handed record replaces an earlier note.
 pub struct AuditBackfill {
     pricer: ChainPricer,
-    ledger: Arc<Mutex<AuditLedger>>,
     handed: HashSet<(ChainWindow, u32, Hash256)>,
 }
 
 impl AuditBackfill {
     #[must_use]
-    pub fn new(ledger: Arc<Mutex<AuditLedger>>) -> Self {
+    pub fn new(published: HashSet<(ChainWindow, u32, Hash256)>) -> Self {
         Self {
             pricer: ChainPricer::new(),
-            ledger,
-            handed: HashSet::new(),
+            handed: published,
         }
     }
 
@@ -43,21 +41,8 @@ impl AuditBackfill {
                 if !self.handed.insert((window, height.to_u32(), hash)) {
                     continue;
                 }
-                let status = self
-                    .ledger
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .status(window, height, hash);
-                let replaces = match status {
-                    AuditStatus::Done => continue,
-                    AuditStatus::New => None,
-                    AuditStatus::Replaces(id) => Some(id),
-                };
                 if let Some(record) = self.pricer.audit(log, window, height) {
-                    batch.push(match replaces {
-                        Some(id) => record.replacing(id),
-                        None => record,
-                    });
+                    batch.push(record);
                 }
             }
         }
@@ -74,16 +59,15 @@ impl AuditBackfill {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
 
-    use mantle::difficulty::BlockHeight;
     use mantle::hash::Hash256;
 
     use super::AuditBackfill;
     use crate::synthetic_market::SyntheticMarket;
-    use crate::{AuditLedger, ChainWindow, NotePayload, RecordLog};
+    use crate::{ChainWindow, RecordLog};
 
     struct BackfillFixture {
         dir: PathBuf,
@@ -121,7 +105,7 @@ mod tests {
     fn batches_run_newest_first_and_never_repeat() {
         let fixture = BackfillFixture::new("order");
         let log = fixture.log(9);
-        let mut backfill = AuditBackfill::new(Arc::new(Mutex::new(AuditLedger::volatile())));
+        let mut backfill = AuditBackfill::new(HashSet::new());
 
         let first = backfill.next_batch(&log, 2);
         let rest = backfill.next_batch(&log, 100);
@@ -132,35 +116,22 @@ mod tests {
     }
 
     #[test]
-    fn records_already_in_the_ledger_are_skipped() {
+    fn records_already_published_are_skipped() {
         let fixture = BackfillFixture::new("skip");
         let log = fixture.log(8);
-        let ledger = Arc::new(Mutex::new(AuditLedger::volatile()));
-        let tip_hash = Hash256::hash(&8_u32.to_le_bytes());
-        ledger
-            .lock()
-            .expect("lock")
-            .record(ChainWindow::Hourly, BlockHeight::new(8), tip_hash, "seen")
-            .expect("record");
-        let mut backfill = AuditBackfill::new(ledger);
+        let published = HashSet::from([(ChainWindow::Hourly, 8, Hash256::hash(&8_u32.to_le_bytes()))]);
+        let mut backfill = AuditBackfill::new(published);
 
         assert_eq!(BackfillFixture::heights(&backfill.next_batch(&log, 100)), vec![7, 6]);
     }
 
     #[test]
-    fn a_block_replaced_by_a_reorg_points_at_the_old_note() {
+    fn a_block_published_under_another_hash_is_handed_out_again() {
         let fixture = BackfillFixture::new("reorg");
         let log = fixture.log(7);
-        let ledger = Arc::new(Mutex::new(AuditLedger::volatile()));
-        ledger
-            .lock()
-            .expect("lock")
-            .record(ChainWindow::Hourly, BlockHeight::new(7), Hash256::hash(b"orphan"), "old-id")
-            .expect("record");
-        let mut backfill = AuditBackfill::new(ledger);
-        let batch = backfill.next_batch(&log, 1);
+        let published = HashSet::from([(ChainWindow::Hourly, 7, Hash256::hash(b"orphan"))]);
+        let mut backfill = AuditBackfill::new(published);
 
-        assert_eq!(batch[0].replaces(), Some("old-id"));
-        assert_eq!(batch[0].window(), "chain-1h");
+        assert_eq!(BackfillFixture::heights(&backfill.next_batch(&log, 1)), vec![7]);
     }
 }

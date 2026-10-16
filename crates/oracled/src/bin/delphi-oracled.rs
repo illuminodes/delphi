@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -106,8 +106,9 @@ impl OracleDaemonApp {
             cache_limit_bytes: self.config.cache_limit_bytes,
             lock,
         };
-        let ledger = Arc::new(Mutex::new(self.ledger()?));
-        eprintln!("{} audit notes already published", ledger.lock().map_or(0, |held| held.len()));
+        let ledger = self.ledger()?;
+        eprintln!("{} audit notes already published", ledger.len());
+        let already_audited = ledger.published();
         let publisher = RelayPublisher::new(sink, signer);
         let window = MempoolWindow::new(
             "mempool",
@@ -117,7 +118,7 @@ impl OracleDaemonApp {
         );
         let hub = PriceHub::new(
             publisher,
-            Arc::clone(&ledger),
+            ledger,
             window,
             self.config.tolerance,
             Self::MEMPOOL_INTERVAL,
@@ -135,7 +136,7 @@ impl OracleDaemonApp {
             None => None,
         };
         let chain = {
-            let worker = ChainWorker::new(spec, ledger, Arc::clone(&stop), sender.clone());
+            let worker = ChainWorker::new(spec, already_audited, Arc::clone(&stop), sender.clone());
             thread::Builder::new()
                 .name("chain".into())
                 .spawn(move || worker.run())

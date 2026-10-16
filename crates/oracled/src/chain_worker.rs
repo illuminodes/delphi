@@ -1,12 +1,14 @@
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use mantle::difficulty::BlockHeight;
+use mantle::hash::Hash256;
 
 use crate::chain_sync::ChainSyncSpec;
-use crate::{AuditBackfill, AuditLedger, BlockRecord, ChainPricer, ChainSnapshot, ChainSync, Event, EventSender};
+use crate::{AuditBackfill, BlockRecord, ChainPricer, ChainSnapshot, ChainSync, ChainWindow, Event, EventSender};
 
 /// Follows the chain tip and reports what to publish after each pass.
 ///
@@ -16,7 +18,7 @@ use crate::{AuditBackfill, AuditLedger, BlockRecord, ChainPricer, ChainSnapshot,
 /// backlog remains the next batch follows after [`Self::BACKFILL_PAUSE`].
 pub struct ChainWorker {
     spec: ChainSyncSpec,
-    ledger: Arc<Mutex<AuditLedger>>,
+    published: HashSet<(ChainWindow, u32, Hash256)>,
     stop: Arc<AtomicBool>,
     events: EventSender,
 }
@@ -37,15 +39,15 @@ impl ChainWorker {
     pub const BACKFILL_PAUSE: Duration = Duration::from_secs(2);
 
     #[must_use]
-    pub const fn new(
+    pub fn new(
         spec: ChainSyncSpec,
-        ledger: Arc<Mutex<AuditLedger>>,
+        published: HashSet<(ChainWindow, u32, Hash256)>,
         stop: Arc<AtomicBool>,
         events: EventSender,
     ) -> Self {
         Self {
             spec,
-            ledger,
+            published,
             stop,
             events,
         }
@@ -56,7 +58,7 @@ impl ChainWorker {
     pub fn run(self) {
         let Self {
             spec,
-            ledger,
+            published,
             stop,
             events,
         } = self;
@@ -72,7 +74,7 @@ impl ChainWorker {
         ChainPass {
             sync,
             pricer: ChainPricer::new(),
-            backfill: AuditBackfill::new(ledger),
+            backfill: AuditBackfill::new(published),
             stop,
             events,
             priced_tip: None,

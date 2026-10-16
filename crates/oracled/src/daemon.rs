@@ -93,7 +93,6 @@ impl<S: NoteSink> Daemon<S> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use mantle::difficulty::{BlockHeight, BlockTime};
@@ -131,9 +130,8 @@ mod tests {
                 MempoolEstimator::new(200, 10),
                 3,
             );
-            let ledger = Arc::new(Mutex::new(AuditLedger::volatile()));
             Daemon::new(
-                PriceHub::new(publisher, ledger, window, 0.15, interval).with_transaction_stream(TransactionStream::new(0)),
+                PriceHub::new(publisher, AuditLedger::volatile(), window, 0.15, interval).with_transaction_stream(TransactionStream::new(0)),
             )
         }
 

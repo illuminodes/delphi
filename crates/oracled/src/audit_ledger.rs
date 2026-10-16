@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -135,6 +135,16 @@ impl AuditLedger {
         Ok(())
     }
 
+    /// Every window, height and block published, for a reader on another
+    /// thread that only needs to skip what is already done.
+    #[must_use]
+    pub fn published(&self) -> HashSet<(ChainWindow, u32, Hash256)> {
+        self.entries
+            .iter()
+            .map(|((window, height), (hash, _))| (*window, *height, *hash))
+            .collect()
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -243,6 +253,19 @@ mod tests {
             ledger.status(ChainWindow::Hourly, BlockHeight::new(7), LedgerFixture::hash(2)),
             AuditStatus::Done
         );
+    }
+
+    #[test]
+    fn the_published_set_names_each_entry_by_its_block() {
+        let mut ledger = AuditLedger::volatile();
+        ledger
+            .record(ChainWindow::Hourly, BlockHeight::new(4), LedgerFixture::hash(1), "id")
+            .expect("record");
+
+        let published = ledger.published();
+
+        assert!(published.contains(&(ChainWindow::Hourly, 4, LedgerFixture::hash(1))));
+        assert_eq!(published.len(), 1);
     }
 
     #[test]

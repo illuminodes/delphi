@@ -1,4 +1,3 @@
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use mantle::difficulty::{BlockHeight, BlockTime};
@@ -7,7 +6,7 @@ use delphi_oracle::PriceBand;
 
 use crate::pending_audits::{PendingAudit, PendingAudits};
 use crate::{
-    Anchor, AuditLedger, AuditRecord, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
+    Anchor, AuditLedger, AuditRecord, AuditStatus, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
     NoteSink, Outcome, RecentBlocks, RelayPublisher, TransactionNote, TransactionStream,
 };
 
@@ -22,7 +21,7 @@ use crate::{
 /// filter's verdict, as far as the [`TransactionStream`] allows.
 pub struct PriceHub<S: NoteSink> {
     publisher: RelayPublisher<S>,
-    ledger: Arc<Mutex<AuditLedger>>,
+    ledger: AuditLedger,
     pending: PendingAudits,
     window: MempoolWindow,
     tolerance: f64,
@@ -57,7 +56,7 @@ impl<S: NoteSink> PriceHub<S> {
     #[must_use]
     pub fn new(
         publisher: RelayPublisher<S>,
-        ledger: Arc<Mutex<AuditLedger>>,
+        ledger: AuditLedger,
         window: MempoolWindow,
         tolerance: f64,
         interval: Duration,
@@ -114,7 +113,7 @@ impl<S: NoteSink> PriceHub<S> {
             .or(self.anchor)
             .filter(|anchor| anchor.is_fresh_at(snapshot.tip));
         let mut outcomes: Vec<(String, Outcome)> =
-            snapshot.audits.iter().map(|record| self.audit(record)).collect();
+            snapshot.audits.iter().filter_map(|record| self.audit(record)).collect();
         if self.tip != Some(snapshot.tip) {
             self.window.reset(snapshot.tip);
             self.tip = Some(snapshot.tip);
@@ -130,8 +129,17 @@ impl<S: NoteSink> PriceHub<S> {
         outcomes
     }
 
-    fn audit(&mut self, record: &AuditRecord) -> (String, Outcome) {
-        let (window, outcome) = self.offer(record);
+    /// Publish `record` unless the ledger already holds it for this block,
+    /// pointing at the earlier note when the ledger holds another block at
+    /// its height.
+    fn audit(&mut self, record: &AuditRecord) -> Option<(String, Outcome)> {
+        let report = record.report();
+        let record = match self.ledger.status(record.chain_window(), report.stop_height, record.stop_hash()) {
+            AuditStatus::Done => return None,
+            AuditStatus::New => record.clone(),
+            AuditStatus::Replaces(id) => record.clone().replacing(id),
+        };
+        let (window, outcome) = self.offer(&record);
         if let Outcome::Published(_, id) = &outcome {
             let audit = PendingAudit {
                 window: record.chain_window(),
@@ -144,7 +152,7 @@ impl<S: NoteSink> PriceHub<S> {
                 self.store(id, audit);
             }
         }
-        (format!("{window}@{}", record.report().stop_height), outcome)
+        Some((format!("{window}@{}", record.report().stop_height), outcome))
     }
 
     /// Enter an audit in the ledger once the relay accepted note `id`.
@@ -162,13 +170,8 @@ impl<S: NoteSink> PriceHub<S> {
         self.pending.len()
     }
 
-    fn store(&self, id: &str, audit: PendingAudit) {
-        let stored = self
-            .ledger
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .record(audit.window, audit.height, audit.hash, id);
-        if let Err(error) = stored {
+    fn store(&mut self, id: &str, audit: PendingAudit) {
+        if let Err(error) = self.ledger.record(audit.window, audit.height, audit.hash, id) {
             eprintln!("audit ledger: {error}");
         }
     }
@@ -278,12 +281,16 @@ impl<S: NoteSink> PriceHub<S> {
     pub const fn publisher(&self) -> &RelayPublisher<S> {
         &self.publisher
     }
+
+    #[must_use]
+    pub const fn ledger(&self) -> &AuditLedger {
+        &self.ledger
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use mantle::difficulty::{BlockHeight, BlockTime};
@@ -322,10 +329,10 @@ mod tests {
         const INTERVAL: Duration = Duration::from_secs(10);
 
         fn hub() -> PriceHub<RecordingSink> {
-            Self::hub_with(Arc::new(Mutex::new(AuditLedger::volatile())))
+            Self::hub_with(AuditLedger::volatile())
         }
 
-        fn hub_with(ledger: Arc<Mutex<AuditLedger>>) -> PriceHub<RecordingSink> {
+        fn hub_with(ledger: AuditLedger) -> PriceHub<RecordingSink> {
             let publisher = RelayPublisher::new(RecordingSink::default(), PriceSigner::generate());
             let window = MempoolWindow::new(
                 "mempool",
@@ -385,14 +392,13 @@ mod tests {
 
     #[test]
     fn each_audit_record_is_published_and_entered_in_the_ledger() {
-        let ledger = Arc::new(Mutex::new(AuditLedger::volatile()));
-        let mut hub = HubFixture::hub_with(Arc::clone(&ledger));
+        let mut hub = HubFixture::hub();
         let outcomes = hub.apply_chain(&HubFixture::snapshot(80_000.0, 100, &ChainWindow::ALL));
 
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes.iter().all(|(_, outcome)| outcome.is_published()));
         assert_eq!(HubFixture::windows(&hub, NoteClass::Audit), vec!["chain-1h", "chain-1d"]);
-        let status = ledger.lock().expect("lock").status(
+        let status = hub.ledger().status(
             ChainWindow::Daily,
             BlockHeight::new(100),
             Hash256::hash(&100_u32.to_le_bytes()),
@@ -401,13 +407,30 @@ mod tests {
     }
 
     #[test]
+    fn an_audit_already_in_the_ledger_is_skipped_and_a_reorged_one_replaces_its_note() {
+        let mut ledger = AuditLedger::volatile();
+        let hash = Hash256::hash(&100_u32.to_le_bytes());
+        ledger.record(ChainWindow::Hourly, BlockHeight::new(100), hash, "done").expect("record");
+        ledger
+            .record(ChainWindow::Daily, BlockHeight::new(100), Hash256::hash(b"orphan"), "old-id")
+            .expect("record");
+        let mut hub = HubFixture::hub_with(ledger);
+
+        let outcomes = hub.apply_chain(&HubFixture::snapshot(80_000.0, 100, &ChainWindow::ALL));
+
+        assert_eq!(outcomes.len(), 1);
+        let notes = hub.publisher().sink().notes.borrow();
+        assert_eq!(notes[0].tags.find_tags_ref("w"), ["chain-1d"]);
+        assert_eq!(notes[0].tags.find_tags_ref("e"), ["old-id"]);
+    }
+
+    #[test]
     fn with_an_acking_sink_only_accepted_audits_enter_the_ledger() {
-        let ledger = Arc::new(Mutex::new(AuditLedger::volatile()));
         let sink = RecordingSink { acks: true, ..RecordingSink::default() };
         let window = MempoolWindow::new("mempool", BlockHeight::new(0), MempoolEstimator::new(200, 10), 3);
         let mut hub = PriceHub::new(
             RelayPublisher::new(sink, PriceSigner::generate()),
-            Arc::clone(&ledger),
+            AuditLedger::volatile(),
             window,
             0.15,
             HubFixture::INTERVAL,
@@ -421,15 +444,16 @@ mod tests {
             })
             .collect();
         let hash = Hash256::hash(&100_u32.to_le_bytes());
-        let status = |window| ledger.lock().expect("lock").status(window, BlockHeight::new(100), hash);
+        let status =
+            |hub: &PriceHub<RecordingSink>, window| hub.ledger().status(window, BlockHeight::new(100), hash);
 
         assert_eq!(hub.pending_audits(), 2);
-        assert_eq!(status(ChainWindow::Hourly), AuditStatus::New);
+        assert_eq!(status(&hub, ChainWindow::Hourly), AuditStatus::New);
         assert!(hub.acknowledge(&ids[0], true).is_some());
         assert!(hub.acknowledge(&ids[1], false).is_some());
         assert!(hub.acknowledge("unknown", true).is_none());
-        assert_eq!(status(ChainWindow::Hourly), AuditStatus::Done);
-        assert_eq!(status(ChainWindow::Daily), AuditStatus::New);
+        assert_eq!(status(&hub, ChainWindow::Hourly), AuditStatus::Done);
+        assert_eq!(status(&hub, ChainWindow::Daily), AuditStatus::New);
         assert_eq!(hub.pending_audits(), 0);
     }
 
