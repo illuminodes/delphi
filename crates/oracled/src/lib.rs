@@ -15,6 +15,7 @@ pub mod chain_worker;
 pub mod chain_sync;
 mod chain_proof;
 pub mod pending_audits;
+pub mod shutdown_signal;
 pub mod chain_window;
 pub mod daemon;
 pub mod daemon_config;

@@ -22,6 +22,7 @@ impl OracleDaemonApp {
     const MEMPOOL_INTERVAL: Duration = Duration::from_secs(10);
     const LEDGER_FILE: &'static str = "audit.ledger";
     const DRY_LEDGER_FILE: &'static str = "audit-dry.ledger";
+    const RETIRED_MARKER: &'static str = "addressable.retired";
 
     fn execute() -> ExitCode {
         let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -124,6 +125,8 @@ impl OracleDaemonApp {
         .with_transaction_stream(TransactionStream::new(self.config.tx_notes_per_second));
 
         let stop = Arc::new(AtomicBool::new(false));
+        delphi_oracled::shutdown_signal::ShutdownSignal::arm(&stop)
+            .map_err(|error| format!("install signal handlers: {error}"))?;
         let (sender, receiver) = mpsc::channel();
         let ack_reader = match acks {
             Some(relay) => Some(AckLogger::new(relay.clone(), sender.clone()).spawn()?),
@@ -146,7 +149,15 @@ impl OracleDaemonApp {
 
         let deadline = self.config.run_for.map(|span| Instant::now() + span);
         let mut daemon = Daemon::new(hub);
-        daemon.retire_addressable();
+        let retired_marker = self.config.data_dir.join(Self::RETIRED_MARKER);
+        if !retired_marker.exists() {
+            daemon.retire_addressable();
+            if !self.config.dry_run
+                && let Err(error) = std::fs::write(&retired_marker, b"")
+            {
+                eprintln!("{}: {error}", retired_marker.display());
+            }
+        }
         daemon.run(&receiver, deadline, &stop);
 
         stop.store(true, Ordering::Relaxed);
