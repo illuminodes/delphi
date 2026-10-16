@@ -49,6 +49,12 @@ impl BlockPlan {
         }
     }
 
+    /// Blocks fetched together.
+    #[must_use]
+    pub const fn batch(&self) -> usize {
+        self.batch
+    }
+
     /// The heights to fetch given the record log's newest height and the
     /// chain tip, or `None` when nothing is missing.
     #[must_use]

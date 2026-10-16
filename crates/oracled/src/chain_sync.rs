@@ -1,9 +1,12 @@
+use std::io::Cursor;
 use std::net::SocketAddrV4;
 use std::path::{Path, PathBuf};
 
+use mantle::codec::Decode;
 use mantle::difficulty::BlockHeight;
 use mantle::network::Network;
-use mantle_fetcher::Fetcher;
+use mantle::primitives::{Block, BlockHeader};
+use mantle_fetcher::{BlockFeed, BlocksRequest, FedBlock, FeedItem, FeedSpec, HeaderRequest};
 use delphi_oracle::DataDirLock;
 
 use crate::chain_proof::ChainProof;
@@ -49,12 +52,15 @@ impl ChainSyncSpec {
 
 /// Keeps a [`RecordLog`] level with the chain tip.
 ///
-/// One fetcher serves many passes. It is dropped and rebuilt only after a
-/// failed pass or a cache purge. A pass brings headers and the missing blocks
-/// in and turns each block into a record. A pass ends early once the block
-/// files pass the cache limit, and the next pass deletes them first, since a
-/// record holds everything pricing needs from its block. A report with
-/// `caught_up` false asks for another pass.
+/// The fetcher runs on a [`BlockFeed`] thread that lives as long as the
+/// sync, so its peers are reused pass after pass, and it downloads the next
+/// batch while this thread decodes, checks and records the current one. A
+/// pass brings headers and the missing blocks in and turns each block into a
+/// record. A pass stops asking for batches once the block files pass the
+/// cache limit, and the next pass discards them first, since a record holds
+/// everything pricing needs from its block. A report with `caught_up` false
+/// asks for another pass. A feed whose thread has gone is started again on
+/// the next pass.
 pub struct ChainSync {
     network: Network,
     peers: Vec<SocketAddrV4>,
@@ -63,7 +69,7 @@ pub struct ChainSync {
     cache: BlockCache,
     log: RecordLog,
     recent: RecentBlocks,
-    fetcher: Option<Fetcher>,
+    feed: Option<BlockFeed<ChainProof>>,
     _lock: DataDirLock,
 }
 
@@ -103,7 +109,7 @@ impl ChainSync {
             data_dir,
             log,
             recent: RecentBlocks::default(),
-            fetcher: None,
+            feed: None,
             _lock: lock,
         })
     }
@@ -130,30 +136,39 @@ impl ChainSync {
     /// Returns a message if the fetcher cannot start, headers or blocks
     /// cannot be fetched or decoded, or a record cannot be stored.
     pub fn sync(&mut self) -> Result<SyncReport, String> {
-        let purged_cache = self.purge_if_full()?;
-        let mut fetcher = self.take_fetcher()?;
-        let report = self.sync_with(&mut fetcher, purged_cache)?;
-        self.fetcher = Some(fetcher);
-        Ok(report)
+        let mut feed = self.take_feed()?;
+        let report = self.sync_with(&mut feed);
+        if report.is_ok() {
+            self.feed = Some(feed);
+        }
+        report
     }
 
-    fn take_fetcher(&mut self) -> Result<Fetcher, String> {
-        match self.fetcher.take() {
-            Some(fetcher) => Ok(fetcher),
-            None => Fetcher::new(self.network, self.peers.clone(), &self.data_dir)
-                .map_err(|error| format!("initialize fetcher: {error}")),
+    fn take_feed(&mut self) -> Result<BlockFeed<ChainProof>, String> {
+        match self.feed.take() {
+            Some(feed) => Ok(feed),
+            None => BlockFeed::spawn(FeedSpec {
+                network: self.network,
+                peers: self.peers.clone(),
+                cache_dir: self.data_dir.clone(),
+                buffered: Self::BATCH_BLOCKS,
+            })
+            .map_err(|error| format!("start block feed: {error}")),
         }
     }
 
-    fn sync_with(&mut self, fetcher: &mut Fetcher, purged_cache: bool) -> Result<SyncReport, String> {
-        let mut proof = ChainProof::new(self.network)?;
-        let headers = fetcher
-            .sync_headers_admitted(
-                BlockHeight::new(1),
-                BlockHeight::new(u32::MAX),
-                self.network.genesis_hash(),
-                &mut proof,
-            )
+    fn sync_with(&mut self, feed: &mut BlockFeed<ChainProof>) -> Result<SyncReport, String> {
+        let purged_cache = self.cache.exceeds_limit();
+        if purged_cache {
+            feed.discard().map_err(|error| format!("purge block cache: {error}"))?;
+        }
+        let (headers, proof) = feed
+            .headers(HeaderRequest {
+                start: BlockHeight::new(1),
+                stop: BlockHeight::new(u32::MAX),
+                locator: self.network.genesis_hash(),
+                admission: ChainProof::new(self.network)?,
+            })
             .map_err(|error| format!("synchronize headers: {error}"))?;
         proof.finish(&headers)?;
         let tip = headers
@@ -169,28 +184,31 @@ impl ChainSync {
                 caught_up: true,
             });
         };
+        feed.request_blocks(BlocksRequest {
+            wanted: span.headers(&headers).to_vec(),
+            window: self.plan.batch(),
+            discard_each_window: false,
+            deliver: true,
+        })?;
         let mut appended = 0;
-        for batch in self.plan.batches(span) {
-            if self.cache.exceeds_limit() {
-                break;
-            }
-            let wanted = batch.headers(&headers);
-            fetcher
-                .fetch_blocks(wanted)
-                .map_err(|error| format!("fetch blocks: {error}"))?;
-            for (height, header) in wanted {
-                let block = fetcher
-                    .read_block_decoded(*height, header.hash())
-                    .map_err(|error| format!("decode block {height}: {error}"))?;
-                proof.check_block(*height, &block)?;
-                let (record, tally) =
-                    BlockRecord::screened(*height, header.time(), header.hash(), &block.transactions);
-                self.recent
-                    .record(BlockDigest::of(*height, &block, tally, record.amounts().to_vec()));
-                self.log
-                    .append(record)
-                    .map_err(|error| format!("store record {height}: {error}"))?;
-                appended += 1;
+        let mut stopping = false;
+        loop {
+            match feed.next_item() {
+                Some(FeedItem::Block(block)) => {
+                    let header = Self::header_at(&headers, block.height)?;
+                    self.record(&proof, header, &block)?;
+                    appended += 1;
+                }
+                Some(FeedItem::WindowDone { .. }) => {
+                    if !stopping && self.cache.exceeds_limit() {
+                        feed.stop_after_window();
+                        stopping = true;
+                    }
+                }
+                Some(FeedItem::Done) => break,
+                Some(FeedItem::Failed(message)) => return Err(format!("fetch blocks: {message}")),
+                Some(FeedItem::Headers(..)) => return Err("block feed sent headers mid-download".to_string()),
+                None => return Err("block feed thread has gone".to_string()),
             }
         }
         Ok(SyncReport {
@@ -201,15 +219,27 @@ impl ChainSync {
         })
     }
 
-    fn purge_if_full(&mut self) -> Result<bool, String> {
-        if !self.cache.exceeds_limit() {
-            return Ok(false);
-        }
-        self.fetcher = None;
-        self.cache
-            .purge()
-            .map_err(|error| format!("purge block cache: {error}"))?;
-        Ok(true)
+    fn header_at(headers: &[(BlockHeight, BlockHeader)], height: BlockHeight) -> Result<BlockHeader, String> {
+        let index = headers.partition_point(|(held, _)| *held < height);
+        headers
+            .get(index)
+            .filter(|(held, _)| *held == height)
+            .map(|(_, header)| *header)
+            .ok_or_else(|| format!("block feed sent height {height} outside the plan"))
+    }
+
+    /// Decode `fed`, check it belongs to the verified chain, and record it.
+    fn record(&mut self, proof: &ChainProof, header: BlockHeader, fed: &FedBlock) -> Result<(), String> {
+        let height = fed.height;
+        let block = Block::decode(&mut Cursor::new(fed.bytes.as_slice()))
+            .map_err(|error| format!("decode block {height}: {error}"))?;
+        proof.check_block(height, &block)?;
+        let (record, tally) = BlockRecord::screened(height, header.time(), header.hash(), &block.transactions);
+        self.recent
+            .record(BlockDigest::of(height, &block, tally, record.amounts().to_vec()));
+        self.log
+            .append(record)
+            .map_err(|error| format!("store record {height}: {error}"))
     }
 }
 

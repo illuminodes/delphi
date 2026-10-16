@@ -1,13 +1,12 @@
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
-/// The raw block files the fetcher appends to inside the data directory.
+/// The size of the raw block files the fetcher appends to inside the data
+/// directory.
 ///
-/// The fetcher never deletes a block, so the daemon bounds disk use by
-/// dropping the fetcher and purging these files once they pass a limit. The
-/// headers file is left alone: rebuilding it means downloading every header
-/// since genesis.
+/// The fetcher never deletes a block on its own, so the daemon bounds disk
+/// use by asking it to discard them once they pass a limit. The headers file
+/// is kept: rebuilding it means downloading every header since genesis.
 #[derive(Debug, Clone)]
 pub struct BlockCache {
     data_dir: PathBuf,
@@ -48,21 +47,6 @@ impl BlockCache {
     #[must_use]
     pub fn exceeds_limit(&self) -> bool {
         self.bytes() > self.limit_bytes
-    }
-
-    /// Delete the block data and its index. No fetcher may have them open.
-    ///
-    /// # Errors
-    /// Returns an I/O error if a file exists but cannot be removed.
-    pub fn purge(&self) -> io::Result<()> {
-        for name in [Self::DATA_FILE, Self::INDEX_FILE] {
-            match fs::remove_file(self.data_dir.join(name)) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(())
     }
 }
 
@@ -114,27 +98,6 @@ mod tests {
 
         assert_eq!(cache.bytes(), 114);
         assert!(cache.exceeds_limit());
-    }
-
-    #[test]
-    fn purging_removes_only_the_block_files() {
-        let fixture = CacheFixture::new("purge");
-        fixture.write("blocks.bin", 10);
-        fixture.write("blocks.idx", 10);
-        fixture.write("chain_headers.bin", 10);
-        let cache = BlockCache::new(&fixture.dir, 100);
-
-        cache.purge().expect("purge");
-
-        assert_eq!(cache.bytes(), 0);
-        assert!(fixture.dir.join("chain_headers.bin").exists());
-    }
-
-    #[test]
-    fn purging_an_empty_directory_succeeds() {
-        let fixture = CacheFixture::new("noop");
-
-        assert!(BlockCache::new(&fixture.dir, 1).purge().is_ok());
     }
 
     #[test]
