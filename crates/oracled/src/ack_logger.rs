@@ -1,16 +1,22 @@
+use std::sync::mpsc::Sender;
 use std::thread::{self, JoinHandle};
 
 use nostro2::NostrRelayEvent;
 use nostro2_relay::NostrRelay;
 
+use crate::Event;
+
+/// Reads the relay's replies and forwards each `OK` to the hub, which
+/// enters accepted audits in the ledger. Notices are printed.
 pub struct AckLogger {
     relay: NostrRelay,
+    events: Sender<Event>,
 }
 
 impl AckLogger {
     #[must_use]
-    pub const fn new(relay: NostrRelay) -> Self {
-        Self { relay }
+    pub const fn new(relay: NostrRelay, events: Sender<Event>) -> Self {
+        Self { relay, events }
     }
 
     /// # Errors
@@ -24,13 +30,22 @@ impl AckLogger {
 
     fn run(mut self) {
         while let Some(event) = self.relay.recv_blocking() {
-            match event {
-                NostrRelayEvent::SentOk(_, id, accepted, message) => {
-                    eprintln!("relay ack {id}: accepted={accepted} {message}");
-                }
-                NostrRelayEvent::Notice(_, message) => eprintln!("relay notice: {message}"),
-                _ => {}
+            if !self.forward(event) {
+                return;
             }
+        }
+    }
+
+    fn forward(&self, event: NostrRelayEvent) -> bool {
+        match event {
+            NostrRelayEvent::SentOk(_, id, accepted, message) => {
+                self.events.send(Event::Ack { id, accepted, message }).is_ok()
+            }
+            NostrRelayEvent::Notice(_, message) => {
+                eprintln!("relay notice: {message}");
+                true
+            }
+            _ => true,
         }
     }
 }

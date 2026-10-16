@@ -11,7 +11,7 @@ use delphi_oracled::{
     MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, RelayConnector, RelayPublisher, StdoutSink,
     TransactionStream,
 };
-use nostro2_relay::ReconnectConfig;
+use nostro2_relay::{NostrRelay, ReconnectConfig};
 
 struct OracleDaemonApp {
     config: DaemonConfig,
@@ -62,13 +62,12 @@ impl OracleDaemonApp {
         eprintln!("publishing as {npub} (key from {})", source.describe());
         eprintln!("data directory {}", self.config.data_dir.display());
         if self.config.dry_run {
-            self.serve(StdoutSink, signer)
+            self.serve(StdoutSink, signer, None)
         } else {
             let relay = RelayConnector::new(&self.config.relay_url, self.config.relay_insecure)
                 .connect(ReconnectConfig::default())?;
             eprintln!("connected to {}", relay.url());
-            AckLogger::new(relay.clone()).spawn()?;
-            self.serve(relay, signer)
+            self.serve(relay.clone(), signer, Some(&relay))
         }
     }
 
@@ -94,7 +93,7 @@ impl OracleDaemonApp {
         Ok(peers)
     }
 
-    fn serve<S: NoteSink>(&self, sink: S, signer: PriceSigner) -> Result<(), String> {
+    fn serve<S: NoteSink>(&self, sink: S, signer: PriceSigner, acks: Option<&NostrRelay>) -> Result<(), String> {
         let lock = ChainSync::lock(&self.config.data_dir)?;
         let peers = self.peers()?;
         eprintln!("{} candidate bitcoin peers", peers.len());
@@ -126,6 +125,10 @@ impl OracleDaemonApp {
 
         let stop = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::channel();
+        let ack_reader = match acks {
+            Some(relay) => Some(AckLogger::new(relay.clone(), sender.clone()).spawn()?),
+            None => None,
+        };
         let chain = {
             let worker = ChainWorker::new(spec, ledger, Arc::clone(&stop), sender.clone());
             thread::Builder::new()
@@ -144,12 +147,19 @@ impl OracleDaemonApp {
         let deadline = self.config.run_for.map(|span| Instant::now() + span);
         let mut daemon = Daemon::new(hub);
         daemon.retire_addressable();
-        daemon.run(&receiver, deadline);
+        daemon.run(&receiver, deadline, &stop);
 
         stop.store(true, Ordering::Relaxed);
         drop(receiver);
         let _ = chain.join();
         let _ = mempool.join();
+        if let Some(relay) = acks {
+            relay.close();
+        }
+        if let Some(reader) = ack_reader {
+            let _ = reader.join();
+        }
+        eprintln!("{} audit notes still awaiting a relay ack", daemon.hub().pending_audits());
         let tally = daemon.hub().publisher().tally();
         eprintln!(
             "stopped: {} audit, {} live, {} transaction, {} other, {} rejected, {} undelivered",

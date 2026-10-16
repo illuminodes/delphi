@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -21,10 +22,11 @@ impl<S: NoteSink> Daemon<S> {
         &self.hub
     }
 
-    /// Handle events until the deadline passes or every sender is gone.
-    pub fn run(&mut self, events: &Receiver<Event>, deadline: Option<Instant>) {
+    /// Handle events until the deadline passes, `stop` is set, or every
+    /// sender is gone.
+    pub fn run(&mut self, events: &Receiver<Event>, deadline: Option<Instant>, stop: &AtomicBool) {
         loop {
-            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+            if deadline.is_some_and(|limit| Instant::now() >= limit) || stop.load(Ordering::Relaxed) {
                 return;
             }
             match events.recv_timeout(Self::WAKE) {
@@ -53,6 +55,19 @@ impl<S: NoteSink> Daemon<S> {
                 }
             }
             Event::Notice(message) => eprintln!("{message}"),
+            Event::Ack { id, accepted, message } => {
+                if let Some(audit) = self.hub.acknowledge(&id, accepted) {
+                    if !accepted {
+                        eprintln!(
+                            "relay refused audit {}@{} ({id}): {message}",
+                            audit.window.tag(),
+                            audit.height
+                        );
+                    }
+                } else if !accepted {
+                    eprintln!("relay refused {id}: {message}");
+                }
+            }
         }
     }
 
@@ -75,6 +90,7 @@ impl<S: NoteSink> Daemon<S> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::{Duration, Instant};
 
@@ -168,7 +184,7 @@ mod tests {
         }
         sender.send(Event::Notice("hello".to_string())).expect("send");
 
-        daemon.run(&receiver, Some(Instant::now() + Duration::from_millis(1_800)));
+        daemon.run(&receiver, Some(Instant::now() + Duration::from_millis(1_800)), &AtomicBool::new(false));
         let windows = DaemonFixture::windows(&daemon);
 
         assert!(windows.contains(&"chain-1h".to_string()), "{windows:?}");
@@ -182,7 +198,7 @@ mod tests {
         drop(sender);
         let started = Instant::now();
 
-        daemon.run(&receiver, None);
+        daemon.run(&receiver, None, &AtomicBool::new(false));
 
         assert!(started.elapsed() < Duration::from_secs(2));
     }
@@ -193,10 +209,21 @@ mod tests {
         let (_sender, receiver) = mpsc::channel::<Event>();
         let started = Instant::now();
 
-        daemon.run(&receiver, Some(started + Duration::from_millis(700)));
+        daemon.run(&receiver, Some(started + Duration::from_millis(700)), &AtomicBool::new(false));
 
         assert!(started.elapsed() >= Duration::from_millis(700));
         assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn the_loop_ends_when_stop_is_set_with_senders_alive() {
+        let mut daemon = DaemonFixture::daemon(Duration::from_secs(10));
+        let (_sender, receiver) = mpsc::channel::<Event>();
+        let started = Instant::now();
+
+        daemon.run(&receiver, None, &AtomicBool::new(true));
+
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
@@ -213,7 +240,7 @@ mod tests {
         sender.send(DaemonFixture::chain_event(80_000.0, 101)).expect("send");
         drop(sender);
 
-        daemon.run(&receiver, None);
+        daemon.run(&receiver, None, &AtomicBool::new(false));
 
         assert_eq!(daemon.hub().mempool_outputs(), 0);
         assert_eq!(daemon.hub().tip(), Some(BlockHeight::new(101)));

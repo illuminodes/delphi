@@ -8,11 +8,21 @@ pub trait NoteSink {
     /// # Errors
     /// Returns a description of why the note could not be queued.
     fn deliver(&self, note: &NostrNote) -> Result<(), String>;
+
+    /// Whether each delivered note is later confirmed by an ack naming its
+    /// id. A sink that does not ack counts a note as stored once delivered.
+    fn acknowledges(&self) -> bool {
+        false
+    }
 }
 
 impl NoteSink for NostrRelay {
     fn deliver(&self, note: &NostrNote) -> Result<(), String> {
         self.send(note).map_err(|error| error.to_string())
+    }
+
+    fn acknowledges(&self) -> bool {
+        true
     }
 }
 

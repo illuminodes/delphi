@@ -8,4 +8,6 @@ pub enum Event {
     Chain(ChainSnapshot),
     Transaction(Transaction, BlockTime),
     Notice(String),
+    /// The relay's `OK` for note `id`.
+    Ack { id: String, accepted: bool, message: String },
 }

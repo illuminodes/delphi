@@ -14,6 +14,7 @@ pub mod chain_pricer;
 pub mod chain_worker;
 pub mod chain_sync;
 mod chain_proof;
+pub mod pending_audits;
 pub mod chain_window;
 pub mod daemon;
 pub mod daemon_config;
