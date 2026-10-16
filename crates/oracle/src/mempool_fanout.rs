@@ -9,6 +9,7 @@ use mantle::network::Network;
 use crate::mempool_watch::{MempoolWatcher, SeenTransaction};
 
 const CONNECT_ATTEMPTS: usize = 48;
+const SEEN_LIMIT: usize = 500_000;
 
 /// What one peer contributed, from the fanout's point of view.
 pub struct PeerStat {
@@ -148,6 +149,9 @@ impl PeerFanout {
     /// rather than re-requested. Peers that disconnect are marked dead and
     /// stop being polled, but keep their statistics.
     pub fn poll(&mut self) -> Vec<SeenTransaction> {
+        if self.seen.len() > SEEN_LIMIT {
+            self.seen.clear();
+        }
         let mut delivered = Vec::new();
         for link in &mut self.links {
             if !link.live {

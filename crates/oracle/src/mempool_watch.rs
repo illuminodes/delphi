@@ -10,8 +10,10 @@ use mantle::network::{
 };
 use mantle::tx::Transaction;
 
+use crate::frame_buffer::FrameBuffer;
+
 const RECV_CHUNK: usize = 64 * 1024;
-const MAX_BUFFERED: usize = 8 * 1024 * 1024;
+const MAX_BUFFERED: usize = MessageHeader::ENCODED_LEN + FrameBuffer::MAX_PAYLOAD as usize;
 const MAX_GETDATA_BATCH: usize = 128;
 const USER_AGENT: &str = "/delphi-oracle:0.1/";
 
@@ -67,7 +69,7 @@ impl PeerBatch {
 pub struct MempoolWatcher {
     stream: TcpStream,
     magic: Magic,
-    recv_buf: Vec<u8>,
+    recv_buf: FrameBuffer,
     scratch: Vec<u8>,
     chunk: Box<[u8]>,
     announced: u64,
@@ -93,7 +95,7 @@ impl MempoolWatcher {
         let mut watcher = Self {
             stream,
             magic: network.magic(),
-            recv_buf: Vec::with_capacity(RECV_CHUNK),
+            recv_buf: FrameBuffer::new(network.magic(), RECV_CHUNK),
             scratch: Vec::new(),
             chunk: vec![0u8; RECV_CHUNK].into_boxed_slice(),
             announced: 0,
@@ -144,7 +146,7 @@ impl MempoolWatcher {
             if !self.fill()? {
                 return Err(WatchError::Handshake);
             }
-            while let Some((command, payload)) = self.next_frame() {
+            while let Some((command, payload)) = self.next_frame()? {
                 match command {
                     Command::Version => {
                         got_version = true;
@@ -172,7 +174,7 @@ impl MempoolWatcher {
     pub fn poll(&mut self) -> Result<PeerBatch, WatchError> {
         let mut batch = PeerBatch::default();
         while self.fill()? && self.recv_buf.len() < MAX_BUFFERED {}
-        while let Some((command, payload)) = self.next_frame() {
+        while let Some((command, payload)) = self.next_frame()? {
             match command {
                 Command::Inv => Self::collect_inv(&payload, &mut batch.announced),
                 Command::Tx => {
@@ -249,7 +251,7 @@ impl MempoolWatcher {
                 io::ErrorKind::UnexpectedEof,
             ))),
             Ok(read) => {
-                self.recv_buf.extend_from_slice(&self.chunk[..read]);
+                self.recv_buf.extend(&self.chunk[..read]);
                 Ok(true)
             }
             Err(error)
@@ -264,26 +266,10 @@ impl MempoolWatcher {
         }
     }
 
-    fn next_frame(&mut self) -> Option<(Command, Vec<u8>)> {
-        if self.recv_buf.len() < MessageHeader::ENCODED_LEN {
-            return None;
-        }
-        let mut raw = [0u8; MessageHeader::ENCODED_LEN];
-        raw.copy_from_slice(&self.recv_buf[..MessageHeader::ENCODED_LEN]);
-        let header = MessageHeader::from_bytes(&raw);
-        let length = header.length() as usize;
-        let total = MessageHeader::ENCODED_LEN + length;
-        if self.recv_buf.len() < total {
-            return None;
-        }
-        let payload = self.recv_buf[MessageHeader::ENCODED_LEN..total].to_vec();
-        let command = Command::from_command_name(header.command());
-        let valid = Hash256::checksum(&payload) == header.checksum();
-        self.recv_buf.drain(..total);
-        match command {
-            Some(command) if valid => Some((command, payload)),
-            _ => self.next_frame(),
-        }
+    fn next_frame(&mut self) -> Result<Option<(Command, Vec<u8>)>, WatchError> {
+        self.recv_buf
+            .next_frame()
+            .map_err(|error| WatchError::Io(io::Error::new(io::ErrorKind::InvalidData, error)))
     }
 
     #[must_use]
