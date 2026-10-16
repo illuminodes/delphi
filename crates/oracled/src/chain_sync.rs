@@ -1,5 +1,5 @@
 use std::net::SocketAddrV4;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mantle::difficulty::BlockHeight;
 use mantle::network::Network;
@@ -18,17 +18,18 @@ pub struct SyncReport {
     pub caught_up: bool,
 }
 
-/// Where and how a [`ChainSync`] runs, without the fetcher it will own.
+/// Where and how a [`ChainSync`] runs, without the fetcher it will own, and
+/// the data directory lock the caller took before touching anything in it.
 ///
 /// The fetcher holds `io_uring` pointers and cannot cross threads, so a worker
 /// thread receives this description and opens the sync itself.
-#[derive(Debug, Clone)]
 pub struct ChainSyncSpec {
     pub network: Network,
     pub peers: Vec<SocketAddrV4>,
     pub data_dir: PathBuf,
     pub depth: usize,
     pub cache_limit_bytes: u64,
+    pub lock: DataDirLock,
 }
 
 impl ChainSyncSpec {
@@ -41,14 +42,14 @@ impl ChainSyncSpec {
             self.data_dir,
             self.depth,
             self.cache_limit_bytes,
+            self.lock,
         )
     }
 }
 
 /// Keeps a [`RecordLog`] level with the chain tip.
 ///
-/// One fetcher serves many passes, because each new fetcher leaks a 16 MiB
-/// slab inside the block-io crate. It is dropped and rebuilt only after a
+/// One fetcher serves many passes. It is dropped and rebuilt only after a
 /// failed pass or a cache purge. A pass brings headers and the missing blocks
 /// in and turns each block into a record. A pass ends early once the block
 /// files pass the cache limit, and the next pass deletes them first, since a
@@ -70,21 +71,28 @@ impl ChainSync {
     pub const REORG_OVERLAP: u32 = 6;
     pub const BATCH_BLOCKS: usize = 200;
 
+    /// Create `data_dir` if needed and take its lock.
+    ///
     /// # Errors
-    /// Returns a message if the data directory cannot be created or locked,
-    /// or the record log cannot be opened.
+    /// Returns a message if the directory cannot be created or another
+    /// process holds its lock.
+    pub fn lock(data_dir: &Path) -> Result<DataDirLock, String> {
+        std::fs::create_dir_all(data_dir)
+            .map_err(|error| format!("create {}: {error}", data_dir.display()))?;
+        DataDirLock::acquire(data_dir).map_err(|error| format!("lock data directory: {error}"))
+    }
+
+    /// # Errors
+    /// Returns a message if the record log cannot be opened.
     pub fn open(
         network: Network,
         peers: Vec<SocketAddrV4>,
         data_dir: impl Into<PathBuf>,
         depth: usize,
         cache_limit_bytes: u64,
+        lock: DataDirLock,
     ) -> Result<Self, String> {
         let data_dir = data_dir.into();
-        std::fs::create_dir_all(&data_dir)
-            .map_err(|error| format!("create {}: {error}", data_dir.display()))?;
-        let lock = DataDirLock::acquire(&data_dir)
-            .map_err(|error| format!("lock data directory: {error}"))?;
         let log = RecordLog::open(data_dir.join("records.log"), depth)
             .map_err(|error| format!("open record log: {error}"))?;
         Ok(Self {
@@ -202,5 +210,21 @@ impl ChainSync {
             .purge()
             .map_err(|error| format!("purge block cache: {error}"))?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChainSync;
+
+    #[test]
+    fn a_second_lock_on_one_directory_is_refused_until_the_first_is_dropped() {
+        let dir = std::env::temp_dir().join(format!("chain-sync-lock-{}", std::process::id()));
+        let first = ChainSync::lock(&dir).expect("first lock");
+
+        assert!(ChainSync::lock(&dir).is_err());
+        drop(first);
+        assert!(ChainSync::lock(&dir).is_ok());
+        std::fs::remove_dir_all(&dir).expect("clean up");
     }
 }

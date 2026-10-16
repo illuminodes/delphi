@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use mantle::network::Network;
 use delphi_oracle::PeerSources;
 use delphi_oracled::{
-    AckLogger, AuditLedger, ChainSyncSpec, ChainWorker, Daemon, DaemonConfig, KeySource, LogFile, MempoolEstimator,
+    AckLogger, AuditLedger, ChainSync, ChainSyncSpec, ChainWorker, Daemon, DaemonConfig, KeySource, LogFile, MempoolEstimator,
     MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, RelayConnector, RelayPublisher, StdoutSink,
     TransactionStream,
 };
@@ -76,8 +76,6 @@ impl OracleDaemonApp {
         } else {
             Self::LEDGER_FILE
         };
-        std::fs::create_dir_all(&self.config.data_dir)
-            .map_err(|error| format!("create {}: {error}", self.config.data_dir.display()))?;
         let path = self.config.data_dir.join(name);
         AuditLedger::open(&path).map_err(|error| format!("audit ledger {}: {error}", path.display()))
     }
@@ -95,6 +93,7 @@ impl OracleDaemonApp {
     }
 
     fn serve<S: NoteSink>(&self, sink: S, signer: PriceSigner) -> Result<(), String> {
+        let lock = ChainSync::lock(&self.config.data_dir)?;
         let peers = self.peers()?;
         eprintln!("{} candidate bitcoin peers", peers.len());
         let spec = ChainSyncSpec {
@@ -103,6 +102,7 @@ impl OracleDaemonApp {
             data_dir: self.config.data_dir.clone(),
             depth: self.config.history_blocks,
             cache_limit_bytes: self.config.cache_limit_bytes,
+            lock,
         };
         let ledger = Arc::new(Mutex::new(self.ledger()?));
         eprintln!("{} audit notes already published", ledger.lock().map_or(0, |held| held.len()));
