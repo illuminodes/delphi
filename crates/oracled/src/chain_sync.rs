@@ -3,7 +3,7 @@ use std::net::SocketAddrV4;
 use std::path::{Path, PathBuf};
 
 use mantle::codec::Decode;
-use mantle::difficulty::BlockHeight;
+use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::network::Network;
 use mantle::primitives::{Block, BlockHeader};
 use mantle_fetcher::{BlockFeed, BlocksRequest, FedBlock, FeedItem, FeedSpec, HeaderRequest};
@@ -16,6 +16,8 @@ use crate::{BlockCache, BlockDigest, BlockPlan, BlockRecord, RecentBlocks, Recor
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncReport {
     pub tip: BlockHeight,
+    /// The tip header's timestamp.
+    pub tip_time: BlockTime,
     pub appended: usize,
     pub purged_cache: bool,
     pub caught_up: bool,
@@ -171,14 +173,15 @@ impl ChainSync {
             })
             .map_err(|error| format!("synchronize headers: {error}"))?;
         proof.finish(&headers)?;
-        let tip = headers
+        let (tip, tip_time) = headers
             .last()
-            .map(|(height, _)| *height)
+            .map(|(height, header)| (*height, header.time()))
             .ok_or_else(|| "peers returned no headers".to_string())?;
         let recorded_tip = self.log.tip().map(BlockRecord::height);
         let Some(span) = self.plan.missing(recorded_tip, tip) else {
             return Ok(SyncReport {
                 tip,
+                tip_time,
                 appended: 0,
                 purged_cache,
                 caught_up: true,
@@ -213,6 +216,7 @@ impl ChainSync {
         }
         Ok(SyncReport {
             tip,
+            tip_time,
             appended,
             purged_cache,
             caught_up: self.log.tip().map(BlockRecord::height) == Some(tip),

@@ -7,6 +7,10 @@ use crate::NoteKind;
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct OracleStatus {
     pub tip: Option<u32>,
+    #[serde(default)]
+    pub tip_age_secs: Option<u64>,
+    #[serde(default)]
+    pub tip_stale: Option<bool>,
     pub anchor: Option<f64>,
     pub band_low: Option<f64>,
     pub band_high: Option<f64>,
@@ -59,9 +63,24 @@ mod tests {
         let status = OracleStatus::from_note(&note).expect("status");
 
         assert_eq!(status.tip, Some(970_000));
+        assert_eq!(status.tip_age_secs, None);
         assert_eq!(status.band_low, None);
         assert_eq!(status.mempool_outputs, 12);
         assert_eq!(status.received_at, 55);
+    }
+
+    #[test]
+    fn the_tip_age_and_staleness_are_read_when_sent() {
+        let note = NostrNoteBuilder::new()
+            .kind(NoteKind::LIVE)
+            .content(r#"{"window":"status","tip":970000,"tip_age_secs":9000,"tip_stale":true,"anchor":null,"band_low":null,"band_high":null}"#)
+            .tag("w", "status")
+            .build();
+
+        let status = OracleStatus::from_note(&note).expect("status");
+
+        assert_eq!(status.tip_age_secs, Some(9_000));
+        assert_eq!(status.tip_stale, Some(true));
     }
 
     #[test]

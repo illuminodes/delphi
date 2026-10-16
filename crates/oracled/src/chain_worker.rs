@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use mantle::difficulty::BlockHeight;
+use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::hash::Hash256;
 
 use crate::chain_sync::ChainSyncSpec;
-use crate::{AuditBackfill, BlockRecord, ChainPricer, ChainSnapshot, ChainSync, ChainWindow, Event, EventSender};
+use crate::{AuditBackfill, BlockRecord, ChainPricer, ChainSnapshot, ChainSync, ChainWindow, Event, EventSender, TipAge};
 
 /// Follows the chain tip and reports what to publish after each pass.
 ///
@@ -115,10 +115,20 @@ impl ChainPass {
         if !self.notice(notice) {
             return Ok(Duration::ZERO);
         }
+        let age = TipAge::now(report.tip_time);
+        if age.is_stale()
+            && !self.notice(format!(
+                "chain tip {} is {} minutes old; peers may be behind or withholding blocks",
+                report.tip,
+                age.seconds() / 60
+            ))
+        {
+            return Ok(Duration::ZERO);
+        }
         if !report.caught_up {
             return Ok(Duration::ZERO);
         }
-        let snapshot = self.snapshot();
+        let snapshot = self.snapshot(report.tip_time);
         let backlog = snapshot.as_ref().is_some_and(|snapshot| snapshot.audits.len() >= ChainWorker::AUDIT_BATCH);
         if let Some(snapshot) = snapshot
             && !self.events.send(Event::Chain(snapshot))
@@ -134,7 +144,7 @@ impl ChainPass {
 
     /// The next audit batch, with the tip's fits when the tip has moved.
     /// `None` when there is nothing new to say.
-    fn snapshot(&mut self) -> Option<ChainSnapshot> {
+    fn snapshot(&mut self, tip_time: BlockTime) -> Option<ChainSnapshot> {
         let log = self.sync.log();
         let tip = log.tip().map(BlockRecord::height)?;
         self.backfill.prune(log);
@@ -147,6 +157,7 @@ impl ChainPass {
         let anchor = self.pricer.anchor(log);
         Some(ChainSnapshot {
             tip,
+            tip_time,
             anchor,
             audits,
             fits: if moved { self.pricer.fits(log) } else { Vec::new() },

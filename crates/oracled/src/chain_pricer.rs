@@ -1,4 +1,4 @@
-use mantle::difficulty::BlockHeight;
+use mantle::difficulty::{BlockHeight, BlockTime};
 use delphi_oracle::RoughPriceEstimator;
 
 use crate::{Anchor, AuditRecord, BlockRecord, ChainWindow, FitUpdate, RecentBlocks, RecordLog};
@@ -11,6 +11,8 @@ pub struct ChainPricer;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainSnapshot {
     pub tip: BlockHeight,
+    /// The tip header's timestamp.
+    pub tip_time: BlockTime,
     /// The hourly price at the tip, which anchors the mempool estimate.
     pub anchor: Option<Anchor>,
     /// Audit records not yet published, newest first.

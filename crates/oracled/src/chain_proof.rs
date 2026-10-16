@@ -19,18 +19,25 @@ impl ChainProof {
             .ok_or_else(|| "network has no verifiable genesis header".to_string())
     }
 
-    /// Confirm that `headers` is exactly the verified chain and passes the
-    /// checkpoint.
+    /// Confirm that `headers` is exactly the verified chain, passes the
+    /// checkpoint and carries the network's minimum work.
     ///
     /// # Errors
     /// Returns a message if the chain stops short of the checkpoint or the
-    /// headers differ from what was admitted.
+    /// minimum work, or the headers differ from what was admitted.
     pub fn finish(&self, headers: &[(BlockHeight, BlockHeader)]) -> Result<(), String> {
         if !self.chain.reached_checkpoint() {
             return Err(format!(
                 "header chain ends at {} before checkpoint {:?}",
                 self.chain.tip_height(),
                 self.chain.checkpoint()
+            ));
+        }
+        if !self.chain.has_minimum_work() {
+            return Err(format!(
+                "header chain work {} is below the network minimum {}",
+                self.chain.tip_work(),
+                self.chain.minimum_work()
             ));
         }
         let matches = headers.len() == usize::try_from(self.chain.tip_height().to_u32()).unwrap_or(0)

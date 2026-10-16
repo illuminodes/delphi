@@ -3,13 +3,15 @@ use std::time::Duration;
 use mantle::difficulty::BlockHeight;
 use delphi_oracle::PriceBand;
 
-use crate::{JsonObject, NoteClass, NotePayload};
+use crate::{JsonObject, NoteClass, NotePayload, TipAge};
 
 /// What the daemon is doing right now, streamed live so a subscriber can
 /// tell a quiet market from a stalled oracle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DaemonStatus {
     pub tip: Option<BlockHeight>,
+    /// How long ago the tip header was stamped.
+    pub tip_age: Option<TipAge>,
     pub anchor: Option<f64>,
     /// Blocks between the anchor's block and the tip.
     pub anchor_age: Option<u32>,
@@ -54,6 +56,8 @@ impl NotePayload for DaemonStatus {
             Some(tip) => object.count("tip", tip.to_u32() as usize),
             None => object.raw("tip", "null"),
         }
+        object.raw("tip_age_secs", &self.tip_age.map_or_else(|| "null".to_string(), |age| age.seconds().to_string()));
+        object.raw("tip_stale", self.tip_age.map_or("null", |age| if age.is_stale() { "true" } else { "false" }));
         object.fixed("anchor", self.anchor.unwrap_or(f64::NAN), 2);
         match self.anchor_age {
             Some(age) => object.count("anchor_age_blocks", age as usize),
@@ -78,13 +82,16 @@ mod tests {
     use mantle::difficulty::BlockHeight;
     use delphi_oracle::PriceBand;
 
+    use mantle::difficulty::BlockTime;
+
     use super::DaemonStatus;
-    use crate::{NoteClass, NotePayload};
+    use crate::{NoteClass, NotePayload, TipAge};
 
     #[test]
     fn a_status_encodes_every_field_and_is_live() {
         let status = DaemonStatus {
             tip: Some(BlockHeight::new(970_000)),
+            tip_age: Some(TipAge::at(BlockTime::new(1_000), 1_600)),
             anchor: Some(80_000.0),
             anchor_age: Some(2),
             band: PriceBand::around(80_000.0, 0.15),
@@ -98,6 +105,8 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
 
         assert_eq!(json["tip"], 970_000);
+        assert_eq!(json["tip_age_secs"], 600);
+        assert_eq!(json["tip_stale"], false);
         assert_eq!(json["anchor"], 80_000.0);
         assert_eq!(json["anchor_age_blocks"], 2);
         assert_eq!(json["mempool_outputs"], 812);
@@ -113,6 +122,7 @@ mod tests {
     fn a_status_before_the_first_block_encodes_nulls() {
         let status = DaemonStatus {
             tip: None,
+            tip_age: None,
             anchor: None,
             anchor_age: None,
             band: None,
@@ -126,8 +136,31 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
 
         assert!(json["tip"].is_null());
+        assert!(json["tip_age_secs"].is_null());
+        assert!(json["tip_stale"].is_null());
         assert!(json["anchor"].is_null());
         assert!(json["anchor_age_blocks"].is_null());
         assert!(status.is_publishable());
+    }
+
+    #[test]
+    fn a_stale_tip_is_flagged() {
+        let status = DaemonStatus {
+            tip: Some(BlockHeight::new(970_000)),
+            tip_age: Some(TipAge::at(BlockTime::new(1_000), 1_000 + 3 * 60 * 60)),
+            anchor: None,
+            anchor_age: None,
+            band: None,
+            mempool_outputs: 0,
+            mempool_transactions: 0,
+            audits_published: 0,
+            transaction_notes: 0,
+            transaction_notes_dropped: 0,
+            uptime: Duration::ZERO,
+        };
+        let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+
+        assert_eq!(json["tip_age_secs"], 3 * 60 * 60);
+        assert_eq!(json["tip_stale"], true);
     }
 }

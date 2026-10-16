@@ -7,7 +7,7 @@ use delphi_oracle::PriceBand;
 use crate::pending_audits::{PendingAudit, PendingAudits};
 use crate::{
     Anchor, AuditLedger, AuditRecord, AuditStatus, EstimateJob, EstimateResult, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
-    NoteSink, Outcome, RecentBlocks, RelayPublisher, TransactionNote, TransactionStream,
+    NoteSink, Outcome, RecentBlocks, RelayPublisher, TipAge, TransactionNote, TransactionStream,
 };
 
 /// Joins the chain prices, the live mempool window and the publisher.
@@ -30,6 +30,7 @@ pub struct PriceHub<S: NoteSink> {
     started: Instant,
     anchor: Option<Anchor>,
     tip: Option<BlockHeight>,
+    tip_time: Option<BlockTime>,
     chain_fits: Vec<FitUpdate>,
     blocks: RecentBlocks,
     stream: TransactionStream,
@@ -72,6 +73,7 @@ impl<S: NoteSink> PriceHub<S> {
             started: Instant::now(),
             anchor: None,
             tip: None,
+            tip_time: None,
             chain_fits: Vec::new(),
             blocks: RecentBlocks::default(),
             stream: TransactionStream::default(),
@@ -118,6 +120,7 @@ impl<S: NoteSink> PriceHub<S> {
             self.window.reset(snapshot.tip);
             self.tip = Some(snapshot.tip);
         }
+        self.tip_time = Some(snapshot.tip_time);
         if !snapshot.fits.is_empty() {
             self.chain_fits.clone_from(&snapshot.fits);
             outcomes.extend(self.send_chain_fits());
@@ -275,6 +278,7 @@ impl<S: NoteSink> PriceHub<S> {
     pub fn status(&self, now: Instant) -> DaemonStatus {
         DaemonStatus {
             tip: self.tip,
+            tip_age: self.tip_time.map(TipAge::now),
             anchor: self.anchor_price(),
             anchor_age: self.anchor_age(),
             band: self.band(),
@@ -388,6 +392,7 @@ mod tests {
         fn snapshot(price: f64, tip: u32, windows: &[ChainWindow]) -> ChainSnapshot {
             ChainSnapshot {
                 tip: BlockHeight::new(tip),
+                tip_time: BlockTime::new(1_780_000_000 + tip),
                 anchor: crate::Anchor::checked(price, None, BlockHeight::new(tip)),
                 audits: windows.iter().map(|window| Self::audit(*window, price, tip)).collect(),
                 fits: Vec::new(),
