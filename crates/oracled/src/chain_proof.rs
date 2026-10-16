@@ -64,21 +64,12 @@ impl ChainProof {
 
 impl HeaderAdmission for ChainProof {
     fn admit(&mut self, first: BlockHeight, headers: &[BlockHeader]) -> Result<(), String> {
-        let base = self.chain.tip_height();
-        let expected = base
-            .checked_add(1)
-            .ok_or_else(|| "header height overflow".to_string())?;
-        if first != expected {
-            return Err(format!("missing header at {expected}, got {first}"));
-        }
-        for header in headers {
-            if let Err(error) = self.chain.extend(*header, &SystemClock) {
-                let height = self.chain.tip_height().checked_add(1);
-                self.chain.truncate(base);
-                return Err(format!("invalid header {height:?}: {error}"));
-            }
-        }
-        Ok(())
+        self.chain
+            .replace_from(first, headers, &SystemClock)
+            .map_err(|(index, error)| match first.to_u32().checked_add(u32::try_from(index).unwrap_or(u32::MAX)) {
+                Some(height) => format!("invalid header {height}: {error}"),
+                None => format!("invalid header past {first}: {error}"),
+            })
     }
 }
 
@@ -137,6 +128,16 @@ mod tests {
         assert!(proof.admit(BlockHeight::new(1), &page).is_err());
         assert!(proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).is_ok());
         assert!(proof.admit(BlockHeight::new(3), &[ProofFixture::block_1()]).is_err());
+    }
+
+    #[test]
+    fn a_page_from_below_the_tip_replaces_the_headers_above_its_parent() {
+        let mut proof = ChainProof::new(Network::Mainnet).expect("mainnet");
+        proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).expect("block 1");
+
+        assert!(proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).is_ok());
+        assert!(proof.admit(BlockHeight::new(1), &[ProofFixture::forged()]).is_err());
+        assert!(proof.admit(BlockHeight::new(2), &[ProofFixture::block_1()]).is_err());
     }
 
     #[test]
