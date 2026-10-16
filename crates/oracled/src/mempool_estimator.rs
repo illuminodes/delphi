@@ -44,7 +44,13 @@ pub struct MempoolEstimate {
 ///
 /// The band is the only outside input, and it comes from confirmed blocks.
 /// The spread is the 10th to 90th percentile of prices from resampling the
-/// sample's outputs with replacement.
+/// sample's transactions with replacement, each drawn with all its admitted
+/// outputs, since a payment and its change are not independent.
+///
+/// A price is refused when it falls outside `band` after refinement, when
+/// it falls outside its own spread, or when more than a quarter of the
+/// resamples find no price, since the failures are the hard cases and
+/// dropping them narrows the spread.
 #[derive(Debug, Clone, Copy)]
 pub struct MempoolEstimator {
     min_outputs: usize,
@@ -62,8 +68,8 @@ impl MempoolEstimator {
         self.min_outputs
     }
 
-    /// `None` while the sample is too small, when no price falls inside
-    /// `band`, or when fewer than half the resamples find one.
+    /// `None` while the sample is too small, and in each refusal described
+    /// on the type.
     #[must_use]
     pub fn estimate(
         &self,
@@ -76,15 +82,23 @@ impl MempoolEstimator {
         }
         let rough = RoughPriceEstimator::new();
         let price = sample.price_within(&rough, band).ok()?.central_price;
+        if !band.contains(price) {
+            return None;
+        }
         let mut prices = self.resampled_prices(sample, band, &rough, rng);
-        if prices.len() * 2 < self.draws {
+        if prices.len() * 4 < self.draws * 3 {
             return None;
         }
         prices.sort_by(f64::total_cmp);
+        let band_low = Self::percentile(&prices, 10);
+        let band_high = Self::percentile(&prices, 90);
+        if price < band_low || price > band_high {
+            return None;
+        }
         Some(MempoolEstimate {
             price,
-            band_low: Self::percentile(&prices, 10),
-            band_high: Self::percentile(&prices, 90),
+            band_low,
+            band_high,
             outputs: sample.len(),
             successful_draws: prices.len(),
         })
@@ -97,15 +111,16 @@ impl MempoolEstimator {
         rough: &RoughPriceEstimator,
         rng: &mut BootstrapRng,
     ) -> Vec<f64> {
-        let outputs = sample.len();
+        let groups = sample.group_count();
         (0..self.draws)
             .filter_map(|_| {
-                let picks: Vec<usize> = (0..outputs).map(|_| rng.below(outputs)).collect();
+                let picks: Vec<usize> = (0..groups).map(|_| rng.below(groups)).collect();
                 sample
-                    .subset(&picks)
+                    .subset_of_groups(&picks)
                     .price_within(rough, band)
                     .ok()
                     .map(|report| report.central_price)
+                    .filter(|price| band.contains(*price))
             })
             .collect()
     }
@@ -178,7 +193,8 @@ mod tests {
         assert!(estimate.band_low <= estimate.band_high);
         assert!(estimate.band_low > 70_000.0 && estimate.band_high < 95_000.0);
         assert_eq!(estimate.outputs, 600);
-        assert!(estimate.successful_draws * 2 >= 30);
+        assert!(estimate.successful_draws * 4 >= 30 * 3);
+        assert!(estimate.band_low <= estimate.price && estimate.price <= estimate.band_high);
     }
 
     #[test]

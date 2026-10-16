@@ -16,9 +16,14 @@ pub struct AdmittedOutput {
 
 /// Outputs that cleared [`crate::OutputFilter`], held so a caller can price
 /// them repeatedly or price a subset of them.
+///
+/// Outputs pushed through [`Self::push_group`] remember which transaction
+/// they came from, so a resample can draw whole transactions; outputs pushed
+/// one at a time each form their own group.
 #[derive(Debug, Clone, Default)]
 pub struct AdmittedSample {
     outputs: Vec<AdmittedOutput>,
+    group_starts: Vec<usize>,
     bounds: Option<(BlockHeight, BlockHeight, BlockTime, BlockTime)>,
 }
 
@@ -29,12 +34,45 @@ impl AdmittedSample {
     }
 
     pub fn push(&mut self, amount: Satoshi, height: BlockHeight, time: BlockTime) {
-        self.outputs.push(AdmittedOutput {
-            amount,
-            height,
-            time,
-        });
+        self.push_group(&[amount], height, time);
+    }
+
+    /// Push one transaction's admitted outputs as a group.
+    pub fn push_group(&mut self, amounts: &[Satoshi], height: BlockHeight, time: BlockTime) {
+        if amounts.is_empty() {
+            return;
+        }
+        self.group_starts.push(self.outputs.len());
+        for amount in amounts {
+            self.outputs.push(AdmittedOutput {
+                amount: *amount,
+                height,
+                time,
+            });
+        }
         self.bounds = Some(Self::widen(self.bounds, height, time));
+    }
+
+    #[must_use]
+    pub fn group_count(&self) -> usize {
+        self.group_starts.len()
+    }
+
+    /// The outputs of the groups named by `groups`, each kept together, in
+    /// the order given. Out-of-range indices are skipped.
+    #[must_use]
+    pub fn subset_of_groups(&self, groups: &[usize]) -> Self {
+        let mut subset = Self::new();
+        for group in groups {
+            let Some(&start) = self.group_starts.get(*group) else {
+                continue;
+            };
+            let end = self.group_starts.get(group + 1).copied().unwrap_or(self.outputs.len());
+            let members = &self.outputs[start..end];
+            let amounts: Vec<Satoshi> = members.iter().map(|output| output.amount).collect();
+            subset.push_group(&amounts, members[0].height, members[0].time);
+        }
+        subset
     }
 
     fn widen(
@@ -54,7 +92,15 @@ impl AdmittedSample {
     }
 
     pub fn evict_oldest(&mut self, count: usize) {
-        self.outputs.drain(..count.min(self.outputs.len()));
+        let count = count.min(self.outputs.len());
+        self.outputs.drain(..count);
+        self.group_starts.retain(|start| *start >= count);
+        for start in &mut self.group_starts {
+            *start -= count;
+        }
+        if !self.outputs.is_empty() && self.group_starts.first() != Some(&0) {
+            self.group_starts.insert(0, 0);
+        }
         self.bounds = self
             .outputs
             .iter()
@@ -295,6 +341,34 @@ mod tests {
         sample.evict_oldest(9);
         assert!(sample.is_empty());
         assert_eq!(sample.price().unwrap_err(), OracleError::NoTransactions);
+    }
+
+    #[test]
+    fn a_group_subset_keeps_each_transactions_outputs_together() {
+        let mut sample = AdmittedSample::new();
+        let at = (BlockHeight::new(1), BlockTime::new(1));
+        sample.push_group(&[Satoshi::new(10), Satoshi::new(11)], at.0, at.1);
+        sample.push_group(&[Satoshi::new(20)], at.0, at.1);
+        sample.push_group(&[Satoshi::new(30), Satoshi::new(31), Satoshi::new(32)], at.0, at.1);
+
+        let subset = sample.subset_of_groups(&[2, 0, 2, 9]);
+        let amounts: Vec<u64> = subset.outputs().iter().map(|output| output.amount.to_u64()).collect();
+
+        assert_eq!(sample.group_count(), 3);
+        assert_eq!(amounts, vec![30, 31, 32, 10, 11, 30, 31, 32]);
+        assert_eq!(subset.group_count(), 3);
+    }
+
+    #[test]
+    fn evicting_through_a_group_keeps_its_remainder_as_one_group() {
+        let mut sample = AdmittedSample::new();
+        let at = (BlockHeight::new(1), BlockTime::new(1));
+        sample.push_group(&[Satoshi::new(10), Satoshi::new(11)], at.0, at.1);
+        sample.push_group(&[Satoshi::new(20), Satoshi::new(21)], at.0, at.1);
+        sample.evict_oldest(3);
+
+        assert_eq!(sample.group_count(), 1);
+        assert_eq!(sample.subset_of_groups(&[0]).len(), 1);
     }
 
     #[test]

@@ -67,9 +67,7 @@ impl MempoolCollector {
     pub fn screen(&mut self, transaction: &Transaction, at: BlockTime) -> (TransactionVerdict, Vec<Satoshi>) {
         self.transactions += 1;
         let (verdict, admitted) = self.filter.screen(transaction);
-        for amount in &admitted {
-            self.sample.push(*amount, self.height, at);
-        }
+        self.sample.push_group(&admitted, self.height, at);
         if !admitted.is_empty() {
             self.admitted_transactions += 1;
             self.windowed_outputs.push_back(admitted.len());
