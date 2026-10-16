@@ -29,7 +29,7 @@ impl OracleDaemonApp {
             println!("{}", DaemonConfig::HELP);
             return ExitCode::SUCCESS;
         }
-        let config = match DaemonConfig::parse(&arguments) {
+        let config = match DaemonConfig::parse(&arguments).and_then(DaemonConfig::with_absolute_data_dir) {
             Ok(config) => config,
             Err(error) => {
                 eprintln!("error: {error}\n\n{}", DaemonConfig::HELP);
@@ -51,7 +51,8 @@ impl OracleDaemonApp {
                 .redirect_stderr()
                 .map_err(|error| format!("log file {}: {error}", path.display()))?;
         }
-        let source = KeySource::new(&self.config, std::env::var(Self::KEY_VARIABLE).ok());
+        let source = KeySource::new(&self.config, std::env::var(Self::KEY_VARIABLE).ok())
+            .with_credentials_directory(std::env::var_os("CREDENTIALS_DIRECTORY").map(std::path::PathBuf::from));
         let signer = source.resolve().map_err(|error| error.to_string())?;
         let npub = signer.npub().map_err(|error| error.to_string())?;
         if self.config.print_npub {
@@ -59,6 +60,7 @@ impl OracleDaemonApp {
             return Ok(());
         }
         eprintln!("publishing as {npub} (key from {})", source.describe());
+        eprintln!("data directory {}", self.config.data_dir.display());
         if self.config.dry_run {
             self.serve(StdoutSink, signer)
         } else {

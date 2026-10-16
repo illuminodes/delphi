@@ -1,6 +1,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::{PriceSigner, PriceSignerError};
@@ -15,12 +15,26 @@ impl KeyStore {
         Self { path: path.into() }
     }
 
+    const SHARED_BITS: u32 = 0o077;
+
     /// # Errors
     /// Returns [`PriceSignerError::Key`] when the file exists but holds no
-    /// usable key, or when a new key cannot be written.
+    /// usable key or is open to its group or other users, or when a new key
+    /// cannot be written.
     pub fn load_or_create(&self) -> Result<PriceSigner, PriceSignerError> {
-        match fs::read_to_string(&self.path) {
-            Ok(secret) => PriceSigner::from_secret(&secret),
+        match fs::metadata(&self.path) {
+            Ok(metadata) => {
+                let mode = metadata.permissions().mode();
+                if mode & Self::SHARED_BITS != 0 {
+                    return Err(PriceSignerError::Key(format!(
+                        "{} has mode {:o}; run chmod 600 on it",
+                        Self::shown(&self.path),
+                        mode & 0o777
+                    )));
+                }
+                let secret = fs::read_to_string(&self.path).map_err(|error| self.failure(&error))?;
+                PriceSigner::from_secret(&secret)
+            }
             Err(error) if error.kind() == ErrorKind::NotFound => self.create(),
             Err(error) => Err(self.failure(&error)),
         }
@@ -111,11 +125,24 @@ mod tests {
         let scratch = Scratch::new();
         std::fs::create_dir_all(scratch.key_path().parent().expect("parent")).expect("dir");
         std::fs::write(scratch.key_path(), "not a key\n").expect("write");
+        std::fs::set_permissions(scratch.key_path(), std::fs::Permissions::from_mode(0o600)).expect("chmod");
 
         let outcome = KeyStore::new(scratch.key_path()).load_or_create();
 
         assert!(outcome.is_err());
         assert_eq!(std::fs::read_to_string(scratch.key_path()).expect("read"), "not a key\n");
+    }
+
+    #[test]
+    fn a_key_readable_by_others_is_refused() {
+        let scratch = Scratch::new();
+        let store = KeyStore::new(scratch.key_path());
+        store.load_or_create().expect("created");
+        std::fs::set_permissions(scratch.key_path(), std::fs::Permissions::from_mode(0o644)).expect("chmod");
+
+        let refused = store.load_or_create().err().map(|error| error.to_string());
+
+        assert!(refused.is_some_and(|message| message.contains("644")));
     }
 
     #[test]

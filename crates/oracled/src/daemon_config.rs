@@ -54,8 +54,10 @@ impl Default for DaemonConfig {
 impl DaemonConfig {
     pub const HELP: &'static str = "delphi-oracled [options]\n\
         \n\
-        The signing key is read from ORACLED_NSEC (nsec, hex or mnemonic), or else\n\
-        from --key-file.\n\
+        The signing key is read from ORACLED_NSEC (nsec, hex or mnemonic), else from\n\
+        --key-file, else from $CREDENTIALS_DIRECTORY/oracled.nsec (systemd\n\
+        LoadCredential=), else from oracled.nsec in the data directory. A key file\n\
+        readable by its group or other users is refused.\n\
         \n\
         --key-file PATH      file holding the nsec; created with a new key if absent\n\
         --log-file PATH      append everything written to stderr to this file\n\
@@ -130,6 +132,17 @@ impl DaemonConfig {
             other => return Err(format!("unknown argument {other}")),
         }
         Ok(())
+    }
+
+    /// Fix the data directory to an absolute path, so later reads and the
+    /// startup log name the same place whatever the working directory was.
+    ///
+    /// # Errors
+    /// Returns a message if the working directory cannot be read.
+    pub fn with_absolute_data_dir(mut self) -> Result<Self, String> {
+        self.data_dir = std::path::absolute(&self.data_dir)
+            .map_err(|error| format!("resolve {}: {error}", self.data_dir.display()))?;
+        Ok(self)
     }
 
     fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
@@ -216,6 +229,14 @@ mod tests {
     fn an_unreadable_number_is_an_error() {
         assert!(DaemonConfig::parse(["--draws", "many"]).is_err());
         assert!(DaemonConfig::parse(["--peer", "not-an-address"]).is_err());
+    }
+
+    #[test]
+    fn the_data_directory_is_made_absolute() {
+        let config = DaemonConfig::default().with_absolute_data_dir().expect("cwd");
+
+        assert!(config.data_dir.is_absolute());
+        assert!(config.data_dir.ends_with("data/oracled"));
     }
 
     #[test]

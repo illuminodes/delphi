@@ -2,24 +2,39 @@ use std::path::PathBuf;
 
 use crate::{DaemonConfig, KeyStore, PriceSigner, PriceSignerError};
 
+/// Where the signing key comes from, in order: the environment, `--key-file`,
+/// a systemd credential, a throwaway key for a dry run, the data directory.
 pub struct KeySource {
     environment: Option<String>,
     key_file: Option<PathBuf>,
+    credential: Option<PathBuf>,
     default_file: PathBuf,
     throwaway: bool,
 }
 
 impl KeySource {
     pub const DEFAULT_FILE: &'static str = "oracled.nsec";
+    pub const CREDENTIAL_NAME: &'static str = "oracled.nsec";
 
     #[must_use]
     pub fn new(config: &DaemonConfig, environment: Option<String>) -> Self {
         Self {
             environment: environment.filter(|value| !value.trim().is_empty()),
             key_file: config.key_file.clone(),
+            credential: None,
             default_file: config.data_dir.join(Self::DEFAULT_FILE),
             throwaway: config.dry_run && !config.print_npub,
         }
+    }
+
+    /// Use `directory/oracled.nsec` when it exists, as systemd's
+    /// `LoadCredential=oracled.nsec:…` provides under `$CREDENTIALS_DIRECTORY`.
+    #[must_use]
+    pub fn with_credentials_directory(mut self, directory: Option<PathBuf>) -> Self {
+        self.credential = directory
+            .map(|directory| directory.join(Self::CREDENTIAL_NAME))
+            .filter(|path| path.is_file());
+        self
     }
 
     /// # Errors
@@ -30,6 +45,9 @@ impl KeySource {
             return PriceSigner::from_secret(secret);
         }
         if let Some(path) = &self.key_file {
+            return KeyStore::new(path.clone()).load_or_create();
+        }
+        if let Some(path) = &self.credential {
             return KeyStore::new(path.clone()).load_or_create();
         }
         if self.throwaway {
@@ -45,6 +63,9 @@ impl KeySource {
         }
         if let Some(path) = &self.key_file {
             return path.display().to_string();
+        }
+        if let Some(path) = &self.credential {
+            return format!("credential {}", path.display());
         }
         if self.throwaway {
             return "throwaway dry-run key".to_string();
@@ -137,6 +158,28 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(described.ends_with(KeySource::DEFAULT_FILE), "{described}");
+    }
+
+    #[test]
+    fn a_credential_is_used_before_the_data_directory_and_a_missing_one_is_ignored() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = SourceFixture::root("credential");
+        let credentials = root.join("credentials");
+        std::fs::create_dir_all(&credentials).expect("dir");
+        let path = credentials.join(KeySource::CREDENTIAL_NAME);
+        std::fs::write(&path, HEX_ONE).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).expect("chmod");
+        let config = SourceFixture::config(&[], root.join("data").to_str().expect("utf8"));
+
+        let used = KeySource::new(&config, None).with_credentials_directory(Some(credentials));
+        let absent = KeySource::new(&config, None).with_credentials_directory(Some(root.join("none")));
+        let resolved = used.resolve().is_ok();
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(used.describe().starts_with("credential "));
+        assert!(resolved);
+        assert!(!absent.describe().starts_with("credential "));
     }
 
     #[test]
