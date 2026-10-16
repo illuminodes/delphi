@@ -45,7 +45,7 @@ pub fn status_bar(props: &StatusBarProps) -> Html {
         <article class="card status">
             <div class="brand">
                 <span class={classes!("dot", state)} aria-hidden="true"></span>
-                <a class="wordmark-link" href="#delphi" title="Delphi design system"><strong>{"Mantle oracle"}</strong></a>
+                <a class="wordmark-link" href="#delphi" title="Delphi design system"><strong>{"Delphi oracle"}</strong></a>
                 <span class="state">{text}</span>
                 <span
                     class={classes!("live-badge", props.live.then_some("on"))}

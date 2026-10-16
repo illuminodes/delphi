@@ -18,7 +18,7 @@ pub struct AlgorithmParams {
 }
 
 impl AlgorithmParams {
-    pub const NAME: &'static str = "mantle-oracle";
+    pub const NAME: &'static str = "delphi-oracle";
     pub const VERSION: usize = 1;
 
     #[must_use]
@@ -62,7 +62,7 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&AlgorithmParams::current().to_json()).expect("json");
 
-        assert_eq!(json["name"], "mantle-oracle");
+        assert_eq!(json["name"], "delphi-oracle");
         assert_eq!(json["version"], AlgorithmParams::VERSION);
         assert_eq!(json["smooth_weight"], 0.65);
         assert_eq!(json["smooth_below"], 150);

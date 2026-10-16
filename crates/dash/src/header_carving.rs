@@ -42,7 +42,7 @@ impl HeaderCarving {
         let motto_x = wordmark.bounds().right + 28.0 * unit;
         let motto = CarveText::new("ΓΝΩΘΙ ΣΕΑΥΤΟΝ  ·  the on-chain oracle", CarveFont::Text, Self::MOTTO * unit, motto_x, baseline).depth(0.6);
         let status_size = Self::STATUS * unit;
-        let status = CarveText::new("RELAY oracle.mantle   TIP 903,412   LIVE 4s", CarveFont::Figures, status_size, area.right, baseline)
+        let status = CarveText::new("RELAY oracle.delphi   TIP 903,412   LIVE 4s", CarveFont::Figures, status_size, area.right, baseline)
             .align(CarveAlign::End)
             .depth(0.7);
         let rule_y = area.bottom - 6.0 * unit;

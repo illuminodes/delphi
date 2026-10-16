@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn the_etched_layout_is_unchanged() {
-        for (kind, expected) in [(MarbleKind::Nero, 11_235_508_300_759_160_463), (MarbleKind::Parian, 16_890_911_256_466_576_769)] {
+        for (kind, expected) in [(MarbleKind::Nero, 11_951_218_725_577_435_567), (MarbleKind::Parian, 5_149_479_015_482_557_485)] {
             assert_eq!(EtchedSample::plan(kind).hash(), expected, "{kind:?} carving plan changed");
         }
     }

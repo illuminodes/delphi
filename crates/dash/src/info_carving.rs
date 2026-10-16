@@ -7,7 +7,7 @@ pub struct InfoCarving {
 
 impl InfoCarving {
     const FACTS: [(&'static str, &'static str); 9] = [
-        ("RELAY", "oracle.mantle"),
+        ("RELAY", "oracle.delphi"),
         ("PUBLISHER", "npub1…k8qz"),
         ("DAEMON", "oracled 0.9.2"),
         ("UPTIME", "12d 4h"),

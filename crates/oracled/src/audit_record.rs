@@ -155,7 +155,7 @@ mod tests {
         assert_eq!(json["price"], 77_160.46);
         assert_eq!(json["stop_height"], 965_218);
         assert_eq!(json["stop_hash"], AuditFixture::hash().to_display_hex());
-        assert_eq!(json["algorithm"]["name"], "mantle-oracle");
+        assert_eq!(json["algorithm"]["name"], "delphi-oracle");
         assert!(record.to_json().len() < 700, "{} bytes", record.to_json().len());
     }
 

@@ -1,7 +1,7 @@
 {
-  "name": "Mantle oracle",
-  "short_name": "Mantle",
-  "description": "Live Bitcoin price windows from the mantle on-chain oracle.",
+  "name": "Delphi oracle",
+  "short_name": "Delphi",
+  "description": "Live Bitcoin price windows from the Delphi on-chain oracle.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

@@ -5,7 +5,7 @@ use crate::DashSettings;
 pub struct SettingsStore;
 
 impl SettingsStore {
-    const KEY: &'static str = "mantle-dash.settings";
+    const KEY: &'static str = "delphi-dash.settings";
 
     fn storage() -> Option<Storage> {
         web_sys::window()?.local_storage().ok()?
