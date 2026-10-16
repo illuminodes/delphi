@@ -276,6 +276,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "delphi-dash"
+version = "0.1.0"
+dependencies = [
+ "gloo-timers",
+ "js-sys",
+ "nostr-minions",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "yew",
+]
+
+[[package]]
+name = "delphi-harness"
+version = "0.1.0"
+dependencies = [
+ "delphi-oracle",
+ "mantle",
+ "ureq 3.4.0",
+]
+
+[[package]]
+name = "delphi-oracle"
+version = "0.1.0"
+dependencies = [
+ "mantle",
+ "mantle-block-io",
+ "mantle-fetcher",
+ "mantle-transport",
+]
+
+[[package]]
+name = "delphi-oracled"
+version = "0.1.0"
+dependencies = [
+ "delphi-oracle",
+ "mantle",
+ "mantle-fetcher",
+ "nostro2 0.9.0",
+ "nostro2-relay",
+ "nostro2-signer 0.8.0",
+ "rustix",
+ "serde_json",
+]
+
+[[package]]
 name = "der"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1139,21 +1187,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mantle-dash"
-version = "0.1.0"
-dependencies = [
- "gloo-timers",
- "js-sys",
- "nostr-minions",
- "serde",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "yew",
-]
-
-[[package]]
 name = "mantle-fetcher"
 version = "0.1.0"
 dependencies = [
@@ -1162,39 +1195,6 @@ dependencies = [
  "mantle-transport",
  "quetzalcoatl",
  "ququmatz",
-]
-
-[[package]]
-name = "mantle-harness"
-version = "0.1.0"
-dependencies = [
- "mantle",
- "mantle-oracle",
- "ureq 3.4.0",
-]
-
-[[package]]
-name = "mantle-oracle"
-version = "0.1.0"
-dependencies = [
- "mantle",
- "mantle-block-io",
- "mantle-fetcher",
- "mantle-transport",
-]
-
-[[package]]
-name = "mantle-oracled"
-version = "0.1.0"
-dependencies = [
- "mantle",
- "mantle-fetcher",
- "mantle-oracle",
- "nostro2 0.9.0",
- "nostro2-relay",
- "nostro2-signer 0.8.0",
- "rustix",
- "serde_json",
 ]
 
 [[package]]
@@ -2261,8 +2261,8 @@ name = "vein-preview"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "delphi-dash",
  "image",
- "mantle-dash",
 ]
 
 [[package]]

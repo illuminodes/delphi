@@ -2,7 +2,7 @@ use mantle::amount::Satoshi;
 use mantle::difficulty::BlockTime;
 use mantle::hash::Hash256;
 use mantle::tx::{Transaction, TxHash};
-use mantle_oracle::TransactionVerdict;
+use delphi_oracle::TransactionVerdict;
 
 use crate::{JsonObject, NoteClass, NotePayload, OutputReading};
 
@@ -152,7 +152,7 @@ mod tests {
     use mantle::hash::Hash256;
     use mantle::script::{ScriptPubKey, ScriptSig, Witness};
     use mantle::tx::{OutPoint, Transaction, TxIn, TxOut};
-    use mantle_oracle::TransactionVerdict;
+    use delphi_oracle::TransactionVerdict;
 
     use super::TransactionNote;
     use crate::{NoteClass, NotePayload, PriceSigner};

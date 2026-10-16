@@ -1,4 +1,4 @@
-use mantle_oracle::{AdmittedSample, PriceBand, RoughPriceEstimator};
+use delphi_oracle::{AdmittedSample, PriceBand, RoughPriceEstimator};
 
 /// A small deterministic generator for bootstrap resampling.
 #[derive(Debug, Clone)]
@@ -120,7 +120,7 @@ impl MempoolEstimator {
 mod tests {
     use std::time::Instant;
 
-    use mantle_oracle::{AdmittedSample, PriceBand};
+    use delphi_oracle::{AdmittedSample, PriceBand};
 
     use super::{BootstrapRng, MempoolEstimator};
     use crate::synthetic_market::SyntheticMarket;

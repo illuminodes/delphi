@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mantle::difficulty::BlockTime;
 use mantle::network::Network;
-use mantle_oracle::UtcDate;
+use delphi_oracle::UtcDate;
 
 use crate::price_series::PriceSeries;
 
@@ -195,7 +195,7 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
 
-    use mantle_oracle::UtcDate;
+    use delphi_oracle::UtcDate;
 
     use super::{ReferenceCache, ReferencePrices};
 
@@ -204,7 +204,7 @@ mod tests {
     impl TempCachePath {
         fn unique(name: &str) -> PathBuf {
             std::env::temp_dir().join(format!(
-                "mantle-reference-{}-{name}.txt",
+                "delphi-reference-{}-{name}.txt",
                 std::process::id()
             ))
         }

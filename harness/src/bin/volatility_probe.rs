@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mantle_harness::intraday_reference::IntradayReference;
-use mantle_harness::span_plan::SpanPlan;
-use mantle_harness::volatility::{VolatilityBand, VolatilityPoint, VolatilityStudy};
-use mantle_oracle::CachedWindows;
+use delphi_harness::intraday_reference::IntradayReference;
+use delphi_harness::span_plan::SpanPlan;
+use delphi_harness::volatility::{VolatilityBand, VolatilityPoint, VolatilityStudy};
+use delphi_oracle::CachedWindows;
 
 const HELP: &str = "\
 oracle-volatility — measure how the oracle tracks a sudden price move

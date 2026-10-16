@@ -3,7 +3,7 @@ use std::path::Path;
 
 use image::imageops::FilterType;
 use image::RgbaImage;
-use mantle_dash::{CarveMask, Carving, MarbleKind, PhotoCrop, StoneEtch, WireframePlan};
+use delphi_dash::{CarveMask, Carving, MarbleKind, PhotoCrop, StoneEtch, WireframePlan};
 
 use crate::glyph_letterer::GlyphLetterer;
 use crate::grain_report::GrainReport;

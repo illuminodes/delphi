@@ -1,4 +1,4 @@
-use mantle_oracle::PriceBand;
+use delphi_oracle::PriceBand;
 
 use crate::anchor_spec::AnchorSpec;
 use crate::convergence::{ConvergenceRow, ConvergenceTrial};
@@ -61,7 +61,7 @@ impl<'a> AnchorComparison<'a> {
 mod tests {
     use mantle::amount::Satoshi;
     use mantle::difficulty::{BlockHeight, BlockTime};
-    use mantle_oracle::AdmittedSample;
+    use delphi_oracle::AdmittedSample;
 
     use super::AnchorComparison;
     use crate::anchor_spec::AnchorSpec;

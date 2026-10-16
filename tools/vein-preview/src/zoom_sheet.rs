@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::Path;
 
 use image::{Rgba, RgbaImage};
-use mantle_dash::{CarveMask, CutLip, VeeCut};
+use delphi_dash::{CarveMask, CutLip, VeeCut};
 
 use crate::etched_preview::EtchedPreview;
 

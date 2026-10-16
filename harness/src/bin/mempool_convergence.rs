@@ -5,10 +5,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::network::Network;
-use mantle_harness::amount_dump::AmountDump;
-use mantle_harness::intraday_reference::IntradayReference;
-use mantle_harness::sample_rng::SampleRng;
-use mantle_oracle::{
+use delphi_harness::amount_dump::AmountDump;
+use delphi_harness::intraday_reference::IntradayReference;
+use delphi_harness::sample_rng::SampleRng;
+use delphi_oracle::{
     AdmittedSample, CachedWindows, MempoolCollector, OraclePipeline, PeerFanout, PeerSources,
 };
 
@@ -312,7 +312,7 @@ impl LiveApp {
             eprintln!("no contiguous cached blocks; skipping the confirmed comparison");
             return None;
         };
-        let selection = mantle_oracle::RangeSelection::Heights {
+        let selection = delphi_oracle::RangeSelection::Heights {
             start: *start_height,
             stop: *stop_height,
         };

@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use ab_glyph::{point, Font, FontVec, PxScale, ScaleFont};
-use mantle_dash::{CarveAlign, CarveFont, CarveMask, CarveText};
+use delphi_dash::{CarveAlign, CarveFont, CarveMask, CarveText};
 
 pub struct GlyphLetterer {
     faces: [FontVec; 3],

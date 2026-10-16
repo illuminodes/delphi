@@ -2,7 +2,7 @@ mod cli;
 
 use std::process::ExitCode;
 
-use mantle_oracle::{PeerSources, WindowRunner};
+use delphi_oracle::{PeerSources, WindowRunner};
 
 use crate::cli::{Args, HELP};
 

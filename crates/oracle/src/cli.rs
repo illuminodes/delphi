@@ -3,13 +3,13 @@ use std::path::PathBuf;
 
 use mantle::difficulty::BlockHeight;
 use mantle::network::Network;
-use mantle_oracle::{RangeSelection, UtcDate};
+use delphi_oracle::{RangeSelection, UtcDate};
 
 pub const HELP: &str = "\
-mantle-oracle — estimate the BTC/USD price from Bitcoin transaction outputs
+delphi-oracle — estimate the BTC/USD price from Bitcoin transaction outputs
 
 Usage:
-    mantle-oracle [OPTIONS]
+    delphi-oracle [OPTIONS]
 
 Range options (choose at most one):
     --date YYYY-MM-DD      Analyze one UTC calendar day.

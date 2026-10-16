@@ -3,7 +3,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mantle_oracled::{KeyStore, RelayConnector};
+use delphi_oracled::{KeyStore, RelayConnector};
 use nostro2::{NostrRelayEvent, NostrSubscription};
 use nostro2_relay::ReconnectConfig;
 

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use mantle::difficulty::BlockHeight;
 use mantle::hash::Hash256;
-use mantle_oracle::AdmittedSample;
+use delphi_oracle::AdmittedSample;
 
 use crate::BlockRecord;
 

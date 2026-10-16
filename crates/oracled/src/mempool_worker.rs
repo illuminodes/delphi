@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mantle::difficulty::BlockTime;
 use mantle::network::Network;
-use mantle_oracle::PeerFanout;
+use delphi_oracle::PeerFanout;
 
 use crate::Event;
 

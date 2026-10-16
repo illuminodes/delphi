@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mantle_harness::confirmed_pools::ConfirmedPools;
-use mantle_harness::intraday_reference::IntradayReference;
-use mantle_harness::stencil_variant::StencilVariant;
-use mantle_harness::subsample_sweep::{DrawMode, PricedPool, SubsampleSweep};
-use mantle_oracle::{CachedWindows, RoughPriceEstimator};
+use delphi_harness::confirmed_pools::ConfirmedPools;
+use delphi_harness::intraday_reference::IntradayReference;
+use delphi_harness::stencil_variant::StencilVariant;
+use delphi_harness::subsample_sweep::{DrawMode, PricedPool, SubsampleSweep};
+use delphi_oracle::{CachedWindows, RoughPriceEstimator};
 
 const HELP: &str = "\
 oracle-stencil-eras — grid rough-estimator stencil variants per cached era

@@ -1,5 +1,5 @@
 use mantle::difficulty::BlockTime;
-use mantle_oracle::RangeSelection;
+use delphi_oracle::RangeSelection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpanWindow {

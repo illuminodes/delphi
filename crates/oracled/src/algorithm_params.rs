@@ -1,4 +1,4 @@
-use mantle_oracle::{CentralPriceFinder, OutputFilter, PriceStencil, RoughPriceEstimator};
+use delphi_oracle::{CentralPriceFinder, OutputFilter, PriceStencil, RoughPriceEstimator};
 
 use crate::JsonObject;
 

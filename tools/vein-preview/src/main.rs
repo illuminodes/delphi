@@ -19,7 +19,7 @@ use row_probe::RowProbe;
 use zoom_sheet::ZoomSheet;
 
 use image::RgbaImage;
-use mantle_dash::{ChalkPlot, MarbleKind, MarbleStone, SampleSeries};
+use delphi_dash::{ChalkPlot, MarbleKind, MarbleStone, SampleSeries};
 
 struct PreviewRequest {
     etched: bool,

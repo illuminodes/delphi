@@ -1,4 +1,4 @@
-use mantle_oracle::{PriceStencil, RoughPriceEstimator};
+use delphi_oracle::{PriceStencil, RoughPriceEstimator};
 
 /// One rough-estimator configuration to compare: the smooth-term weight and
 /// the slide below which the smooth term applies.

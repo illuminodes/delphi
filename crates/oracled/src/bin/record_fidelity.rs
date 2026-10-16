@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use mantle::difficulty::BlockHeight;
-use mantle_oracle::{AdmittedSample, CachedWindows, OraclePipeline, RangeSelection};
+use delphi_oracle::{AdmittedSample, CachedWindows, OraclePipeline, RangeSelection};
 
 struct FidelityApp {
     data_dir: String,

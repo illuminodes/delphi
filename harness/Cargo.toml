@@ -1,5 +1,5 @@
 [package]
-name = "mantle-harness"
+name = "delphi-harness"
 version.workspace = true
 edition.workspace = true
 
@@ -7,7 +7,7 @@ edition.workspace = true
 workspace = true
 
 [lib]
-name = "mantle_harness"
+name = "delphi_harness"
 path = "src/lib.rs"
 
 [[bin]]
@@ -48,5 +48,5 @@ path = "src/bin/volatility_probe.rs"
 
 [dependencies]
 mantle = { workspace = true }
-mantle-oracle = { path = "../crates/oracle" }
+delphi-oracle = { path = "../crates/oracle" }
 ureq = "3"

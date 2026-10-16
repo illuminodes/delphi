@@ -5,8 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mantle::network::Network;
-use mantle_oracle::PeerSources;
-use mantle_oracled::{
+use delphi_oracle::PeerSources;
+use delphi_oracled::{
     AckLogger, AuditLedger, ChainSyncSpec, ChainWorker, Daemon, DaemonConfig, KeySource, LogFile, MempoolEstimator,
     MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, RelayConnector, RelayPublisher, StdoutSink,
     TransactionStream,

@@ -77,7 +77,7 @@ impl NotePayload for RecentBlocks {
 mod tests {
     use mantle::amount::Satoshi;
     use mantle::difficulty::BlockHeight;
-    use mantle_oracle::TransactionTally;
+    use delphi_oracle::TransactionTally;
 
     use super::RecentBlocks;
     use crate::{BlockDigest, NoteClass, NotePayload};

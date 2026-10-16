@@ -2,7 +2,7 @@ use std::error::Error;
 use std::path::Path;
 
 use image::{imageops::FilterType, RgbaImage};
-use mantle_dash::{CarveMask, Carving, FumeBowl, FumeMark, Limestone, OracleScene, OracleSketch, StoneSketch};
+use delphi_dash::{CarveMask, Carving, FumeBowl, FumeMark, Limestone, OracleScene, OracleSketch, StoneSketch};
 
 use crate::glyph_letterer::GlyphLetterer;
 

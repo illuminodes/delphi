@@ -2,7 +2,7 @@ use std::net::SocketAddrV4;
 use std::path::PathBuf;
 
 use mantle::network::Network;
-use mantle_oracle::UtcDate;
+use delphi_oracle::UtcDate;
 
 pub const HELP: &str = "\
 oracle-harness — validate the price oracle across N daily windows

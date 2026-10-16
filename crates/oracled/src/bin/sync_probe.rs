@@ -2,8 +2,8 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use mantle::network::Network;
-use mantle_oracle::PeerSources;
-use mantle_oracled::ChainSync;
+use delphi_oracle::PeerSources;
+use delphi_oracled::ChainSync;
 
 struct ProbeApp {
     data_dir: String,

@@ -1,15 +1,15 @@
 [package]
-name = "mantle-dash"
+name = "delphi-dash"
 version = "0.1.0"
 edition = "2021"
-description = "Client-side PWA dashboard for the mantle-oracled price feed"
+description = "Client-side PWA dashboard for the delphi-oracled price feed"
 
 [lib]
-name = "mantle_dash"
+name = "delphi_dash"
 path = "src/lib.rs"
 
 [[bin]]
-name = "mantle-dash"
+name = "delphi-dash"
 path = "src/main.rs"
 
 [dependencies]

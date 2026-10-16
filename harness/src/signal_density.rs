@@ -1,6 +1,6 @@
 use mantle::amount::Satoshi;
 use mantle::difficulty::{BlockHeight, BlockTime};
-use mantle_oracle::IntradayPricePoints;
+use delphi_oracle::IntradayPricePoints;
 
 /// How much round-USD signal a set of outputs carries at a known price.
 ///

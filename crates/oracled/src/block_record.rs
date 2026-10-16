@@ -2,7 +2,7 @@ use mantle::amount::Satoshi;
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::hash::Hash256;
 use mantle::tx::Transaction;
-use mantle_oracle::{AdmittedSample, OutputFilter, TransactionTally};
+use delphi_oracle::{AdmittedSample, OutputFilter, TransactionTally};
 
 /// The outputs one block contributes to the price, after filtering.
 ///
@@ -149,7 +149,7 @@ mod tests {
     use mantle::amount::Satoshi;
     use mantle::difficulty::{BlockHeight, BlockTime};
     use mantle::hash::Hash256;
-    use mantle_oracle::AdmittedSample;
+    use delphi_oracle::AdmittedSample;
 
     use super::BlockRecord;
 

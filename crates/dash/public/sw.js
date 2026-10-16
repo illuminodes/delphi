@@ -1,4 +1,4 @@
-const CACHE = "mantle-dash-shell-v1";
+const CACHE = "delphi-dash-shell-v1";
 
 self.addEventListener("install", function () {
     self.skipWaiting();

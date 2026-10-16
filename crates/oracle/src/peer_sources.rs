@@ -87,7 +87,7 @@ mod tests {
 
     impl TempPeerFile {
         fn write(body: &str) -> std::path::PathBuf {
-            let path = std::env::temp_dir().join(format!("mantle-peers-{}.txt", std::process::id()));
+            let path = std::env::temp_dir().join(format!("delphi-peers-{}.txt", std::process::id()));
             let mut file = std::fs::File::create(&path).expect("create temp peer file");
             file.write_all(body.as_bytes()).expect("write temp peer file");
             path

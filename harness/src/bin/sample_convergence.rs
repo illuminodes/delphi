@@ -2,11 +2,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use mantle::difficulty::BlockTime;
-use mantle_harness::convergence::{ConvergenceRow, ConvergenceTrial};
-use mantle_harness::intraday_reference::IntradayReference;
-use mantle_harness::sample_rng::SampleRng;
-use mantle_harness::span_plan::SpanPlan;
-use mantle_oracle::{AdmittedSample, CachedWindows, OraclePipeline};
+use delphi_harness::convergence::{ConvergenceRow, ConvergenceTrial};
+use delphi_harness::intraday_reference::IntradayReference;
+use delphi_harness::sample_rng::SampleRng;
+use delphi_harness::span_plan::SpanPlan;
+use delphi_oracle::{AdmittedSample, CachedWindows, OraclePipeline};
 
 const HELP: &str = "\
 oracle-convergence — how many admitted outputs the oracle needs for a price
@@ -239,7 +239,7 @@ impl ConvergenceApp {
 
     fn admitted_of(
         windows: &mut CachedWindows,
-        selection: mantle_oracle::RangeSelection,
+        selection: delphi_oracle::RangeSelection,
     ) -> Result<AdmittedSample, String> {
         let mut pipeline = OraclePipeline::new();
         windows

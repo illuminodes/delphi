@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use mantle::difficulty::BlockHeight;
-use mantle_oracle::PriceBand;
+use delphi_oracle::PriceBand;
 
 use crate::{JsonObject, NoteClass, NotePayload};
 
@@ -70,7 +70,7 @@ mod tests {
     use std::time::Duration;
 
     use mantle::difficulty::BlockHeight;
-    use mantle_oracle::PriceBand;
+    use delphi_oracle::PriceBand;
 
     use super::DaemonStatus;
     use crate::{NoteClass, NotePayload};

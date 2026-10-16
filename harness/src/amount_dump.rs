@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use mantle::amount::Satoshi;
 use mantle::difficulty::{BlockHeight, BlockTime};
-use mantle_oracle::AdmittedSample;
+use delphi_oracle::AdmittedSample;
 
 /// Admitted outputs saved as `satoshis unix_seconds` lines, so a live
 /// collection can be analysed again without reconnecting to peers.
@@ -54,7 +54,7 @@ impl AmountDump {
 mod tests {
     use mantle::amount::Satoshi;
     use mantle::difficulty::{BlockHeight, BlockTime};
-    use mantle_oracle::AdmittedSample;
+    use delphi_oracle::AdmittedSample;
 
     use super::AmountDump;
 

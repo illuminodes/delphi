@@ -1,4 +1,4 @@
-use mantle_dash::CarveMask;
+use delphi_dash::CarveMask;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CarveClass {

@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use mantle_oracle::{DenominationFit, PriceBand, PriceFit};
+use delphi_oracle::{DenominationFit, PriceBand, PriceFit};
 
 use crate::{JsonObject, NoteClass, NotePayload};
 
@@ -141,7 +141,7 @@ impl NotePayload for FitUpdate {
 
 #[cfg(test)]
 mod tests {
-    use mantle_oracle::{PriceBand, RoughPriceEstimator};
+    use delphi_oracle::{PriceBand, RoughPriceEstimator};
 
     use super::FitUpdate;
     use crate::NotePayload;

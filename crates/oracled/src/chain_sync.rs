@@ -5,7 +5,7 @@ use mantle::difficulty::BlockHeight;
 use mantle::network::Network;
 use mantle::primitives::BlockHeader;
 use mantle_fetcher::Fetcher;
-use mantle_oracle::DataDirLock;
+use delphi_oracle::DataDirLock;
 
 use crate::{BlockCache, BlockDigest, BlockPlan, BlockRecord, RecentBlocks, RecordLog};
 

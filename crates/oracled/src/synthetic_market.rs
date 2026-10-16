@@ -3,7 +3,7 @@ use mantle::difficulty::{BlockHeight, BlockTime, Locktime, Sequence, TxVersion};
 use mantle::hash::Hash256;
 use mantle::script::{ScriptPubKey, ScriptSig, Witness};
 use mantle::tx::{OutPoint, Transaction, TxIn, TxOut};
-use mantle_oracle::AdmittedSample;
+use delphi_oracle::AdmittedSample;
 
 use crate::{BlockRecord, BootstrapRng};
 

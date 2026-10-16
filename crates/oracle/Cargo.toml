@@ -1,5 +1,5 @@
 [package]
-name = "mantle-oracle"
+name = "delphi-oracle"
 version.workspace = true
 edition.workspace = true
 

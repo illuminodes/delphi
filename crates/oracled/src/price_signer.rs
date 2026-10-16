@@ -149,7 +149,7 @@ mod tests {
 
     use mantle::difficulty::{BlockHeight, BlockTime};
     use mantle::hash::Hash256;
-    use mantle_oracle::OracleReport;
+    use delphi_oracle::OracleReport;
 
     use super::{PriceSigner, PriceSignerError};
     use crate::{AuditRecord, ChainWindow, NoteClass, NotePayload, PriceUpdate};

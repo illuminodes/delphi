@@ -1,7 +1,7 @@
 use mantle::amount::Satoshi;
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::tx::Transaction;
-use mantle_oracle::{MempoolCollector, PriceBand, RoughPriceEstimator, TransactionVerdict};
+use delphi_oracle::{MempoolCollector, PriceBand, RoughPriceEstimator, TransactionVerdict};
 
 use crate::{BootstrapRng, FitUpdate, MempoolEstimator, PriceUpdate};
 
@@ -84,7 +84,7 @@ impl MempoolWindow {
 #[cfg(test)]
 mod tests {
     use mantle::difficulty::{BlockHeight, BlockTime};
-    use mantle_oracle::PriceBand;
+    use delphi_oracle::PriceBand;
 
     use super::MempoolWindow;
     use crate::synthetic_market::SyntheticMarket;

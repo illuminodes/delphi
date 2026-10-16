@@ -1,5 +1,5 @@
 use mantle::hash::Hash256;
-use mantle_oracle::OracleReport;
+use delphi_oracle::OracleReport;
 
 use crate::{AlgorithmParams, ChainWindow, JsonObject, NoteClass, NotePayload};
 
@@ -116,7 +116,7 @@ impl NotePayload for AuditRecord {
 mod tests {
     use mantle::difficulty::{BlockHeight, BlockTime};
     use mantle::hash::Hash256;
-    use mantle_oracle::OracleReport;
+    use delphi_oracle::OracleReport;
 
     use super::AuditRecord;
     use crate::{ChainWindow, NoteClass, NotePayload};

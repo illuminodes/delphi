@@ -1,6 +1,6 @@
 /// Whether a draw's octave ratio tells correct estimates from octave locks.
 ///
-/// Each draw contributes its [`mantle_oracle::SlideProfile::octave_ratio`]
+/// Each draw contributes its [`delphi_oracle::SlideProfile::octave_ratio`]
 /// and its error against the reference. A draw is `locked` when the error
 /// exceeds [`Self::LOCK_ERROR`], which only an octave slip produces, and
 /// `sound` when it is under [`Self::SOUND_ERROR`].

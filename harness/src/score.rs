@@ -1,4 +1,4 @@
-use mantle_oracle::OracleReport;
+use delphi_oracle::OracleReport;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowScore {
@@ -100,7 +100,7 @@ impl Scorecard {
 #[cfg(test)]
 mod tests {
     use mantle::difficulty::{BlockHeight, BlockTime};
-    use mantle_oracle::OracleReport;
+    use delphi_oracle::OracleReport;
 
     use super::{Scorecard, WindowScore};
 

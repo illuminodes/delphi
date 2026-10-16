@@ -80,7 +80,7 @@ mod tests {
 
     use mantle::difficulty::{BlockHeight, BlockTime};
     use mantle::hash::Hash256;
-    use mantle_oracle::OracleReport;
+    use delphi_oracle::OracleReport;
     use nostro2::NostrNote;
 
     use super::Daemon;

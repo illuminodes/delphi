@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use mantle_oracled::RelayConnector;
+use delphi_oracled::RelayConnector;
 use nostro2_relay::ReconnectConfig;
 
 struct ProbeApp;

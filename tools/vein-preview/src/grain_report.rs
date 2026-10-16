@@ -1,4 +1,4 @@
-use mantle_dash::CarveMask;
+use delphi_dash::CarveMask;
 
 use crate::carve_class::CarveClass;
 

@@ -2,10 +2,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use mantle::difficulty::BlockTime;
-use mantle_harness::granularity::{GranularityRow, GranularitySweep};
-use mantle_harness::intraday_reference::IntradayReference;
-use mantle_harness::span_plan::SpanPlan;
-use mantle_oracle::{BlockRange, CachedWindows, RangeSelection};
+use delphi_harness::granularity::{GranularityRow, GranularitySweep};
+use delphi_harness::intraday_reference::IntradayReference;
+use delphi_harness::span_plan::SpanPlan;
+use delphi_oracle::{BlockRange, CachedWindows, RangeSelection};
 
 const HELP: &str = "\
 oracle-granularity — find the shortest window the oracle can still price

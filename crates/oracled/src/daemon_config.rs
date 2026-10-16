@@ -52,7 +52,7 @@ impl Default for DaemonConfig {
 }
 
 impl DaemonConfig {
-    pub const HELP: &'static str = "mantle-oracled [options]\n\
+    pub const HELP: &'static str = "delphi-oracled [options]\n\
         \n\
         The signing key is read from ORACLED_NSEC (nsec, hex or mnemonic), or else\n\
         from --key-file.\n\

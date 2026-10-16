@@ -3,7 +3,7 @@ use mantle::codec::VarInt;
 use mantle::difficulty::{BlockHeight, CompactBits};
 use mantle::primitives::{Block, BlockHeader};
 use mantle::tx::Transaction;
-use mantle_oracle::{TransactionTally, TransactionVerdict};
+use delphi_oracle::{TransactionTally, TransactionVerdict};
 
 use crate::{BlockFunnel, JsonObject};
 
@@ -146,7 +146,7 @@ mod tests {
     use mantle::primitives::{Block, BlockHeader};
     use mantle::script::Witness;
     use mantle::tx::{OutPoint, Transaction, TxIn, TxOut};
-    use mantle_oracle::{TransactionTally, TransactionVerdict};
+    use delphi_oracle::{TransactionTally, TransactionVerdict};
 
     use super::BlockDigest;
 

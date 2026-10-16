@@ -1,5 +1,5 @@
 use mantle::difficulty::BlockHeight;
-use mantle_oracle::RoughPriceEstimator;
+use delphi_oracle::RoughPriceEstimator;
 
 use crate::{AuditRecord, BlockRecord, ChainWindow, FitUpdate, RecentBlocks, RecordLog};
 

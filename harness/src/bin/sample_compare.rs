@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mantle_harness::amount_dump::AmountDump;
-use mantle_harness::confirmed_pools::ConfirmedPools;
-use mantle_harness::intraday_reference::IntradayReference;
-use mantle_harness::octave_separation::OctaveSeparation;
-use mantle_harness::signal_density::SignalDensity;
-use mantle_harness::stencil_variant::StencilVariant;
-use mantle_harness::span_plan::SpanPlan;
-use mantle_harness::subsample_sweep::{DrawMode, PricedPool, SubsampleSweep};
-use mantle_oracle::{AdmittedSample, CachedWindows, RoughPriceEstimator};
+use delphi_harness::amount_dump::AmountDump;
+use delphi_harness::confirmed_pools::ConfirmedPools;
+use delphi_harness::intraday_reference::IntradayReference;
+use delphi_harness::octave_separation::OctaveSeparation;
+use delphi_harness::signal_density::SignalDensity;
+use delphi_harness::stencil_variant::StencilVariant;
+use delphi_harness::span_plan::SpanPlan;
+use delphi_harness::subsample_sweep::{DrawMode, PricedPool, SubsampleSweep};
+use delphi_oracle::{AdmittedSample, CachedWindows, RoughPriceEstimator};
 
 const HELP: &str = "\
 oracle-sample-compare — bootstrap live mempool dumps against confirmed windows

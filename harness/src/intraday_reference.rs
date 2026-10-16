@@ -258,7 +258,7 @@ mod tests {
 
         fn temp_path(name: &str) -> PathBuf {
             std::env::temp_dir()
-                .join(format!("mantle-intraday-{}-{name}.txt", std::process::id()))
+                .join(format!("delphi-intraday-{}-{name}.txt", std::process::id()))
         }
     }
 

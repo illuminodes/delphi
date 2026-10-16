@@ -1,4 +1,4 @@
-use mantle_oracle::{AdmittedSample, RoughPriceEstimator};
+use delphi_oracle::{AdmittedSample, RoughPriceEstimator};
 
 use crate::anchor_spec::AnchorSpec;
 use crate::convergence::{ConvergenceRow, ConvergenceTrial};
@@ -167,7 +167,7 @@ impl<'a> SubsampleSweep<'a> {
 mod tests {
     use mantle::amount::Satoshi;
     use mantle::difficulty::{BlockHeight, BlockTime};
-    use mantle_oracle::AdmittedSample;
+    use delphi_oracle::AdmittedSample;
 
     use super::{DrawMode, PricedPool, SubsampleSweep};
     use crate::sample_rng::SampleRng;

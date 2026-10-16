@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::tx::Transaction;
-use mantle_oracle::PriceBand;
+use delphi_oracle::PriceBand;
 
 use crate::{
     AuditLedger, AuditRecord, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
@@ -244,7 +244,7 @@ mod tests {
 
     use mantle::difficulty::{BlockHeight, BlockTime};
     use mantle::hash::Hash256;
-    use mantle_oracle::OracleReport;
+    use delphi_oracle::OracleReport;
     use nostro2::NostrNote;
 
     use super::PriceHub;
@@ -419,7 +419,7 @@ mod tests {
         let mut snapshot = HubFixture::snapshot(80_000.0, 100, &[]);
         let sample = SyntheticMarket::new(80_000.0, 3).sample(600);
         let fit = sample
-            .fit(&mantle_oracle::RoughPriceEstimator::new(), None)
+            .fit(&delphi_oracle::RoughPriceEstimator::new(), None)
             .expect("fit");
         snapshot.fits = vec![crate::FitUpdate::new("chain-1h", "chain", fit)];
         hub.apply_chain(&snapshot);
@@ -452,7 +452,7 @@ mod tests {
             output_value: mantle::amount::Satoshi::new(0),
             coinbase_value: mantle::amount::Satoshi::new(0),
             subsidy: mantle::amount::Satoshi::new(0),
-            tally: mantle_oracle::TransactionTally::default(),
+            tally: delphi_oracle::TransactionTally::default(),
             admitted: Vec::new(),
             funnel: None,
         });

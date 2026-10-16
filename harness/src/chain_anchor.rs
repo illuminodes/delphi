@@ -1,6 +1,6 @@
 use mantle::difficulty::BlockHeight;
 use mantle::primitives::BlockHeader;
-use mantle_oracle::{CachedWindows, OraclePipeline, RangeSelection};
+use delphi_oracle::{CachedWindows, OraclePipeline, RangeSelection};
 
 /// The oracle's own confirmed-chain price from the blocks immediately before
 /// a moment, using only what is cached on disk.

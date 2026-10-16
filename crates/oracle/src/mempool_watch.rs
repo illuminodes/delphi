@@ -13,7 +13,7 @@ use mantle::tx::Transaction;
 const RECV_CHUNK: usize = 64 * 1024;
 const MAX_BUFFERED: usize = 8 * 1024 * 1024;
 const MAX_GETDATA_BATCH: usize = 128;
-const USER_AGENT: &str = "/mantle-oracle:0.1/";
+const USER_AGENT: &str = "/delphi-oracle:0.1/";
 
 #[derive(Debug)]
 pub enum WatchError {

@@ -1,5 +1,5 @@
 use mantle::difficulty::BlockTime;
-use mantle_oracle::{RangeSelection, UtcDate};
+use delphi_oracle::{RangeSelection, UtcDate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowPlan {
@@ -40,7 +40,7 @@ impl WindowPlan {
 
 #[cfg(test)]
 mod tests {
-    use mantle_oracle::{RangeSelection, UtcDate};
+    use delphi_oracle::{RangeSelection, UtcDate};
 
     use super::WindowPlan;
 

@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use mantle::network::Network;
-use mantle_oracle::{OutputFilter, PeerFanout, PeerSources};
+use delphi_oracle::{OutputFilter, PeerFanout, PeerSources};
 
 const HELP: &str = "\
 mempool-spike — measure the live mempool's usable output rate

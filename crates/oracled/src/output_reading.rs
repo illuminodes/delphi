@@ -1,6 +1,6 @@
 use mantle::amount::Satoshi;
 use mantle::difficulty::{BlockHeight, BlockTime};
-use mantle_oracle::{CentralPriceFinder, IntradayPricePoints};
+use delphi_oracle::{CentralPriceFinder, IntradayPricePoints};
 
 /// What one admitted output says at a given price: the round dollar amount it most likely paid,
 /// the price that amount implies, and whether that price lies inside the central finder's band.

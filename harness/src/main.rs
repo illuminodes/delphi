@@ -3,10 +3,10 @@ mod cli;
 use std::process::ExitCode;
 
 use mantle::network::Network;
-use mantle_harness::reference_prices::{ReferenceError, ReferencePrices};
-use mantle_harness::score::Scorecard;
-use mantle_harness::window_plan::WindowPlan;
-use mantle_oracle::{PeerSources, UtcDate, WindowRunner};
+use delphi_harness::reference_prices::{ReferenceError, ReferencePrices};
+use delphi_harness::score::Scorecard;
+use delphi_harness::window_plan::WindowPlan;
+use delphi_oracle::{PeerSources, UtcDate, WindowRunner};
 
 use crate::cli::{Args, HELP};
 

@@ -1,6 +1,6 @@
 use mantle::difficulty::BlockHeight;
 use mantle::primitives::BlockHeader;
-use mantle_oracle::{CachedWindows, OraclePipeline};
+use delphi_oracle::{CachedWindows, OraclePipeline};
 
 use crate::anchor_spec::AnchorSpec;
 use crate::chain_anchor::ChainAnchor;

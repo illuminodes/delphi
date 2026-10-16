@@ -3,7 +3,7 @@ use std::error::Error;
 use std::path::Path;
 
 use image::{imageops::FilterType, RgbaImage};
-use mantle_dash::{FumeBowl, FumeMark, FumeScene, FumeSketch, VesselMask};
+use delphi_dash::{FumeBowl, FumeMark, FumeScene, FumeSketch, VesselMask};
 
 pub struct FumeFilm {
     width: u32,
