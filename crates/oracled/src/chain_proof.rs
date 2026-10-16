@@ -131,11 +131,13 @@ mod tests {
     }
 
     #[test]
-    fn a_page_from_below_the_tip_replaces_the_headers_above_its_parent() {
+    fn a_page_from_below_the_tip_without_more_work_is_refused() {
         let mut proof = ChainProof::new(Network::Mainnet).expect("mainnet");
         proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).expect("block 1");
 
-        assert!(proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).is_ok());
+        let same_work = proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]);
+
+        assert!(same_work.is_err_and(|reason| reason.contains("InsufficientChainWork")));
         assert!(proof.admit(BlockHeight::new(1), &[ProofFixture::forged()]).is_err());
         assert!(proof.admit(BlockHeight::new(2), &[ProofFixture::block_1()]).is_err());
     }
