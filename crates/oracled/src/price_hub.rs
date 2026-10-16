@@ -6,7 +6,7 @@ use delphi_oracle::PriceBand;
 
 use crate::pending_audits::{PendingAudit, PendingAudits};
 use crate::{
-    Anchor, AuditLedger, AuditRecord, AuditStatus, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
+    Anchor, AuditLedger, AuditRecord, AuditStatus, EstimateJob, EstimateResult, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
     NoteSink, Outcome, RecentBlocks, RelayPublisher, TransactionNote, TransactionStream,
 };
 
@@ -200,7 +200,19 @@ impl<S: NoteSink> PriceHub<S> {
 
     /// Stream the mempool price and fit once the interval has passed and an
     /// anchor exists, and the chain fits and status once `repeat` has passed.
+    /// The estimate runs on this thread.
     pub fn tick(&mut self, now: Instant) -> Vec<(String, Outcome)> {
+        let (mut outcomes, job) = self.tick_deferred(now);
+        if let Some(job) = job {
+            let result = self.window.run(job);
+            outcomes.extend(self.publish_estimate(result));
+        }
+        outcomes
+    }
+
+    /// [`Self::tick`], handing the mempool estimate back as a job for
+    /// another thread instead of running it.
+    pub fn tick_deferred(&mut self, now: Instant) -> (Vec<(String, Outcome)>, Option<EstimateJob>) {
         let mut outcomes = Vec::new();
         if self
             .last_repeat
@@ -217,16 +229,29 @@ impl<S: NoteSink> PriceHub<S> {
             .last_tick
             .is_some_and(|last| now.saturating_duration_since(last) < self.interval)
         {
-            return outcomes;
+            return (outcomes, None);
         }
         self.last_tick = Some(now);
-        let Some(band) = self.band() else {
-            return outcomes;
-        };
-        if let Some(update) = self.window.update(band) {
+        (outcomes, self.estimate_job())
+    }
+
+    /// A copy of the mempool sample to price, once an anchor bounds it.
+    #[must_use]
+    pub fn estimate_job(&self) -> Option<EstimateJob> {
+        self.window.job(self.band()?, self.tip)
+    }
+
+    /// Publish an estimate computed for the current tip; one computed before
+    /// the tip moved is dropped.
+    pub fn publish_estimate(&mut self, result: EstimateResult) -> Vec<(String, Outcome)> {
+        if result.tip != self.tip {
+            return Vec::new();
+        }
+        let mut outcomes = Vec::new();
+        if let Some(update) = result.update {
             let update = update.with_anchor_age(self.anchor_age());
             outcomes.push(self.offer(&update));
-            if let Some(fit) = self.window.fit(band) {
+            if let Some(fit) = result.fit {
                 outcomes.push(self.offer(&fit));
             }
         }
@@ -504,6 +529,26 @@ mod tests {
             .find(|note| note.tags.find_tags_ref("w") == ["mempool"])
             .expect("note");
         assert!(note.content.contains("\"band_low\""));
+    }
+
+    #[test]
+    fn a_deferred_estimate_is_published_for_its_tip_and_dropped_after_a_new_block() {
+        let mut hub = HubFixture::hub();
+        let start = Instant::now();
+        hub.apply_chain(&HubFixture::snapshot(81_000.0, 100, &[]));
+        HubFixture::fill(&mut hub, 300, 80_000.0);
+        let (_, job) = hub.tick_deferred(start);
+        let job = job.expect("job");
+        let stale = job.clone();
+        let estimator = MempoolEstimator::new(200, 10);
+        let result = job.run(&estimator, &mut crate::BootstrapRng::seeded(1));
+
+        let published: Vec<String> = hub.publish_estimate(result).into_iter().map(|(window, _)| window).collect();
+        assert_eq!(published, vec!["mempool", "fit-mempool"]);
+
+        hub.apply_chain(&HubFixture::snapshot(81_000.0, 101, &[]));
+        let late = stale.run(&estimator, &mut crate::BootstrapRng::seeded(1));
+        assert!(hub.publish_estimate(late).is_empty());
     }
 
     #[test]

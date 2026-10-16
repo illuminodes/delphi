@@ -3,7 +3,7 @@ use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::tx::Transaction;
 use delphi_oracle::{MempoolCollector, PriceBand, RoughPriceEstimator, TransactionVerdict};
 
-use crate::{BootstrapRng, FitUpdate, MempoolEstimator, PriceUpdate};
+use crate::{BootstrapRng, EstimateJob, EstimateResult, FitUpdate, MempoolEstimator, PriceUpdate};
 
 /// Unconfirmed transactions seen since the last confirmed block.
 ///
@@ -52,6 +52,33 @@ impl MempoolWindow {
         self.collector.admitted_transactions()
     }
 
+    #[must_use]
+    pub const fn estimator(&self) -> MempoolEstimator {
+        self.estimator
+    }
+
+    /// A copy of the sample to price inside `band`, or `None` while it is
+    /// thinner than the estimator's minimum.
+    #[must_use]
+    pub fn job(&self, band: PriceBand, tip: Option<BlockHeight>) -> Option<EstimateJob> {
+        let sample = self.collector.sample();
+        if sample.len() < self.estimator.min_outputs() {
+            return None;
+        }
+        Some(EstimateJob {
+            name: self.name.clone(),
+            sample: sample.clone(),
+            admitted_transactions: self.collector.admitted_transactions(),
+            band,
+            tip,
+        })
+    }
+
+    /// Run `job` here, on this window's own generator.
+    pub fn run(&mut self, job: EstimateJob) -> EstimateResult {
+        job.run(&self.estimator, &mut self.rng)
+    }
+
     /// The evidence behind the window's price inside `band`, under the same
     /// minimum sample size as [`Self::update`].
     #[must_use]
@@ -67,17 +94,8 @@ impl MempoolWindow {
     /// The window's current price inside `band`, or `None` while the sample
     /// is thin or no price falls inside the band.
     pub fn update(&mut self, band: PriceBand) -> Option<PriceUpdate> {
-        let estimate = self
-            .estimator
-            .estimate(self.collector.sample(), band, &mut self.rng)?;
-        Some(PriceUpdate::new(
-            self.name.clone(),
-            estimate.price,
-            estimate.outputs,
-            usize::try_from(self.collector.admitted_transactions()).unwrap_or(usize::MAX),
-            estimate.band_low,
-            estimate.band_high,
-        ))
+        let job = self.job(band, None)?;
+        self.run(job).update
     }
 }
 
@@ -122,6 +140,7 @@ mod tests {
 
         assert!(window.outputs() < 200);
         assert!(window.update(band()).is_none());
+        assert!(window.job(band(), None).is_none());
     }
 
     #[test]
@@ -137,6 +156,21 @@ mod tests {
         assert_eq!(update.transactions() as u64, window.admitted_transactions());
         assert!(band_low <= update.price() + 1.0 && update.price() <= band_high + 1.0);
         assert!(update.is_publishable());
+    }
+
+    #[test]
+    fn a_job_run_elsewhere_carries_its_tip_and_the_same_fit() {
+        let mut window = window();
+        PoolFixture::fill(&mut window, 300, 80_000.0);
+        let job = window.job(band(), Some(BlockHeight::new(7))).expect("job");
+        let estimator = window.estimator();
+
+        let result = job.run(&estimator, &mut crate::BootstrapRng::seeded(5));
+
+        assert_eq!(result.tip, Some(BlockHeight::new(7)));
+        assert!(result.update.is_some());
+        let fit = result.fit.expect("fit");
+        assert_eq!(fit.fit().report, window.fit(band()).expect("fit").fit().report);
     }
 
     #[test]

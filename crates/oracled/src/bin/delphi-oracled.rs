@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use mantle::network::Network;
 use delphi_oracle::PeerSources;
 use delphi_oracled::{
-    AckLogger, AuditLedger, ChainSync, ChainSyncSpec, ChainWorker, Daemon, DaemonConfig, EventBus, KeySource, LogFile,
+    AckLogger, AuditLedger, ChainSync, ChainSyncSpec, ChainWorker, Daemon, DaemonConfig, EstimatorWorker, EventBus,
+    KeySource, LogFile,
     MempoolEstimator, MempoolWindow, MempoolWorker, NoteSink, PriceHub, PriceSigner, RelayConnector, RelayPublisher,
     StdoutSink, Ticker, TransactionStream,
 };
@@ -23,6 +24,7 @@ impl OracleDaemonApp {
     const LEDGER_FILE: &'static str = "audit.ledger";
     const DRY_LEDGER_FILE: &'static str = "audit-dry.ledger";
     const RETIRED_MARKER: &'static str = "addressable.retired";
+    const ESTIMATOR_SEED: u64 = 0x6d65_6d70;
 
     fn execute() -> ExitCode {
         let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -114,7 +116,7 @@ impl OracleDaemonApp {
             "mempool",
             mantle::difficulty::BlockHeight::new(0),
             MempoolEstimator::new(self.config.min_outputs, self.config.draws),
-            0x6d65_6d70,
+            Self::ESTIMATOR_SEED,
         );
         let hub = PriceHub::new(
             publisher,
@@ -143,14 +145,19 @@ impl OracleDaemonApp {
                 .map_err(|error| format!("spawn chain worker: {error}"))?
         };
         let mempool = {
-            let worker = MempoolWorker::new(peers, self.config.mempool_peers, Arc::clone(&stop), sender);
+            let worker = MempoolWorker::new(peers, self.config.mempool_peers, Arc::clone(&stop), sender.clone());
             thread::Builder::new()
                 .name("mempool".into())
                 .spawn(move || worker.run())
                 .map_err(|error| format!("spawn mempool worker: {error}"))?
         };
 
-        let mut daemon = Daemon::new(hub);
+        let estimator = EstimatorWorker::spawn(
+            MempoolEstimator::new(self.config.min_outputs, self.config.draws),
+            Self::ESTIMATOR_SEED,
+            sender,
+        )?;
+        let mut daemon = Daemon::new(hub).with_estimator(estimator);
         let retired_marker = self.config.data_dir.join(Self::RETIRED_MARKER);
         if !retired_marker.exists() {
             daemon.retire_addressable();
@@ -174,6 +181,7 @@ impl OracleDaemonApp {
             let _ = reader.join();
         }
         eprintln!("{} audit notes still awaiting a relay ack", daemon.hub().pending_audits());
+        eprintln!("{} mempool checks skipped while the estimator was busy", daemon.estimates_skipped());
         let tally = daemon.hub().publisher().tally();
         eprintln!(
             "stopped: {} audit, {} live, {} transaction, {} other, {} rejected, {} undelivered",

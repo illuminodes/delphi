@@ -1,10 +1,15 @@
 use std::time::{Duration, Instant};
 
-use crate::{ChainSnapshot, Event, EventReceiver, NoteClass, NoteSink, Outcome, PriceHub};
+use crate::{ChainSnapshot, EstimatorHandle, Event, EventReceiver, NoteClass, NoteSink, Outcome, PriceHub};
 
 /// Owns the price hub and drives it from the worker threads' events.
+///
+/// With an estimator attached, each mempool bootstrap runs on its thread and
+/// its result arrives as an event; without one it runs on the hub thread.
 pub struct Daemon<S: NoteSink> {
     hub: PriceHub<S>,
+    estimator: Option<EstimatorHandle>,
+    estimates_skipped: u64,
 }
 
 impl<S: NoteSink> Daemon<S> {
@@ -13,7 +18,23 @@ impl<S: NoteSink> Daemon<S> {
 
     #[must_use]
     pub const fn new(hub: PriceHub<S>) -> Self {
-        Self { hub }
+        Self {
+            hub,
+            estimator: None,
+            estimates_skipped: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn with_estimator(mut self, estimator: EstimatorHandle) -> Self {
+        self.estimator = Some(estimator);
+        self
+    }
+
+    /// Mempool checks skipped because the estimator was still busy.
+    #[must_use]
+    pub const fn estimates_skipped(&self) -> u64 {
+        self.estimates_skipped
     }
 
     #[must_use]
@@ -21,16 +42,23 @@ impl<S: NoteSink> Daemon<S> {
         &self.hub
     }
 
-    /// Handle events until a [`Event::Stop`] arrives or every sender is gone.
+    /// Handle events until a [`Event::Stop`] arrives or every sender is gone,
+    /// then stop the estimator. An attached estimator holds a sender of its
+    /// own, so with one attached only [`Event::Stop`] ends the loop.
     pub fn run(&mut self, events: &mut EventReceiver) {
+        self.drive(events);
+        if let Some(estimator) = &mut self.estimator {
+            estimator.stop();
+        }
+    }
+
+    fn drive(&mut self, events: &mut EventReceiver) {
         let mut reported_drops = 0;
         while let Some(event) = events.recv() {
             match event {
                 Event::Stop => return,
                 Event::Tick(now) => {
-                    for (window, outcome) in self.hub.tick(now) {
-                        Self::report(&window, &outcome);
-                    }
+                    self.tick(now);
                     let dropped = events.dropped();
                     if dropped >= reported_drops + 1_000 {
                         eprintln!("{dropped} mempool transactions dropped while the hub was busy");
@@ -48,8 +76,31 @@ impl<S: NoteSink> Daemon<S> {
         Self::report(&window, &outcome);
     }
 
+    fn tick(&mut self, now: Instant) {
+        let Some(estimator) = &self.estimator else {
+            for (window, outcome) in self.hub.tick(now) {
+                Self::report(&window, &outcome);
+            }
+            return;
+        };
+        let (outcomes, job) = self.hub.tick_deferred(now);
+        if let Some(job) = job
+            && !estimator.submit(job)
+        {
+            self.estimates_skipped += 1;
+        }
+        for (window, outcome) in outcomes {
+            Self::report(&window, &outcome);
+        }
+    }
+
     fn handle(&mut self, event: Event) {
         match event {
+            Event::Estimate(result) => {
+                for (window, outcome) in self.hub.publish_estimate(*result) {
+                    Self::report(&window, &outcome);
+                }
+            }
             Event::Chain(snapshot) => self.apply(&snapshot),
             Event::Transaction(transaction, at) => {
                 if let Some((window, outcome)) = self.hub.absorb(&transaction, at, Instant::now()) {
@@ -110,11 +161,17 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         notes: RefCell<Vec<NostrNote>>,
+        stop_after_fit: Option<crate::EventSender>,
     }
 
     impl NoteSink for RecordingSink {
         fn deliver(&self, note: &NostrNote) -> Result<(), String> {
             self.notes.borrow_mut().push(note.clone());
+            if let Some(stop) = &self.stop_after_fit
+                && note.tags.find_tags_ref("w") == ["fit-mempool"]
+            {
+                stop.send(Event::Stop);
+            }
             Ok(())
         }
     }
@@ -123,7 +180,11 @@ mod tests {
 
     impl DaemonFixture {
         fn daemon(interval: Duration) -> Daemon<RecordingSink> {
-            let publisher = RelayPublisher::new(RecordingSink::default(), PriceSigner::generate());
+            Self::daemon_with(interval, RecordingSink::default())
+        }
+
+        fn daemon_with(interval: Duration, sink: RecordingSink) -> Daemon<RecordingSink> {
+            let publisher = RelayPublisher::new(sink, PriceSigner::generate());
             let window = MempoolWindow::new(
                 "mempool",
                 BlockHeight::new(0),
@@ -191,6 +252,31 @@ mod tests {
 
         assert!(windows.contains(&"chain-1h".to_string()), "{windows:?}");
         assert!(windows.contains(&"mempool".to_string()), "{windows:?}");
+    }
+
+    #[test]
+    fn with_an_estimator_the_mempool_price_comes_back_as_an_event() {
+        let (sender, mut receiver) = EventBus::open(1_024);
+        let estimator =
+            crate::EstimatorWorker::spawn(MempoolEstimator::new(200, 10), 3, sender.clone()).expect("spawn");
+        let sink = RecordingSink {
+            stop_after_fit: Some(sender.clone()),
+            ..RecordingSink::default()
+        };
+        let mut daemon = DaemonFixture::daemon_with(Duration::from_millis(600), sink).with_estimator(estimator);
+        assert!(sender.send(DaemonFixture::chain_event(81_000.0, 100)));
+        let mut market = SyntheticMarket::new(80_000.0, 5);
+        for _ in 0..300 {
+            assert!(sender.send(Event::Transaction(market.transaction(), BlockTime::new(1))));
+        }
+        assert!(sender.send(Event::Tick(Instant::now())));
+        drop(sender);
+
+        daemon.run(&mut receiver);
+        let windows = DaemonFixture::windows(&daemon);
+
+        assert!(windows.contains(&"mempool".to_string()), "{windows:?}");
+        assert!(windows.contains(&"fit-mempool".to_string()), "{windows:?}");
     }
 
     #[test]

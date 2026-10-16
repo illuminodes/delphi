@@ -37,7 +37,7 @@ impl Default for DaemonConfig {
             peers: Vec::new(),
             tolerance: 0.15,
             min_outputs: 200,
-            draws: 30,
+            draws: 100,
             mempool_peers: 8,
             history_blocks: 1_008,
             cache_limit_bytes: 1_000_000_000,
@@ -68,7 +68,7 @@ impl DaemonConfig {
         --peer ADDR          bitcoin peer ip:port, repeatable (default DNS seeds)\n\
         --tolerance F        mempool anchor band around the hourly chain price (default 0.15)\n\
         --min-outputs N      smallest mempool sample that is priced (default 200)\n\
-        --draws N            bootstrap resamples per mempool price (default 30)\n\
+        --draws N            bootstrap resamples per mempool price (default 100)\n\
         --mempool-peers N    peers to watch for unconfirmed transactions (default 8)\n\
         --history-blocks N   blocks of history to keep, which sets how far back each\n\
         \x20                    timeline reaches (default 1008, seven days)\n\
