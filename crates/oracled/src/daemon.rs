@@ -147,7 +147,7 @@ mod tests {
             };
             Event::Chain(ChainSnapshot {
                 tip: BlockHeight::new(tip),
-                anchor: Some(price),
+                anchor: crate::Anchor::checked(price, None, BlockHeight::new(tip)),
                 audits: vec![AuditRecord::new(
                     ChainWindow::Hourly,
                     report,

@@ -1,7 +1,7 @@
 use mantle::difficulty::BlockHeight;
 use delphi_oracle::RoughPriceEstimator;
 
-use crate::{AuditRecord, BlockRecord, ChainWindow, FitUpdate, RecentBlocks, RecordLog};
+use crate::{Anchor, AuditRecord, BlockRecord, ChainWindow, FitUpdate, RecentBlocks, RecordLog};
 
 /// Prices chain windows out of the record log.
 #[derive(Debug, Clone, Copy, Default)]
@@ -12,7 +12,7 @@ pub struct ChainPricer;
 pub struct ChainSnapshot {
     pub tip: BlockHeight,
     /// The hourly price at the tip, which anchors the mempool estimate.
-    pub anchor: Option<f64>,
+    pub anchor: Option<Anchor>,
     /// Audit records not yet published, newest first.
     pub audits: Vec<AuditRecord>,
     /// The evidence behind each window's price at the tip.
@@ -42,10 +42,17 @@ impl ChainPricer {
         Some(AuditRecord::new(window, report, stop.hash()))
     }
 
+    /// The hourly price at the tip, when the daily price, if the log holds
+    /// a day, agrees with it.
     #[must_use]
-    pub fn anchor(&self, log: &RecordLog) -> Option<f64> {
-        let report = log.sample(ChainWindow::Hourly.blocks())?.price().ok()?;
-        Some(report.central_price)
+    pub fn anchor(&self, log: &RecordLog) -> Option<Anchor> {
+        let tip = log.tip().map(BlockRecord::height)?;
+        let hourly = log.sample(ChainWindow::Hourly.blocks())?.price().ok()?.central_price;
+        let daily = log
+            .sample(ChainWindow::Daily.blocks())
+            .and_then(|sample| sample.price().ok())
+            .map(|report| report.central_price);
+        Anchor::checked(hourly, daily, tip)
     }
 
     /// The evidence behind every window's price at the tip.
@@ -154,7 +161,8 @@ mod tests {
             .audit(&log, ChainWindow::Hourly, BlockHeight::new(12))
             .expect("audit");
 
-        assert_eq!(pricer.anchor(&log), Some(at_tip.price()));
+        assert_eq!(pricer.anchor(&log).map(|anchor| anchor.price), Some(at_tip.price()));
+        assert_eq!(pricer.anchor(&log).map(|anchor| anchor.height), Some(BlockHeight::new(12)));
         let empty = LogFixture::new("anchor-empty");
         assert!(pricer.anchor(&empty.log_with(0, 0, 1.0)).is_none());
     }

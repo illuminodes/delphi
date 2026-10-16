@@ -148,7 +148,7 @@ impl ChainPass {
             anchor,
             audits,
             fits: if moved { self.pricer.fits(log) } else { Vec::new() },
-            blocks: self.sync.recent().measured(anchor),
+            blocks: self.sync.recent().measured(anchor.map(|anchor| anchor.price)),
         })
     }
 

@@ -9,6 +9,7 @@ pub struct PriceUpdate {
     transactions: usize,
     band_low: f64,
     band_high: f64,
+    anchor_age: Option<u32>,
 }
 
 impl PriceUpdate {
@@ -30,7 +31,15 @@ impl PriceUpdate {
             transactions,
             band_low,
             band_high,
+            anchor_age: None,
         }
+    }
+
+    /// Record how many blocks old the anchor that bounded this price was.
+    #[must_use]
+    pub const fn with_anchor_age(mut self, age: Option<u32>) -> Self {
+        self.anchor_age = age;
+        self
     }
 
     #[must_use]
@@ -83,6 +92,10 @@ impl NotePayload for PriceUpdate {
         object.count("transactions", self.transactions);
         object.fixed("band_low", self.band_low, 2);
         object.fixed("band_high", self.band_high, 2);
+        match self.anchor_age {
+            Some(age) => object.count("anchor_age_blocks", age as usize),
+            None => object.raw("anchor_age_blocks", "null"),
+        }
         object.finish()
     }
 }
@@ -113,6 +126,14 @@ mod tests {
         assert_eq!(json["transactions"], 206);
         assert_eq!(json["band_low"], 76_500.0);
         assert_eq!(json["band_high"], 77_400.0);
+    }
+
+    #[test]
+    fn the_anchor_age_is_carried_when_known() {
+        let aged = UpdateFixture::mempool(1.0, 2.0).with_anchor_age(Some(3));
+
+        assert_eq!(UpdateFixture::parse(&aged)["anchor_age_blocks"], 3);
+        assert!(UpdateFixture::parse(&UpdateFixture::mempool(1.0, 2.0))["anchor_age_blocks"].is_null());
     }
 
     #[test]

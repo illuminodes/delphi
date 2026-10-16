@@ -11,6 +11,8 @@ use crate::{JsonObject, NoteClass, NotePayload};
 pub struct DaemonStatus {
     pub tip: Option<BlockHeight>,
     pub anchor: Option<f64>,
+    /// Blocks between the anchor's block and the tip.
+    pub anchor_age: Option<u32>,
     pub band: Option<PriceBand>,
     pub mempool_outputs: usize,
     pub mempool_transactions: u64,
@@ -53,6 +55,10 @@ impl NotePayload for DaemonStatus {
             None => object.raw("tip", "null"),
         }
         object.fixed("anchor", self.anchor.unwrap_or(f64::NAN), 2);
+        match self.anchor_age {
+            Some(age) => object.count("anchor_age_blocks", age as usize),
+            None => object.raw("anchor_age_blocks", "null"),
+        }
         object.fixed("band_low", self.band.map_or(f64::NAN, PriceBand::low), 2);
         object.fixed("band_high", self.band.map_or(f64::NAN, PriceBand::high), 2);
         object.count("mempool_outputs", self.mempool_outputs);
@@ -80,6 +86,7 @@ mod tests {
         let status = DaemonStatus {
             tip: Some(BlockHeight::new(970_000)),
             anchor: Some(80_000.0),
+            anchor_age: Some(2),
             band: PriceBand::around(80_000.0, 0.15),
             mempool_outputs: 812,
             mempool_transactions: 400,
@@ -92,6 +99,7 @@ mod tests {
 
         assert_eq!(json["tip"], 970_000);
         assert_eq!(json["anchor"], 80_000.0);
+        assert_eq!(json["anchor_age_blocks"], 2);
         assert_eq!(json["mempool_outputs"], 812);
         assert_eq!(json["audits_published"], 12);
         assert_eq!(json["transaction_notes"], 30);
@@ -106,6 +114,7 @@ mod tests {
         let status = DaemonStatus {
             tip: None,
             anchor: None,
+            anchor_age: None,
             band: None,
             mempool_outputs: 0,
             mempool_transactions: 0,
@@ -118,6 +127,7 @@ mod tests {
 
         assert!(json["tip"].is_null());
         assert!(json["anchor"].is_null());
+        assert!(json["anchor_age_blocks"].is_null());
         assert!(status.is_publishable());
     }
 }

@@ -7,7 +7,7 @@ use delphi_oracle::PriceBand;
 
 use crate::pending_audits::{PendingAudit, PendingAudits};
 use crate::{
-    AuditLedger, AuditRecord, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
+    Anchor, AuditLedger, AuditRecord, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
     NoteSink, Outcome, RecentBlocks, RelayPublisher, TransactionNote, TransactionStream,
 };
 
@@ -29,7 +29,7 @@ pub struct PriceHub<S: NoteSink> {
     interval: Duration,
     repeat: Duration,
     started: Instant,
-    anchor: Option<f64>,
+    anchor: Option<Anchor>,
     tip: Option<BlockHeight>,
     chain_fits: Vec<FitUpdate>,
     blocks: RecentBlocks,
@@ -109,7 +109,10 @@ impl<S: NoteSink> PriceHub<S> {
     /// Publish the snapshot's audit records and fits, and restart the mempool
     /// window if the tip is not the one it was counting from.
     pub fn apply_chain(&mut self, snapshot: &ChainSnapshot) -> Vec<(String, Outcome)> {
-        self.anchor = snapshot.anchor.or(self.anchor);
+        self.anchor = snapshot
+            .anchor
+            .or(self.anchor)
+            .filter(|anchor| anchor.is_fresh_at(snapshot.tip));
         let mut outcomes: Vec<(String, Outcome)> =
             snapshot.audits.iter().map(|record| self.audit(record)).collect();
         if self.tip != Some(snapshot.tip) {
@@ -188,7 +191,7 @@ impl<S: NoteSink> PriceHub<S> {
         if !self.stream.admit(now) {
             return None;
         }
-        let note = TransactionNote::new(transaction, at, verdict, admitted, self.anchor);
+        let note = TransactionNote::new(transaction, at, verdict, admitted, self.anchor_price());
         Some(self.offer(&note))
     }
 
@@ -218,6 +221,7 @@ impl<S: NoteSink> PriceHub<S> {
             return outcomes;
         };
         if let Some(update) = self.window.update(band) {
+            let update = update.with_anchor_age(self.anchor_age());
             outcomes.push(self.offer(&update));
             if let Some(fit) = self.window.fit(band) {
                 outcomes.push(self.offer(&fit));
@@ -227,15 +231,24 @@ impl<S: NoteSink> PriceHub<S> {
     }
 
     fn band(&self) -> Option<PriceBand> {
-        self.anchor
+        self.anchor_price()
             .and_then(|anchor| PriceBand::around(anchor, self.tolerance))
+    }
+
+    fn anchor_price(&self) -> Option<f64> {
+        self.anchor.map(|anchor| anchor.price)
+    }
+
+    fn anchor_age(&self) -> Option<u32> {
+        Some(self.anchor?.age(self.tip?))
     }
 
     #[must_use]
     pub fn status(&self, now: Instant) -> DaemonStatus {
         DaemonStatus {
             tip: self.tip,
-            anchor: self.anchor,
+            anchor: self.anchor_price(),
+            anchor_age: self.anchor_age(),
             band: self.band(),
             mempool_outputs: self.window.outputs(),
             mempool_transactions: self.window.admitted_transactions(),
@@ -247,8 +260,8 @@ impl<S: NoteSink> PriceHub<S> {
     }
 
     #[must_use]
-    pub const fn anchor(&self) -> Option<f64> {
-        self.anchor
+    pub fn anchor(&self) -> Option<f64> {
+        self.anchor_price()
     }
 
     #[must_use]
@@ -343,7 +356,7 @@ mod tests {
         fn snapshot(price: f64, tip: u32, windows: &[ChainWindow]) -> ChainSnapshot {
             ChainSnapshot {
                 tip: BlockHeight::new(tip),
-                anchor: Some(price),
+                anchor: crate::Anchor::checked(price, None, BlockHeight::new(tip)),
                 audits: windows.iter().map(|window| Self::audit(*window, price, tip)).collect(),
                 fits: Vec::new(),
                 blocks: RecentBlocks::default(),
@@ -563,6 +576,18 @@ mod tests {
         hub.apply_chain(&later);
 
         assert_eq!(hub.anchor(), Some(80_000.0));
+        assert_eq!(hub.status(Instant::now()).anchor_age, Some(1));
+    }
+
+    #[test]
+    fn an_anchor_not_refreshed_for_too_many_blocks_is_dropped() {
+        let mut hub = HubFixture::hub();
+        hub.apply_chain(&HubFixture::snapshot(80_000.0, 100, &[]));
+        let mut later = HubFixture::snapshot(90_000.0, 100 + crate::Anchor::MAX_AGE_BLOCKS + 1, &[]);
+        later.anchor = None;
+        hub.apply_chain(&later);
+
+        assert_eq!(hub.anchor(), None);
     }
 
     #[test]
