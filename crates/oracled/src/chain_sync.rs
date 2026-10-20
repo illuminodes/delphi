@@ -63,6 +63,10 @@ impl ChainSyncSpec {
 /// everything pricing needs from its block. A report with `caught_up` false
 /// asks for another pass. A feed whose thread has gone is started again on
 /// the next pass.
+///
+/// The verified header chain is kept between passes, so a pass checks only
+/// the headers that are new since the last one. A pass that fails starts the
+/// next one from genesis again.
 pub struct ChainSync {
     network: Network,
     peers: Vec<SocketAddrV4>,
@@ -72,12 +76,14 @@ pub struct ChainSync {
     log: RecordLog,
     recent: RecentBlocks,
     feed: Option<BlockFeed<ChainProof>>,
+    proof: Option<ChainProof>,
     _lock: DataDirLock,
 }
 
 impl ChainSync {
     pub const REORG_OVERLAP: u32 = 6;
     pub const BATCH_BLOCKS: usize = 200;
+    pub const BUFFERED_BLOCKS: usize = 16;
 
     /// Create `data_dir` if needed and take its lock.
     ///
@@ -112,6 +118,7 @@ impl ChainSync {
             log,
             recent: RecentBlocks::default(),
             feed: None,
+            proof: None,
             _lock: lock,
         })
     }
@@ -153,7 +160,7 @@ impl ChainSync {
                 network: self.network,
                 peers: self.peers.clone(),
                 cache_dir: self.data_dir.clone(),
-                buffered: Self::BATCH_BLOCKS,
+                buffered: Self::BUFFERED_BLOCKS,
             })
             .map_err(|error| format!("start block feed: {error}")),
         }
@@ -164,15 +171,33 @@ impl ChainSync {
         if purged_cache {
             feed.discard().map_err(|error| format!("purge block cache: {error}"))?;
         }
-        let (headers, proof) = feed
+        let admission = match self.proof.take() {
+            Some(proof) => proof,
+            None => ChainProof::new(self.network)?,
+        };
+        let (headers, mut proof) = feed
             .headers(HeaderRequest {
                 start: BlockHeight::new(1),
                 stop: BlockHeight::new(u32::MAX),
                 locator: self.network.genesis_hash(),
-                admission: ChainProof::new(self.network)?,
+                admission,
             })
             .map_err(|error| format!("synchronize headers: {error}"))?;
         proof.finish(&headers)?;
+        let report = self.record_span(feed, &proof, &headers, purged_cache);
+        if report.is_ok() {
+            self.proof = Some(proof);
+        }
+        report
+    }
+
+    fn record_span(
+        &mut self,
+        feed: &mut BlockFeed<ChainProof>,
+        proof: &ChainProof,
+        headers: &[(BlockHeight, BlockHeader)],
+        purged_cache: bool,
+    ) -> Result<SyncReport, String> {
         let (tip, tip_time) = headers
             .last()
             .map(|(height, header)| (*height, header.time()))
@@ -188,7 +213,7 @@ impl ChainSync {
             });
         };
         feed.request_blocks(BlocksRequest {
-            wanted: span.headers(&headers).to_vec(),
+            wanted: span.headers(headers).to_vec(),
             window: self.plan.batch(),
             discard_each_window: false,
             deliver: true,
@@ -198,8 +223,8 @@ impl ChainSync {
         loop {
             match feed.next_item() {
                 Some(FeedItem::Block(block)) => {
-                    let header = Self::header_at(&headers, block.height)?;
-                    self.record(&proof, header, &block)?;
+                    let header = Self::header_at(headers, block.height)?;
+                    self.record(proof, header, &block)?;
                     appended += 1;
                 }
                 Some(FeedItem::WindowDone { .. }) => {

@@ -20,12 +20,18 @@ impl ChainProof {
     }
 
     /// Confirm that `headers` is exactly the verified chain, passes the
-    /// checkpoint and carries the network's minimum work.
+    /// checkpoint and carries the network's minimum work. A proof kept from
+    /// an earlier pass that runs past `headers` is cut back to their tip.
     ///
     /// # Errors
     /// Returns a message if the chain stops short of the checkpoint or the
     /// minimum work, or the headers differ from what was admitted.
-    pub fn finish(&self, headers: &[(BlockHeight, BlockHeader)]) -> Result<(), String> {
+    pub fn finish(&mut self, headers: &[(BlockHeight, BlockHeader)]) -> Result<(), String> {
+        if let Some((tip, _)) = headers.last()
+            && *tip < self.chain.tip_height()
+        {
+            self.chain.truncate(*tip);
+        }
         if !self.chain.reached_checkpoint() {
             return Err(format!(
                 "header chain ends at {} before checkpoint {:?}",
@@ -69,8 +75,28 @@ impl ChainProof {
     }
 }
 
+impl ChainProof {
+    /// How many of `headers`, placed from `first`, the chain already holds.
+    fn held_prefix(&self, first: BlockHeight, headers: &[BlockHeader]) -> usize {
+        headers
+            .iter()
+            .zip(first.to_u32()..)
+            .take_while(|(header, height)| self.chain.header_at(BlockHeight::new(*height)) == Some(*header))
+            .count()
+    }
+}
+
+/// Headers the chain already holds at their heights are taken as they are,
+/// so a proof kept across passes accepts the cached file again without
+/// re-checking it; the rest is admitted from the first difference.
 impl HeaderAdmission for ChainProof {
     fn admit(&mut self, first: BlockHeight, headers: &[BlockHeader]) -> Result<(), String> {
+        let held = self.held_prefix(first, headers);
+        if held == headers.len() {
+            return Ok(());
+        }
+        let first = BlockHeight::new(first.to_u32() + u32::try_from(held).unwrap_or(u32::MAX));
+        let headers = &headers[held..];
         self.chain
             .replace_from(first, headers, &SystemClock)
             .map_err(|(index, error)| match first.to_u32().checked_add(u32::try_from(index).unwrap_or(u32::MAX)) {
@@ -117,7 +143,7 @@ mod tests {
 
     #[test]
     fn refuses_a_chain_below_its_checkpoint() {
-        let proof = ChainProof::new(Network::Mainnet).expect("mainnet");
+        let mut proof = ChainProof::new(Network::Mainnet).expect("mainnet");
         assert!(proof.finish(&[]).is_err());
     }
 
@@ -142,9 +168,6 @@ mod tests {
         let mut proof = ChainProof::new(Network::Mainnet).expect("mainnet");
         proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).expect("block 1");
 
-        let same_work = proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]);
-
-        assert!(same_work.is_err_and(|reason| reason.contains("InsufficientChainWork")));
         assert!(proof.admit(BlockHeight::new(1), &[ProofFixture::forged()]).is_err());
         assert!(proof.admit(BlockHeight::new(2), &[ProofFixture::block_1()]).is_err());
     }
@@ -155,5 +178,15 @@ mod tests {
         proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).expect("block 1");
 
         assert!(proof.finish(&[(BlockHeight::new(1), ProofFixture::block_1())]).is_err());
+    }
+
+    #[test]
+    fn headers_already_held_are_taken_again_without_a_recheck() {
+        let mut proof = ChainProof::new(Network::Mainnet).expect("mainnet");
+        proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).expect("block 1");
+
+        assert!(proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).is_ok());
+        assert_eq!(proof.held_prefix(BlockHeight::new(1), &[ProofFixture::block_1()]), 1);
+        assert_eq!(proof.held_prefix(BlockHeight::new(1), &[ProofFixture::forged()]), 0);
     }
 }
