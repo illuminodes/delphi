@@ -44,35 +44,44 @@ impl ChainPricer {
         Some(AuditRecord::new(window, report, stop.hash()))
     }
 
-    /// The hourly price at the tip, when the daily price, if the log holds
-    /// a day, agrees with it.
+    /// The hourly price ending at `height`, when the daily price there, if
+    /// the log holds a day, agrees with it.
     #[must_use]
-    pub fn anchor(&self, log: &RecordLog) -> Option<Anchor> {
-        let tip = log.tip().map(BlockRecord::height)?;
-        let hourly = log.sample(ChainWindow::Hourly.blocks())?.price().ok()?.central_price;
+    pub fn anchor(&self, log: &RecordLog, height: BlockHeight) -> Option<Anchor> {
+        let newer = Self::newer_than(log, height)?;
+        let hourly = log
+            .sample_ending_before_tip(ChainWindow::Hourly.blocks(), newer)?
+            .price()
+            .ok()?
+            .central_price;
         let daily = log
-            .sample(ChainWindow::Daily.blocks())
+            .sample_ending_before_tip(ChainWindow::Daily.blocks(), newer)
             .and_then(|sample| sample.price().ok())
             .map(|report| report.central_price);
-        Anchor::checked(hourly, daily, tip)
+        Anchor::checked(hourly, daily, height)
     }
 
-    /// The evidence behind every window's price at the tip.
+    /// The evidence behind every window's price ending at `height`.
     #[must_use]
-    pub fn fits(&self, log: &RecordLog) -> Vec<FitUpdate> {
+    pub fn fits(&self, log: &RecordLog, height: BlockHeight) -> Vec<FitUpdate> {
         ChainWindow::ALL
             .into_iter()
-            .filter_map(|window| self.fit(log, window))
+            .filter_map(|window| self.fit(log, window, height))
             .collect()
     }
 
     #[must_use]
-    pub fn fit(&self, log: &RecordLog, window: ChainWindow) -> Option<FitUpdate> {
+    pub fn fit(&self, log: &RecordLog, window: ChainWindow, height: BlockHeight) -> Option<FitUpdate> {
         let fit = log
-            .sample(window.blocks())?
+            .sample_ending_before_tip(window.blocks(), Self::newer_than(log, height)?)?
             .fit(&RoughPriceEstimator::new(), None)
             .ok()?;
         Some(FitUpdate::new(window.tag(), "chain", fit))
+    }
+
+    fn newer_than(log: &RecordLog, height: BlockHeight) -> Option<usize> {
+        let tip = log.tip().map(BlockRecord::height)?.to_u32();
+        usize::try_from(tip.checked_sub(height.to_u32())?).ok()
     }
 }
 
@@ -163,17 +172,31 @@ mod tests {
             .audit(&log, ChainWindow::Hourly, BlockHeight::new(12))
             .expect("audit");
 
-        assert_eq!(pricer.anchor(&log).map(|anchor| anchor.price), Some(at_tip.price()));
-        assert_eq!(pricer.anchor(&log).map(|anchor| anchor.height), Some(BlockHeight::new(12)));
+        let tip = BlockHeight::new(12);
+        assert_eq!(pricer.anchor(&log, tip).map(|anchor| anchor.price), Some(at_tip.price()));
+        assert_eq!(pricer.anchor(&log, tip).map(|anchor| anchor.height), Some(tip));
         let empty = LogFixture::new("anchor-empty");
-        assert!(pricer.anchor(&empty.log_with(0, 0, 1.0)).is_none());
+        assert!(pricer.anchor(&empty.log_with(0, 0, 1.0), tip).is_none());
+    }
+
+    #[test]
+    fn an_anchor_below_the_tip_prices_the_window_ending_there() {
+        let fixture = LogFixture::new("anchor-settled");
+        let log = fixture.log_with(12, 400, 80_000.0);
+        let pricer = ChainPricer::new();
+        let settled = BlockHeight::new(9);
+        let audit = pricer.audit(&log, ChainWindow::Hourly, settled).expect("audit");
+
+        assert_eq!(pricer.anchor(&log, settled).map(|anchor| anchor.price), Some(audit.price()));
+        assert_eq!(pricer.anchor(&log, settled).map(|anchor| anchor.height), Some(settled));
+        assert!(pricer.anchor(&log, BlockHeight::new(13)).is_none());
     }
 
     #[test]
     fn each_window_the_log_can_fill_gets_a_fit() {
         let fixture = LogFixture::new("fits");
         let log = fixture.log_with(150, 60, 80_000.0);
-        let fits = ChainPricer::new().fits(&log);
+        let fits = ChainPricer::new().fits(&log, BlockHeight::new(150));
         let windows: Vec<&str> = fits.iter().map(NotePayload::window).collect();
 
         assert_eq!(windows, vec!["fit-chain-1h", "fit-chain-1d"]);

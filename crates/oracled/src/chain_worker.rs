@@ -13,9 +13,12 @@ use crate::{AuditBackfill, BlockRecord, ChainPricer, ChainSnapshot, ChainSync, C
 /// Follows the chain tip and reports what to publish after each pass.
 ///
 /// A snapshot is sent only once the record log is level with the chain tip,
-/// so a half-filled log never publishes old prices as current. Its audit
-/// records come newest first in batches of [`Self::AUDIT_BATCH`]; while a
-/// backlog remains the next batch follows after [`Self::BACKFILL_PAUSE`].
+/// so a half-filled log never publishes old prices as current. Prices come
+/// from the settled height, the newest block enough peers agree on, so a
+/// reorg near the tip never reaches a signed audit; the newest blocks are
+/// still streamed as they arrive. Audit records come newest first in batches
+/// of [`Self::AUDIT_BATCH`]; while a backlog remains the next batch follows
+/// after [`Self::BACKFILL_PAUSE`].
 pub struct ChainWorker {
     spec: ChainSyncSpec,
     published: HashSet<(ChainWindow, u32, Hash256)>,
@@ -30,6 +33,7 @@ struct ChainPass {
     stop: Arc<AtomicBool>,
     events: EventSender,
     priced_tip: Option<BlockHeight>,
+    settled: Option<BlockHeight>,
 }
 
 impl ChainWorker {
@@ -78,6 +82,7 @@ impl ChainWorker {
             stop,
             events,
             priced_tip: None,
+            settled: None,
         }
         .run();
     }
@@ -106,12 +111,16 @@ impl ChainPass {
     fn pass(&mut self) -> Result<Duration, String> {
         let report = self.sync.sync()?;
         let notice = format!(
-            "chain tip {} ({} blocks read, {} held, block cache {} MB)",
+            "chain tip {}, settled {} ({} blocks read, {} held, block cache {} MB)",
             report.tip,
+            report.settled.map_or_else(|| "nothing yet".to_string(), |height| height.to_string()),
             report.appended,
             self.sync.log().len(),
             self.sync.cache().bytes() / 1_000_000
         );
+        if report.settled.is_some() {
+            self.settled = report.settled;
+        }
         if !self.notice(notice) {
             return Ok(Duration::ZERO);
         }
@@ -142,25 +151,32 @@ impl ChainPass {
         })
     }
 
-    /// The next audit batch, with the tip's fits when the tip has moved.
-    /// `None` when there is nothing new to say.
+    /// The next audit batch up to the settled height, with the fits at that
+    /// height when the tip has moved. `None` when there is nothing new to
+    /// say. Before anything has settled, only the newest blocks go out.
     fn snapshot(&mut self, tip_time: BlockTime) -> Option<ChainSnapshot> {
         let log = self.sync.log();
         let tip = log.tip().map(BlockRecord::height)?;
         self.backfill.prune(log);
-        let audits = self.backfill.next_batch(log, ChainWorker::AUDIT_BATCH);
+        let audits = self.settled.map_or_else(Vec::new, |settled| {
+            self.backfill.next_batch(log, ChainWorker::AUDIT_BATCH, settled)
+        });
         let moved = self.priced_tip != Some(tip);
         if !moved && audits.is_empty() {
             return None;
         }
         self.priced_tip = Some(tip);
-        let anchor = self.pricer.anchor(log);
+        let anchor = self.settled.and_then(|settled| self.pricer.anchor(log, settled));
+        let fits = match self.settled {
+            Some(settled) if moved => self.pricer.fits(log, settled),
+            _ => Vec::new(),
+        };
         Some(ChainSnapshot {
             tip,
             tip_time,
             anchor,
             audits,
-            fits: if moved { self.pricer.fits(log) } else { Vec::new() },
+            fits,
             blocks: self.sync.recent().measured(anchor.map(|anchor| anchor.price)),
         })
     }

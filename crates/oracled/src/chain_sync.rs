@@ -6,11 +6,11 @@ use mantle::codec::Decode;
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::network::Network;
 use mantle::primitives::{Block, BlockHeader};
-use mantle_fetcher::{BlockFeed, BlocksRequest, FedBlock, FeedItem, FeedSpec, HeaderRequest};
+use mantle_fetcher::{BlockFeed, BlocksRequest, FedBlock, FeedItem, FeedSpec, HeaderRequest, SurveyRequest};
 use delphi_oracle::DataDirLock;
 
 use crate::chain_proof::ChainProof;
-use crate::{BlockCache, BlockDigest, BlockPlan, BlockRecord, HeaderTail, RecentBlocks, RecordLog};
+use crate::{BlockCache, BlockDigest, BlockPlan, BlockRecord, ChainQuorum, HeaderTail, RecentBlocks, RecordLog};
 
 /// What one synchronization pass did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,9 @@ pub struct SyncReport {
     pub appended: usize,
     pub purged_cache: bool,
     pub caught_up: bool,
+    /// The highest height enough peers agree on, at least
+    /// [`ChainQuorum::DEPTH`] below the tip; `None` while no height is.
+    pub settled: Option<BlockHeight>,
 }
 
 /// Where and how a [`ChainSync`] runs, without the fetcher it will own, and
@@ -82,6 +85,7 @@ pub struct ChainSync {
     proof: Option<ChainProof>,
     tail: HeaderTail,
     depth: u32,
+    quorum: ChainQuorum,
     _lock: DataDirLock,
 }
 
@@ -89,6 +93,7 @@ impl ChainSync {
     pub const REORG_OVERLAP: u32 = 6;
     pub const BATCH_BLOCKS: usize = 200;
     pub const BUFFERED_BLOCKS: usize = 16;
+    pub const SURVEY_SHOWN: usize = 64;
 
     /// Create `data_dir` if needed and take its lock.
     ///
@@ -122,6 +127,7 @@ impl ChainSync {
         Ok(Self {
             tail,
             proof,
+            quorum: ChainQuorum::new(ChainQuorum::DEPTH, ChainQuorum::GROUPS),
             depth: u32::try_from(depth).unwrap_or(u32::MAX).saturating_add(Self::REORG_OVERLAP),
             network,
             peers,
@@ -193,13 +199,42 @@ impl ChainSync {
             })
             .map_err(|error| format!("synchronize headers: {error}"))?;
         proof.finish(&headers)?;
-        let report = self.record_span(feed, &proof, &headers, purged_cache)?;
+        let mut report = self.record_span(feed, &proof, &headers, purged_cache)?;
+        if report.caught_up {
+            report.settled = self.settle(feed, &headers)?;
+        }
         proof.keep_newest(self.depth);
         self.tail
             .save(proof.chain())
             .map_err(|error| format!("save header tail: {error}"))?;
         self.proof = Some(proof);
         Ok(report)
+    }
+
+    /// Show the peers our chain up to [`ChainQuorum::lookback`] below the
+    /// tip, and settle the heights above that most of them answer with.
+    fn settle(
+        &self,
+        feed: &mut BlockFeed<ChainProof>,
+        headers: &[(BlockHeight, BlockHeader)],
+    ) -> Result<Option<BlockHeight>, String> {
+        let Some(&(tip, _)) = headers.last() else {
+            return Ok(None);
+        };
+        let shown_to = BlockHeight::new(tip.to_u32().saturating_sub(self.quorum.lookback()));
+        let end = headers.partition_point(|(height, _)| *height <= shown_to);
+        let shown = &headers[end.saturating_sub(Self::SURVEY_SHOWN)..end];
+        let Some(&(start, first)) = shown.first() else {
+            return Ok(None);
+        };
+        let pages = feed
+            .survey(SurveyRequest {
+                start,
+                base: first.prev_block(),
+                held: shown.to_vec(),
+            })
+            .map_err(|error| format!("survey peers: {error}"))?;
+        Ok(self.quorum.settled(headers, &pages))
     }
 
     /// The chain kept from the last pass, else the saved tail, else genesis.
@@ -236,6 +271,7 @@ impl ChainSync {
                 appended: 0,
                 purged_cache,
                 caught_up: true,
+                settled: None,
             });
         };
         feed.request_blocks(BlocksRequest {
@@ -261,7 +297,9 @@ impl ChainSync {
                 }
                 Some(FeedItem::Done) => break,
                 Some(FeedItem::Failed(message)) => return Err(format!("fetch blocks: {message}")),
-                Some(FeedItem::Headers(..)) => return Err("block feed sent headers mid-download".to_string()),
+                Some(FeedItem::Headers(..) | FeedItem::Survey(_)) => {
+                    return Err("block feed answered out of turn mid-download".to_string());
+                }
                 None => return Err("block feed thread has gone".to_string()),
             }
         }
@@ -271,6 +309,7 @@ impl ChainSync {
             appended,
             purged_cache,
             caught_up: self.log.tip().map(BlockRecord::height) == Some(tip),
+            settled: None,
         })
     }
 

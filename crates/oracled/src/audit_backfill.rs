@@ -25,12 +25,14 @@ impl AuditBackfill {
         }
     }
 
-    /// Up to `limit` records still to publish.
-    pub fn next_batch(&mut self, log: &RecordLog, limit: usize) -> Vec<AuditRecord> {
+    /// Up to `limit` records still to publish, stopping no higher than
+    /// `settled`: an audit is signed for good, so it waits until enough
+    /// peers agree on its block.
+    pub fn next_batch(&mut self, log: &RecordLog, limit: usize, settled: BlockHeight) -> Vec<AuditRecord> {
         let mut batch = Vec::new();
         let blocks: Vec<(BlockHeight, Hash256)> = log
             .records()
-            .filter(|record| !record.lacks_hash())
+            .filter(|record| !record.lacks_hash() && record.height() <= settled)
             .map(|record| (record.height(), record.hash()))
             .collect();
         for (height, hash) in blocks.into_iter().rev() {
@@ -63,6 +65,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use mantle::difficulty::BlockHeight;
     use mantle::hash::Hash256;
 
     use super::AuditBackfill;
@@ -74,6 +77,8 @@ mod tests {
     }
 
     impl BackfillFixture {
+        const ALL: BlockHeight = BlockHeight::new(u32::MAX);
+
         fn new(name: &str) -> Self {
             let dir = std::env::temp_dir().join(format!("oracled-backfill-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
@@ -107,12 +112,12 @@ mod tests {
         let log = fixture.log(9);
         let mut backfill = AuditBackfill::new(HashSet::new());
 
-        let first = backfill.next_batch(&log, 2);
-        let rest = backfill.next_batch(&log, 100);
+        let first = backfill.next_batch(&log, 2, BackfillFixture::ALL);
+        let rest = backfill.next_batch(&log, 100, BackfillFixture::ALL);
 
         assert_eq!(BackfillFixture::heights(&first), vec![9, 8]);
         assert_eq!(BackfillFixture::heights(&rest), vec![7, 6]);
-        assert!(backfill.next_batch(&log, 100).is_empty());
+        assert!(backfill.next_batch(&log, 100, BackfillFixture::ALL).is_empty());
     }
 
     #[test]
@@ -122,7 +127,17 @@ mod tests {
         let published = HashSet::from([(ChainWindow::Hourly, 8, Hash256::hash(&8_u32.to_le_bytes()))]);
         let mut backfill = AuditBackfill::new(published);
 
-        assert_eq!(BackfillFixture::heights(&backfill.next_batch(&log, 100)), vec![7, 6]);
+        assert_eq!(BackfillFixture::heights(&backfill.next_batch(&log, 100, BackfillFixture::ALL)), vec![7, 6]);
+    }
+
+    #[test]
+    fn nothing_above_the_settled_height_is_handed_out_until_it_settles() {
+        let fixture = BackfillFixture::new("settled");
+        let log = fixture.log(9);
+        let mut backfill = AuditBackfill::new(HashSet::new());
+
+        assert_eq!(BackfillFixture::heights(&backfill.next_batch(&log, 100, BlockHeight::new(7))), vec![7, 6]);
+        assert_eq!(BackfillFixture::heights(&backfill.next_batch(&log, 100, BlockHeight::new(9))), vec![9, 8]);
     }
 
     #[test]
@@ -132,6 +147,6 @@ mod tests {
         let published = HashSet::from([(ChainWindow::Hourly, 7, Hash256::hash(b"orphan"))]);
         let mut backfill = AuditBackfill::new(published);
 
-        assert_eq!(BackfillFixture::heights(&backfill.next_batch(&log, 1)), vec![7]);
+        assert_eq!(BackfillFixture::heights(&backfill.next_batch(&log, 1, BackfillFixture::ALL)), vec![7]);
     }
 }
