@@ -85,7 +85,7 @@ pub struct ChainSync {
 
 impl ChainSync {
     pub const REORG_OVERLAP: u32 = 6;
-    pub const BATCH_BLOCKS: usize = 200;
+    pub const BATCH_BLOCKS: usize = 32;
     pub const BUFFERED_BLOCKS: usize = 16;
     pub const SURVEY_SHOWN: usize = 64;
 
