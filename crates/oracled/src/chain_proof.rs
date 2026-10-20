@@ -1,11 +1,14 @@
 use mantle::network::Network;
-use mantle::primitives::{Block, BlockHeader, BlockHeight};
+use mantle::primitives::{Block, BlockHeader, BlockHeight, Hash256};
 use mantle_consensus::header_chain::HeaderChain;
 use mantle_consensus::validation::{SystemClock, WitnessCommitment, validate_block_structure};
 use mantle_fetcher::HeaderAdmission;
 
 /// The header chain a sync pass has verified, grown one fetched page at a
 /// time, and the check that a downloaded block belongs to it.
+///
+/// The chain may be a tail resumed from disk: headers are then requested
+/// from just above its base, whose hash is the locator.
 pub struct ChainProof {
     chain: HeaderChain,
 }
@@ -17,6 +20,35 @@ impl ChainProof {
         HeaderChain::for_network(network)
             .map(|chain| Self { chain })
             .ok_or_else(|| "network has no verifiable genesis header".to_string())
+    }
+
+    #[must_use]
+    pub const fn resumed(chain: HeaderChain) -> Self {
+        Self { chain }
+    }
+
+    #[must_use]
+    pub const fn chain(&self) -> &HeaderChain {
+        &self.chain
+    }
+
+    /// The first height to request headers from.
+    #[must_use]
+    pub fn start(&self) -> BlockHeight {
+        BlockHeight::new(self.chain.base().to_u32() + 1)
+    }
+
+    /// The hash of the header just below [`Self::start`].
+    #[must_use]
+    pub fn locator(&self) -> Hash256 {
+        self.chain.header_at(self.chain.base()).map_or(Hash256::ZERO, BlockHeader::hash)
+    }
+
+    /// Drop the headers no longer needed to verify the next ones or to
+    /// fetch the newest `depth` blocks.
+    pub fn keep_newest(&mut self, depth: u32) {
+        let tip = self.chain.tip_height().to_u32();
+        self.chain.forget_below(BlockHeight::new(tip.saturating_sub(depth)));
     }
 
     /// Confirm that `headers` is exactly the verified chain, passes the
@@ -46,7 +78,9 @@ impl ChainProof {
                 self.chain.minimum_work()
             ));
         }
-        let matches = headers.len() == usize::try_from(self.chain.tip_height().to_u32()).unwrap_or(0)
+        let held = self.chain.tip_height().to_u32() - self.chain.base().to_u32();
+        let matches = headers.len() == usize::try_from(held).unwrap_or(0)
+            && headers.first().is_none_or(|(height, _)| *height == self.start())
             && headers
                 .iter()
                 .all(|(height, header)| self.chain.header_at(*height) == Some(header));
@@ -178,6 +212,26 @@ mod tests {
         proof.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).expect("block 1");
 
         assert!(proof.finish(&[(BlockHeight::new(1), ProofFixture::block_1())]).is_err());
+    }
+
+    #[test]
+    fn a_resumed_tail_asks_from_above_its_base_and_finishes_on_its_own_headers() {
+        let mut whole = ChainProof::new(Network::Mainnet).expect("mainnet");
+        whole.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).expect("block 1");
+        let tail = mantle_consensus::header_chain::HeaderChain::tail_for_network(
+            Network::Mainnet,
+            BlockHeight::new(1),
+            whole.chain().tip_work(),
+            &[ProofFixture::block_1()],
+        )
+        .expect("tail");
+        let mut resumed = ChainProof::resumed(tail);
+
+        assert_eq!(resumed.start(), BlockHeight::new(2));
+        assert_eq!(resumed.locator(), ProofFixture::block_1().hash());
+        assert!(resumed.admit(BlockHeight::new(1), &[ProofFixture::block_1()]).is_ok());
+        let error = resumed.finish(&[]).expect_err("below the checkpoint");
+        assert!(error.contains("checkpoint"), "{error}");
     }
 
     #[test]

@@ -10,7 +10,7 @@ use mantle_fetcher::{BlockFeed, BlocksRequest, FedBlock, FeedItem, FeedSpec, Hea
 use delphi_oracle::DataDirLock;
 
 use crate::chain_proof::ChainProof;
-use crate::{BlockCache, BlockDigest, BlockPlan, BlockRecord, RecentBlocks, RecordLog};
+use crate::{BlockCache, BlockDigest, BlockPlan, BlockRecord, HeaderTail, RecentBlocks, RecordLog};
 
 /// What one synchronization pass did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,8 +65,11 @@ impl ChainSyncSpec {
 /// the next pass.
 ///
 /// The verified header chain is kept between passes, so a pass checks only
-/// the headers that are new since the last one. A pass that fails starts the
-/// next one from genesis again.
+/// the headers that are new since the last one, and only its newest headers
+/// are held: enough to fetch the history window and to verify what comes
+/// next. That tail is saved after every pass and resumed on the next start,
+/// so only a first start syncs headers from genesis. A pass that fails
+/// resumes the next one from the saved tail.
 pub struct ChainSync {
     network: Network,
     peers: Vec<SocketAddrV4>,
@@ -77,6 +80,8 @@ pub struct ChainSync {
     recent: RecentBlocks,
     feed: Option<BlockFeed<ChainProof>>,
     proof: Option<ChainProof>,
+    tail: HeaderTail,
+    depth: u32,
     _lock: DataDirLock,
 }
 
@@ -109,7 +114,15 @@ impl ChainSync {
         let data_dir = data_dir.into();
         let log = RecordLog::open(data_dir.join("records.log"), depth)
             .map_err(|error| format!("open record log: {error}"))?;
+        let tail = HeaderTail::new(&data_dir);
+        let proof = tail
+            .load(network)
+            .map_err(|error| format!("read header tail: {error}"))?
+            .map(ChainProof::resumed);
         Ok(Self {
+            tail,
+            proof,
+            depth: u32::try_from(depth).unwrap_or(u32::MAX).saturating_add(Self::REORG_OVERLAP),
             network,
             peers,
             plan: BlockPlan::new(depth, Self::REORG_OVERLAP, Self::BATCH_BLOCKS),
@@ -118,7 +131,6 @@ impl ChainSync {
             log,
             recent: RecentBlocks::default(),
             feed: None,
-            proof: None,
             _lock: lock,
         })
     }
@@ -171,24 +183,38 @@ impl ChainSync {
         if purged_cache {
             feed.discard().map_err(|error| format!("purge block cache: {error}"))?;
         }
-        let admission = match self.proof.take() {
-            Some(proof) => proof,
-            None => ChainProof::new(self.network)?,
-        };
+        let admission = self.resume()?;
         let (headers, mut proof) = feed
             .headers(HeaderRequest {
-                start: BlockHeight::new(1),
+                start: admission.start(),
                 stop: BlockHeight::new(u32::MAX),
-                locator: self.network.genesis_hash(),
+                locator: admission.locator(),
                 admission,
             })
             .map_err(|error| format!("synchronize headers: {error}"))?;
         proof.finish(&headers)?;
-        let report = self.record_span(feed, &proof, &headers, purged_cache);
-        if report.is_ok() {
-            self.proof = Some(proof);
+        let report = self.record_span(feed, &proof, &headers, purged_cache)?;
+        proof.keep_newest(self.depth);
+        self.tail
+            .save(proof.chain())
+            .map_err(|error| format!("save header tail: {error}"))?;
+        self.proof = Some(proof);
+        Ok(report)
+    }
+
+    /// The chain kept from the last pass, else the saved tail, else genesis.
+    fn resume(&mut self) -> Result<ChainProof, String> {
+        if let Some(proof) = self.proof.take() {
+            return Ok(proof);
         }
-        report
+        match self
+            .tail
+            .load(self.network)
+            .map_err(|error| format!("read header tail: {error}"))?
+        {
+            Some(chain) => Ok(ChainProof::resumed(chain)),
+            None => ChainProof::new(self.network),
+        }
     }
 
     fn record_span(
