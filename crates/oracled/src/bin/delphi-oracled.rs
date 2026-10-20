@@ -121,7 +121,6 @@ impl OracleDaemonApp {
             peers: peers.clone(),
             data_dir: self.config.data_dir.clone(),
             depth: self.config.history_blocks,
-            cache_limit_bytes: self.config.cache_limit_bytes,
             lock,
         };
         let ledger = self.ledger()?;

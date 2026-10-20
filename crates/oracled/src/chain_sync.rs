@@ -6,11 +6,15 @@ use mantle::codec::Decode;
 use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::network::Network;
 use mantle::primitives::{Block, BlockHeader};
-use mantle_fetcher::{BlockFeed, BlocksRequest, FedBlock, FeedItem, FeedSpec, HeaderRequest, SurveyRequest};
+use mantle_fetcher::{
+    BlockFeed, BlockStaging, BlocksRequest, FedBlock, FeedItem, FeedSpec, HeaderRequest, SurveyRequest,
+};
 use delphi_oracle::DataDirLock;
 
 use crate::chain_proof::ChainProof;
-use crate::{BlockCache, BlockDigest, BlockPlan, BlockRecord, ChainQuorum, HeaderTail, RecentBlocks, RecordLog};
+use crate::{
+    BlockDigest, BlockPlan, BlockRecord, ChainQuorum, HeaderTail, LegacyBlockFiles, RecentBlocks, RecordLog,
+};
 
 /// What one synchronization pass did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +23,6 @@ pub struct SyncReport {
     /// The tip header's timestamp.
     pub tip_time: BlockTime,
     pub appended: usize,
-    pub purged_cache: bool,
     pub caught_up: bool,
     /// The highest height enough peers agree on, at least
     /// [`ChainQuorum::DEPTH`] below the tip; `None` while no height is.
@@ -36,7 +39,6 @@ pub struct ChainSyncSpec {
     pub peers: Vec<SocketAddrV4>,
     pub data_dir: PathBuf,
     pub depth: usize,
-    pub cache_limit_bytes: u64,
     pub lock: DataDirLock,
 }
 
@@ -44,14 +46,7 @@ impl ChainSyncSpec {
     /// # Errors
     /// As [`ChainSync::open`].
     pub fn open(self) -> Result<ChainSync, String> {
-        ChainSync::open(
-            self.network,
-            self.peers,
-            self.data_dir,
-            self.depth,
-            self.cache_limit_bytes,
-            self.lock,
-        )
+        ChainSync::open(self.network, self.peers, self.data_dir, self.depth, self.lock)
     }
 }
 
@@ -61,11 +56,11 @@ impl ChainSyncSpec {
 /// sync, so its peers are reused pass after pass, and it downloads the next
 /// batch while this thread decodes, checks and records the current one. A
 /// pass brings headers and the missing blocks in and turns each block into a
-/// record. A pass stops asking for batches once the block files pass the
-/// cache limit, and the next pass discards them first, since a record holds
-/// everything pricing needs from its block. A report with `caught_up` false
-/// asks for another pass. A feed whose thread has gone is started again on
-/// the next pass.
+/// record. Blocks are held in memory only, one batch downloading and at most
+/// [`Self::BUFFERED_BLOCKS`] waiting, since a record holds everything
+/// pricing needs from its block; nothing but records and the header tail
+/// reaches the disk. A feed whose thread has gone is started again on the
+/// next pass.
 ///
 /// The verified header chain is kept between passes, so a pass checks only
 /// the headers that are new since the last one, and only its newest headers
@@ -78,7 +73,6 @@ pub struct ChainSync {
     peers: Vec<SocketAddrV4>,
     data_dir: PathBuf,
     plan: BlockPlan,
-    cache: BlockCache,
     log: RecordLog,
     recent: RecentBlocks,
     feed: Option<BlockFeed<ChainProof>>,
@@ -107,16 +101,21 @@ impl ChainSync {
     }
 
     /// # Errors
-    /// Returns a message if the record log cannot be opened.
+    /// Returns a message if the record log or header tail cannot be read,
+    /// or block files left by an earlier version cannot be removed.
     pub fn open(
         network: Network,
         peers: Vec<SocketAddrV4>,
         data_dir: impl Into<PathBuf>,
         depth: usize,
-        cache_limit_bytes: u64,
         lock: DataDirLock,
     ) -> Result<Self, String> {
         let data_dir = data_dir.into();
+        let freed = LegacyBlockFiles::remove(&data_dir)
+            .map_err(|error| format!("remove old block files: {error}"))?;
+        if freed > 0 {
+            eprintln!("removed {} MB of block files from an earlier version", freed / 1_000_000);
+        }
         let log = RecordLog::open(data_dir.join("records.log"), depth)
             .map_err(|error| format!("open record log: {error}"))?;
         let tail = HeaderTail::new(&data_dir);
@@ -132,7 +131,6 @@ impl ChainSync {
             network,
             peers,
             plan: BlockPlan::new(depth, Self::REORG_OVERLAP, Self::BATCH_BLOCKS),
-            cache: BlockCache::new(data_dir.clone(), cache_limit_bytes),
             data_dir,
             log,
             recent: RecentBlocks::default(),
@@ -150,11 +148,6 @@ impl ChainSync {
     #[must_use]
     pub const fn recent(&self) -> &RecentBlocks {
         &self.recent
-    }
-
-    #[must_use]
-    pub const fn cache(&self) -> &BlockCache {
-        &self.cache
     }
 
     /// Bring the record log up to the current chain tip.
@@ -185,10 +178,6 @@ impl ChainSync {
     }
 
     fn sync_with(&mut self, feed: &mut BlockFeed<ChainProof>) -> Result<SyncReport, String> {
-        let purged_cache = self.cache.exceeds_limit();
-        if purged_cache {
-            feed.discard().map_err(|error| format!("purge block cache: {error}"))?;
-        }
         let admission = self.resume()?;
         let (headers, mut proof) = feed
             .headers(HeaderRequest {
@@ -199,7 +188,7 @@ impl ChainSync {
             })
             .map_err(|error| format!("synchronize headers: {error}"))?;
         proof.finish(&headers)?;
-        let mut report = self.record_span(feed, &proof, &headers, purged_cache)?;
+        let mut report = self.record_span(feed, &proof, &headers)?;
         if report.caught_up {
             report.settled = self.settle(feed, &headers)?;
         }
@@ -257,7 +246,6 @@ impl ChainSync {
         feed: &mut BlockFeed<ChainProof>,
         proof: &ChainProof,
         headers: &[(BlockHeight, BlockHeader)],
-        purged_cache: bool,
     ) -> Result<SyncReport, String> {
         let (tip, tip_time) = headers
             .last()
@@ -269,7 +257,6 @@ impl ChainSync {
                 tip,
                 tip_time,
                 appended: 0,
-                purged_cache,
                 caught_up: true,
                 settled: None,
             });
@@ -279,9 +266,9 @@ impl ChainSync {
             window: self.plan.batch(),
             discard_each_window: false,
             deliver: true,
+            staging: BlockStaging::Memory,
         })?;
         let mut appended = 0;
-        let mut stopping = false;
         loop {
             match feed.next_item() {
                 Some(FeedItem::Block(block)) => {
@@ -289,12 +276,7 @@ impl ChainSync {
                     self.record(proof, header, &block)?;
                     appended += 1;
                 }
-                Some(FeedItem::WindowDone { .. }) => {
-                    if !stopping && self.cache.exceeds_limit() {
-                        feed.stop_after_window();
-                        stopping = true;
-                    }
-                }
+                Some(FeedItem::WindowDone { .. }) => {}
                 Some(FeedItem::Done) => break,
                 Some(FeedItem::Failed(message)) => return Err(format!("fetch blocks: {message}")),
                 Some(FeedItem::Headers(..) | FeedItem::Survey(_)) => {
@@ -307,7 +289,6 @@ impl ChainSync {
             tip,
             tip_time,
             appended,
-            purged_cache,
             caught_up: self.log.tip().map(BlockRecord::height) == Some(tip),
             settled: None,
         })

@@ -37,25 +37,17 @@ impl ProbeApp {
         let peers = PeerSources::new().resolve(Network::Mainnet);
         eprintln!("{} candidate peers, depth {}", peers.len(), self.depth);
         let lock = ChainSync::lock(std::path::Path::new(&self.data_dir))?;
-        let mut sync = ChainSync::open(
-            Network::Mainnet,
-            peers,
-            &self.data_dir,
-            self.depth,
-            1_000_000_000,
-            lock,
-        )?;
+        let mut sync = ChainSync::open(Network::Mainnet, peers, &self.data_dir, self.depth, lock)?;
         for pass in 1..=2 {
             let started = Instant::now();
             let report = sync.sync()?;
             eprintln!(
-                "pass {pass}: synced to {} in {:.1}s: {} records appended, caught up {}, cache purged {}, block cache {} bytes",
+                "pass {pass}: synced to {} in {:.1}s: {} records appended, caught up {}, settled {:?}",
                 report.tip,
                 started.elapsed().as_secs_f64(),
                 report.appended,
                 report.caught_up,
-                report.purged_cache,
-                sync.cache().bytes()
+                report.settled,
             );
         }
         for blocks in [1, self.depth] {

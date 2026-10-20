@@ -19,7 +19,6 @@ pub struct DaemonConfig {
     pub draws: usize,
     pub mempool_peers: usize,
     pub history_blocks: usize,
-    pub cache_limit_bytes: u64,
     pub tx_notes_per_second: u32,
     pub dry_run: bool,
     pub print_npub: bool,
@@ -40,7 +39,6 @@ impl Default for DaemonConfig {
             draws: 100,
             mempool_peers: 8,
             history_blocks: 1_008,
-            cache_limit_bytes: 1_000_000_000,
             tx_notes_per_second: TransactionStream::DEFAULT_PER_SECOND,
             dry_run: false,
             print_npub: false,
@@ -72,7 +70,7 @@ impl DaemonConfig {
         --mempool-peers N    peers to watch for unconfirmed transactions (default 8)\n\
         --history-blocks N   blocks of history to keep, which sets how far back each\n\
         \x20                    timeline reaches (default 1008, seven days)\n\
-        --cache-mb N         cap on the fetcher's raw block files (default 1000)\n\
+        --cache-mb N         ignored; blocks are no longer kept on disk\n\
         --tx-notes N         per-transaction verdict notes per second, 0 for none (default 20)\n\
         --dry-run            print notes instead of publishing, with a throwaway key\n\
         --run-seconds N      stop after N seconds\n";
@@ -124,7 +122,7 @@ impl DaemonConfig {
             "--history-blocks" => self.history_blocks = Self::number(flag, value)?,
             "--tx-notes" => self.tx_notes_per_second = Self::number(flag, value)?,
             "--cache-mb" => {
-                self.cache_limit_bytes = Self::number::<u64>(flag, value)?.saturating_mul(1_000_000);
+                Self::number::<u64>(flag, value)?;
             }
             "--run-seconds" => {
                 self.run_for = Some(Duration::from_secs(Self::number(flag, value)?));
@@ -201,7 +199,6 @@ mod tests {
         assert_eq!(config.draws, 50);
         assert_eq!(config.mempool_peers, 4);
         assert_eq!(config.history_blocks, 144);
-        assert_eq!(config.cache_limit_bytes, 500_000_000);
         assert_eq!(config.tx_notes_per_second, 0);
         assert!(config.dry_run);
         assert!(config.relay_insecure);

@@ -111,12 +111,11 @@ impl ChainPass {
     fn pass(&mut self) -> Result<Duration, String> {
         let report = self.sync.sync()?;
         let notice = format!(
-            "chain tip {}, settled {} ({} blocks read, {} held, block cache {} MB)",
+            "chain tip {}, settled {} ({} blocks read, {} held)",
             report.tip,
             report.settled.map_or_else(|| "nothing yet".to_string(), |height| height.to_string()),
             report.appended,
             self.sync.log().len(),
-            self.sync.cache().bytes() / 1_000_000
         );
         if report.settled.is_some() {
             self.settled = report.settled;
