@@ -48,7 +48,7 @@ impl KeySource {
             return KeyStore::new(path.clone()).load_or_create();
         }
         if let Some(path) = &self.credential {
-            return KeyStore::new(path.clone()).load_or_create();
+            return KeyStore::new(path.clone()).load_credential();
         }
         if self.throwaway {
             return Ok(PriceSigner::generate());

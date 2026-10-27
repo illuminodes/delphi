@@ -40,6 +40,18 @@ impl KeyStore {
         }
     }
 
+    /// Read a key systemd placed under `$CREDENTIALS_DIRECTORY`. systemd
+    /// makes the copy mode 440 in a directory only the service can open, so
+    /// the mode check does not apply, and a credential is never created.
+    ///
+    /// # Errors
+    /// Returns [`PriceSignerError::Key`] when the file cannot be read or
+    /// holds no usable key.
+    pub fn load_credential(&self) -> Result<PriceSigner, PriceSignerError> {
+        let secret = fs::read_to_string(&self.path).map_err(|error| self.failure(&error))?;
+        PriceSigner::from_secret(&secret)
+    }
+
     fn create(&self) -> Result<PriceSigner, PriceSignerError> {
         if let Some(parent) = self.path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             fs::create_dir_all(parent).map_err(|error| self.failure(&error))?;
@@ -143,6 +155,21 @@ mod tests {
         let refused = store.load_or_create().err().map(|error| error.to_string());
 
         assert!(refused.is_some_and(|message| message.contains("644")));
+    }
+
+    #[test]
+    fn a_credential_is_read_whatever_its_mode_and_never_created() {
+        let scratch = Scratch::new();
+        let store = KeyStore::new(scratch.key_path());
+        let created = store.load_or_create().expect("created");
+        std::fs::set_permissions(scratch.key_path(), std::fs::Permissions::from_mode(0o440)).expect("chmod");
+
+        let loaded = store.load_credential().expect("loaded");
+        let missing = KeyStore::new(scratch.root.join("absent.nsec")).load_credential();
+
+        assert_eq!(loaded.npub().expect("npub"), created.npub().expect("npub"));
+        assert!(missing.is_err());
+        assert!(!scratch.root.join("absent.nsec").exists());
     }
 
     #[test]
