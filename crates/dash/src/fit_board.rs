@@ -41,6 +41,16 @@ impl FitBoard {
         self.rejected
     }
 
+    /// Every window the oracle fits, plus any other window a fit arrived for. Fits are live
+    /// notes, so a fresh page holds none until the oracle's next repeat.
+    #[must_use]
+    pub fn windows(&self) -> Vec<&str> {
+        FitNote::WINDOWS
+            .into_iter()
+            .chain(self.ordered().into_iter().map(FitNote::window))
+            .collect()
+    }
+
     #[must_use]
     pub fn ordered(&self) -> Vec<&FitNote> {
         let mut fits: Vec<&FitNote> = self
@@ -101,6 +111,15 @@ mod tests {
 
         let order: Vec<&str> = board.ordered().iter().map(|fit| fit.window()).collect();
         assert_eq!(order, vec!["mempool", "chain-1h", "chain-1d"]);
+    }
+
+    #[test]
+    fn every_fitted_window_is_offered_before_its_first_fit_arrives() {
+        let mut board = FitBoard::default();
+        assert_eq!(board.windows(), vec!["mempool", "chain-1h", "chain-1d"]);
+
+        board.accept(&BoardFixture::note("chain-4h", 1.0, 1));
+        assert!(board.windows().contains(&"chain-4h"));
     }
 
     #[test]

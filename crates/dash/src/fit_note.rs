@@ -104,6 +104,8 @@ pub struct FitNote {
 
 impl FitNote {
     pub const PREFIX: &'static str = "fit-";
+    /// The windows the oracle fits.
+    pub const WINDOWS: [&'static str; 3] = ["mempool", "chain-1h", "chain-1d"];
 
     #[must_use]
     pub fn is_fit_window(window: &str) -> bool {

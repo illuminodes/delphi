@@ -34,7 +34,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
         .copied()
         .filter(|window| *window != "mempool" && board.history(window).len() >= 2)
         .collect();
-    let fitted: Vec<&str> = fits.ordered().iter().map(|fit| fit.window()).collect();
+    let fitted = fits.windows();
     let history_tabs = WindowTabs::longest_first(&charted).led_by(WindowLabel::DAILY);
     let loaded: usize = FeedFilter::WINDOWS.iter().map(|window| board.history(window).len()).sum();
     let on_range = {
@@ -86,7 +86,14 @@ pub fn dashboard(props: &DashboardProps) -> Html {
             })
         };
         let fit = Callback::from(move |window: String| {
-            fits.latest(&window).map_or_else(Html::default, |fit| html! { <FitPanel fit={fit.clone()} /> })
+            fits.latest(&window).map_or_else(
+                || html! {
+                    <div class="card placeholder">
+                        {format!("Waiting for the {} fit; the oracle repeats it every minute…", WindowLabel::of(&window).title(&window).to_lowercase())}
+                    </div>
+                },
+                |fit| html! { <FitPanel fit={fit.clone()} /> },
+            )
         });
         Callback::from(move |panel: PanelId| match panel {
             PanelId::Source => source.clone(),
