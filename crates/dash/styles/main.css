@@ -215,7 +215,10 @@ body {
 .source-facts dd.key { color: var(--text); }
 .source-facts dd.good { color: var(--good); }
 .source-facts dd:has(.dot) { display: flex; align-items: center; gap: 0.4rem; }
-.source-card header { justify-content: space-between; align-items: center; }
+.source-card header { justify-content: space-between; align-items: center; padding-bottom: 0.6rem; border-bottom: 1px solid var(--line); }
+.identity { display: flex; align-items: baseline; gap: 0.75rem; white-space: nowrap; }
+.wordmark { font-weight: 600; font-size: 1.05rem; letter-spacing: 0.32em; }
+.tagline { color: var(--muted); font-size: 0.75rem; }
 .method { margin: 0.5rem 0 0; padding-top: 0.6rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
 
 /* Controls and settings */

@@ -47,9 +47,13 @@ pub fn source_panel(props: &SourcePanelProps) -> Html {
     html! {
         <article class="card source-card">
             <header>
-                {verdict}
+                <div class="identity">
+                    <span class="wordmark">{"DELPHI"}</span>
+                    <span class="tagline">{"Bitcoin price oracle"}</span>
+                </div>
                 <button type="button" class="ghost" onclick={props.on_settings.clone()}>{"Settings"}</button>
             </header>
+            {verdict}
             <dl class="source-facts">
                 <div title="the relay this page reads from; it cannot forge notes">
                     <dt>{"Relay"}</dt>
