@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use mantle::hash::Hash256;
 use mantle::network::{Command, Network};
 use mantle_transport::ququmatz::types::{AddressFamily, CqeFlags, SockAddrIn, SocketFlags, SocketType, Timespec};
-use mantle_transport::ququmatz::{IoUring, ProvidedBufferRing, Socket};
+use mantle_transport::ququmatz::{self, IoUring, ProvidedBufferRing, Socket};
 use mantle_transport::{
     CqeData, IoUringExt, Op, Peer, PeerPool, PeerState, SendArena, decode_cqe_buffer_id, make_ring,
 };
@@ -85,6 +85,19 @@ impl RingIo {
             pending_send_seqs: Vec::new(),
             app: MempoolSession::new(self.network.magic()),
         })
+    }
+
+    /// A signal during the wait makes `io_uring_enter` return `EINTR`; that
+    /// only ends the wait early, so the completions are drained as usual.
+    fn wait(&mut self) -> io::Result<()> {
+        const EINTR: i32 = 4;
+        match self.ring.submit_and_wait(1) {
+            Ok(_) => Ok(()),
+            Err(
+                ququmatz::Error::Syscall(errno) | ququmatz::Error::Submit(ququmatz::SubmitError::Syscall(errno)),
+            ) if errno.raw() == EINTR => Ok(()),
+            Err(error) => Err(io::Error::other(format!("{error:?}"))),
+        }
     }
 
     fn kill(&mut self, peer: &mut MempoolPeer) {
@@ -247,10 +260,7 @@ impl UringMempoolFanout {
 
     fn pump(&mut self, wait: Duration, delivered: &mut Vec<SeenTransaction>) -> io::Result<()> {
         self.io.ring.push_tick(wait)?;
-        self.io
-            .ring
-            .submit_and_wait(1)
-            .map_err(|error| io::Error::other(format!("{error:?}")))?;
+        self.io.wait()?;
         while let Some(cqe) = self.io.ring.complete() {
             let user_data = cqe.user_data();
             self.complete(user_data, cqe.raw_result(), cqe.flags(), delivered)?;
