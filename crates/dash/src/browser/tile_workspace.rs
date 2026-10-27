@@ -11,7 +11,8 @@ pub struct TileWorkspaceProps {
 }
 
 /// Every card as a tile of the spiral: each card's inner edge drags to resize it, and a
-/// tile's grip carries it onto another tile's edge (to move it there) or centre (to swap).
+/// tile's grip, a handle in its top-right corner, carries it onto another tile's edge (to move
+/// it there) or centre (to swap). The cards name themselves, so the tile adds no title.
 /// The canvas is the viewport, grown so no card falls below its minimum; the viewport scrolls.
 #[function_component(TileWorkspace)]
 pub fn tile_workspace(props: &TileWorkspaceProps) -> Html {
@@ -102,9 +103,13 @@ pub fn tile_workspace(props: &TileWorkspaceProps) -> Html {
                 html! {
                     <section key={panel.title()} class={classes!("tile", is_carried.then_some("carried"))} style={rect.style()}>
                         <div class="tile-frame">
-                            <div class="tile-grip" onpointerdown={grab} title="Drag to move">
-                                <span class="grip-dots">{"⠿"}</span>
-                                <span class="grip-title">{panel.title()}</span>
+                            <div
+                                class="tile-grip"
+                                onpointerdown={grab}
+                                title={format!("Drag to move {}", panel.title())}
+                                aria-label={format!("Move {}", panel.title())}
+                            >
+                                {"⠿"}
                             </div>
                             <div class="tile-body">{props.render.emit(panel)}</div>
                         </div>
