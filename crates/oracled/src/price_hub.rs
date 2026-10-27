@@ -7,7 +7,7 @@ use delphi_oracle::PriceBand;
 use crate::pending_audits::{PendingAudit, PendingAudits};
 use crate::{
     Anchor, AuditLedger, AuditRecord, AuditStatus, EstimateJob, EstimateResult, ChainSnapshot, DaemonStatus, FitUpdate, MempoolWindow, NoteClass, NotePayload,
-    NoteSink, Outcome, RecentBlocks, RelayPublisher, TipAge, TransactionNote, TransactionStream,
+    NoteSink, Outcome, RecentBlocks, RelayPublisher, StoredCopy, TipAge, TransactionNote, TransactionStream,
 };
 
 /// Joins the chain prices, the live mempool window and the publisher.
@@ -16,7 +16,8 @@ use crate::{
 /// sink confirms it, at once for a sink without acks. Everything
 /// else is live: the mempool price and its fit at each check, the chain fits
 /// and the newest blocks at each block and again every `repeat`, and the
-/// daemon status every `repeat`. Nothing is priced from the mempool before
+/// daemon status every `repeat`. The status, chain fits and blocks also go out as addressable
+/// [`StoredCopy`] notes, so a subscriber arriving between repeats finds them. Nothing is priced from the mempool before
 /// the chain anchors it. Each mempool transaction goes out as its own note, tagged with the
 /// filter's verdict, as far as the [`TransactionStream`] allows.
 pub struct PriceHub<S: NoteSink> {
@@ -130,7 +131,7 @@ impl<S: NoteSink> PriceHub<S> {
         }
         if !snapshot.blocks.is_empty() && snapshot.blocks != self.blocks {
             self.blocks.clone_from(&snapshot.blocks);
-            outcomes.push(self.offer(&self.blocks.clone()));
+            outcomes.extend(self.offer_kept(&self.blocks.clone()));
         }
         outcomes
     }
@@ -184,13 +185,18 @@ impl<S: NoteSink> PriceHub<S> {
 
     fn send_chain_fits(&mut self) -> Vec<(String, Outcome)> {
         let fits = std::mem::take(&mut self.chain_fits);
-        let outcomes = fits.iter().map(|fit| self.offer(fit)).collect();
+        let outcomes = fits.iter().flat_map(|fit| self.offer_kept(fit)).collect();
         self.chain_fits = fits;
         outcomes
     }
 
     fn offer(&mut self, payload: &impl NotePayload) -> (String, Outcome) {
         (payload.window().to_string(), self.publisher.offer(payload))
+    }
+
+    /// Offer `payload` live and as its stored copy.
+    fn offer_kept(&mut self, payload: &impl NotePayload) -> [(String, Outcome); 2] {
+        [self.offer(payload), self.offer(&StoredCopy::new(payload))]
     }
 
     /// Add a mempool transaction to the window and, when the stream lets it through, publish
@@ -225,10 +231,10 @@ impl<S: NoteSink> PriceHub<S> {
             .is_none_or(|last| now.saturating_duration_since(last) >= self.repeat)
         {
             self.last_repeat = Some(now);
-            outcomes.push(self.offer(&self.status(now)));
+            outcomes.extend(self.offer_kept(&self.status(now)));
             outcomes.extend(self.send_chain_fits());
             if !self.blocks.is_empty() {
-                outcomes.push(self.offer(&self.blocks.clone()));
+                outcomes.extend(self.offer_kept(&self.blocks.clone()));
             }
         }
         if self
@@ -514,7 +520,7 @@ mod tests {
         HubFixture::fill(&mut hub, 300, 80_000.0);
         let windows: Vec<String> = hub.tick(Instant::now()).into_iter().map(|(window, _)| window).collect();
 
-        assert_eq!(windows, vec!["status"]);
+        assert_eq!(windows, vec!["status", "latest-status"]);
     }
 
     #[test]
@@ -623,6 +629,8 @@ mod tests {
 
         let live = HubFixture::windows(&hub, NoteClass::Live);
         assert_eq!(live.iter().filter(|window| *window == RecentBlocks::WINDOW).count(), 2);
+        let stored = HubFixture::windows(&hub, NoteClass::Addressable);
+        assert_eq!(stored.iter().filter(|window| *window == RecentBlocks::WINDOW).count(), 2);
     }
 
     #[test]

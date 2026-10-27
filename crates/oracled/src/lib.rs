@@ -53,6 +53,7 @@ pub mod relay_publisher;
 pub mod sample_series;
 pub mod soak_report;
 pub mod stdout_sink;
+pub mod stored_copy;
 pub mod transaction_note;
 pub mod transaction_stream;
 #[cfg(test)]
@@ -108,5 +109,6 @@ pub use relay_publisher::{NoteSink, Outcome, PublishTally, RelayPublisher};
 pub use sample_series::SampleSeries;
 pub use soak_report::SoakReport;
 pub use stdout_sink::StdoutSink;
+pub use stored_copy::StoredCopy;
 pub use transaction_note::TransactionNote;
 pub use transaction_stream::TransactionStream;
