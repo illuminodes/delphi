@@ -1177,7 +1177,7 @@ dependencies = [
 [[package]]
 name = "mantle"
 version = "0.1.0"
-source = "git+https://github.com/illuminodes/mantle?rev=c3a4fe41796f708e71750168794ffe36dbc5f701#c3a4fe41796f708e71750168794ffe36dbc5f701"
+source = "git+https://github.com/illuminodes/mantle?rev=b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320#b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320"
 dependencies = [
  "sha2",
 ]
@@ -1185,7 +1185,7 @@ dependencies = [
 [[package]]
 name = "mantle-block-io"
 version = "0.1.0"
-source = "git+https://github.com/illuminodes/mantle?rev=c3a4fe41796f708e71750168794ffe36dbc5f701#c3a4fe41796f708e71750168794ffe36dbc5f701"
+source = "git+https://github.com/illuminodes/mantle?rev=b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320#b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320"
 dependencies = [
  "mantle",
  "quetzalcoatl",
@@ -1195,7 +1195,7 @@ dependencies = [
 [[package]]
 name = "mantle-consensus"
 version = "0.1.0"
-source = "git+https://github.com/illuminodes/mantle?rev=c3a4fe41796f708e71750168794ffe36dbc5f701#c3a4fe41796f708e71750168794ffe36dbc5f701"
+source = "git+https://github.com/illuminodes/mantle?rev=b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320#b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320"
 dependencies = [
  "k256",
  "mantle",
@@ -1207,7 +1207,7 @@ dependencies = [
 [[package]]
 name = "mantle-fetcher"
 version = "0.1.0"
-source = "git+https://github.com/illuminodes/mantle?rev=c3a4fe41796f708e71750168794ffe36dbc5f701#c3a4fe41796f708e71750168794ffe36dbc5f701"
+source = "git+https://github.com/illuminodes/mantle?rev=b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320#b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320"
 dependencies = [
  "mantle",
  "mantle-block-io",
@@ -1219,7 +1219,7 @@ dependencies = [
 [[package]]
 name = "mantle-transport"
 version = "0.1.0"
-source = "git+https://github.com/illuminodes/mantle?rev=c3a4fe41796f708e71750168794ffe36dbc5f701#c3a4fe41796f708e71750168794ffe36dbc5f701"
+source = "git+https://github.com/illuminodes/mantle?rev=b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320#b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320"
 dependencies = [
  "mantle",
  "ququmatz",

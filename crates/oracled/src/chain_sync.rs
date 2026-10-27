@@ -7,7 +7,7 @@ use mantle::difficulty::{BlockHeight, BlockTime};
 use mantle::network::Network;
 use mantle::primitives::{Block, BlockHeader};
 use mantle_fetcher::{
-    BlockFeed, BlockStaging, BlocksRequest, FedBlock, FeedItem, FeedSpec, HeaderRequest, SurveyRequest,
+    BlockFeed, BlockStaging, BlocksRequest, FedBlock, FeedItem, FeedSpec, HeaderRequest, RecvBuffers, SurveyRequest,
 };
 use delphi_oracle::DataDirLock;
 
@@ -85,7 +85,9 @@ pub struct ChainSync {
 
 impl ChainSync {
     pub const REORG_OVERLAP: u32 = 6;
-    pub const BATCH_BLOCKS: usize = 32;
+    /// Blocks downloaded together and held in memory until recorded: about
+    /// 200 MB of mainnet blocks, enough work to spread across the peers.
+    pub const BATCH_BLOCKS: usize = 128;
     pub const BUFFERED_BLOCKS: usize = 16;
     pub const SURVEY_SHOWN: usize = 64;
 
@@ -172,6 +174,7 @@ impl ChainSync {
                 peers: self.peers.clone(),
                 cache_dir: self.data_dir.clone(),
                 buffered: Self::BUFFERED_BLOCKS,
+                recv_buffers: RecvBuffers::LIGHT,
             })
             .map_err(|error| format!("start block feed: {error}")),
         }

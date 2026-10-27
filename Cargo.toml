@@ -33,11 +33,11 @@ debug = false
 strip = true
 
 [workspace.dependencies]
-mantle = { git = "https://github.com/illuminodes/mantle", rev = "c3a4fe41796f708e71750168794ffe36dbc5f701" }
-mantle-block-io = { git = "https://github.com/illuminodes/mantle", rev = "c3a4fe41796f708e71750168794ffe36dbc5f701" }
-mantle-consensus = { git = "https://github.com/illuminodes/mantle", rev = "c3a4fe41796f708e71750168794ffe36dbc5f701" }
-mantle-fetcher = { git = "https://github.com/illuminodes/mantle", rev = "c3a4fe41796f708e71750168794ffe36dbc5f701" }
-mantle-transport = { git = "https://github.com/illuminodes/mantle", rev = "c3a4fe41796f708e71750168794ffe36dbc5f701" }
+mantle = { git = "https://github.com/illuminodes/mantle", rev = "b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320" }
+mantle-block-io = { git = "https://github.com/illuminodes/mantle", rev = "b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320" }
+mantle-consensus = { git = "https://github.com/illuminodes/mantle", rev = "b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320" }
+mantle-fetcher = { git = "https://github.com/illuminodes/mantle", rev = "b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320" }
+mantle-transport = { git = "https://github.com/illuminodes/mantle", rev = "b0416c4477ccb5448e8fe8bd1fad3d5e2deb2320" }
 nostro2 = { version = "0.9.0", default-features = false, features = ["serde", "k256"] }
 nostro2-signer = { version = "0.8.0", default-features = false, features = ["serde", "k256"] }
 nostro2-relay = "0.10.0"
