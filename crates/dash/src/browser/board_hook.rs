@@ -4,7 +4,7 @@ use std::rc::Rc;
 use nostr_minions::{use_nostr_relay_pool, NostrRelayPoolStore, NostrSubscription, SubscriptionId, WallClock};
 use yew::prelude::*;
 
-use crate::{DashState, FeedFilter, HistoryRange, PublisherKey};
+use crate::{DashState, FeedFilter, HistoryRange, NoteGate, PublisherKey};
 
 /// The publisher's notes, gathered from two sets of subscriptions: the live and transaction
 /// streams, opened once per publisher, and the audited history, reopened whenever the range changes.
@@ -21,7 +21,11 @@ pub fn use_dash_state(publisher: &PublisherKey, range: HistoryRange) -> DashStat
     };
     let callback = Callback::from({
         let state = state.clone();
+        let gate = NoteGate::new(publisher.hex());
         move |note| {
+            if !gate.admits(&note) {
+                return;
+            }
             state.borrow_mut().accept(&note);
             refresh.force_update();
         }

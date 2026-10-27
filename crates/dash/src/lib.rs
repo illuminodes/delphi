@@ -55,6 +55,7 @@ pub mod chart_geometry;
 pub mod civil_time;
 pub mod dash_settings;
 pub mod dash_state;
+pub mod note_gate;
 pub mod display_format;
 pub mod divider_spot;
 pub mod drop_zone;
@@ -224,6 +225,7 @@ pub use series_point::SeriesPoint;
 
 pub use dash_settings::{DashSettings, SettingsError};
 pub use dash_state::DashState;
+pub use note_gate::NoteGate;
 pub use display_format::DisplayFormat;
 pub use divider_spot::DividerSpot;
 pub use drop_zone::DropZone;
