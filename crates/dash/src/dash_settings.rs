@@ -31,13 +31,15 @@ impl Default for DashSettings {
     fn default() -> Self {
         Self {
             relay: Self::DEFAULT_RELAY.to_string(),
-            publisher: String::new(),
+            publisher: Self::DEFAULT_PUBLISHER.to_string(),
         }
     }
 }
 
 impl DashSettings {
     pub const DEFAULT_RELAY: &'static str = "wss://rof.illuminodes.com";
+    /// The production oracle on miniforum.
+    pub const DEFAULT_PUBLISHER: &'static str = "npub1hj2vnmtqepcwpwpxh49dlqulve6qf4d9u0v99shqluzuwcy7n0sql0cvwv";
 
     pub fn relay_url(&self) -> Result<String, SettingsError> {
         let relay = self.relay.trim();
@@ -87,12 +89,16 @@ mod tests {
     use SettingsFixture as Fixture;
 
     #[test]
-    fn the_default_points_at_the_production_relay_without_a_publisher() {
-        let defaults = DashSettings::default();
+    fn the_default_points_at_the_production_relay_and_oracle() {
+        let (relay, _) = DashSettings::default().validate().expect("valid defaults");
 
-        assert_eq!(defaults.relay, "wss://rof.illuminodes.com");
+        assert_eq!(relay, "wss://rof.illuminodes.com");
+    }
+
+    #[test]
+    fn an_empty_publisher_is_refused() {
         assert_eq!(
-            defaults.validate(),
+            Fixture::settings("wss://r.example", "").validate(),
             Err(SettingsError::Publisher(PublisherKeyError::Empty))
         );
     }
