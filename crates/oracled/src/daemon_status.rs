@@ -12,6 +12,8 @@ pub struct DaemonStatus {
     pub tip: Option<BlockHeight>,
     /// How long ago the tip header was stamped.
     pub tip_age: Option<TipAge>,
+    /// The newest height enough peer groups agree on; audits wait for it.
+    pub settled: Option<BlockHeight>,
     pub anchor: Option<f64>,
     /// Blocks between the anchor's block and the tip.
     pub anchor_age: Option<u32>,
@@ -58,6 +60,10 @@ impl NotePayload for DaemonStatus {
         }
         object.raw("tip_age_secs", &self.tip_age.map_or_else(|| "null".to_string(), |age| age.seconds().to_string()));
         object.raw("tip_stale", self.tip_age.map_or("null", |age| if age.is_stale() { "true" } else { "false" }));
+        match self.settled {
+            Some(settled) => object.count("settled", settled.to_u32() as usize),
+            None => object.raw("settled", "null"),
+        }
         object.fixed("anchor", self.anchor.unwrap_or(f64::NAN), 2);
         match self.anchor_age {
             Some(age) => object.count("anchor_age_blocks", age as usize),
@@ -92,6 +98,7 @@ mod tests {
         let status = DaemonStatus {
             tip: Some(BlockHeight::new(970_000)),
             tip_age: Some(TipAge::at(BlockTime::new(1_000), 1_600)),
+            settled: Some(BlockHeight::new(969_994)),
             anchor: Some(80_000.0),
             anchor_age: Some(2),
             band: PriceBand::around(80_000.0, 0.15),
@@ -107,6 +114,7 @@ mod tests {
         assert_eq!(json["tip"], 970_000);
         assert_eq!(json["tip_age_secs"], 600);
         assert_eq!(json["tip_stale"], false);
+        assert_eq!(json["settled"], 969_994);
         assert_eq!(json["anchor"], 80_000.0);
         assert_eq!(json["anchor_age_blocks"], 2);
         assert_eq!(json["mempool_outputs"], 812);
@@ -123,6 +131,7 @@ mod tests {
         let status = DaemonStatus {
             tip: None,
             tip_age: None,
+            settled: None,
             anchor: None,
             anchor_age: None,
             band: None,
@@ -138,6 +147,7 @@ mod tests {
         assert!(json["tip"].is_null());
         assert!(json["tip_age_secs"].is_null());
         assert!(json["tip_stale"].is_null());
+        assert!(json["settled"].is_null());
         assert!(json["anchor"].is_null());
         assert!(json["anchor_age_blocks"].is_null());
         assert!(status.is_publishable());
@@ -148,6 +158,7 @@ mod tests {
         let status = DaemonStatus {
             tip: Some(BlockHeight::new(970_000)),
             tip_age: Some(TipAge::at(BlockTime::new(1_000), 1_000 + 3 * 60 * 60)),
+            settled: None,
             anchor: None,
             anchor_age: None,
             band: None,

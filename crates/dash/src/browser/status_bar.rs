@@ -56,6 +56,19 @@ pub fn status_bar(props: &StatusBarProps) -> Html {
                 {props.status.as_ref().map_or_else(|| html! {}, |status| html! {
                     <span class="oracle-status">
                         {status.tip.map_or_else(String::new, |tip| format!("tip {} · ", DisplayFormat::count(tip as usize)))}
+                        {status.settled.map_or_else(
+                            || "nothing settled yet · ".to_string(),
+                            |settled| format!("settled {} · ", DisplayFormat::count(settled as usize)),
+                        )}
+                        {if status.tip_stale == Some(true) {
+                            html! {
+                                <span class="warn" title="The newest block the oracle knows is over two hours old">
+                                    {format!("tip {} min old · ", status.tip_age_secs.unwrap_or(0) / 60)}
+                                </span>
+                            }
+                        } else {
+                            html! {}
+                        }}
                         {format!(
                             "{} mempool outputs · {} audits sent",
                             DisplayFormat::count(status.mempool_outputs),

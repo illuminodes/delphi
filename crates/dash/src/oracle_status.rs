@@ -11,6 +11,8 @@ pub struct OracleStatus {
     pub tip_age_secs: Option<u64>,
     #[serde(default)]
     pub tip_stale: Option<bool>,
+    #[serde(default)]
+    pub settled: Option<u32>,
     pub anchor: Option<f64>,
     pub band_low: Option<f64>,
     pub band_high: Option<f64>,

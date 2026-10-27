@@ -209,6 +209,7 @@ mod tests {
             Event::Chain(ChainSnapshot {
                 tip: BlockHeight::new(tip),
                 tip_time: BlockTime::new(2),
+                settled: Some(BlockHeight::new(tip)),
                 anchor: crate::Anchor::checked(price, None, BlockHeight::new(tip)),
                 audits: vec![AuditRecord::new(
                     ChainWindow::Hourly,

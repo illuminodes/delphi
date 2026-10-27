@@ -13,6 +13,8 @@ pub struct ChainSnapshot {
     pub tip: BlockHeight,
     /// The tip header's timestamp.
     pub tip_time: BlockTime,
+    /// The newest height enough peer groups agree on; audits stop here.
+    pub settled: Option<BlockHeight>,
     /// The hourly price at the tip, which anchors the mempool estimate.
     pub anchor: Option<Anchor>,
     /// Audit records not yet published, newest first.

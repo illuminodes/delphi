@@ -173,6 +173,7 @@ impl ChainPass {
         Some(ChainSnapshot {
             tip,
             tip_time,
+            settled: self.settled,
             anchor,
             audits,
             fits,

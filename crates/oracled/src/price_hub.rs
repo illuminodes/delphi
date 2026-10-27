@@ -31,6 +31,7 @@ pub struct PriceHub<S: NoteSink> {
     anchor: Option<Anchor>,
     tip: Option<BlockHeight>,
     tip_time: Option<BlockTime>,
+    settled: Option<BlockHeight>,
     chain_fits: Vec<FitUpdate>,
     blocks: RecentBlocks,
     stream: TransactionStream,
@@ -74,6 +75,7 @@ impl<S: NoteSink> PriceHub<S> {
             anchor: None,
             tip: None,
             tip_time: None,
+            settled: None,
             chain_fits: Vec::new(),
             blocks: RecentBlocks::default(),
             stream: TransactionStream::default(),
@@ -121,6 +123,7 @@ impl<S: NoteSink> PriceHub<S> {
             self.tip = Some(snapshot.tip);
         }
         self.tip_time = Some(snapshot.tip_time);
+        self.settled = snapshot.settled.or(self.settled);
         if !snapshot.fits.is_empty() {
             self.chain_fits.clone_from(&snapshot.fits);
             outcomes.extend(self.send_chain_fits());
@@ -279,6 +282,7 @@ impl<S: NoteSink> PriceHub<S> {
         DaemonStatus {
             tip: self.tip,
             tip_age: self.tip_time.map(TipAge::now),
+            settled: self.settled,
             anchor: self.anchor_price(),
             anchor_age: self.anchor_age(),
             band: self.band(),
@@ -393,6 +397,7 @@ mod tests {
             ChainSnapshot {
                 tip: BlockHeight::new(tip),
                 tip_time: BlockTime::new(1_780_000_000 + tip),
+                settled: Some(BlockHeight::new(tip)),
                 anchor: crate::Anchor::checked(price, None, BlockHeight::new(tip)),
                 audits: windows.iter().map(|window| Self::audit(*window, price, tip)).collect(),
                 fits: Vec::new(),
