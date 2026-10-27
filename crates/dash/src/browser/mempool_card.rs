@@ -18,7 +18,7 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
     let selected = use_state(|| None::<TransactionStage>);
     let hovered = use_state(|| None::<String>);
     let area = use_node_ref();
-    let (width, _) = use_box_size(&area);
+    let (width, height) = use_box_size(&area);
     let stream = &props.stream;
     if stream.is_empty() {
         return html! {
@@ -30,8 +30,7 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
     }
     let transactions = stream.recent(None);
     let sides: Vec<u32> = transactions.iter().map(|transaction| MempoolGrid::side_for(transaction.usd_value())).collect();
-    let columns = ((width + MempoolCardParts::GAP) / MempoolCardParts::CELL_PITCH).floor().max(1.0) as u32;
-    let grid = MempoolGrid::pack(&sides, columns);
+    let grid = MempoolGrid::pack(&sides, MempoolCardParts::cells(width), MempoolCardParts::cells(height));
     let total = stream.total();
     let shown = hovered
         .as_ref()
@@ -97,22 +96,21 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
                         "{} entered the model ({:.0}%) · showing newest {}",
                         DisplayFormat::count(stream.entered_model()),
                         BlockFilter::share(stream.entered_model(), total) * 100.0,
-                        DisplayFormat::count(transactions.len()),
+                        DisplayFormat::count(grid.tiles().len()),
                     )}
                 </span>
                 {MempoolCardParts::dropped(props.status.as_ref())}
             </header>
             <nav class="tx-legend">{for legend}</nav>
-            <div class="tx-grid-scroll" onmouseleave={leave}>
+            <div class="tx-grid-area" ref={area} onmouseleave={leave}>
                 <div
                     class="tx-grid"
-                    ref={area}
                     style={format!("grid-template-columns: repeat({}, var(--cell)); grid-template-rows: repeat({}, var(--cell))", grid.columns(), grid.rows())}
                 >
                     {for tiles}
                 </div>
+                {MempoolCardParts::inspector(shown, props.now)}
             </div>
-            {MempoolCardParts::inspector(shown, props.now)}
         </article>
     }
 }
@@ -124,6 +122,11 @@ impl MempoolCardParts {
     /// One cell plus the gap after it, in CSS pixels; must match `--cell` and the grid gap.
     const CELL_PITCH: f64 = 12.0;
     const GAP: f64 = 2.0;
+
+    /// How many whole cells fit along a length, counting no gap after the last one.
+    fn cells(length: f64) -> u32 {
+        ((length + Self::GAP) / Self::CELL_PITCH).floor().max(1.0) as u32
+    }
 
     fn dropped(status: Option<&OracleStatus>) -> Html {
         let Some(dropped) = status.map(|status| status.transaction_notes_dropped).filter(|dropped| *dropped > 0) else {
@@ -138,11 +141,7 @@ impl MempoolCardParts {
 
     fn inspector(transaction: Option<&MempoolTransaction>, now: i64) -> Html {
         let Some(transaction) = transaction else {
-            return html! {
-                <div class="tx-inspector empty">
-                    {"Hover a square for details. Size follows dollar value; click to open on mempool.space."}
-                </div>
-            };
+            return html! {};
         };
         let outcome = transaction.rejection().map_or_else(|| Self::reading(transaction), |(label, hint)| {
             html! { <span title={hint}>{format!("rejected: {label}")}</span> }

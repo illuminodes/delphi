@@ -7,9 +7,10 @@ pub struct GridTile {
     pub side: u32,
 }
 
-/// Transactions packed as squares into a grid of fixed width, in order, each placed at the
+/// Transactions packed as squares into a grid of fixed size, in order, each placed at the
 /// first free spot (top to bottom, left to right) where it fits. Small squares fill the gaps
-/// left beside large ones, as on mempool.space.
+/// left beside large ones, as on mempool.space. Packing stops at the first square with no room
+/// left, so the grid holds the newest transactions and nothing older.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MempoolGrid {
     columns: u32,
@@ -33,41 +34,36 @@ impl MempoolGrid {
     }
 
     #[must_use]
-    pub fn pack(sides: &[u32], columns: u32) -> Self {
+    pub fn pack(sides: &[u32], columns: u32, rows: u32) -> Self {
         let columns = columns.max(1);
-        let mut taken: Vec<Vec<bool>> = Vec::new();
+        let rows = rows.max(1);
+        let mut taken = vec![vec![false; columns as usize]; rows as usize];
         let mut first_open = 0;
         let mut tiles = Vec::with_capacity(sides.len());
         for (index, side) in sides.iter().enumerate() {
-            let side = (*side).clamp(1, columns);
-            let (x, y) = Self::find(&mut taken, &mut first_open, side, columns);
+            let side = (*side).clamp(1, columns.min(rows));
+            let Some((x, y)) = Self::find(&taken, &mut first_open, side) else {
+                break;
+            };
             for row in &mut taken[y as usize..(y + side) as usize] {
                 row[x as usize..(x + side) as usize].fill(true);
             }
             tiles.push(GridTile { index, x, y, side });
         }
-        Self { columns, rows: taken.len() as u32, tiles }
+        Self { columns, rows, tiles }
     }
 
-    fn find(taken: &mut Vec<Vec<bool>>, first_open: &mut usize, side: u32, columns: u32) -> (u32, u32) {
+    fn find(taken: &[Vec<bool>], first_open: &mut usize, side: u32) -> Option<(u32, u32)> {
         while taken.get(*first_open).is_some_and(|row| row.iter().all(|cell| *cell)) {
             *first_open += 1;
         }
-        let mut y = *first_open;
-        loop {
-            while taken.len() < y + side as usize {
-                taken.push(vec![false; columns as usize]);
-            }
-            let fit = (0..=columns - side).find(|x| {
-                taken[y..y + side as usize]
-                    .iter()
-                    .all(|row| row[*x as usize..(x + side) as usize].iter().all(|cell| !cell))
-            });
-            if let Some(x) = fit {
-                return (x, y as u32);
-            }
-            y += 1;
-        }
+        let side = side as usize;
+        (*first_open..=taken.len().checked_sub(side)?).find_map(|y| {
+            let band = &taken[y..y + side];
+            (0..=band[0].len() - side)
+                .find(|x| band.iter().all(|row| row[*x..x + side].iter().all(|cell| !cell)))
+                .map(|x| (x as u32, y as u32))
+        })
     }
 
     #[must_use]
@@ -102,17 +98,25 @@ mod tests {
 
     #[test]
     fn squares_are_placed_in_order_and_small_ones_fill_the_gap_beside_a_large_one() {
-        let grid = MempoolGrid::pack(&[2, 1, 1, 1, 1], 3);
+        let grid = MempoolGrid::pack(&[2, 1, 1, 1, 1], 3, 3);
         let places: Vec<(u32, u32)> = grid.tiles().iter().map(|tile| (tile.x, tile.y)).collect();
 
         assert_eq!(places, vec![(0, 0), (2, 0), (2, 1), (0, 2), (1, 2)]);
-        assert_eq!(grid.rows(), 3);
+    }
+
+    #[test]
+    fn packing_stops_at_the_first_square_without_room_so_nothing_older_slips_in() {
+        let grid = MempoolGrid::pack(&[2, 2, 2, 1, 1], 4, 3);
+        let indices: Vec<usize> = grid.tiles().iter().map(|tile| tile.index).collect();
+
+        assert_eq!(indices, vec![0, 1]);
+        assert!(grid.tiles().iter().all(|tile| tile.y + tile.side <= grid.rows()));
     }
 
     #[test]
     fn no_two_squares_overlap_and_all_stay_inside_the_columns() {
         let sides: Vec<u32> = (0..200).map(|index| [1, 3, 1, 2, 5, 1, 1, 4][index % 8]).collect();
-        let grid = MempoolGrid::pack(&sides, 12);
+        let grid = MempoolGrid::pack(&sides, 12, 400);
         let mut cells = vec![vec![false; 12]; grid.rows() as usize];
 
         for tile in grid.tiles() {
@@ -129,9 +133,9 @@ mod tests {
 
     #[test]
     fn a_square_wider_than_the_grid_is_shrunk_to_fit() {
-        let grid = MempoolGrid::pack(&[5], 2);
+        let grid = MempoolGrid::pack(&[5, 5], 2, 3);
 
         assert_eq!(grid.tiles()[0].side, 2);
-        assert_eq!(grid.rows(), 2);
+        assert_eq!(grid.tiles().len(), 1);
     }
 }
