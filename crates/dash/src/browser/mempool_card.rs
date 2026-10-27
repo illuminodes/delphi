@@ -30,7 +30,7 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
     }
     let transactions = stream.recent(None);
     let sides: Vec<u32> = transactions.iter().map(|transaction| MempoolGrid::side_for(transaction.usd_value())).collect();
-    let columns = (width / MempoolCardParts::CELL_PITCH).floor().max(1.0) as u32;
+    let columns = ((width + MempoolCardParts::GAP) / MempoolCardParts::CELL_PITCH).floor().max(1.0) as u32;
     let grid = MempoolGrid::pack(&sides, columns);
     let total = stream.total();
     let shown = hovered
@@ -103,9 +103,10 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
                 {MempoolCardParts::dropped(props.status.as_ref())}
             </header>
             <nav class="tx-legend">{for legend}</nav>
-            <div class="tx-grid-scroll" ref={area} onmouseleave={leave}>
+            <div class="tx-grid-scroll" onmouseleave={leave}>
                 <div
                     class="tx-grid"
+                    ref={area}
                     style={format!("grid-template-columns: repeat({}, var(--cell)); grid-template-rows: repeat({}, var(--cell))", grid.columns(), grid.rows())}
                 >
                     {for tiles}
@@ -122,6 +123,7 @@ struct MempoolCardParts;
 impl MempoolCardParts {
     /// One cell plus the gap after it, in CSS pixels; must match `--cell` and the grid gap.
     const CELL_PITCH: f64 = 12.0;
+    const GAP: f64 = 2.0;
 
     fn dropped(status: Option<&OracleStatus>) -> Html {
         let Some(dropped) = status.map(|status| status.transaction_notes_dropped).filter(|dropped| *dropped > 0) else {
