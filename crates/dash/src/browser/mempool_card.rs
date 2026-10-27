@@ -1,6 +1,7 @@
 use yew::prelude::*;
 
-use crate::{BlockFilter, DisplayFormat, MempoolStream, MempoolTransaction, OracleStatus, TransactionStage};
+use super::box_size_hook::use_box_size;
+use crate::{BlockFilter, DisplayFormat, MempoolGrid, MempoolStream, MempoolTransaction, OracleStatus, TransactionStage};
 
 #[derive(Properties, PartialEq)]
 pub struct MempoolCardProps {
@@ -9,11 +10,15 @@ pub struct MempoolCardProps {
     pub now: i64,
 }
 
-/// Every mempool transaction the oracle streamed since this page subscribed, sorted by how far
-/// it got into the price, and the newest ones with their outputs read in dollars.
+/// The streamed mempool transactions as squares, newest at the top left, each sized by its
+/// dollar value and coloured by how far it got into the price. Hovering a square describes it;
+/// clicking opens it on mempool.space. The legend dims every stage but the one picked.
 #[function_component(MempoolCard)]
 pub fn mempool_card(props: &MempoolCardProps) -> Html {
     let selected = use_state(|| None::<TransactionStage>);
+    let hovered = use_state(|| None::<String>);
+    let area = use_node_ref();
+    let (width, _) = use_box_size(&area);
     let stream = &props.stream;
     if stream.is_empty() {
         return html! {
@@ -23,28 +28,65 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
             </div>
         };
     }
+    let transactions = stream.recent(None);
+    let sides: Vec<u32> = transactions.iter().map(|transaction| MempoolGrid::side_for(transaction.usd_value())).collect();
+    let columns = (width / MempoolCardParts::CELL_PITCH).floor().max(1.0) as u32;
+    let grid = MempoolGrid::pack(&sides, columns);
     let total = stream.total();
-    let stages = TransactionStage::ALL.into_iter().map(|stage| {
+    let shown = hovered
+        .as_ref()
+        .and_then(|txid| transactions.iter().find(|transaction| &transaction.txid == txid).copied());
+
+    let legend = TransactionStage::ALL.into_iter().map(|stage| {
         let count = stream.stage_count(stage);
-        let share = BlockFilter::share(count, total);
         let active = *selected == Some(stage);
         let onclick = {
             let selected = selected.clone();
             Callback::from(move |_: MouseEvent| selected.set(if active { None } else { Some(stage) }))
         };
         html! {
-            <li class={classes!(stage.css_class(), active.then_some("active"))} title={stage.hint()} onclick={onclick}>
-                <span class="funnel-label">{stage.label()}</span>
-                <span class="funnel-track">
-                    <span class="funnel-bar" style={format!("width: {:.1}%", share * 100.0)}></span>
-                </span>
-                <span class="funnel-count">
-                    {DisplayFormat::count(count)}
-                    <span class="detail">{format!(" {:.0}%", share * 100.0)}</span>
-                </span>
-            </li>
+            <button
+                type="button"
+                class={classes!("legend-item", stage.css_class(), active.then_some("active"))}
+                title={stage.hint()}
+                onclick={onclick}
+            >
+                <span class="swatch" aria-hidden="true"></span>
+                {stage.label()}
+                <span class="legend-count">{DisplayFormat::count(count)}</span>
+            </button>
         }
     });
+    let tiles = grid.tiles().iter().map(|tile| {
+        let transaction = transactions[tile.index];
+        let dimmed = selected.is_some_and(|stage| stage != transaction.stage);
+        let enter = {
+            let hovered = hovered.clone();
+            let txid = transaction.txid.clone();
+            Callback::from(move |_: MouseEvent| hovered.set(Some(txid.clone())))
+        };
+        html! {
+            <a
+                key={transaction.txid.clone()}
+                class={classes!("tx-square", transaction.stage.css_class(), dimmed.then_some("dimmed"))}
+                style={format!("grid-column: {} / span {side}; grid-row: {} / span {side}", tile.x + 1, tile.y + 1, side = tile.side)}
+                href={format!("https://mempool.space/tx/{}", transaction.txid)}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={format!("{} transaction {}", transaction.stage.label(), transaction.short_txid())}
+                onmouseenter={enter}
+                onfocus={
+                    let hovered = hovered.clone();
+                    let txid = transaction.txid.clone();
+                    Callback::from(move |_: FocusEvent| hovered.set(Some(txid.clone())))
+                }
+            />
+        }
+    });
+    let leave = {
+        let hovered = hovered.clone();
+        Callback::from(move |_: MouseEvent| hovered.set(None))
+    };
 
     html! {
         <article class="card mempool-card">
@@ -52,43 +94,35 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
                 <h2>{format!("{} transactions", DisplayFormat::count(total))}</h2>
                 <span class="detail">
                     {format!(
-                        "{} entered the model ({:.0}%)",
+                        "{} entered the model ({:.0}%) · showing newest {}",
                         DisplayFormat::count(stream.entered_model()),
-                        BlockFilter::share(stream.entered_model(), total) * 100.0
+                        BlockFilter::share(stream.entered_model(), total) * 100.0,
+                        DisplayFormat::count(transactions.len()),
                     )}
                 </span>
                 {MempoolCardParts::dropped(props.status.as_ref())}
             </header>
-            <section class="filter-funnel">
-                <ul class="funnel-stages stage-picker">{for stages}</ul>
-                <h3>{"Turned away"}</h3>
-                <ul class="funnel-rejections">
-                    {for stream.rejections().into_iter().map(|(verdict, count)| {
-                        let (label, hint) = BlockFilter::rejection(verdict).unwrap_or((verdict, ""));
-                        html! {
-                            <li title={hint}>
-                                <span class="fact-label">{label}</span>
-                                {DisplayFormat::count(count)}
-                                <span class="detail">{format!(" {:.0}%", BlockFilter::share(count, total) * 100.0)}</span>
-                            </li>
-                        }
-                    })}
-                </ul>
-            </section>
-            <h3 class="list-title">
-                {selected.map_or_else(|| "Newest".to_string(), |stage| format!("Newest · {}", stage.label()))}
-            </h3>
-            <ul class="tx-list">
-                {for stream.recent(*selected).into_iter().map(|transaction| MempoolCardParts::row(transaction, props.now))}
-            </ul>
+            <nav class="tx-legend">{for legend}</nav>
+            <div class="tx-grid-scroll" ref={area} onmouseleave={leave}>
+                <div
+                    class="tx-grid"
+                    style={format!("grid-template-columns: repeat({}, var(--cell)); grid-template-rows: repeat({}, var(--cell))", grid.columns(), grid.rows())}
+                >
+                    {for tiles}
+                </div>
+            </div>
+            {MempoolCardParts::inspector(shown, props.now)}
         </article>
     }
 }
 
-/// The pieces of the mempool card that are not the stage picker.
+/// The pieces of the mempool card around the grid.
 struct MempoolCardParts;
 
 impl MempoolCardParts {
+    /// One cell plus the gap after it, in CSS pixels; must match `--cell` and the grid gap.
+    const CELL_PITCH: f64 = 12.0;
+
     fn dropped(status: Option<&OracleStatus>) -> Html {
         let Some(dropped) = status.map(|status| status.transaction_notes_dropped).filter(|dropped| *dropped > 0) else {
             return html! {};
@@ -100,46 +134,47 @@ impl MempoolCardParts {
         }
     }
 
-    fn row(transaction: &MempoolTransaction, now: i64) -> Html {
-        let reason = transaction.rejection().map_or_else(
-            || Self::reading(transaction),
-            |(label, hint)| html! { <span class="tx-reason" title={hint}>{label}</span> },
-        );
-        let outputs: Vec<String> = transaction
-            .outputs
-            .iter()
-            .map(|output| format!("{:.8} ₿{}", output.btc(), if output.admitted { "" } else { " (not kept)" }))
-            .collect();
+    fn inspector(transaction: Option<&MempoolTransaction>, now: i64) -> Html {
+        let Some(transaction) = transaction else {
+            return html! {
+                <div class="tx-inspector empty">
+                    {"Hover a square for details. Size follows dollar value; click to open on mempool.space."}
+                </div>
+            };
+        };
+        let outcome = transaction.rejection().map_or_else(|| Self::reading(transaction), |(label, hint)| {
+            html! { <span title={hint}>{format!("rejected: {label}")}</span> }
+        });
         html! {
-            <li class={classes!("tx-row", transaction.stage.css_class())}>
-                <span class="tx-stage" title={transaction.stage.hint()}>{transaction.stage.label()}</span>
-                <a
-                    class="tx-id"
-                    href={format!("https://mempool.space/tx/{}", transaction.txid)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={transaction.txid.clone()}
-                >
-                    {transaction.short_txid()}
-                </a>
-                <span class="tx-shape" title={outputs.join("\n")}>
-                    {format!("{} in · {} out · {} B", transaction.inputs, transaction.outputs.len(), DisplayFormat::count(transaction.size))}
+            <div class={classes!("tx-inspector", transaction.stage.css_class())}>
+                <span class="tx-stage">{transaction.stage.label()}</span>
+                <span class="tx-id">{transaction.short_txid()}</span>
+                <span class="tx-value">
+                    {transaction.usd_value().map_or_else(|| "—".to_string(), DisplayFormat::usd_whole)}
                 </span>
-                {reason}
-                <span class="detail">{DisplayFormat::age(now - transaction.received_at)}</span>
-            </li>
+                <span class="detail">
+                    {format!(
+                        "{} in · {} out · {} B",
+                        transaction.inputs,
+                        transaction.outputs.len(),
+                        DisplayFormat::count(transaction.size)
+                    )}
+                </span>
+                <span class="tx-outcome">{outcome}</span>
+                <span class="detail tx-age">{DisplayFormat::age(now - transaction.received_at)}</span>
+            </div>
         }
     }
 
     fn reading(transaction: &MempoolTransaction) -> Html {
         match transaction.best_output() {
             Some(output) => html! {
-                <span class="tx-reason" title={format!("{} sats", DisplayFormat::count(usize::try_from(output.sats).unwrap_or(usize::MAX)))}>
-                    {output.usd.map_or_else(String::new, |usd| format!("${usd} → "))}
-                    {output.implied.map_or_else(|| "—".to_string(), DisplayFormat::usd_whole)}
+                <span title={format!("{} sats", DisplayFormat::count(usize::try_from(output.sats).unwrap_or(usize::MAX)))}>
+                    {output.usd.map_or_else(String::new, |usd| format!("${usd} output → "))}
+                    {output.implied.map_or_else(|| "—".to_string(), |implied| format!("implies {}", DisplayFormat::usd_whole(implied)))}
                 </span>
             },
-            None => html! { <span class="tx-reason">{"—"}</span> },
+            None => html! { <span>{transaction.stage.hint()}</span> },
         }
     }
 }

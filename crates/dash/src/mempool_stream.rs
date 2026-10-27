@@ -15,7 +15,7 @@ pub struct MempoolStream {
 }
 
 impl MempoolStream {
-    pub const RECENT: usize = 60;
+    pub const RECENT: usize = 600;
 
     pub fn accept(&mut self, note: &NostrNote) -> bool {
         let Some(transaction) = MempoolTransaction::from_note(note) else {

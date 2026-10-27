@@ -48,6 +48,14 @@ impl MempoolTransaction {
         BlockFilter::rejection(&self.verdict)
     }
 
+    /// What all its outputs are worth at the hourly price the oracle used, or `None` without one.
+    #[must_use]
+    pub fn usd_value(&self) -> Option<f64> {
+        let price = self.price.filter(|price| price.is_finite() && *price > 0.0)?;
+        let btc: f64 = self.outputs.iter().map(TransactionOutput::btc).sum();
+        (btc > 0.0).then_some(btc * price)
+    }
+
     /// The output that carried it furthest: one inside the band, else one near a round amount.
     #[must_use]
     pub fn best_output(&self) -> Option<&TransactionOutput> {
@@ -91,6 +99,7 @@ mod tests {
         assert_eq!(transaction.short_txid(), "00112233…eeff");
         assert_eq!(transaction.best_output().and_then(|output| output.usd), Some(100));
         assert!(transaction.rejection().is_none());
+        assert!((transaction.usd_value().expect("value") - 0.001_008 * 100_000.0).abs() < 1e-6);
     }
 
     #[test]
@@ -105,6 +114,7 @@ mod tests {
         assert_eq!(transaction.rejection().map(|(label, _)| label), Some("OP_RETURN"));
         assert_eq!(transaction.price, None);
         assert!(transaction.best_output().is_none());
+        assert_eq!(transaction.usd_value(), None);
     }
 
     #[test]
