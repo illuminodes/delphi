@@ -1,0 +1,45 @@
+stages:
+  - soak
+
+variables:
+  CARGO_TARGET_DIR: "$CI_PROJECT_DIR/target"
+  SOAK_DIR: "$CI_PROJECT_DIR/soak-run"
+  SOAK_SECONDS: "7200"
+  SOAK_SAMPLE_SECS: "5"
+  SOAK_REPORT_SECS: "60"
+
+# A dry run of the daemon against mainnet: throwaway key, notes printed
+# instead of published. Starts from an empty data directory, so it covers the
+# first header sync from genesis as well as steady state.
+oracled-soak:
+  stage: soak
+  tags:
+    - ansible
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "e2e"'
+  timeout: 3h
+  resource_group: oracled-soak
+  interruptible: true
+  before_script:
+    - export PATH="$HOME/.cargo/bin:$PATH"
+    - pkill -f "$CI_PROJECT_DIR/target/release/delphi-oracled" && sleep 5 || true
+    - command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+    - test "$(cat /proc/sys/kernel/io_uring_disabled)" != 2 || { echo "io_uring is disabled on this host"; exit 1; }
+    - rm -rf "$SOAK_DIR" && mkdir -p "$SOAK_DIR"
+  script:
+    - cargo build --release -p delphi-oracled --bin delphi-oracled --bin soak_monitor
+    - >
+      target/release/soak_monitor
+      target/release/delphi-oracled
+      "$SOAK_DIR/data"
+      "$SOAK_SECONDS" "$SOAK_SAMPLE_SECS" "$SOAK_REPORT_SECS"
+      -- --dry-run
+  after_script:
+    - pkill -f "$CI_PROJECT_DIR/target/release/delphi-oracled" || true
+    - rm -rf "$CI_PROJECT_DIR/soak-run/data"
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - soak-run/data.log
+      - soak-run/soak-summary.txt
