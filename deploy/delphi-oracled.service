@@ -1,0 +1,20 @@
+[Unit]
+Description=Delphi price oracle
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/delphi-oracled --data-dir %S/delphi-oracled
+LoadCredential=oracled.nsec:/etc/delphi/oracled.nsec
+DynamicUser=yes
+StateDirectory=delphi-oracled
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
