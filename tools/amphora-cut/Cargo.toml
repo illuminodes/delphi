@@ -1,9 +1,0 @@
-[package]
-name = "amphora-cut"
-version = "0.1.0"
-edition = "2021"
-publish = false
-description = "Cuts a museum amphora photograph out of its backdrop and measures its body profile for the fumes page"
-
-[dependencies]
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

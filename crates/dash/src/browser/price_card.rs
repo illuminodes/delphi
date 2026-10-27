@@ -15,12 +15,8 @@ pub fn price_card(props: &PriceCardProps) -> Html {
     let note = &props.note;
     let label = WindowLabel::of(note.window());
     let stale = note.is_stale(props.now);
-    let class = classes!(
-        "card",
-        "price-card",
-        stale.then_some("stale"),
-        (note.window() == "mempool").then_some("live")
-    );
+    let live = note.window() == "mempool";
+    let class = classes!("card", "price-card", if live { "live" } else { "chain" }, stale.then_some("stale"));
     let pairs: Vec<(i64, f64)> = props
         .sparkline
         .iter()
@@ -32,8 +28,8 @@ pub fn price_card(props: &PriceCardProps) -> Html {
     html! {
         <article class={class}>
             <header>
-                <h2>{label.title(note.window())}</h2>
-                <span class="detail">{label.detail()}</span>
+                <span class="source-tag">{if live { "Live · mempool" } else { "Settled · chain" }}</span>
+                <span class="detail">{format!("{} · {}", label.title(note.window()), label.detail())}</span>
                 <span class={classes!("age", stale.then_some("warn"))}>
                     {if stale { format!("stale · {age}") } else { age }}
                 </span>

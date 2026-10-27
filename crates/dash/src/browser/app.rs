@@ -1,21 +1,12 @@
 use nostr_minions::{NostrRelayPoolProvider, UserRelay};
 use yew::prelude::*;
 
-use crate::ViewRoute;
-
-use super::brand_sheet::BrandSheet;
-use super::carved_wireframe::CarvedWireframe;
 use super::dashboard::Dashboard;
-use super::etched_wireframe::EtchedWireframe;
-use super::fume_page::FumePage;
-use super::oracle_page::OraclePage;
-use super::route_hook::use_view_route;
 use super::settings_panel::SettingsPanel;
 use super::settings_store::SettingsStore;
 
 #[function_component(App)]
 pub fn app() -> Html {
-    let route = use_view_route();
     let settings = use_memo((), |()| SettingsStore::load());
     let editing = use_state(|| false);
 
@@ -28,15 +19,6 @@ pub fn app() -> Html {
         let editing = editing.clone();
         Callback::from(move |()| editing.set(false))
     };
-
-    match route {
-        ViewRoute::Brand => return html! { <BrandSheet /> },
-        ViewRoute::Etched => return html! { <EtchedWireframe /> },
-        ViewRoute::Carved => return html! { <CarvedWireframe /> },
-        ViewRoute::Fumes => return html! { <FumePage /> },
-        ViewRoute::Oracle => return html! { <OraclePage /> },
-        ViewRoute::Dashboard => {}
-    }
 
     let Some((relay, publisher)) = validated else {
         return html! {

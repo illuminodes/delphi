@@ -4,7 +4,7 @@ use crate::{PanelId, TileSize};
 pub struct PanelFootprint;
 
 impl PanelFootprint {
-    const INFO: TileSize = TileSize::new(300.0, 150.0);
+    const SOURCE: TileSize = TileSize::new(300.0, 220.0);
     const PRICE: TileSize = TileSize::new(240.0, 150.0);
     const FIT: TileSize = TileSize::new(280.0, 220.0);
     const HISTORY: TileSize = TileSize::new(320.0, 230.0);
@@ -14,7 +14,7 @@ impl PanelFootprint {
     #[must_use]
     pub const fn minimum(panel: PanelId) -> TileSize {
         match panel {
-            PanelId::Info => Self::INFO,
+            PanelId::Source => Self::SOURCE,
             PanelId::Price => Self::PRICE,
             PanelId::Fit => Self::FIT,
             PanelId::History => Self::HISTORY,

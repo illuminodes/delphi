@@ -11,13 +11,13 @@ impl ConnectionSummary {
     #[must_use]
     pub fn describe(health: &HashMap<String, ReadyState>) -> (&'static str, &'static str) {
         if health.is_empty() {
-            return ("connecting", "Connecting…");
+            return ("connecting", "Connecting");
         }
         if health.values().any(|state| *state == ReadyState::OPEN) {
             return ("open", "Connected");
         }
         if health.values().any(|state| *state == ReadyState::CONNECTING) {
-            return ("connecting", "Connecting…");
+            return ("connecting", "Connecting");
         }
         ("closed", "Disconnected")
     }
@@ -25,69 +25,54 @@ impl ConnectionSummary {
 
 #[derive(Properties, PartialEq)]
 pub struct StatusBarProps {
-    pub relay: AttrValue,
-    pub publisher: AttrValue,
     pub now: i64,
-    pub rejected: usize,
     pub live: bool,
     pub status: Option<OracleStatus>,
     pub on_settings: Callback<MouseEvent>,
 }
 
+/// The bar across the top: the name, the relay connection, the chain heights the oracle
+/// reports, and the clock.
 #[function_component(StatusBar)]
 pub fn status_bar(props: &StatusBarProps) -> Html {
     let health = use_nostr_relay_pool()
         .map(|pool| pool.relay_health())
         .unwrap_or_default();
     let (state, text) = ConnectionSummary::describe(&health);
+    let status = props.status.as_ref();
+    let height = |value: Option<u32>| value.map_or_else(|| "—".to_string(), |height| DisplayFormat::count(height as usize));
 
     html! {
-        <article class="card status">
-            <div class="brand">
-                <span class={classes!("dot", state)} aria-hidden="true"></span>
-                <a class="wordmark-link" href="#delphi" title="Delphi design system"><strong>{"Delphi oracle"}</strong></a>
-                <span class="state">{text}</span>
-                <span
-                    class={classes!("live-badge", props.live.then_some("on"))}
-                    title="Notes the oracle streams while it works; they are not stored by the relay"
-                >
-                    {if props.live { "● live" } else { "○ live stream quiet" }}
-                </span>
-                {props.status.as_ref().map_or_else(|| html! {}, |status| html! {
-                    <span class="oracle-status">
-                        {status.tip.map_or_else(String::new, |tip| format!("tip {} · ", DisplayFormat::count(tip as usize)))}
-                        {status.settled.map_or_else(
-                            || "nothing settled yet · ".to_string(),
-                            |settled| format!("settled {} · ", DisplayFormat::count(settled as usize)),
-                        )}
-                        {if status.tip_stale == Some(true) {
-                            html! {
-                                <span class="warn" title="The newest block the oracle knows is over two hours old">
-                                    {format!("tip {} min old · ", status.tip_age_secs.unwrap_or(0) / 60)}
-                                </span>
-                            }
-                        } else {
-                            html! {}
-                        }}
-                        {format!(
-                            "{} mempool outputs · {} audits sent",
-                            DisplayFormat::count(status.mempool_outputs),
-                            DisplayFormat::count(usize::try_from(status.audits_published).unwrap_or(usize::MAX)),
-                        )}
-                    </span>
-                })}
+        <header class="topbar">
+            <div class="identity">
+                <span class="wordmark">{"DELPHI"}</span>
+                <span class="tagline">{"Bitcoin price oracle"}</span>
             </div>
-            <div class="meta">
-                <span title="relay">{props.relay.clone()}</span>
-                <span title="publisher">{props.publisher.clone()}</span>
-                <span>{DisplayFormat::clock(props.now)}</span>
-                {if props.rejected > 0 {
-                    html! { <span class="warn">{format!("{} unreadable", props.rejected)}</span> }
-                } else {
-                    html! {}
-                }}
-                <button type="button" onclick={props.on_settings.clone()}>{"Settings"}</button>
-            </div>
-        </article>
+            <dl class="vitals">
+                <div title="relay connection">
+                    <dt>{"Relay"}</dt>
+                    <dd><span class={classes!("dot", state)} aria-hidden="true"></span>{text}</dd>
+                </div>
+                <div title="whether the oracle's live stream has spoken in the last 90 seconds">
+                    <dt>{"Stream"}</dt>
+                    <dd class={classes!(props.live.then_some("good"))}>{if props.live { "Live" } else { "Quiet" }}</dd>
+                </div>
+                <div title="newest block the oracle validated">
+                    <dt>{"Tip"}</dt>
+                    <dd class={classes!(status.and_then(|status| status.tip_stale).unwrap_or(false).then_some("warn"))}>
+                        {height(status.and_then(|status| status.tip))}
+                    </dd>
+                </div>
+                <div title="newest block deep enough for a settled price">
+                    <dt>{"Settled"}</dt>
+                    <dd>{height(status.and_then(|status| status.settled))}</dd>
+                </div>
+                <div>
+                    <dt>{"Time"}</dt>
+                    <dd>{DisplayFormat::clock(props.now)}</dd>
+                </div>
+            </dl>
+            <button type="button" class="ghost" onclick={props.on_settings.clone()}>{"Settings"}</button>
+        </header>
     }
 }

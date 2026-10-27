@@ -8,6 +8,7 @@ use super::history_chart::HistoryChart;
 use super::history_range_input::HistoryRangeInput;
 use super::mempool_card::MempoolCard;
 use super::price_card::PriceCard;
+use super::source_panel::SourcePanel;
 use super::status_bar::StatusBar;
 use super::tabbed_card::TabbedCard;
 use super::tile_workspace::TileWorkspace;
@@ -47,18 +48,18 @@ pub fn dashboard(props: &DashboardProps) -> Html {
     let mempool = state.mempool().clone();
     let oracle_status = state.status().cloned();
 
-    let status = html! {
-        <StatusBar
+    let source = html! {
+        <SourcePanel
+            publisher={props.settings.publisher.trim().to_string()}
             relay={props.settings.relay.clone()}
-            publisher={props.publisher.short()}
+            verified={state.verified()}
+            refused={state.refused()}
+            unreadable={state.rejected()}
+            last_note={state.last_note()}
+            status={oracle_status.clone()}
             now={now}
-            rejected={state.rejected()}
-            live={state.is_live(now)}
-            status={state.status().cloned()}
-            on_settings={props.on_settings.clone()}
         />
     };
-    let waiting = notes.is_empty();
 
     let render = {
         let notes: Vec<_> = notes.iter().map(|note| (*note).clone()).collect();
@@ -87,12 +88,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
             fits.latest(&window).map_or_else(Html::default, |fit| html! { <FitPanel fit={fit.clone()} /> })
         });
         Callback::from(move |panel: PanelId| match panel {
-            PanelId::Info => html! {
-                <>
-                    {status.clone()}
-                    {waiting.then(|| html! { <p class="empty">{"Waiting for the first price from this publisher…"}</p> })}
-                </>
-            },
+            PanelId::Source => source.clone(),
             PanelId::Price => html! {
                 <TabbedCard tabs={price_tabs.clone()} render={price.clone()} waiting="Waiting for the first price…" />
             },
@@ -105,7 +101,9 @@ pub fn dashboard(props: &DashboardProps) -> Html {
                     <TabbedCard tabs={history_tabs.clone()} render={history.clone()} waiting="Waiting for audited blocks…" />
                 </div>
             },
-            PanelId::Blockchain => html! { <BlockchainCard blocks={blocks.clone()} now={now} /> },
+            PanelId::Blockchain => html! {
+                <BlockchainCard blocks={blocks.clone()} status={oracle_status.clone()} now={now} />
+            },
             PanelId::Mempool => html! {
                 <MempoolCard stream={mempool.clone()} status={oracle_status.clone()} now={now} />
             },
@@ -114,6 +112,12 @@ pub fn dashboard(props: &DashboardProps) -> Html {
 
     html! {
         <div class="shell">
+            <StatusBar
+                now={now}
+                live={state.is_live(now)}
+                status={state.status().cloned()}
+                on_settings={props.on_settings.clone()}
+            />
             <main class="workspace">
                 <TileWorkspace render={render} />
             </main>

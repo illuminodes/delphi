@@ -5,12 +5,12 @@ pub enum PanelId {
     Fit,
     Blockchain,
     Mempool,
-    Info,
+    Source,
     Price,
 }
 
 impl PanelId {
-    pub const ALL: [Self; 6] = [Self::History, Self::Fit, Self::Blockchain, Self::Mempool, Self::Info, Self::Price];
+    pub const ALL: [Self; 6] = [Self::History, Self::Fit, Self::Blockchain, Self::Mempool, Self::Source, Self::Price];
 
     #[must_use]
     pub const fn title(&self) -> &'static str {
@@ -19,7 +19,7 @@ impl PanelId {
             Self::Fit => "Fit",
             Self::Blockchain => "Blockchain",
             Self::Mempool => "Mempool",
-            Self::Info => "Information",
+            Self::Source => "Source",
             Self::Price => "Price",
         }
     }

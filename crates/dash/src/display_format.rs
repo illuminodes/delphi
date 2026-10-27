@@ -38,6 +38,16 @@ impl DisplayFormat {
         }
     }
 
+    /// A span of time in its two largest units, e.g. `3h 12m`.
+    #[must_use]
+    pub fn duration(seconds: u64) -> String {
+        match seconds {
+            0..=3_599 => format!("{}m", seconds / 60),
+            3_600..=86_399 => format!("{}h {}m", seconds / 3_600, seconds % 3_600 / 60),
+            _ => format!("{}d {}h", seconds / 86_400, seconds % 86_400 / 3_600),
+        }
+    }
+
     #[must_use]
     pub fn percent(value: f64) -> String {
         if value.is_finite() {
@@ -83,6 +93,13 @@ impl DisplayFormat {
 #[cfg(test)]
 mod tests {
     use super::DisplayFormat;
+
+    #[test]
+    fn durations_show_their_two_largest_units() {
+        assert_eq!(DisplayFormat::duration(59), "0m");
+        assert_eq!(DisplayFormat::duration(3_660), "1h 1m");
+        assert_eq!(DisplayFormat::duration(90_000), "1d 1h");
+    }
 
     #[test]
     fn dollars_are_grouped_and_carry_two_decimals() {

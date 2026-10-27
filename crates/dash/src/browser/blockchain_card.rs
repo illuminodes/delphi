@@ -1,11 +1,13 @@
 use yew::prelude::*;
 
+use super::block_strip_view::BlockStripView;
 use super::filter_funnel::FilterFunnel;
-use crate::{BlockFilter, ChainBlock, ChainBlocks, CivilTime, DisplayFormat};
+use crate::{BlockFilter, BlockStrip, ChainBlock, ChainBlocks, CivilTime, DisplayFormat, OracleStatus};
 
 #[derive(Properties, PartialEq)]
 pub struct BlockchainCardProps {
     pub blocks: Option<ChainBlocks>,
+    pub status: Option<OracleStatus>,
     pub now: i64,
 }
 
@@ -20,6 +22,8 @@ pub fn blockchain_card(props: &BlockchainCardProps) -> Html {
     };
     let age = DisplayFormat::age(props.now - tip.time);
     let facts = BlockchainFacts::of(tip, blocks);
+    let status = props.status.as_ref();
+    let strip = BlockStrip::new(blocks, status.and_then(|status| status.tip), status.and_then(|status| status.settled));
 
     html! {
         <article class="card blockchain-card">
@@ -29,6 +33,7 @@ pub fn blockchain_card(props: &BlockchainCardProps) -> Html {
                 <span class="age">{age}</span>
             </header>
             <p class="block-hash" title={tip.hash.clone()}>{tip.hash.clone()}</p>
+            <BlockStripView strip={strip} />
             <ul class="facts">
                 {for facts.into_iter().map(|(label, value, hint)| html! {
                     <li title={hint}>

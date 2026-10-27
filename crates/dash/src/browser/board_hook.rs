@@ -23,10 +23,11 @@ pub fn use_dash_state(publisher: &PublisherKey, range: HistoryRange) -> DashStat
         let state = state.clone();
         let gate = NoteGate::new(publisher.hex());
         move |note| {
-            if !gate.admits(&note) {
-                return;
+            if gate.admits(&note) {
+                state.borrow_mut().accept(&note);
+            } else {
+                state.borrow_mut().refuse();
             }
-            state.borrow_mut().accept(&note);
             refresh.force_update();
         }
     });

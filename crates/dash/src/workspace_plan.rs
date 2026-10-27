@@ -10,7 +10,7 @@ impl WorkspacePlan {
         (PanelId::Fit, 3),
         (PanelId::Blockchain, 3),
         (PanelId::Mempool, 3),
-        (PanelId::Info, 2),
+        (PanelId::Source, 2),
         (PanelId::Price, 1),
     ];
 

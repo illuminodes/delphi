@@ -5,9 +5,6 @@ members = [
     "crates/oracle",
     "crates/oracled",
     "crates/dash",
-    "tools/vein-preview",
-    "tools/amphora-cut",
-    "tools/stone-fetch",
 ]
 
 [workspace.package]

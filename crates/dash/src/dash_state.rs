@@ -12,7 +12,10 @@ pub struct DashState {
     blocks: Option<ChainBlocks>,
     mempool: MempoolStream,
     last_live: Option<i64>,
+    last_note: Option<i64>,
     history_since: i64,
+    verified: usize,
+    refused: usize,
 }
 
 impl DashState {
@@ -26,7 +29,10 @@ impl DashState {
         self.history_since = range.since(now);
     }
 
+    /// Takes a note whose signature the gate already checked.
     pub fn accept(&mut self, note: &NostrNote) {
+        self.verified += 1;
+        self.last_note = Some(self.last_note.map_or(note.created_at, |last| last.max(note.created_at)));
         if note.kind == NoteKind::TRANSACTION {
             self.mempool.accept(note);
             return;
@@ -83,6 +89,27 @@ impl DashState {
     pub fn is_live(&self, now: i64) -> bool {
         self.last_live
             .is_some_and(|last| now - last <= Self::LIVE_WITHIN_SECONDS)
+    }
+
+    /// Counts a note the gate turned away: another key, or a bad signature.
+    pub const fn refuse(&mut self) {
+        self.refused += 1;
+    }
+
+    #[must_use]
+    pub const fn verified(&self) -> usize {
+        self.verified
+    }
+
+    #[must_use]
+    pub const fn refused(&self) -> usize {
+        self.refused
+    }
+
+    /// When the newest signed note was created.
+    #[must_use]
+    pub const fn last_note(&self) -> Option<i64> {
+        self.last_note
     }
 
     #[must_use]
@@ -205,6 +232,18 @@ mod tests {
         assert_eq!(state.mempool().total(), 1);
         assert!(state.prices().is_empty());
         assert_eq!(state.rejected(), 0);
+    }
+
+    #[test]
+    fn signed_and_refused_notes_are_counted_and_the_newest_time_kept() {
+        let mut state = DashState::default();
+        state.accept(&StateFixture::live("status", r#"{"tip":5}"#, 300));
+        state.accept(&StateFixture::live("status", r#"{"tip":4}"#, 200));
+        state.refuse();
+
+        assert_eq!(state.verified(), 2);
+        assert_eq!(state.refused(), 1);
+        assert_eq!(state.last_note(), Some(300));
     }
 
     #[test]
