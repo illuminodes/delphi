@@ -9,7 +9,6 @@ use super::history_range_input::HistoryRangeInput;
 use super::mempool_card::MempoolCard;
 use super::price_card::PriceCard;
 use super::source_panel::SourcePanel;
-use super::status_bar::StatusBar;
 use super::tabbed_card::TabbedCard;
 use super::tile_workspace::TileWorkspace;
 use crate::{DashSettings, FeedFilter, HistoryRange, PanelId, PublisherKey, WindowLabel, WindowTabs};
@@ -56,8 +55,10 @@ pub fn dashboard(props: &DashboardProps) -> Html {
             refused={state.refused()}
             unreadable={state.rejected()}
             last_note={state.last_note()}
+            live={state.is_live(now)}
             status={oracle_status.clone()}
             now={now}
+            on_settings={props.on_settings.clone()}
         />
     };
 
@@ -111,16 +112,8 @@ pub fn dashboard(props: &DashboardProps) -> Html {
     };
 
     html! {
-        <div class="shell">
-            <StatusBar
-                now={now}
-                live={state.is_live(now)}
-                status={state.status().cloned()}
-                on_settings={props.on_settings.clone()}
-            />
-            <main class="workspace">
-                <TileWorkspace render={render} />
-            </main>
-        </div>
+        <main class="workspace">
+            <TileWorkspace render={render} />
+        </main>
     }
 }

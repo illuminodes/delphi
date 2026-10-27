@@ -36,38 +36,14 @@ body {
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
-.shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
-
-/* Top bar */
-
-.topbar {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 1.5rem;
-    padding: 0.6rem 1rem;
-    border-bottom: 1px solid var(--line);
-    background: var(--bg);
-    overflow-x: auto;
-}
-.identity { display: flex; align-items: baseline; gap: 0.75rem; white-space: nowrap; }
-.wordmark { font-weight: 600; font-size: 0.95rem; letter-spacing: 0.32em; }
-.tagline { color: var(--muted); font-size: 0.8rem; }
-.vitals { display: flex; gap: 1.5rem; margin: 0 0 0 auto; }
-.vitals > div { display: flex; flex-direction: column; gap: 0.05rem; white-space: nowrap; }
-.vitals dt { color: var(--faint); font-size: 0.66rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
-.vitals dd { margin: 0; display: flex; align-items: center; gap: 0.4rem; font: 500 0.82rem var(--mono); font-variant-numeric: tabular-nums; }
-.vitals dd.good { color: var(--good); }
-.vitals dd.warn { color: var(--warn); }
-
-.dot { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--muted); }
+.dot { flex: 0 0 auto; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--muted); }
 .dot.open { background: var(--good); }
 .dot.connecting { background: var(--warn); }
 .dot.closed { background: var(--bad); }
 
 /* Tiled workspace */
 
-.workspace { flex: 1 1 auto; min-height: 0; display: flex; padding: 0.35rem; }
+.workspace { height: 100vh; height: 100dvh; display: flex; padding: 0.35rem; }
 
 .tiles-viewport { flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; position: relative; }
 .tiles { position: relative; touch-action: none; }
@@ -237,6 +213,9 @@ body {
 .source-facts dt { color: var(--muted); font-size: 0.75rem; }
 .source-facts dd { margin: 0; font: 0.75rem var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .source-facts dd.key { color: var(--text); }
+.source-facts dd.good { color: var(--good); }
+.source-facts dd:has(.dot) { display: flex; align-items: center; gap: 0.4rem; }
+.source-card header { justify-content: space-between; align-items: center; }
 .method { margin: 0.5rem 0 0; padding-top: 0.6rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
 
 /* Controls and settings */
