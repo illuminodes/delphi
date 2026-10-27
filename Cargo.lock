@@ -282,9 +282,9 @@ dependencies = [
  "mantle",
  "mantle-consensus",
  "mantle-fetcher",
- "nostro2 0.9.0",
+ "nostro2",
  "nostro2-relay",
- "nostro2-signer 0.8.0",
+ "nostro2-signer",
  "quetzalcoatl",
  "rustix",
  "serde_json",
@@ -1072,15 +1072,15 @@ dependencies = [
 
 [[package]]
 name = "nostr-minions"
-version = "0.4.1"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a8d9f1c8f19f7520e335fd07d1a74b5213d93e226677a06cc2ce4166fc228aa"
+checksum = "a641c371d5e483039b667e32d94c759ceec2d44c1d31daa0b67b9ba055bff385"
 dependencies = [
  "futures",
  "idb",
- "nostro2 0.8.2",
- "nostro2-nips 0.5.1",
- "nostro2-signer 0.6.0",
+ "nostro2",
+ "nostro2-nips",
+ "nostro2-signer",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -1089,21 +1089,6 @@ dependencies = [
  "web-sys",
  "yew",
  "yew-agent",
-]
-
-[[package]]
-name = "nostro2"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e644c7fb659f9b0febf0043fe6f14eae529ebb7d487f8fdf135f70d445e3ff76"
-dependencies = [
- "getrandom 0.4.2",
- "js-sys",
- "k256",
- "nostro2-traits",
- "serde",
- "serde_json",
- "sha2",
 ]
 
 [[package]]
@@ -1132,25 +1117,6 @@ dependencies = [
 
 [[package]]
 name = "nostro2-nips"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fc63001de7cbcf4a6f50c3380a22120d950c9b7d9edef2f67b1ca131431b8c8"
-dependencies = [
- "base64 0.22.1",
- "chacha20",
- "getrandom 0.4.2",
- "hkdf",
- "hmac",
- "nostro2 0.8.2",
- "nostro2-traits",
- "serde",
- "serde_json",
- "sha2",
- "zeroize",
-]
-
-[[package]]
-name = "nostro2-nips"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0e050aa95dcbe807052b4d9200a579c2189c9559a7ada839ca436268f333fe2"
@@ -1160,7 +1126,7 @@ dependencies = [
  "getrandom 0.4.2",
  "hkdf",
  "hmac",
- "nostro2 0.9.0",
+ "nostro2",
  "nostro2-traits",
  "serde",
  "serde_json",
@@ -1177,7 +1143,7 @@ dependencies = [
  "coyoquil",
  "futures-core",
  "log",
- "nostro2 0.9.0",
+ "nostro2",
  "nostro2-cache",
  "quetzalcoatl",
  "rustls",
@@ -1188,29 +1154,14 @@ dependencies = [
 
 [[package]]
 name = "nostro2-signer"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "713e9e0272eef26676e3adacb0856ed66ed98fc4de7f7f0a6b998c0c54f873a7"
-dependencies = [
- "getrandom 0.4.2",
- "k256",
- "nostro2 0.8.2",
- "nostro2-nips 0.5.1",
- "nostro2-traits",
- "xinachtli",
- "zeroize",
-]
-
-[[package]]
-name = "nostro2-signer"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d1d97d80e2378542738a0b79d8df2d6641d2bbba54d042a037c4926da121130"
 dependencies = [
  "getrandom 0.4.2",
  "k256",
- "nostro2 0.9.0",
- "nostro2-nips 0.7.0",
+ "nostro2",
+ "nostro2-nips",
  "nostro2-traits",
  "xinachtli",
  "zeroize",
