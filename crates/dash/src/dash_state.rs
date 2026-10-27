@@ -1,6 +1,6 @@
 use nostr_minions::NostrNote;
 
-use crate::{ChainBlocks, FitBoard, FitNote, HistoryRange, MempoolStream, NoteKind, OracleStatus, PriceBoard};
+use crate::{ChainBlocks, FitBoard, FitNote, HistoryRange, KeptNotes, MempoolStream, NoteKind, OracleStatus, PriceBoard};
 
 /// Everything one publisher has sent: prices and their history, the fits
 /// behind them, and the daemon's last word about itself.
@@ -10,7 +10,10 @@ pub struct DashState {
     fits: FitBoard,
     status: Option<OracleStatus>,
     blocks: Option<ChainBlocks>,
+    kept: KeptNotes,
+    saved_only: bool,
     mempool: MempoolStream,
+    history_loading: Option<usize>,
     last_live: Option<i64>,
     last_note: Option<i64>,
     history_since: i64,
@@ -33,17 +36,37 @@ impl DashState {
     pub fn accept(&mut self, note: &NostrNote) {
         self.verified += 1;
         self.last_note = Some(self.last_note.map_or(note.created_at, |last| last.max(note.created_at)));
-        if note.kind == NoteKind::TRANSACTION {
-            self.mempool.accept(note);
-            return;
-        }
-        if note.kind == NoteKind::AUDIT && note.created_at < self.history_since {
-            return;
-        }
         if note.kind == NoteKind::LIVE {
             self.last_live = Some(self.last_live.map_or(note.created_at, |last| last.max(note.created_at)));
         }
+        if self.apply(note) {
+            self.saved_only = false;
+        }
+    }
+
+    /// Takes a note saved by an earlier visit, already checked again by the gate. It fills the
+    /// cards but does not count as heard from the relay.
+    pub fn restore(&mut self, note: &NostrNote) {
+        if self.apply(note) {
+            self.saved_only = true;
+        }
+    }
+
+    /// Files `note` on its card; returns whether it replaced a repeated note (status, blocks, fit).
+    fn apply(&mut self, note: &NostrNote) -> bool {
+        if note.kind == NoteKind::TRANSACTION {
+            self.mempool.accept(note);
+            return false;
+        }
+        if note.kind == NoteKind::AUDIT && note.created_at < self.history_since {
+            return false;
+        }
         let window = NoteKind::window(note);
+        let repeated = window
+            .is_some_and(|window| window == OracleStatus::WINDOW || window == ChainBlocks::WINDOW || FitNote::is_fit_window(window));
+        if repeated && !self.kept.keep(note) {
+            return false;
+        }
         if window == Some(OracleStatus::WINDOW) {
             if let Some(status) = OracleStatus::from_note(note) {
                 self.status = Some(status);
@@ -57,6 +80,13 @@ impl DashState {
         } else {
             self.prices.accept(note);
         }
+        repeated
+    }
+
+    /// Whether the status, blocks and fits shown all come from an earlier visit's saved copy.
+    #[must_use]
+    pub const fn saved_only(&self) -> bool {
+        self.saved_only
     }
 
     #[must_use]
@@ -77,6 +107,23 @@ impl DashState {
     #[must_use]
     pub const fn blocks(&self) -> Option<&ChainBlocks> {
         self.blocks.as_ref()
+    }
+
+    /// The newest status, blocks and fit notes, for saving.
+    #[must_use]
+    pub const fn kept(&self) -> &KeptNotes {
+        &self.kept
+    }
+
+    /// How many history notes are held back while the relay is still sending them, or `None`
+    /// once they are shown.
+    #[must_use]
+    pub const fn history_loading(&self) -> Option<usize> {
+        self.history_loading
+    }
+
+    pub const fn set_history_loading(&mut self, held: Option<usize>) {
+        self.history_loading = held;
     }
 
     #[must_use]
@@ -244,6 +291,42 @@ mod tests {
         assert_eq!(state.verified(), 2);
         assert_eq!(state.refused(), 1);
         assert_eq!(state.last_note(), Some(300));
+    }
+
+    #[test]
+    fn an_older_status_does_not_replace_a_newer_one() {
+        let mut state = DashState::default();
+        state.accept(&StateFixture::live("status", r#"{"tip":5}"#, 300));
+        state.accept(&StateFixture::live("status", r#"{"tip":4}"#, 200));
+
+        assert_eq!(state.status().and_then(|status| status.tip), Some(5));
+    }
+
+    #[test]
+    fn a_stored_copy_fills_the_card_without_marking_the_stream_live() {
+        let mut state = DashState::default();
+        let mut stored = StateFixture::live("status", r#"{"tip":5}"#, 100);
+        stored.kind = NoteKind::STORED;
+        state.accept(&stored);
+
+        assert_eq!(state.status().and_then(|status| status.tip), Some(5));
+        assert!(!state.is_live(100));
+    }
+
+    #[test]
+    fn a_restored_note_fills_the_card_but_is_not_counted() {
+        let mut state = DashState::default();
+        state.restore(&StateFixture::live("status", r#"{"tip":5}"#, 100));
+
+        assert_eq!(state.status().and_then(|status| status.tip), Some(5));
+        assert_eq!(state.verified(), 0);
+        assert_eq!(state.last_note(), None);
+        assert!(!state.is_live(100));
+        assert!(state.saved_only());
+        assert_eq!(state.kept().revision(), 1);
+
+        state.accept(&StateFixture::live("blocks", r#"{"blocks":[]}"#, 101));
+        assert!(!state.saved_only());
     }
 
     #[test]

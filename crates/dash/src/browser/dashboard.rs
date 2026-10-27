@@ -37,6 +37,11 @@ pub fn dashboard(props: &DashboardProps) -> Html {
     let fitted = fits.windows();
     let history_tabs = WindowTabs::longest_first(&charted).led_by(WindowLabel::DAILY);
     let loaded: usize = FeedFilter::WINDOWS.iter().map(|window| board.history(window).len()).sum();
+    let history_waiting = state.history_loading().map_or_else(
+        || AttrValue::from("Waiting for audited blocks…"),
+        |held| AttrValue::from(format!("Loading audited blocks… {held} notes so far")),
+    );
+    let history_tabs = if state.history_loading().is_some() { WindowTabs::shortest_first::<&str>(&[]) } else { history_tabs };
     let on_range = {
         let range = range.clone();
         Callback::from(move |picked: HistoryRange| range.set(picked))
@@ -56,6 +61,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
             unreadable={state.rejected()}
             last_note={state.last_note()}
             live={state.is_live(now)}
+            saved_only={state.saved_only()}
             status={oracle_status.clone()}
             now={now}
             on_settings={props.on_settings.clone()}
@@ -106,7 +112,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
             PanelId::History => html! {
                 <div class="history-panel">
                     <HistoryRangeInput range={*range} loaded={loaded} on_change={on_range.clone()} />
-                    <TabbedCard tabs={history_tabs.clone()} render={history.clone()} waiting="Waiting for audited blocks…" />
+                    <TabbedCard tabs={history_tabs.clone()} render={history.clone()} waiting={history_waiting.clone()} />
                 </div>
             },
             PanelId::Blockchain => html! {

@@ -13,6 +13,7 @@ pub struct SourcePanelProps {
     pub unreadable: usize,
     pub last_note: Option<i64>,
     pub live: bool,
+    pub saved_only: bool,
     pub status: Option<OracleStatus>,
     pub now: i64,
     pub on_settings: Callback<MouseEvent>,
@@ -66,6 +67,11 @@ pub fn source_panel(props: &SourcePanelProps) -> Html {
                     <dt>{"Stream"}</dt>
                     <dd class={classes!(props.live.then_some("good"))}>{if props.live { "Live" } else { "Quiet" }}</dd>
                 </div>
+                {if props.saved_only {
+                    row("Showing", "Saved from the last visit".to_string(), "status, blocks and fits saved in this browser, signatures checked again; replaced as fresh notes arrive")
+                } else {
+                    html! {}
+                }}
                 <div title="the oracle's public key; every note is signed by it">
                     <dt>{"Signed by"}</dt>
                     <dd class="key">{props.publisher.clone()}</dd>

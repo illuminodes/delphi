@@ -37,7 +37,7 @@ impl OracleStatus {
 
     #[must_use]
     pub fn from_note(note: &NostrNote) -> Option<Self> {
-        if note.kind != NoteKind::LIVE || NoteKind::window(note) != Some(Self::WINDOW) {
+        if !NoteKind::carries_live(note.kind) || NoteKind::window(note) != Some(Self::WINDOW) {
             return None;
         }
         let mut status: Self = serde_json::from_str(&note.content).ok()?;

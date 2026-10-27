@@ -1,9 +1,10 @@
 use nostr_minions::NostrSubscription;
 
-use crate::{HistoryRange, NoteKind};
+use crate::{ChainBlocks, FitNote, HistoryRange, NoteKind, OracleStatus};
 
 /// The relay filters the dashboard opens: the stored audit history over a
-/// range, the live stream, and the per-transaction stream.
+/// range, the live stream, the stored copies of its repeated notes, and the
+/// per-transaction stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeedFilter {
     author: String,
@@ -43,6 +44,21 @@ impl FeedFilter {
             .author(self.author.clone())
     }
 
+    /// The newest stored copy of the status, blocks and each chain fit, named so that addressable
+    /// notes from older daemons are left out. The mempool fit is not stored; it streams every few
+    /// seconds.
+    #[must_use]
+    pub fn stored(&self) -> NostrSubscription {
+        let mut filter = NostrSubscription::new()
+            .kind(NoteKind::STORED)
+            .author(self.author.clone());
+        let fits = Self::WINDOWS.map(|window| format!("{}{window}", FitNote::PREFIX));
+        for window in [OracleStatus::WINDOW, ChainBlocks::WINDOW].into_iter().chain(fits.iter().map(String::as_str)) {
+            filter.add_tag("d", &format!("{}{window}", NoteKind::STORED_PREFIX));
+        }
+        filter
+    }
+
     #[must_use]
     pub fn transactions(&self) -> NostrSubscription {
         NostrSubscription::new()
@@ -77,6 +93,18 @@ mod tests {
 
         assert!(filter.kinds.as_ref().is_some_and(|kinds| kinds.contains(&NoteKind::LIVE)));
         assert!(filter.since.is_none());
+    }
+
+    #[test]
+    fn the_stored_filter_names_each_repeated_window() {
+        let filter = FeedFilter::new("ab").stored();
+        let names = &filter.tags.as_ref().expect("tags")["d"];
+
+        assert!(filter.kinds.as_ref().is_some_and(|kinds| kinds.contains(&NoteKind::STORED)));
+        assert!(names.contains("latest-status"));
+        assert!(names.contains("latest-blocks"));
+        assert!(names.contains("latest-fit-chain-1d"));
+        assert!(!names.contains("chain-1h"));
     }
 
     #[test]

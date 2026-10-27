@@ -14,7 +14,7 @@ impl ChainBlocks {
 
     #[must_use]
     pub fn from_note(note: &NostrNote) -> Option<Self> {
-        if note.kind != NoteKind::LIVE || NoteKind::window(note) != Some(Self::WINDOW) {
+        if !NoteKind::carries_live(note.kind) || NoteKind::window(note) != Some(Self::WINDOW) {
             return None;
         }
         let mut blocks: Self = serde_json::from_str(&note.content).ok()?;

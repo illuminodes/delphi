@@ -113,7 +113,7 @@ impl FitNote {
     }
 
     pub fn from_note(note: &NostrNote) -> Result<Self, FitNoteError> {
-        if note.kind != NoteKind::LIVE {
+        if !NoteKind::carries_live(note.kind) {
             return Err(FitNoteError::WrongKind(note.kind));
         }
         let window = NoteKind::window(note)
