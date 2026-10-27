@@ -1177,6 +1177,7 @@ dependencies = [
 [[package]]
 name = "mantle"
 version = "0.1.0"
+source = "git+https://github.com/illuminodes/mantle?rev=c3a4fe41796f708e71750168794ffe36dbc5f701#c3a4fe41796f708e71750168794ffe36dbc5f701"
 dependencies = [
  "sha2",
 ]
@@ -1184,6 +1185,7 @@ dependencies = [
 [[package]]
 name = "mantle-block-io"
 version = "0.1.0"
+source = "git+https://github.com/illuminodes/mantle?rev=c3a4fe41796f708e71750168794ffe36dbc5f701#c3a4fe41796f708e71750168794ffe36dbc5f701"
 dependencies = [
  "mantle",
  "quetzalcoatl",
@@ -1193,6 +1195,7 @@ dependencies = [
 [[package]]
 name = "mantle-consensus"
 version = "0.1.0"
+source = "git+https://github.com/illuminodes/mantle?rev=c3a4fe41796f708e71750168794ffe36dbc5f701#c3a4fe41796f708e71750168794ffe36dbc5f701"
 dependencies = [
  "k256",
  "mantle",
@@ -1204,6 +1207,7 @@ dependencies = [
 [[package]]
 name = "mantle-fetcher"
 version = "0.1.0"
+source = "git+https://github.com/illuminodes/mantle?rev=c3a4fe41796f708e71750168794ffe36dbc5f701#c3a4fe41796f708e71750168794ffe36dbc5f701"
 dependencies = [
  "mantle",
  "mantle-block-io",
@@ -1215,6 +1219,7 @@ dependencies = [
 [[package]]
 name = "mantle-transport"
 version = "0.1.0"
+source = "git+https://github.com/illuminodes/mantle?rev=c3a4fe41796f708e71750168794ffe36dbc5f701#c3a4fe41796f708e71750168794ffe36dbc5f701"
 dependencies = [
  "mantle",
  "ququmatz",
@@ -1295,7 +1300,7 @@ dependencies = [
  "getrandom 0.4.2",
  "js-sys",
  "k256",
- "nostro2-traits 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "nostro2-traits",
  "serde",
  "serde_json",
  "sha2",
@@ -1304,11 +1309,13 @@ dependencies = [
 [[package]]
 name = "nostro2"
 version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a534bf40591301b08a3f75686c2446dae0563239f6cc451c52a8c1140fc6875"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
  "k256",
- "nostro2-traits 0.3.1",
+ "nostro2-traits",
  "serde",
  "serde_json",
  "sha2",
@@ -1317,6 +1324,8 @@ dependencies = [
 [[package]]
 name = "nostro2-cache"
 version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95cf1079c6e6547b1e956dee8fdbb5c4d3858889da04614e77840ea66cf6f1e9"
 dependencies = [
  "lru",
 ]
@@ -1333,7 +1342,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "nostro2 0.8.2",
- "nostro2-traits 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "nostro2-traits",
  "serde",
  "serde_json",
  "sha2",
@@ -1343,6 +1352,8 @@ dependencies = [
 [[package]]
 name = "nostro2-nips"
 version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0e050aa95dcbe807052b4d9200a579c2189c9559a7ada839ca436268f333fe2"
 dependencies = [
  "base64 0.22.1",
  "chacha20",
@@ -1350,7 +1361,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "nostro2 0.9.0",
- "nostro2-traits 0.3.1",
+ "nostro2-traits",
  "serde",
  "serde_json",
  "sha2",
@@ -1360,6 +1371,8 @@ dependencies = [
 [[package]]
 name = "nostro2-relay"
 version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17db0c5b1d4c6884c2a05b4ca4b9f91489444f0501927421eb467fd1dbbc248f"
 dependencies = [
  "coyoquil",
  "futures-core",
@@ -1383,7 +1396,7 @@ dependencies = [
  "k256",
  "nostro2 0.8.2",
  "nostro2-nips 0.5.1",
- "nostro2-traits 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "nostro2-traits",
  "xinachtli",
  "zeroize",
 ]
@@ -1391,19 +1404,17 @@ dependencies = [
 [[package]]
 name = "nostro2-signer"
 version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d1d97d80e2378542738a0b79d8df2d6641d2bbba54d042a037c4926da121130"
 dependencies = [
  "getrandom 0.4.2",
  "k256",
  "nostro2 0.9.0",
  "nostro2-nips 0.7.0",
- "nostro2-traits 0.3.1",
+ "nostro2-traits",
  "xinachtli",
  "zeroize",
 ]
-
-[[package]]
-name = "nostro2-traits"
-version = "0.3.1"
 
 [[package]]
 name = "nostro2-traits"
@@ -1618,6 +1629,8 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 [[package]]
 name = "quetzalcoatl"
 version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81eea00c7a8c79f8ef98c0a60f924b4b1c7cb846a30936c64c706fb972574ab7"
 dependencies = [
  "loom",
 ]

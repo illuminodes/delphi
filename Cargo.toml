@@ -33,15 +33,12 @@ debug = false
 strip = true
 
 [workspace.dependencies]
-mantle = { path = "../mantle/crates/mantle" }
-mantle-block-io = { path = "../mantle/crates/block-io" }
-mantle-consensus = { path = "../mantle/crates/consensus" }
-mantle-fetcher = { path = "../mantle/crates/fetcher" }
-mantle-transport = { path = "../mantle/crates/transport" }
-nostro2 = { path = "/home/cuarentaydos/Code/illuminodes/NostrO2/crates/core", default-features = false, features = ["serde", "k256"] }
-nostro2-signer = { path = "/home/cuarentaydos/Code/illuminodes/NostrO2/crates/signer", default-features = false, features = ["serde", "k256"] }
-nostro2-relay = { path = "/home/cuarentaydos/Code/illuminodes/NostrO2/crates/relay" }
+mantle = { git = "https://github.com/illuminodes/mantle", rev = "c3a4fe41796f708e71750168794ffe36dbc5f701" }
+mantle-block-io = { git = "https://github.com/illuminodes/mantle", rev = "c3a4fe41796f708e71750168794ffe36dbc5f701" }
+mantle-consensus = { git = "https://github.com/illuminodes/mantle", rev = "c3a4fe41796f708e71750168794ffe36dbc5f701" }
+mantle-fetcher = { git = "https://github.com/illuminodes/mantle", rev = "c3a4fe41796f708e71750168794ffe36dbc5f701" }
+mantle-transport = { git = "https://github.com/illuminodes/mantle", rev = "c3a4fe41796f708e71750168794ffe36dbc5f701" }
+nostro2 = { version = "0.9.0", default-features = false, features = ["serde", "k256"] }
+nostro2-signer = { version = "0.8.0", default-features = false, features = ["serde", "k256"] }
+nostro2-relay = "0.10.0"
 quetzalcoatl = "0.15.2"
-
-[patch.crates-io]
-quetzalcoatl = { path = "/home/cuarentaydos/Code/tooling/quetzalcoatl" }
