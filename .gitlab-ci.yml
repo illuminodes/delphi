@@ -4,6 +4,8 @@ stages:
 
 variables:
   CARGO_TARGET_DIR: "$CI_PROJECT_DIR/target"
+  # The shell runner reuses its checkout; keep build caches between jobs.
+  GIT_CLEAN_FLAGS: -ffdx -e /target/ -e /crates/dash/node_modules/
   SOAK_DIR: "$CI_PROJECT_DIR/soak-run"
   SOAK_SECONDS: "7200"
   SOAK_SAMPLE_SECS: "5"
