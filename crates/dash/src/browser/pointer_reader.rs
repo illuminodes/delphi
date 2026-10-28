@@ -1,4 +1,3 @@
-use wasm_bindgen::JsCast;
 use web_sys::Element;
 use yew::prelude::*;
 
@@ -7,9 +6,10 @@ use crate::ChartLayout;
 pub struct PointerReader;
 
 impl PointerReader {
-    pub fn chart_x(event: &MouseEvent, layout: &ChartLayout) -> Option<f64> {
-        let element = event.current_target()?.dyn_into::<Element>().ok()?;
-        let rect = element.get_bounding_client_rect();
+    /// The pointer's x in `layout` units across `plot`, the element the chart fills. Yew delegates
+    /// events to its root, so the event's own current target is not the chart.
+    pub fn chart_x(event: &MouseEvent, plot: &NodeRef, layout: &ChartLayout) -> Option<f64> {
+        let rect = plot.cast::<Element>()?.get_bounding_client_rect();
         if rect.width() <= 0.0 {
             return None;
         }

@@ -44,8 +44,9 @@ pub fn fit_panel(props: &FitPanelProps) -> Html {
             let on_move = {
                 let hovered = hovered.clone();
                 let chart = chart.clone();
+                let plot = plot.clone();
                 Callback::from(move |event: MouseEvent| {
-                    if let Some(x) = PointerReader::chart_x(&event, chart.layout()) {
+                    if let Some(x) = PointerReader::chart_x(&event, &plot, chart.layout()) {
                         hovered.set(Some(chart.price_at(x)));
                     }
                 })

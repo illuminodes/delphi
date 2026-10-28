@@ -37,11 +37,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
     let fitted = fits.windows();
     let history_tabs = WindowTabs::longest_first(&charted).led_by(WindowLabel::DAILY);
     let loaded: usize = FeedFilter::WINDOWS.iter().map(|window| board.history(window).len()).sum();
-    let history_waiting = state.history_loading().map_or_else(
-        || AttrValue::from("Waiting for audited blocks…"),
-        |held| AttrValue::from(format!("Loading audited blocks… {held} notes so far")),
-    );
-    let history_tabs = if state.history_loading().is_some() { WindowTabs::shortest_first::<&str>(&[]) } else { history_tabs };
+    let history_loading = state.history_loading();
     let on_range = {
         let range = range.clone();
         Callback::from(move |picked: HistoryRange| range.set(picked))
@@ -88,7 +84,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
         let history = {
             let board = state.prices().clone();
             Callback::from(move |window: String| html! {
-                <HistoryChart window={window.clone()} points={board.history(&window)} />
+                <HistoryChart window={window.clone()} points={board.history(&window)} loading={history_loading} />
             })
         };
         let fit = Callback::from(move |window: String| {
@@ -112,7 +108,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
             PanelId::History => html! {
                 <div class="history-panel">
                     <HistoryRangeInput range={*range} loaded={loaded} on_change={on_range.clone()} />
-                    <TabbedCard tabs={history_tabs.clone()} render={history.clone()} waiting={history_waiting.clone()} />
+                    <TabbedCard tabs={history_tabs.clone()} render={history.clone()} waiting="Waiting for audited blocks…" />
                 </div>
             },
             PanelId::Blockchain => html! {

@@ -51,6 +51,16 @@ impl ChartLayout {
         ((self.inner_width() / Self::X_TICK_SPACING) as usize + 1).clamp(2, 7)
     }
 
+    /// `count` grid line heights spread evenly from the top of the plot to its bottom, where a
+    /// chart's price ticks fall, so an empty frame lines up with the chart that replaces it.
+    #[must_use]
+    pub fn grid_rows(&self, count: usize) -> Vec<f64> {
+        let steps = count.max(2) - 1;
+        (0..=steps)
+            .map(|step| self.top + self.inner_height() * step as f64 / steps as f64)
+            .collect()
+    }
+
     #[must_use]
     pub const fn standard() -> Self {
         Self {
@@ -365,6 +375,19 @@ mod tests {
         assert_eq!(chart.index_at(at(70.0)), 1);
         assert_eq!(chart.index_at(at(900.0)), 2);
         assert_eq!(chart.index_at(10_000.0), 2);
+    }
+
+    #[test]
+    fn empty_grid_rows_fall_where_the_price_ticks_will() {
+        let chart = SeriesFixture::geometry(&[(100.0, 0), (200.0, 100)]);
+        let layout = ChartLayout::standard();
+
+        let mut ticks: Vec<f64> = chart.y_ticks(4).iter().map(|tick| tick.position).collect();
+        ticks.reverse();
+        let rows = layout.grid_rows(4);
+
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().zip(&ticks).all(|(row, tick)| (row - tick).abs() < 1e-9));
     }
 
     #[test]
