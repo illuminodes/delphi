@@ -16,6 +16,13 @@
     <link data-trunk rel="rust" data-bin="delphi-dash" data-cargo-profile-release="wasm-release" data-wasm-opt="z" />
 </head>
 <body>
+    <script>
+        (function () {
+            var saved = localStorage.getItem("delphi-dash.color-scheme");
+            var light = saved ? saved === "light" : matchMedia("(prefers-color-scheme: light)").matches;
+            document.documentElement.dataset.theme = light ? "light" : "dark";
+        })();
+    </script>
     <noscript>This dashboard needs JavaScript and WebAssembly.</noscript>
     <script>
         if ("serviceWorker" in navigator) {

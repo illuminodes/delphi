@@ -22,7 +22,7 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 gloo-timers = "0.3"
 web-sys = { version = "0.3", features = [
-    "Window", "Location", "Storage", "HtmlInputElement", "InputEvent", "Event", "EventTarget",
+    "Window", "Document", "MediaQueryList", "Location", "Storage", "HtmlInputElement", "InputEvent", "Event", "EventTarget",
     "Element", "DomRect", "MouseEvent", "PointerEvent", "ResizeObserver",
 ] }
 
