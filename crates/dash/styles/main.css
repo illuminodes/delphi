@@ -34,11 +34,11 @@
     --muted: #626b76;
     --faint: #a7aeb6;
 
-    --chain: #9a7414;
-    --mempool: #23877d;
-    --good: #23877d;
-    --warn: #b07a12;
-    --bad: #c23e38;
+    --chain: #c2982f;
+    --mempool: #36a99d;
+    --good: #2f9a8f;
+    --warn: #c98d1c;
+    --bad: #d64c45;
 }
 
 * { box-sizing: border-box; }
