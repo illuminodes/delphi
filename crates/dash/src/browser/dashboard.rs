@@ -3,6 +3,7 @@ use yew::prelude::*;
 use super::blockchain_card::BlockchainCard;
 use super::board_hook::use_dash_state;
 use super::clock_hook::use_unix_seconds;
+use super::fit_facts::FitFacts;
 use super::fit_panel::FitPanel;
 use super::history_chart::HistoryChart;
 use super::history_range_input::HistoryRangeInput;
@@ -86,6 +87,12 @@ pub fn dashboard(props: &DashboardProps) -> Html {
                 <HistoryChart window={window.clone()} points={board.history(&window)} loading={history_loading} />
             })
         };
+        let fit_facts = {
+            let fits = fits.clone();
+            Callback::from(move |window: String| {
+                fits.latest(&window).map_or_else(Html::default, |fit| html! { <FitFacts fit={fit.clone()} /> })
+            })
+        };
         let fit = Callback::from(move |window: String| {
             fits.latest(&window).map_or_else(
                 || html! {
@@ -102,13 +109,15 @@ pub fn dashboard(props: &DashboardProps) -> Html {
                 <TabbedCard tabs={price_tabs.clone()} render={price.clone()} waiting="Waiting for the first price…" />
             },
             PanelId::Fit => html! {
-                <TabbedCard tabs={fit_tabs.clone()} render={fit.clone()} waiting="Waiting for a fit…" />
+                <TabbedCard tabs={fit_tabs.clone()} render={fit.clone()} aside={fit_facts.clone()} waiting="Waiting for a fit…" />
             },
             PanelId::History => html! {
-                <div class="history-panel">
-                    <HistoryRangeInput range={*range} on_change={on_range.clone()} />
-                    <TabbedCard tabs={history_tabs.clone()} render={history.clone()} waiting="Waiting for audited blocks…" />
-                </div>
+                <TabbedCard
+                    tabs={history_tabs.clone()}
+                    render={history.clone()}
+                    lead={html! { <HistoryRangeInput range={*range} on_change={on_range.clone()} /> }}
+                    waiting="Waiting for audited blocks…"
+                />
             },
             PanelId::Blockchain => html! {
                 <BlockchainCard blocks={blocks.clone()} status={oracle_status.clone()} now={now} />

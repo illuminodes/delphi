@@ -58,7 +58,7 @@ body {
 .tile-grip { position: absolute; z-index: 1; top: 0.35rem; right: 0.35rem; width: 1.4rem; height: 1.4rem; display: flex; align-items: center; justify-content: center; border-radius: 4px; color: var(--faint); font-size: 0.8rem; line-height: 1; cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none; }
 .tile-grip:hover { color: var(--text); background: var(--surface-2); }
 .tile-body .card > header { padding-right: 1.1rem; }
-.tile-body .window-tabs, .tile-body .history-range { padding-right: 2rem; }
+.tile-body .tab-row { padding-right: 2rem; }
 .tile-body { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 
 .tile-divider { position: absolute; z-index: 2; touch-action: none; }
@@ -74,14 +74,15 @@ body {
 /* Tabs and range */
 
 .tabbed { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.tabbed-body { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.window-tabs { flex: 0 0 auto; display: flex; gap: 0.15rem; padding: 0.5rem 0.75rem 0; overflow-x: auto; }
+.tabbed-body, .tabbed-window { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.tab-row { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.75rem; padding: 0.5rem 0.75rem 0; }
+.window-tabs { display: flex; gap: 0.15rem; }
+.tab-aside { margin-left: auto; display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; color: var(--muted); font: 0.75rem var(--mono); font-variant-numeric: tabular-nums; }
 .window-tab { padding: 0.2rem 0.6rem; font-size: 0.75rem; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; white-space: nowrap; }
 .window-tab:hover { color: var(--text); border-color: transparent; }
 .window-tab.active { color: var(--text); background: var(--surface-2); border-color: var(--line-strong); }
 
-.history-panel { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.history-range { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; padding: 0.5rem 0.75rem 0; font-size: 0.75rem; color: var(--muted); }
+.history-range { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; font-size: 0.75rem; color: var(--muted); }
 .history-range label { display: inline-flex; align-items: center; gap: 0.3rem; }
 .history-range input { width: 3.5rem; padding: 0.15rem 0.3rem; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--bg); color: var(--text); font: 0.75rem var(--mono); }
 .history-range input:focus { outline: none; border-color: var(--muted); }
@@ -92,7 +93,7 @@ body {
 /* Cards inside tiles */
 
 .card { padding: 0.75rem; }
-.tile-body > .card, .tile-body > article, .tabbed-body > .card, .tabbed-body > article { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; margin: 0; border: 0; border-radius: 0; background: transparent; }
+.tile-body > .card, .tile-body > article, .tabbed-window > .card, .tabbed-window > article { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; margin: 0; border: 0; border-radius: 0; background: transparent; }
 .tile-body .plot { flex: 1 1 auto; min-height: 0; position: relative; }
 .tile-body .plot > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .card header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; }
@@ -152,7 +153,10 @@ body {
 .fit-card { --bar: var(--faint); --curve: var(--chain); }
 .fit-chart .fit-band { fill: var(--chain); fill-opacity: 0.06; }
 .fit-chart .fit-spread { fill: var(--text); fill-opacity: 0.06; }
-.fit-chart .fit-bar { fill: var(--bar); fill-opacity: 0.8; }
+.fit-chart .fit-bar { fill: var(--bar); fill-opacity: 0.8; transform-box: fill-box; transform-origin: bottom; animation: rise 0.6s cubic-bezier(0.3, 0, 0.2, 1) both; }
+.fit-chart .hover-price { fill: var(--text); }
+@keyframes rise { from { transform: scaleY(0); } }
+@media (prefers-reduced-motion: reduce) { .fit-chart .fit-bar { animation: none; } }
 .fit-chart .fit-curve { fill: none; stroke: var(--curve); stroke-width: 1.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .fit-chart .fit-price { stroke: var(--text); stroke-width: 1.5; }
 .fit-chart .fit-rough { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }

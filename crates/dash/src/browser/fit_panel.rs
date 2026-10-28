@@ -9,6 +9,7 @@ pub struct FitPanelProps {
     pub fit: FitNote,
 }
 
+/// The outputs behind one fit as rising bars, with the score curve drawn in over them.
 #[function_component(FitPanel)]
 pub fn fit_panel(props: &FitPanelProps) -> Html {
     let fit = &props.fit;
@@ -17,20 +18,6 @@ pub fn fit_panel(props: &FitPanelProps) -> Html {
     let plot = use_node_ref();
     let (width, height) = use_box_size(&plot);
     let chart = FitGeometry::new(fit, ChartLayout::for_histogram(width, height));
-
-    let readout = hovered.map_or_else(
-        || {
-            format!(
-                "{} implied · rough {}",
-                DisplayFormat::count(fit.implied_total() as usize),
-                DisplayFormat::usd_whole(fit.rough_price())
-            )
-        },
-        |price| {
-            let offset = (price - fit.price()) / fit.price() * 100.0;
-            format!("{} ({})", DisplayFormat::usd_whole(price), DisplayFormat::percent_brief(offset))
-        },
-    );
 
     let body = chart.map_or_else(
         || html! {},
@@ -92,7 +79,7 @@ pub fn fit_panel(props: &FitPanelProps) -> Html {
                             <title>{format!("{} outputs", bar.count)}</title>
                         </rect>
                     })}
-                    <path class="fit-curve" d={chart.curve_path()} />
+                    <g class="trace"><path class="fit-curve" d={chart.curve_path()} /></g>
                     {if chart.contains(fit.rough_price()) {
                         html! {
                             <line class="fit-rough" x1={format!("{rough_x:.1}")} x2={format!("{rough_x:.1}")}
@@ -122,9 +109,17 @@ pub fn fit_panel(props: &FitPanelProps) -> Html {
                     })}
                     {hovered.map_or_else(|| html! {}, |price| {
                         let x = chart.x_of(price);
+                        let offset = (price - fit.price()) / fit.price() * 100.0;
+                        let (anchor, label_x) = if x > layout.width / 2.0 { ("end", x - 6.0) } else { ("start", x + 6.0) };
                         html! {
-                            <line class="crosshair" x1={format!("{x:.1}")} x2={format!("{x:.1}")}
-                                y1={layout.top.to_string()} y2={bottom.to_string()} />
+                            <>
+                                <line class="crosshair" x1={format!("{x:.1}")} x2={format!("{x:.1}")}
+                                    y1={layout.top.to_string()} y2={bottom.to_string()} />
+                                <text class="axis hover-price" text-anchor={anchor}
+                                    x={format!("{label_x:.1}")} y={(layout.top + 10.0).to_string()}>
+                                    {format!("{} ({})", DisplayFormat::usd_whole(price), DisplayFormat::percent_brief(offset))}
+                                </text>
+                            </>
                         }
                     })}
                 </svg>
@@ -134,15 +129,6 @@ pub fn fit_panel(props: &FitPanelProps) -> Html {
 
     html! {
         <article class="card fit-card">
-            <header>
-                <h2>{format!("{} fit", label.title(fit.window()))}</h2>
-                <span class="detail">{readout}</span>
-                {fit.octave_ratio().map_or_else(|| html! {}, |ratio| html! {
-                    <span class="detail" title="score of the best rival one octave away, relative to the winner">
-                        {format!("octave {ratio:.2}")}
-                    </span>
-                })}
-            </header>
             <div class="plot" ref={plot}>{body}</div>
         </article>
     }

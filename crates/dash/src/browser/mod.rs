@@ -8,6 +8,7 @@ pub mod clock_hook;
 pub mod connection_summary;
 pub mod dashboard;
 pub mod filter_funnel;
+pub mod fit_facts;
 pub mod fit_panel;
 pub mod history_chart;
 pub mod history_range_input;
