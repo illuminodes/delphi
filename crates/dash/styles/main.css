@@ -75,14 +75,15 @@ body {
 
 .tabbed { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .tabbed-body, .tabbed-window { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.tab-row { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.75rem; padding: 0.5rem 0.75rem 0; }
-.window-tabs { display: flex; gap: 0.15rem; }
-.tab-aside { margin-left: auto; display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; color: var(--muted); font: 0.75rem var(--mono); font-variant-numeric: tabular-nums; }
+.tab-row { flex: 0 0 auto; display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.75rem 0; min-width: 0; }
+.window-tabs { flex: none; display: flex; gap: 0.15rem; }
+.tab-aside { flex: 0 1 auto; min-width: 0; margin-left: auto; display: flex; gap: 0.75rem; overflow: hidden; white-space: nowrap; color: var(--muted); font: 0.75rem var(--mono); font-variant-numeric: tabular-nums; }
+.tab-aside > * { overflow: hidden; text-overflow: ellipsis; }
 .window-tab { padding: 0.2rem 0.6rem; font-size: 0.75rem; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; white-space: nowrap; }
 .window-tab:hover { color: var(--text); border-color: transparent; }
 .window-tab.active { color: var(--text); background: var(--surface-2); border-color: var(--line-strong); }
 
-.history-range { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; font-size: 0.75rem; color: var(--muted); }
+.history-range { flex: 0 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; font-size: 0.75rem; color: var(--muted); }
 .history-range label { display: inline-flex; align-items: center; gap: 0.3rem; }
 .history-range input { width: 3.5rem; padding: 0.15rem 0.3rem; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--bg); color: var(--text); font: 0.75rem var(--mono); }
 .history-range input:focus { outline: none; border-color: var(--muted); }
@@ -107,7 +108,7 @@ body {
 .price-card { --tone: var(--chain); gap: 0.3rem; }
 .price-card.live { --tone: color-mix(in srgb, var(--mempool) 55%, var(--muted)); }
 .price-card.stale { opacity: 0.55; }
-.source-tag { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.68rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--tone); }
+.source-tag { display: flex; min-width: 0; white-space: nowrap; overflow: hidden; align-items: center; gap: 0.4rem; font-size: 0.68rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--tone); }
 .source-tag::before { content: ""; width: 0.4rem; height: 0.4rem; border-radius: 50%; background: var(--tone); }
 .price-card.live .source-tag::before { background: transparent; box-shadow: inset 0 0 0 1px var(--tone); animation: pulse 2s ease-in-out infinite; }
 .price-card.settled .price { color: color-mix(in srgb, var(--chain) 25%, var(--text)); }

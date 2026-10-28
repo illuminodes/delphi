@@ -1,6 +1,6 @@
 use yew::prelude::*;
 
-use crate::{DisplayFormat, PriceNote};
+use crate::{DisplayFormat, PriceNote, PriceOrigin};
 
 #[derive(Properties, PartialEq)]
 pub struct PriceAgeProps {
@@ -9,13 +9,19 @@ pub struct PriceAgeProps {
     pub settled: Option<u32>,
 }
 
-/// How old a price is, flagged once it is out of date.
+/// When a price was last updated: for a chain window, when its newest block was mined.
+/// Flagged once it is out of date.
 #[function_component(PriceAge)]
 pub fn price_age(props: &PriceAgeProps) -> Html {
-    let age = DisplayFormat::age(props.note.age_seconds(props.now));
-    if props.note.is_stale(props.now, props.settled) {
-        html! { <span class="warn">{format!("stale · {age}")}</span> }
-    } else {
-        html! { <span>{age}</span> }
+    let updated = match props.note.origin() {
+        PriceOrigin::Chain(detail) => i64::from(detail.stop_time),
+        PriceOrigin::Mempool(_) => props.note.created_at(),
+    };
+    let age = DisplayFormat::age((props.now - updated).max(0));
+    let stale = props.note.is_stale(props.now, props.settled);
+    html! {
+        <span class={classes!(stale.then_some("warn"))} title={DisplayFormat::clock(updated)}>
+            {if stale { format!("stale · updated {age}") } else { format!("updated {age}") }}
+        </span>
     }
 }
