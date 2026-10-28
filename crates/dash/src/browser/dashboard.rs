@@ -57,11 +57,8 @@ pub fn dashboard(props: &DashboardProps) -> Html {
             verified={state.verified()}
             refused={state.refused()}
             unreadable={state.rejected()}
-            last_note={state.last_note()}
             live={state.is_live(now)}
             saved_only={state.saved_only()}
-            status={oracle_status.clone()}
-            now={now}
             on_settings={props.on_settings.clone()}
         />
     };

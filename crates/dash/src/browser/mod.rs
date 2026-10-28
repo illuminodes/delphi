@@ -17,6 +17,7 @@ pub mod mempool_card;
 pub mod pointer_reader;
 pub mod price_age;
 pub mod price_card;
+pub mod project_links;
 pub mod render_pacer;
 pub mod settings_panel;
 pub mod settings_store;

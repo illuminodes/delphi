@@ -2,7 +2,8 @@ use nostr_minions::use_nostr_relay_pool;
 use yew::prelude::*;
 
 use super::connection_summary::ConnectionSummary;
-use crate::{DisplayFormat, OracleStatus};
+use super::project_links::ProjectLinks;
+use crate::DisplayFormat;
 
 #[derive(Properties, PartialEq)]
 pub struct SourcePanelProps {
@@ -11,22 +12,19 @@ pub struct SourcePanelProps {
     pub verified: usize,
     pub refused: usize,
     pub unreadable: usize,
-    pub last_note: Option<i64>,
     pub live: bool,
     pub saved_only: bool,
-    pub status: Option<OracleStatus>,
-    pub now: i64,
     pub on_settings: Callback<MouseEvent>,
 }
 
-/// Where the numbers come from and why to believe them: the relay connection and live stream,
-/// the signing key, how many notes passed the signature check, and what the oracle reports
-/// about its own work.
+/// Where the numbers come from and why to believe them: the relay, the signing key, how many
+/// notes passed the signature check here, and how the oracle reaches its prices.
 #[function_component(SourcePanel)]
 pub fn source_panel(props: &SourcePanelProps) -> Html {
     let health = use_nostr_relay_pool().map(|pool| pool.relay_health()).unwrap_or_default();
     let (connection, connection_text) = ConnectionSummary::describe(&health);
-    let status = props.status.as_ref();
+    let quiet = connection == "open" && !props.live;
+    let relay = props.relay.trim_start_matches("wss://").trim_start_matches("ws://");
     let row = |label: &'static str, value: String, hint: &'static str| {
         html! {
             <div title={hint}>
@@ -56,31 +54,22 @@ pub fn source_panel(props: &SourcePanelProps) -> Html {
             </header>
             {verdict}
             <dl class="source-facts">
-                <div title="the relay this page reads from; it cannot forge notes">
+                <div title={format!("{connection_text}; the relay this page reads from, which cannot forge notes")}>
                     <dt>{"Relay"}</dt>
                     <dd>
-                        <span class={classes!("dot", connection)} aria-hidden="true"></span>
-                        {format!("{connection_text} · {}", props.relay)}
+                        <span class={classes!("dot", if quiet { "connecting" } else { connection })} aria-hidden="true"></span>
+                        {if quiet { format!("{relay} · quiet") } else { relay.to_string() }}
                     </dd>
                 </div>
-                <div title="whether the oracle's live stream has spoken in the last 90 seconds">
-                    <dt>{"Stream"}</dt>
-                    <dd class={classes!(props.live.then_some("good"))}>{if props.live { "Live" } else { "Quiet" }}</dd>
+                <div title="the oracle's public key; every note is signed by it">
+                    <dt>{"Signed by"}</dt>
+                    <dd class="key">{props.publisher.clone()}</dd>
                 </div>
                 {if props.saved_only {
                     row("Showing", "Saved from the last visit".to_string(), "status, blocks and fits saved in this browser, signatures checked again; replaced as fresh notes arrive")
                 } else {
                     html! {}
                 }}
-                <div title="the oracle's public key; every note is signed by it">
-                    <dt>{"Signed by"}</dt>
-                    <dd class="key">{props.publisher.clone()}</dd>
-                </div>
-                {row(
-                    "Last note",
-                    props.last_note.map_or_else(|| "—".to_string(), |at| DisplayFormat::age(props.now - at)),
-                    "age of the newest signed note",
-                )}
                 {if props.refused > 0 {
                     row("Refused", DisplayFormat::count(props.refused), "notes from another key or with a bad signature, dropped")
                 } else {
@@ -95,25 +84,11 @@ pub fn source_panel(props: &SourcePanelProps) -> Html {
                 } else {
                     html! {}
                 }}
-                {status.map(|status| html! {
-                    <>
-                        {row(
-                            "Audits",
-                            DisplayFormat::count(usize::try_from(status.audits_published).unwrap_or(usize::MAX)),
-                            "settled prices the oracle has published",
-                        )}
-                        {row(
-                            "Mempool",
-                            format!("{} outputs", DisplayFormat::count(status.mempool_outputs)),
-                            "unconfirmed outputs in the live sample",
-                        )}
-                        {row("Uptime", DisplayFormat::duration(status.uptime), "time since the oracle started")}
-                    </>
-                }).unwrap_or_default()}
             </dl>
             <p class="method">
-                {"Prices come from Bitcoin transactions only: headers and blocks are fetched from many independent peers and accepted once they agree at 6 confirmations. No exchange feeds and no trusted node."}
+                {"Prices come only from Bitcoin transactions, in blocks that many independent peers agree on at 6 confirmations. No exchanges, no trusted node."}
             </p>
+            {ProjectLinks::render()}
         </article>
     }
 }

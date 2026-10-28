@@ -259,6 +259,10 @@ body {
 .identity { display: flex; align-items: baseline; gap: 0.75rem; white-space: nowrap; }
 .wordmark { font-weight: 600; font-size: 1.05rem; letter-spacing: 0.32em; }
 .tagline { color: var(--muted); font-size: 0.75rem; }
+.project-links { display: flex; gap: 0.25rem; margin-top: auto; padding-top: 0.25rem; }
+.project-links a { display: flex; padding: 0.35rem; border-radius: 4px; color: var(--muted); }
+.project-links a:hover { color: var(--text); background: var(--surface-2); }
+.project-links svg { width: 1rem; height: 1rem; }
 .method { margin: 0.5rem 0 0; padding-top: 0.6rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
 
 /* Controls and settings */
