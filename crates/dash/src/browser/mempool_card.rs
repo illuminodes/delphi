@@ -1,7 +1,7 @@
 use yew::prelude::*;
 
 use super::box_size_hook::use_box_size;
-use crate::{BlockFilter, DisplayFormat, MempoolGrid, MempoolStream, MempoolTransaction, OracleStatus, TransactionStage};
+use crate::{BlockFilter, DisplayFormat, GridTile, MempoolGrid, MempoolStream, MempoolTransaction, OracleStatus, TransactionStage};
 
 #[derive(Properties, PartialEq)]
 pub struct MempoolCardProps {
@@ -68,7 +68,7 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
             <a
                 key={transaction.txid.clone()}
                 class={classes!("tx-square", transaction.stage.css_class(), dimmed.then_some("dimmed"))}
-                style={format!("grid-column: {} / span {side}; grid-row: {} / span {side}", tile.x + 1, tile.y + 1, side = tile.side)}
+                style={MempoolCardParts::place(tile)}
                 href={format!("https://mempool.space/tx/{}", transaction.txid)}
                 target="_blank"
                 rel="noopener noreferrer"
@@ -103,10 +103,7 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
             </header>
             <nav class="tx-legend">{for legend}</nav>
             <div class="tx-grid-area" ref={area} onmouseleave={leave}>
-                <div
-                    class="tx-grid"
-                    style={format!("grid-template-columns: repeat({}, var(--cell)); grid-template-rows: repeat({}, var(--cell))", grid.columns(), grid.rows())}
-                >
+                <div class="tx-grid" style={MempoolCardParts::extent(&grid)}>
                     {for tiles}
                 </div>
                 {MempoolCardParts::inspector(shown, props.now)}
@@ -119,9 +116,27 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
 struct MempoolCardParts;
 
 impl MempoolCardParts {
-    /// One cell plus the gap after it, in CSS pixels; must match `--cell` and the grid gap.
+    /// One cell plus the gap after it, in CSS pixels.
     const CELL_PITCH: f64 = 12.0;
     const GAP: f64 = 2.0;
+
+    fn span(cells: u32) -> f64 {
+        f64::from(cells) * Self::CELL_PITCH - Self::GAP
+    }
+
+    /// A square's place as a transform, so a move between places can be animated.
+    fn place(tile: &GridTile) -> String {
+        format!(
+            "--size:{:.0}px;transform:translate({:.0}px,{:.0}px)",
+            Self::span(tile.side),
+            f64::from(tile.x) * Self::CELL_PITCH,
+            f64::from(tile.y) * Self::CELL_PITCH,
+        )
+    }
+
+    fn extent(grid: &MempoolGrid) -> String {
+        format!("width:{:.0}px;height:{:.0}px", Self::span(grid.columns()), Self::span(grid.rows()))
+    }
 
     /// How many whole cells fit along a length, counting no gap after the last one.
     fn cells(length: f64) -> u32 {

@@ -246,7 +246,7 @@ body {
 .stage-sampled { --bar: var(--mempool); }
 .stage-dropped { --bar: var(--faint); }
 .stage-rejected { --bar: var(--bad); }
-.mempool-card { --cell: 10px; gap: 0.5rem; }
+.mempool-card { gap: 0.5rem; }
 .tx-legend { display: flex; flex-wrap: wrap; gap: 0.15rem; }
 .legend-item { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.15rem 0.5rem; border: 1px solid transparent; background: transparent; color: var(--muted); font-size: 0.72rem; }
 .legend-item:hover { color: var(--text); border-color: transparent; }
@@ -254,8 +254,15 @@ body {
 .legend-item .swatch { width: 0.6rem; height: 0.6rem; border-radius: 2px; background: var(--bar); }
 .legend-count { font: 0.7rem var(--mono); color: var(--faint); }
 .tx-grid-area { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
-.tx-grid { display: grid; gap: 2px; }
-.tx-square { display: block; border-radius: 2px; background: var(--bar); opacity: 0.85; transition: opacity 0.2s, outline-color 0.1s; outline: 1px solid transparent; outline-offset: 1px; }
+.tx-grid { position: relative; }
+.tx-square {
+    position: absolute; left: 0; top: 0; width: var(--size); height: var(--size);
+    border-radius: 2px; background: var(--bar); opacity: 0.85; outline: 1px solid transparent; outline-offset: 1px;
+    transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1), width 0.45s cubic-bezier(0.22, 1, 0.36, 1), height 0.45s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s, outline-color 0.1s;
+    animation: inflate 0.45s cubic-bezier(0.34, 1.4, 0.64, 1) backwards;
+}
+@keyframes inflate { from { scale: 0; opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .tx-square { transition: opacity 0.2s, outline-color 0.1s; animation: none; } }
 .tx-square:hover, .tx-square:focus-visible { opacity: 1; outline-color: var(--text); }
 .tx-square.dimmed { opacity: 0.12; }
 .tx-inspector { position: absolute; left: 0; right: 0; bottom: 0; pointer-events: none; box-shadow: 0 -0.5rem 1rem var(--bg); display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.9rem; min-height: 2.6rem; padding: 0.45rem 0.6rem; border: 1px solid var(--line); border-left: 2px solid var(--bar, var(--line)); border-radius: 4px; background: var(--bg); font: 0.75rem var(--mono); font-variant-numeric: tabular-nums; }
