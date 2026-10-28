@@ -48,6 +48,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
     let blocks = state.blocks().cloned();
     let mempool = state.mempool().clone();
     let oracle_status = state.status().cloned();
+    let settled = oracle_status.as_ref().and_then(|status| status.settled);
 
     let source = html! {
         <SourcePanel
@@ -73,7 +74,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
             let notes = notes.clone();
             Callback::from(move |window: String| {
                 notes.iter().find(|note| note.window() == window).map_or_else(Html::default, |note| {
-                    html! { <PriceAge note={note.clone()} now={now} /> }
+                    html! { <PriceAge note={note.clone()} now={now} settled={settled} /> }
                 })
             })
         };
@@ -84,6 +85,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
                         note={note.clone()}
                         sparkline={board.history(&window)}
                         now={now}
+                        settled={settled}
                         spread={board.spread_percent(&window, "chain-1h").filter(|_| window != "chain-1h")}
                     />
                 }

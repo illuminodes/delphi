@@ -7,6 +7,7 @@ pub struct PriceCardProps {
     pub note: PriceNote,
     pub sparkline: Vec<SeriesPoint>,
     pub now: i64,
+    pub settled: Option<u32>,
     pub spread: Option<f64>,
 }
 
@@ -21,7 +22,7 @@ pub fn price_card(props: &PriceCardProps) -> Html {
         "card",
         "price-card",
         if live { "live" } else { "settled" },
-        note.is_stale(props.now).then_some("stale")
+        note.is_stale(props.now, props.settled).then_some("stale")
     );
     let pairs: Vec<(i64, f64)> = props
         .sparkline

@@ -204,17 +204,25 @@ impl PriceNote {
         (now - self.created_at).max(0)
     }
 
+    /// A chain price is stamped with its last block's time, and that block is already six deep, so
+    /// an hour or more is its normal age. The limit leaves room for slow blocks and miner clocks.
     #[must_use]
     pub const fn stale_after_seconds(&self) -> i64 {
         match self.origin {
             PriceOrigin::Mempool(_) => 5 * 60,
-            PriceOrigin::Chain(_) => 45 * 60,
+            PriceOrigin::Chain(_) => 4 * 60 * 60,
         }
     }
 
+    /// Whether the price is out of date: too old, or a chain price behind the height the daemon
+    /// last reported as settled.
     #[must_use]
-    pub fn is_stale(&self, now: i64) -> bool {
-        self.age_seconds(now) > self.stale_after_seconds()
+    pub fn is_stale(&self, now: i64, settled: Option<u32>) -> bool {
+        let behind = match &self.origin {
+            PriceOrigin::Chain(detail) => settled.is_some_and(|settled| detail.stop_height < settled),
+            PriceOrigin::Mempool(_) => false,
+        };
+        behind || self.age_seconds(now) > self.stale_after_seconds()
     }
 }
 
@@ -382,10 +390,20 @@ mod tests {
         let mempool = PriceNote::from_note(&NoteFixture::mempool(1_000)).expect("mempool");
         let chain = PriceNote::from_note(&NoteFixture::chain(1_000)).expect("chain");
 
-        assert!(!mempool.is_stale(1_000 + 300));
-        assert!(mempool.is_stale(1_000 + 301));
-        assert!(!chain.is_stale(1_000 + 301));
-        assert!(chain.is_stale(1_000 + 2_701));
+        assert!(!mempool.is_stale(1_000 + 300, None));
+        assert!(mempool.is_stale(1_000 + 301, None));
+        assert!(!chain.is_stale(1_000 + 3_600, None));
+        assert!(chain.is_stale(1_000 + 14_401, None));
+    }
+
+    #[test]
+    fn a_chain_price_behind_the_settled_height_is_stale() {
+        let chain = PriceNote::from_note(&NoteFixture::chain(1_000)).expect("chain");
+        let PriceOrigin::Chain(detail) = chain.origin() else { panic!("chain") };
+        let height = detail.stop_height;
+
+        assert!(!chain.is_stale(1_000, Some(height)));
+        assert!(chain.is_stale(1_000, Some(height + 1)));
     }
 
     #[test]
