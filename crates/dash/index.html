@@ -13,7 +13,7 @@
     <link data-trunk rel="copy-file" href="public/icon.svg" />
     <link data-trunk rel="copy-file" href="public/sw.js" />
     <link data-trunk rel="css" href="styles/main.css" />
-    <link data-trunk rel="rust" data-bin="delphi-dash" data-cargo-profile-release="wasm-release" data-wasm-opt="z" />
+    <link data-trunk rel="rust" data-bin="delphi-dash" data-cargo-profile-release="wasm-release" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int" />
 </head>
 <body>
     <script>
