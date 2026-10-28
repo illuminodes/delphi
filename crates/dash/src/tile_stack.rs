@@ -1,7 +1,7 @@
 use crate::{PanelId, SpiralCard, TileRect, TileSize};
 
-/// The workspace on a narrow screen: the cards in spiral order, one under another at the full
-/// width, each a little taller than its minimum height. The stack fills the viewport when it is
+/// The workspace on a narrow screen: the cards one under another at the full width, the source
+/// card first and the rest in spiral order, each a little taller than its minimum height. The stack fills the viewport when it is
 /// shorter and scrolls when it is taller.
 pub struct TileStack<'a> {
     cards: &'a [SpiralCard],
@@ -12,6 +12,7 @@ impl<'a> TileStack<'a> {
     /// Viewports narrower than this, in CSS pixels, stack. Matches the 40rem breakpoint in main.css.
     pub const BELOW: f64 = 640.0;
     const GROWTH: f64 = 1.3;
+    const FIRST: PanelId = PanelId::Source;
 
     #[must_use]
     pub const fn new(cards: &'a [SpiralCard], viewport: TileSize) -> Self {
@@ -36,8 +37,11 @@ impl<'a> TileStack<'a> {
     pub fn tiles(&self) -> Vec<(PanelId, TileRect)> {
         let total = self.total();
         let mut y = 0.0;
-        self.cards
-            .iter()
+        let (first, rest): (Vec<&SpiralCard>, Vec<&SpiralCard>) =
+            self.cards.iter().partition(|card| *card.panel() == Self::FIRST);
+        first
+            .into_iter()
+            .chain(rest)
             .map(|card| {
                 let height = if total > 0.0 {
                     card.minimum().height * Self::GROWTH / total
@@ -84,6 +88,16 @@ mod tests {
         assert_eq!(stack.canvas(), TileSize::new(390.0, 520.0));
         assert!((tiles[0].1.height - 0.25).abs() < 1e-9 && (tiles[1].1.y - 0.25).abs() < 1e-9);
         assert!(tiles.iter().all(|(_, rect)| (rect.width - 1.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn the_source_card_is_always_on_top() {
+        let cards = crate::WorkspacePlan::cards();
+        let tiles = TileStack::new(&cards, TileSize::new(390.0, 800.0)).tiles();
+
+        assert_eq!(tiles[0].0, PanelId::Source);
+        assert!(tiles[0].1.y.abs() < 1e-9);
+        assert_eq!(tiles[1].0, PanelId::History);
     }
 
     #[test]
