@@ -1,4 +1,6 @@
-use crate::{DividerSpot, DropZone, PanelId, SpiralCard, SpiralCompass, SpiralCut, SpiralNeeds, TileRect, TileSize};
+use crate::{
+    DividerSpot, DropZone, PanelId, SpiralCard, SpiralCompass, SpiralCut, SpiralNeeds, TileRect, TileSize, WorkspaceArrangement,
+};
 
 /// The workspace as a spiral: each card in turn cuts its own share from the area the cards
 /// before it left, and the last card fills what remains. Resizing a card moves only its inner
@@ -22,6 +24,12 @@ impl TileLayout {
     #[must_use]
     pub fn panels(&self) -> Vec<PanelId> {
         self.cards.iter().map(|card| *card.panel()).collect()
+    }
+
+    /// The card order and shares, to save for the next visit.
+    #[must_use]
+    pub fn arrangement(&self) -> WorkspaceArrangement {
+        WorkspaceArrangement::of(&self.cards)
     }
 
     #[must_use]

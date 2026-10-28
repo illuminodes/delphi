@@ -23,6 +23,11 @@ impl PanelId {
             Self::Price => "Price",
         }
     }
+
+    #[must_use]
+    pub fn titled(title: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|panel| panel.title() == title)
+    }
 }
 
 #[cfg(test)]
@@ -46,5 +51,13 @@ mod tests {
         titles.dedup();
 
         assert_eq!(titles.len(), PanelId::ALL.len());
+    }
+
+    #[test]
+    fn every_card_is_found_by_its_title() {
+        for panel in PanelId::ALL {
+            assert_eq!(PanelId::titled(panel.title()), Some(panel));
+        }
+        assert_eq!(PanelId::titled("Nope"), None);
     }
 }

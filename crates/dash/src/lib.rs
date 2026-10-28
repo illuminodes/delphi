@@ -47,6 +47,7 @@ pub mod transaction_output;
 pub mod transaction_stage;
 pub mod window_label;
 pub mod window_tabs;
+pub mod workspace_arrangement;
 pub mod workspace_plan;
 pub mod workspace_state;
 
@@ -97,5 +98,6 @@ pub use transaction_output::TransactionOutput;
 pub use transaction_stage::TransactionStage;
 pub use window_label::WindowLabel;
 pub use window_tabs::WindowTabs;
+pub use workspace_arrangement::WorkspaceArrangement;
 pub use workspace_plan::WorkspacePlan;
 pub use workspace_state::{WorkspaceAction, WorkspaceState};

@@ -1,4 +1,4 @@
-use crate::{TileGesture, TileLayout, TileSize, WorkspacePlan};
+use crate::{TileGesture, TileLayout, TileSize, WorkspaceArrangement, WorkspacePlan};
 
 /// What the workspace is asked to do.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,14 +18,23 @@ pub struct WorkspaceState {
 
 impl Default for WorkspaceState {
     fn default() -> Self {
-        Self {
-            layout: TileLayout::new(WorkspacePlan::cards(), TileSize::ZERO),
-            gesture: None,
-        }
+        Self::restored(None)
     }
 }
 
 impl WorkspaceState {
+    /// The workspace as the reader left it, or the starting plan when nothing usable was saved.
+    #[must_use]
+    pub fn restored(saved: Option<&WorkspaceArrangement>) -> Self {
+        Self {
+            layout: TileLayout::new(
+                saved.and_then(WorkspaceArrangement::cards).unwrap_or_else(WorkspacePlan::cards),
+                TileSize::ZERO,
+            ),
+            gesture: None,
+        }
+    }
+
     #[must_use]
     pub const fn layout(&self) -> &TileLayout {
         &self.layout
@@ -87,6 +96,23 @@ mod tests {
         assert_eq!(first, PanelId::History);
         assert!((rect.width - 0.2).abs() < 1e-9);
         assert!(state.gesture().is_none());
+    }
+
+    #[test]
+    fn a_saved_arrangement_is_restored_and_a_missing_one_falls_back_to_the_plan() {
+        let mut state = StateFixture::sized();
+        let edge = state.layout().dividers().remove(0);
+        state = state
+            .applied(WorkspaceAction::Begin(TileGesture::Resize(edge)))
+            .applied(WorkspaceAction::Follow { x: 0.2, y: 0.1 })
+            .applied(WorkspaceAction::Finish);
+        let saved = state.layout().arrangement();
+
+        assert_eq!(WorkspaceState::restored(Some(&saved)).layout().arrangement(), saved);
+        assert_eq!(
+            WorkspaceState::restored(None).layout().arrangement(),
+            crate::WorkspaceArrangement::of(&crate::WorkspacePlan::cards())
+        );
     }
 
     #[test]

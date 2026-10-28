@@ -1,4 +1,5 @@
 pub mod app;
+pub mod arrangement_store;
 pub mod block_strip_view;
 pub mod blockchain_card;
 pub mod board_hook;
