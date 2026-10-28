@@ -19,13 +19,14 @@ impl FeedFilter {
     }
 
     /// One filter per window, so a relay's per-filter limit cannot let the
-    /// busier window crowd out the other.
+    /// busier window crowd out the other. Each starts where `since` says for
+    /// its window, so notes already kept in the browser are not asked for again.
     #[must_use]
-    pub fn audits(&self, now: i64, range: HistoryRange) -> Vec<NostrSubscription> {
-        let since = u64::try_from(range.since(now)).unwrap_or(0);
+    pub fn audits(&self, range: HistoryRange, since: impl Fn(&str) -> i64) -> Vec<NostrSubscription> {
         Self::WINDOWS
             .into_iter()
             .map(|window| {
+                let since = u64::try_from(since(window)).unwrap_or(0);
                 let mut filter = NostrSubscription::new()
                     .kind(NoteKind::AUDIT)
                     .author(self.author.clone());
@@ -75,11 +76,11 @@ mod tests {
     #[test]
     fn each_window_gets_its_own_audit_filter_reaching_back_over_the_range() {
         let range = HistoryRange::days(30);
-        let filters = FeedFilter::new("ab").audits(10_000_000, range);
+        let filters = FeedFilter::new("ab").audits(range, |window| if window == "chain-1h" { 500 } else { 7 });
 
         assert_eq!(filters.len(), 2);
-        for (filter, window) in filters.iter().zip(FeedFilter::WINDOWS) {
-            assert_eq!(filter.since, Some(10_000_000 - 30 * 86_400));
+        for ((filter, window), since) in filters.iter().zip(FeedFilter::WINDOWS).zip([500, 7]) {
+            assert_eq!(filter.since, Some(since));
             assert_eq!(filter.limit, Some(range.note_capacity()));
             let tags = filter.tags.as_ref().expect("tags");
             assert!(tags["w"].contains(window));

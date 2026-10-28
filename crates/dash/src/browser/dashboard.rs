@@ -1,6 +1,7 @@
 use yew::prelude::*;
 
 use super::blockchain_card::BlockchainCard;
+use super::boot::Boot;
 use super::board_hook::use_dash_state;
 use super::clock_hook::use_unix_seconds;
 use super::fit_facts::FitFacts;
@@ -13,11 +14,11 @@ use super::price_card::PriceCard;
 use super::source_panel::SourcePanel;
 use super::tabbed_card::TabbedCard;
 use super::tile_workspace::TileWorkspace;
-use crate::{DashSettings, HistoryRange, PanelId, PublisherKey, WindowLabel, WindowTabs};
+use crate::{HistoryRange, PanelId, PublisherKey, WindowLabel, WindowTabs};
 
 #[derive(Properties, PartialEq)]
 pub struct DashboardProps {
-    pub settings: DashSettings,
+    pub boot: Boot,
     pub publisher: PublisherKey,
     pub on_settings: Callback<MouseEvent>,
 }
@@ -25,7 +26,7 @@ pub struct DashboardProps {
 #[function_component(Dashboard)]
 pub fn dashboard(props: &DashboardProps) -> Html {
     let range = use_state(HistoryRange::default);
-    let state = use_dash_state(&props.publisher, *range);
+    let state = use_dash_state(&props.boot, &props.publisher, *range);
     let now = use_unix_seconds(1_000);
     let board = state.prices();
     let notes = board.ordered();
@@ -52,8 +53,8 @@ pub fn dashboard(props: &DashboardProps) -> Html {
 
     let source = html! {
         <SourcePanel
-            publisher={props.settings.publisher.trim().to_string()}
-            relay={props.settings.relay.clone()}
+            publisher={props.boot.settings.publisher.trim().to_string()}
+            relay={props.boot.settings.relay.clone()}
             verified={state.verified()}
             refused={state.refused()}
             unreadable={state.rejected()}
@@ -137,7 +138,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
 
     html! {
         <main class="workspace">
-            <TileWorkspace render={render} />
+            <TileWorkspace db={props.boot.db.clone()} saved={props.boot.arrangement.clone()} render={render} />
         </main>
     }
 }

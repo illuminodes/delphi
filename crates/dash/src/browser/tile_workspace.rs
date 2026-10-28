@@ -3,11 +3,14 @@ use yew::prelude::*;
 
 use super::arrangement_store::ArrangementStore;
 use super::box_size_hook::use_box_size;
+use super::dash_db::DashDb;
 use super::pointer_reader::PointerReader;
-use crate::{DividerSpot, PanelId, TileGesture, TileSize, WorkspaceAction, WorkspaceState};
+use crate::{DividerSpot, PanelId, TileGesture, TileSize, WorkspaceAction, WorkspaceArrangement, WorkspaceState};
 
 #[derive(Properties, PartialEq)]
 pub struct TileWorkspaceProps {
+    pub db: Option<DashDb>,
+    pub saved: Option<WorkspaceArrangement>,
     pub render: Callback<PanelId, Html>,
 }
 
@@ -17,7 +20,7 @@ pub struct TileWorkspaceProps {
 /// The canvas is the viewport, grown so no card falls below its minimum; the viewport scrolls.
 #[function_component(TileWorkspace)]
 pub fn tile_workspace(props: &TileWorkspaceProps) -> Html {
-    let state = use_reducer(|| WorkspaceState::restored(ArrangementStore::load().as_ref()));
+    let state = use_reducer(|| WorkspaceState::restored(props.saved.as_ref()));
     let viewport = use_node_ref();
     let surface = use_node_ref();
     let (width, height) = use_box_size(&viewport);
@@ -48,9 +51,10 @@ pub fn tile_workspace(props: &TileWorkspaceProps) -> Html {
     {
         let arrangement = state.layout().arrangement();
         let settled = state.gesture().is_none();
-        use_effect_with((arrangement, settled), |(arrangement, settled)| {
-            if *settled {
-                ArrangementStore::save(arrangement);
+        let db = props.db.clone();
+        use_effect_with((arrangement, settled), move |(arrangement, settled)| {
+            if let Some(db) = db.filter(|_| *settled) {
+                ArrangementStore::save(&db, arrangement);
             }
         });
     }

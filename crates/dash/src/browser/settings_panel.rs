@@ -2,6 +2,7 @@ use wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
+use super::dash_db::DashDb;
 use super::settings_store::SettingsStore;
 use crate::DashSettings;
 
@@ -30,6 +31,7 @@ impl PageReload {
 
 #[derive(Properties, PartialEq)]
 pub struct SettingsPanelProps {
+    pub db: Option<DashDb>,
     pub initial: DashSettings,
     pub dismissible: bool,
     pub on_close: Callback<()>,
@@ -59,15 +61,24 @@ pub fn settings_panel(props: &SettingsPanelProps) -> Html {
     let on_save = {
         let draft = draft.clone();
         let error = error.clone();
+        let db = props.db.clone();
         Callback::from(move |event: SubmitEvent| {
             event.prevent_default();
-            match draft.validate() {
-                Ok(_) => {
-                    SettingsStore::save(&draft);
-                    PageReload::now();
-                }
-                Err(problem) => error.set(Some(problem.to_string())),
+            if let Err(problem) = draft.validate() {
+                error.set(Some(problem.to_string()));
+                return;
             }
+            let Some(db) = db.clone() else {
+                error.set(Some("this browser cannot save settings".to_string()));
+                return;
+            };
+            let (draft, error) = ((*draft).clone(), error.clone());
+            wasm_bindgen_futures::spawn_local(async move {
+                match SettingsStore::save(&db, &draft).await {
+                    Ok(()) => PageReload::now(),
+                    Err(_) => error.set(Some("saving the settings failed".to_string())),
+                }
+            });
         })
     };
     let on_cancel = {

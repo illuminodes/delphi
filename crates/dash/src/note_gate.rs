@@ -17,7 +17,14 @@ impl NoteGate {
 
     #[must_use]
     pub fn admits(&self, note: &NostrNote) -> bool {
-        note.pubkey == self.publisher && note.verify()
+        self.is_publisher(note) && note.verify()
+    }
+
+    /// Whether `note` claims the publisher's key. Enough for notes this browser saved itself after
+    /// `admits` checked them: checking thousands of signatures again would hold up every visit.
+    #[must_use]
+    pub fn is_publisher(&self, note: &NostrNote) -> bool {
+        note.pubkey == self.publisher
     }
 }
 

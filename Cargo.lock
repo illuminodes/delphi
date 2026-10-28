@@ -245,6 +245,7 @@ name = "delphi-dash"
 version = "0.1.0"
 dependencies = [
  "gloo-timers",
+ "idb",
  "js-sys",
  "nostr-minions",
  "serde",
