@@ -15,6 +15,7 @@ pub mod history_range_input;
 pub mod kept_store;
 pub mod mempool_card;
 pub mod pointer_reader;
+pub mod price_age;
 pub mod price_card;
 pub mod render_pacer;
 pub mod settings_panel;

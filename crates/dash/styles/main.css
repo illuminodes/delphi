@@ -104,18 +104,17 @@ body {
 
 /* Price */
 
-.price-card { --tone: var(--chain); justify-content: center; }
-.price-card.live { --tone: var(--mempool); }
+.price-card { --tone: var(--chain); gap: 0.3rem; }
+.price-card.live { --tone: color-mix(in srgb, var(--mempool) 55%, var(--muted)); }
 .price-card.stale { opacity: 0.55; }
 .source-tag { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.68rem; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--tone); }
 .source-tag::before { content: ""; width: 0.4rem; height: 0.4rem; border-radius: 50%; background: var(--tone); }
-.price-card.live .source-tag::before { animation: pulse 2s ease-in-out infinite; }
+.price-card.live .source-tag::before { background: transparent; box-shadow: inset 0 0 0 1px var(--tone); animation: pulse 2s ease-in-out infinite; }
+.price-card.settled .price { color: color-mix(in srgb, var(--chain) 25%, var(--text)); }
 @keyframes pulse { 50% { opacity: 0.3; } }
 @media (prefers-reduced-motion: reduce) { .price-card.live .source-tag::before { animation: none; } }
-.price-card .age { margin-left: auto; color: var(--muted); font-size: 0.75rem; }
-.price-row { display: flex; align-items: center; gap: 1rem; }
-.price { margin: 0.35rem 0 0.25rem; font: 500 2.4rem/1.1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; white-space: nowrap; }
-.spark { flex: 1 1 auto; display: block; height: 2.25rem; margin: 0; }
+.price { margin: 0; font: 500 2.4rem/1.1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; white-space: nowrap; }
+.spark { flex: 1 1 auto; display: block; width: 100%; min-height: 1.5rem; margin-top: 0.2rem; }
 .spark polyline { fill: none; stroke: var(--tone); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .facts { display: flex; flex-wrap: wrap; gap: 0.2rem 1.1rem; margin: 0.35rem 0 0; padding: 0; list-style: none; font: 0.75rem var(--mono); font-variant-numeric: tabular-nums; overflow: hidden; }
 .fact-label { color: var(--muted); margin-right: 0.35rem; font-family: var(--sans); }

@@ -7,6 +7,9 @@ pub struct SparklinePath {
 }
 
 impl SparklinePath {
+    /// A width for sparklines stretched across a card, wide enough that long series keep detail.
+    pub const WIDE: f64 = 400.0;
+
     #[must_use]
     pub const fn new(width: f64, height: f64, padding: f64) -> Self {
         Self {

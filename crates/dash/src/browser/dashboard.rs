@@ -8,6 +8,7 @@ use super::fit_panel::FitPanel;
 use super::history_chart::HistoryChart;
 use super::history_range_input::HistoryRangeInput;
 use super::mempool_card::MempoolCard;
+use super::price_age::PriceAge;
 use super::price_card::PriceCard;
 use super::source_panel::SourcePanel;
 use super::tabbed_card::TabbedCard;
@@ -68,13 +69,20 @@ pub fn dashboard(props: &DashboardProps) -> Html {
         let notes: Vec<_> = notes.iter().map(|note| (*note).clone()).collect();
         let board = board.clone();
         let fits = fits.clone();
+        let price_age = {
+            let notes = notes.clone();
+            Callback::from(move |window: String| {
+                notes.iter().find(|note| note.window() == window).map_or_else(Html::default, |note| {
+                    html! { <PriceAge note={note.clone()} now={now} /> }
+                })
+            })
+        };
         let price = Callback::from(move |window: String| {
             notes.iter().find(|note| note.window() == window).map_or_else(Html::default, |note| {
-                let sparkline = if window == "mempool" { board.history(&window) } else { Vec::new() };
                 html! {
                     <PriceCard
                         note={note.clone()}
-                        sparkline={sparkline}
+                        sparkline={board.history(&window)}
                         now={now}
                         spread={board.spread_percent(&window, "chain-1h").filter(|_| window != "chain-1h")}
                     />
@@ -106,7 +114,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
         Callback::from(move |panel: PanelId| match panel {
             PanelId::Source => source.clone(),
             PanelId::Price => html! {
-                <TabbedCard tabs={price_tabs.clone()} render={price.clone()} waiting="Waiting for the first price…" />
+                <TabbedCard tabs={price_tabs.clone()} render={price.clone()} aside={price_age.clone()} waiting="Waiting for the first price…" />
             },
             PanelId::Fit => html! {
                 <TabbedCard tabs={fit_tabs.clone()} render={fit.clone()} aside={fit_facts.clone()} waiting="Waiting for a fit…" />
