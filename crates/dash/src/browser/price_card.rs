@@ -29,11 +29,11 @@ pub fn price_card(props: &PriceCardProps) -> Html {
         .map(|point| (point.stop_time(), point.price()))
         .collect();
     let spark = SparklinePath::new(SparklinePath::WIDE, 40.0, 2.0).points(&pairs);
-    let tag = if live { "Provisional" } else { "Settled" };
+    let tag = if live { "Live".to_string() } else { format!("Settled · {}", label.detail()) };
 
     html! {
         <article class={class}>
-            <span class="source-tag">{format!("{tag} · {}", label.detail())}</span>
+            <span class="source-tag">{tag}</span>
             <p class="price">{DisplayFormat::usd(note.price())}</p>
             <ul class="facts">
                 {for PriceFact::list(note, props.spread).into_iter().map(|fact| html! {
