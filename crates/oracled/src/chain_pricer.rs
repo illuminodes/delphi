@@ -1,7 +1,7 @@
 use mantle::difficulty::{BlockHeight, BlockTime};
-use delphi_oracle::RoughPriceEstimator;
+use delphi_oracle::{PriceBand, RoughPriceEstimator};
 
-use crate::{Anchor, AuditRecord, BlockRecord, ChainWindow, FitUpdate, RecentBlocks, RecordLog};
+use crate::{Anchor, AuditRecord, BlockRecord, ChainWindow, FitUpdate, NotePayload, RecentBlocks, RecordLog};
 
 /// Prices chain windows out of the record log.
 #[derive(Debug, Clone, Copy, Default)]
@@ -26,6 +26,12 @@ pub struct ChainSnapshot {
 }
 
 impl ChainPricer {
+    /// How far, as a ratio either way, a shorter window may stray from the
+    /// deepest window's price at the same block. A thin sample can lock onto
+    /// a peak one octave (2x) off; 1.3x keeps those out and leaves room for a
+    /// real intraday move.
+    pub const OCTAVE_GUARD: f64 = 0.3;
+
     #[must_use]
     pub const fn new() -> Self {
         Self
@@ -36,47 +42,84 @@ impl ChainPricer {
     /// the outputs cannot be priced.
     #[must_use]
     pub fn audit(&self, log: &RecordLog, window: ChainWindow, height: BlockHeight) -> Option<AuditRecord> {
+        let reference = self.reference(log, window, height);
+        self.audit_against(log, window, height, reference)
+    }
+
+    /// [`Self::audit`] with the deepest window's price at `height` already
+    /// known; `None` leaves the price unbounded.
+    #[must_use]
+    pub fn audit_against(
+        &self,
+        log: &RecordLog,
+        window: ChainWindow,
+        height: BlockHeight,
+        reference: Option<f64>,
+    ) -> Option<AuditRecord> {
         let stop = log.get(height).filter(|record| !record.lacks_hash())?;
-        let tip = log.tip().map(BlockRecord::height)?.to_u32();
-        let newer = usize::try_from(tip.checked_sub(height.to_u32())?).ok()?;
-        let report = log
-            .sample_ending_before_tip(window.blocks(), newer)?
-            .price()
-            .ok()?;
+        let sample = log.sample_ending_before_tip(window.blocks(), Self::newer_than(log, height)?)?;
+        let report = match Self::band(reference) {
+            Some(band) => sample.price_within(&RoughPriceEstimator::new(), band),
+            None => sample.price(),
+        }
+        .ok()?;
         Some(AuditRecord::new(window, report, stop.hash()))
+    }
+
+    /// The deepest window's price at `height`, which bounds every shorter
+    /// window there, or `None` for the deepest window itself or while the log
+    /// is too short to price it.
+    #[must_use]
+    pub fn reference(&self, log: &RecordLog, window: ChainWindow, height: BlockHeight) -> Option<f64> {
+        let deepest = ChainWindow::deepest();
+        if window == deepest {
+            return None;
+        }
+        log.sample_ending_before_tip(deepest.blocks(), Self::newer_than(log, height)?)?
+            .price()
+            .ok()
+            .map(|report| report.central_price)
+    }
+
+    fn band(reference: Option<f64>) -> Option<PriceBand> {
+        PriceBand::around(reference?, Self::OCTAVE_GUARD)
     }
 
     /// The hourly price ending at `height`, when the daily price there, if
     /// the log holds a day, agrees with it.
     #[must_use]
     pub fn anchor(&self, log: &RecordLog, height: BlockHeight) -> Option<Anchor> {
-        let newer = Self::newer_than(log, height)?;
-        let hourly = log
-            .sample_ending_before_tip(ChainWindow::Hourly.blocks(), newer)?
-            .price()
-            .ok()?
-            .central_price;
-        let daily = log
-            .sample_ending_before_tip(ChainWindow::Daily.blocks(), newer)
-            .and_then(|sample| sample.price().ok())
-            .map(|report| report.central_price);
+        let daily = self.reference(log, ChainWindow::Hourly, height);
+        let hourly = self
+            .audit_against(log, ChainWindow::Hourly, height, daily)?
+            .price();
         Anchor::checked(hourly, daily, height)
     }
 
     /// The evidence behind every window's price ending at `height`.
     #[must_use]
     pub fn fits(&self, log: &RecordLog, height: BlockHeight) -> Vec<FitUpdate> {
+        let daily = self.reference(log, ChainWindow::Hourly, height);
         ChainWindow::ALL
             .into_iter()
-            .filter_map(|window| self.fit(log, window, height))
+            .filter_map(|window| {
+                let reference = daily.filter(|_| window != ChainWindow::deepest());
+                self.fit(log, window, height, reference)
+            })
             .collect()
     }
 
     #[must_use]
-    pub fn fit(&self, log: &RecordLog, window: ChainWindow, height: BlockHeight) -> Option<FitUpdate> {
+    pub fn fit(
+        &self,
+        log: &RecordLog,
+        window: ChainWindow,
+        height: BlockHeight,
+        reference: Option<f64>,
+    ) -> Option<FitUpdate> {
         let fit = log
             .sample_ending_before_tip(window.blocks(), Self::newer_than(log, height)?)?
-            .fit(&RoughPriceEstimator::new(), None)
+            .fit(&RoughPriceEstimator::new(), Self::band(reference))
             .ok()?;
         Some(FitUpdate::new(window.tag(), "chain", fit))
     }
@@ -192,6 +235,30 @@ mod tests {
         assert_eq!(pricer.anchor(&log, settled).map(|anchor| anchor.price), Some(audit.price()));
         assert_eq!(pricer.anchor(&log, settled).map(|anchor| anchor.height), Some(settled));
         assert!(pricer.anchor(&log, BlockHeight::new(13)).is_none());
+    }
+
+    #[test]
+    fn a_short_window_is_held_to_the_octave_of_its_reference() {
+        let fixture = LogFixture::new("octave");
+        let log = fixture.log_with(150, 400, 80_000.0);
+        let pricer = ChainPricer::new();
+        let height = BlockHeight::new(150);
+        let daily = pricer.reference(&log, ChainWindow::Hourly, height).expect("daily");
+        let held = pricer.audit(&log, ChainWindow::Hourly, height).expect("audit");
+        let moved = pricer
+            .audit_against(&log, ChainWindow::Hourly, height, Some(160_000.0))
+            .expect("audit");
+
+        assert!((held.price() / daily - 1.0).abs() < 0.05, "{}", held.price());
+        assert!((moved.price() / 160_000.0 - 1.0).abs() < ChainPricer::OCTAVE_GUARD, "{}", moved.price());
+    }
+
+    #[test]
+    fn the_deepest_window_has_no_reference() {
+        let fixture = LogFixture::new("reference");
+        let log = fixture.log_with(150, 60, 80_000.0);
+
+        assert!(ChainPricer::new().reference(&log, ChainWindow::Daily, BlockHeight::new(150)).is_none());
     }
 
     #[test]

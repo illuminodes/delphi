@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use mantle::difficulty::BlockHeight;
 use mantle::hash::Hash256;
 
-use crate::{AuditRecord, ChainPricer, ChainWindow, RecordLog};
+use crate::{AuditRecord, ChainPricer, ChainWindow, NotePayload, RecordLog};
 
 /// Finds the audit records not yet published, newest first, so the tip goes
 /// out before the history behind it.
@@ -35,20 +35,37 @@ impl AuditBackfill {
             .filter(|record| !record.lacks_hash() && record.height() <= settled)
             .map(|record| (record.height(), record.hash()))
             .collect();
+        let deepest = ChainWindow::deepest();
         for (height, hash) in blocks.into_iter().rev() {
-            for window in ChainWindow::ALL {
+            let mut deepest_price = None;
+            for window in Self::deepest_first() {
                 if batch.len() >= limit {
                     return batch;
                 }
                 if !self.handed.insert((window, height.to_u32(), hash)) {
                     continue;
                 }
-                if let Some(record) = self.pricer.audit(log, window, height) {
+                let reference = if window == deepest {
+                    None
+                } else {
+                    deepest_price.or_else(|| self.pricer.reference(log, window, height))
+                };
+                if let Some(record) = self.pricer.audit_against(log, window, height, reference) {
+                    if window == deepest {
+                        deepest_price = Some(record.price());
+                    }
                     batch.push(record);
                 }
             }
         }
         batch
+    }
+
+    /// The windows with the deepest first, so its price can bound the rest.
+    fn deepest_first() -> [ChainWindow; 2] {
+        let mut windows = ChainWindow::ALL;
+        windows.sort_by_key(|window| std::cmp::Reverse(window.blocks()));
+        windows
     }
 
     /// Forget the handed-out records below the log, which can never return.
