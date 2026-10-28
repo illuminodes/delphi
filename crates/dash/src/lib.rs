@@ -54,7 +54,7 @@ pub use block_filter::BlockFilter;
 pub use block_strip::{BlockStrip, StripBlock};
 pub use chain_block::ChainBlock;
 pub use chain_blocks::ChainBlocks;
-pub use chain_layout::{ChainLayout, CubeDetail};
+pub use chain_layout::ChainLayout;
 pub use chart_geometry::{ChartGeometry, ChartLayout, ChartTick};
 pub use civil_time::CivilTime;
 pub use dash_settings::{DashSettings, SettingsError};
