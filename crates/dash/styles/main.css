@@ -165,19 +165,18 @@ body {
 .chain-row { flex: 1; display: flex; gap: 3px; min-height: 0; }
 .chain-slot { flex: 1; position: relative; min-width: 0; }
 
-.cube { --tone: color-mix(in srgb, var(--chain) calc(16% + var(--quality, 0) * 84%), var(--surface-2)); position: absolute; left: 0; right: var(--depth); bottom: 0; height: calc(var(--fill, 1) * (100% - var(--depth))); display: flex; flex-direction: column; justify-content: space-between; padding: 0.3rem 0.4rem; border: 0; border-radius: 0; background: var(--tone); color: var(--text); font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: left; cursor: pointer; transition: filter 0.15s; }
+.cube { --tone: color-mix(in oklab, var(--chain) calc(var(--quality, 0) * 100%), var(--bad)); position: absolute; left: 0; right: var(--depth); bottom: 0; height: calc(var(--fill, 1) * (100% - var(--depth))); display: flex; flex-direction: column; justify-content: space-between; padding: 0.3rem 0.4rem; border: 0; border-radius: 0; background: var(--tone); color: var(--bg); font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: left; cursor: pointer; transition: filter 0.15s; }
 .cube::before { content: ""; position: absolute; left: 0; bottom: 100%; width: 100%; height: var(--depth); background: color-mix(in srgb, var(--tone) 80%, var(--text)); transform-origin: bottom left; transform: skewX(-45deg); }
 .cube::after { content: ""; position: absolute; left: 100%; top: 0; width: var(--depth); height: 100%; background: color-mix(in srgb, var(--tone) 65%, var(--bg)); transform-origin: top left; transform: skewY(-45deg); }
-.cube.unrated { --tone: var(--line-strong); }
-.cube.pending { outline: 2px dashed color-mix(in srgb, var(--text) 70%, transparent); outline-offset: -5px; }
-.cube.bright { color: var(--bg); }
-.cube.bright.pending { outline-color: color-mix(in srgb, var(--bg) 70%, transparent); }
-.cube.bright > span { text-shadow: none; }
-.cube > span { overflow: hidden; white-space: nowrap; line-height: 1.15; text-shadow: 0 1px 2px rgb(0 0 0 / 0.75); }
+.cube.unrated { --tone: var(--line-strong); color: var(--text); }
+.cube.pending { outline: 2px dashed color-mix(in srgb, currentColor 55%, transparent); outline-offset: -5px; }
+.cube > span { overflow: hidden; white-space: nowrap; line-height: 1.15; }
 .cube-height { font-size: 0.7rem; font-weight: 500; }
 .cube-votes { align-self: flex-end; font-size: 1.05rem; font-weight: 600; }
 .cube:hover { filter: brightness(1.15); }
-.cube.selected { border: 2px solid var(--text); }
+.cube.selected { box-shadow: inset 0 0 0 2px var(--text); }
+.cube.selected::before { background: var(--text); }
+.cube:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { .cube { transition: none; } }
 
 .block-line, .block-panel { flex: none; }
