@@ -61,6 +61,15 @@ impl ChartLayout {
             .collect()
     }
 
+    /// `count` positions spread evenly across the plot, where a chart's time ticks fall.
+    #[must_use]
+    pub fn grid_columns(&self, count: usize) -> Vec<f64> {
+        let steps = count.max(2) - 1;
+        (0..=steps)
+            .map(|step| self.left + self.inner_width() * step as f64 / steps as f64)
+            .collect()
+    }
+
     #[must_use]
     pub const fn standard() -> Self {
         Self {
@@ -388,6 +397,10 @@ mod tests {
 
         assert_eq!(rows.len(), 4);
         assert!(rows.iter().zip(&ticks).all(|(row, tick)| (row - tick).abs() < 1e-9));
+
+        let columns = layout.grid_columns(3);
+        let times: Vec<f64> = chart.x_ticks(3).iter().map(|tick| tick.position).collect();
+        assert!(columns.iter().zip(&times).all(|(column, time)| (column - time).abs() < 1e-9));
     }
 
     #[test]
