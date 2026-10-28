@@ -11,8 +11,8 @@ pub struct BlockStripViewProps {
     pub now: i64,
 }
 
-/// The recent blocks as a wall of 3D blocks tiling the space given, newest first. A block rises
-/// as high as it was full and is coloured by how many votes it gave the price, from red for few
+/// The recent blocks as a wall of slots tiling the space given, newest first. A block fills its
+/// slot as high as it was full and is coloured by how many votes it gave the price, from red for few
 /// to the chain's gold for many; blocks still short of settling have a dashed inset. Each block shows its height and
 /// votes; the rest is in its hover note. Clicking a block picks it.
 #[function_component(BlockStripView)]
@@ -38,7 +38,7 @@ pub fn block_strip_view(props: &BlockStripViewProps) -> Html {
     }
 }
 
-/// One block drawn as a 3D block in its slot.
+/// One block drawn as a bar filling its slot.
 struct ChainCube<'a> {
     block: &'a StripBlock,
     selected: bool,

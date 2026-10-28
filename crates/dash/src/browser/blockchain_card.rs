@@ -12,7 +12,7 @@ pub struct BlockchainCardProps {
     pub now: i64,
 }
 
-/// The recent blocks as a chain of cubes, with the picked block's figures packed around it: one
+/// The recent blocks as a wall of slots, with the picked block's figures packed around it: one
 /// line naming it above, and below a grid of figures beside a stack of one-line bars. The newest
 /// block is picked until another cube is clicked.
 #[function_component(BlockchainCard)]
