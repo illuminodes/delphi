@@ -7,7 +7,6 @@ use crate::HistoryRange;
 #[derive(Properties, PartialEq)]
 pub struct HistoryRangeInputProps {
     pub range: HistoryRange,
-    pub loaded: usize,
     pub on_change: Callback<HistoryRange>,
 }
 
@@ -78,7 +77,6 @@ pub fn history_range_input(props: &HistoryRangeInputProps) -> Html {
     html! {
         <form class="history-range" onsubmit={on_submit}>
             <label>
-                {"Last"}
                 <input
                     ref={field}
                     type="number"
@@ -96,9 +94,6 @@ pub fn history_range_input(props: &HistoryRangeInputProps) -> Html {
             {preset(7)}
             {preset(30)}
             {preset(90)}
-            <span class="detail" title="audit notes loaded from the relay for this range, across both windows">
-                {format!("{} notes", props.loaded)}
-            </span>
         </form>
     }
 }

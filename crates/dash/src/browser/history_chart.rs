@@ -68,9 +68,6 @@ pub fn history_chart(props: &HistoryChartProps) -> Html {
                             format!(" · #{}", DisplayFormat::count(height as usize))
                         })}
                     </span>
-                    <span class="readout-range" title="low – high over the shown history">
-                        {format!("{} – {}", DisplayFormat::usd_whole(chart.low()), DisplayFormat::usd_whole(chart.high()))}
-                    </span>
                     <span class={classes!("readout-change", trend)}>{DisplayFormat::percent_brief(change)}</span>
                 </div>
             }
@@ -144,10 +141,6 @@ pub fn history_chart(props: &HistoryChartProps) -> Html {
 
     html! {
         <article class="card chart-card">
-            <header>
-                <h2>{format!("{} history", label.title(&props.window))}</h2>
-                <span class="detail">{format!("{} audited blocks", props.points.len())}</span>
-            </header>
             {readout}
             <div class="plot" ref={plot}>
                 <svg

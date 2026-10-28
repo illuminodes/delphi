@@ -11,7 +11,7 @@ use super::price_card::PriceCard;
 use super::source_panel::SourcePanel;
 use super::tabbed_card::TabbedCard;
 use super::tile_workspace::TileWorkspace;
-use crate::{DashSettings, FeedFilter, HistoryRange, PanelId, PublisherKey, WindowLabel, WindowTabs};
+use crate::{DashSettings, HistoryRange, PanelId, PublisherKey, WindowLabel, WindowTabs};
 
 #[derive(Properties, PartialEq)]
 pub struct DashboardProps {
@@ -36,7 +36,6 @@ pub fn dashboard(props: &DashboardProps) -> Html {
         .collect();
     let fitted = fits.windows();
     let history_tabs = WindowTabs::longest_first(&charted).led_by(WindowLabel::DAILY);
-    let loaded: usize = FeedFilter::WINDOWS.iter().map(|window| board.history(window).len()).sum();
     let history_loading = state.history_loading();
     let on_range = {
         let range = range.clone();
@@ -107,7 +106,7 @@ pub fn dashboard(props: &DashboardProps) -> Html {
             },
             PanelId::History => html! {
                 <div class="history-panel">
-                    <HistoryRangeInput range={*range} loaded={loaded} on_change={on_range.clone()} />
+                    <HistoryRangeInput range={*range} on_change={on_range.clone()} />
                     <TabbedCard tabs={history_tabs.clone()} render={history.clone()} waiting="Waiting for audited blocks…" />
                 </div>
             },

@@ -88,7 +88,6 @@ body {
 .range-preset { padding: 0.15rem 0.45rem; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); font: 0.72rem var(--mono); cursor: pointer; }
 .range-preset:hover { color: var(--text); border-color: transparent; }
 .range-preset.active { color: var(--text); background: var(--surface-2); border-color: var(--line-strong); }
-.history-range .detail { margin-left: auto; }
 
 /* Cards inside tiles */
 
@@ -126,7 +125,6 @@ body {
 .chart-readout { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 1rem; margin: 0.4rem 0 0.25rem; }
 .readout-price { font: 500 1.35rem var(--mono); font-variant-numeric: tabular-nums; }
 .readout-time { color: var(--muted); font-size: 0.75rem; }
-.readout-range { color: var(--muted); font: 0.75rem var(--mono); }
 .readout-change { margin-left: auto; font: 500 0.8rem var(--mono); color: var(--good); }
 .readout-change.down { color: var(--bad); }
 
