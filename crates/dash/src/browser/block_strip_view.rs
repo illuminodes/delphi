@@ -12,8 +12,8 @@ pub struct BlockStripViewProps {
 }
 
 /// The recent blocks as a wall of 3D blocks tiling the space given, newest first. A block rises
-/// as high as it was full and is coloured by how many votes it gave the price, from red for few
-/// to green for many; blocks still short of settling are dimmed. Each block shows its height and
+/// as high as it was full and is tinted in the chain's gold by how many votes it gave the price,
+/// faint for few and strong for many; blocks still short of settling are greyed. Each block shows its height and
 /// votes; the rest is in its hover note. Clicking a block picks it.
 #[function_component(BlockStripView)]
 pub fn block_strip_view(props: &BlockStripViewProps) -> Html {
@@ -45,6 +45,9 @@ struct ChainCube<'a> {
 }
 
 impl ChainCube<'_> {
+    /// From this vote quality up the gold is light enough to need dark writing.
+    const BRIGHT: f64 = 0.6;
+
     fn view(&self, on_select: &Callback<u32>, now: i64) -> Html {
         let block = self.block;
         let height = block.height;
@@ -57,6 +60,7 @@ impl ChainCube<'_> {
                         "cube",
                         (!block.settled).then_some("pending"),
                         block.vote_quality().is_none().then_some("unrated"),
+                        block.vote_quality().is_some_and(|quality| quality >= Self::BRIGHT).then_some("bright"),
                         self.selected.then_some("selected"),
                     )}
                     style={self.style()}
