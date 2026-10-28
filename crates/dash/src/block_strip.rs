@@ -15,16 +15,19 @@ pub struct StripBlock {
 }
 
 impl StripBlock {
-    /// Fee rates at or above this many sat/vB get the last colour of the scale.
-    const TOP_RATE: f64 = 300.0;
+    /// Blocks with this many votes or fewer told the oracle almost nothing.
+    pub const FEW_VOTES: f64 = 10.0;
+    /// Blocks with this many votes or more are as good as blocks get.
+    pub const MANY_VOTES: f64 = 500.0;
 
-    /// The colour hue for the block's fee rate on a log scale: teal at 1 sat/vB, through yellow and
-    /// red, to purple at [`Self::TOP_RATE`]. `None` when the block has no fee rate.
+    /// How much the block told the oracle, from 0 to 1: its votes (outputs whose implied price
+    /// agreed with the hourly price) on a log scale from [`Self::FEW_VOTES`] to
+    /// [`Self::MANY_VOTES`]. `None` when the daemon did not report votes.
     #[must_use]
-    pub fn fee_hue(&self) -> Option<f64> {
-        let rate = self.fee_rate?;
-        let step = (rate.max(1.0).ln() / Self::TOP_RATE.ln()).clamp(0.0, 1.0);
-        Some((165.0 - step * 225.0).rem_euclid(360.0))
+    pub fn vote_quality(&self) -> Option<f64> {
+        let votes = self.votes? as f64;
+        let span = (Self::MANY_VOTES / Self::FEW_VOTES).ln();
+        Some(((votes / Self::FEW_VOTES).max(1.0).ln() / span).clamp(0.0, 1.0))
     }
 }
 
@@ -147,18 +150,18 @@ mod tests {
     }
 
     #[test]
-    fn the_fee_colour_runs_from_teal_through_red_to_purple() {
+    fn vote_quality_rises_on_a_log_scale_between_few_and_many_votes() {
         let strip = BlockStrip::new(&StripFixture::blocks(&[100]), None, None);
         let mut block = strip.blocks()[0].clone();
-        let hue = |block: &super::StripBlock| block.fee_hue().expect("hue");
+        let quality = |block: &super::StripBlock| block.vote_quality().expect("quality");
 
-        block.fee_rate = Some(0.5);
-        assert!((hue(&block) - 165.0).abs() < 1e-9);
-        block.fee_rate = Some(1_000.0);
-        assert!((hue(&block) - 300.0).abs() < 1e-9);
-        block.fee_rate = Some(20.0);
-        assert!(hue(&block) > 0.0 && hue(&block) < 165.0);
-        block.fee_rate = None;
-        assert!(block.fee_hue().is_none());
+        block.votes = Some(3);
+        assert!(quality(&block).abs() < f64::EPSILON);
+        block.votes = Some(5_000);
+        assert!((quality(&block) - 1.0).abs() < f64::EPSILON);
+        block.votes = Some(70);
+        assert!((quality(&block) - 0.5).abs() < 0.01);
+        block.votes = None;
+        assert!(block.vote_quality().is_none());
     }
 }

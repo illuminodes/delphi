@@ -11,38 +11,32 @@ pub struct BlockStripViewProps {
     pub now: i64,
 }
 
-/// The recent blocks as a chain of cubes, newest first, sized and wrapped into rows to fill the
-/// space it is given without scrolling. Each cube fills as high as the block is full, in a
-/// colour set by its fee rate, and carries as much of its figures as its size allows. Clicking
-/// a cube picks that block.
+/// The recent blocks as a chain of cubes, newest first, flowed into rows that fill the space
+/// given without scrolling. A cube is as big as its block was full and coloured by how many
+/// votes the block gave the price, from red for few to green for many. Clicking a cube picks
+/// that block.
 #[function_component(BlockStripView)]
 pub fn block_strip_view(props: &BlockStripViewProps) -> Html {
     let area = use_node_ref();
     let (width, height) = use_box_size(&area);
     let blocks = props.strip.blocks();
-    let layout = ChainLayout::fit(blocks.len(), width, height);
-    let style = format!(
-        "--cube: {:.0}px; --columns: {}; --link: {:.0}px; --row-gap: {:.0}px",
-        layout.cube,
-        layout.columns,
-        ChainLayout::LINK,
-        ChainLayout::ROW_GAP
-    );
+    let fullness: Vec<f64> = blocks.iter().map(|block| block.fullness).collect();
+    let layout = ChainLayout::fit(&fullness, width, height);
+    let style = format!("--link: {:.0}px; --row-gap: {:.0}px", ChainLayout::LINK, ChainLayout::ROW_GAP);
 
     html! {
         <div class="chain-area" ref={area}>
-            <div
-                class={classes!("chain", layout.detail().css_class())}
-                style={style}
-                role="list"
-                aria-label="recent blocks, newest first"
-            >
-                {for blocks.iter().take(layout.shown).enumerate().map(|(index, block)| ChainCube {
-                    block,
-                    selected: block.height == props.selected,
-                    linked: layout.linked(index),
-                    detail: layout.detail(),
-                }.view(&props.on_select, props.now))}
+            <div class="chain" style={style} role="list" aria-label="recent blocks, newest first">
+                {for layout.rows().iter().map(|row| html! {
+                    <div class="chain-row">
+                        {for row.iter().enumerate().map(|(place, index)| ChainCube {
+                            block: &blocks[*index],
+                            side: layout.side(*index),
+                            selected: blocks[*index].height == props.selected,
+                            linked: place > 0,
+                        }.view(&props.on_select, props.now))}
+                    </div>
+                })}
             </div>
         </div>
     }
@@ -51,9 +45,9 @@ pub fn block_strip_view(props: &BlockStripViewProps) -> Html {
 /// One block drawn as a cube.
 struct ChainCube<'a> {
     block: &'a StripBlock,
+    side: f64,
     selected: bool,
     linked: bool,
-    detail: CubeDetail,
 }
 
 impl ChainCube<'_> {
@@ -67,7 +61,7 @@ impl ChainCube<'_> {
             format!("{}/{} conf", block.confirmations, BlockStrip::SETTLE_DEPTH)
         };
         html! {
-            <div role="listitem" class="chain-slot" key={height}>
+            <div role="listitem" class="chain-slot" key={height} style={format!("--cube: {:.0}px", self.side)}>
                 {if self.linked { html! { <span class="chain-link" aria-hidden="true"></span> } } else { html! {} }}
                 <span class="cube-height">{DisplayFormat::count(height as usize)}</span>
                 <button
@@ -75,15 +69,14 @@ impl ChainCube<'_> {
                     class={classes!(
                         "cube",
                         if block.settled { "settled" } else { "pending" },
-                        (block.fullness >= 0.97).then_some("full"),
+                        block.vote_quality().is_none().then_some("unrated"),
                         self.selected.then_some("selected"),
                     )}
-                    style={self.style()}
+                    style={block.vote_quality().map(|quality| format!("--quality: {quality:.3}"))}
                     title={self.summary(now)}
                     aria-pressed={self.selected.to_string()}
                     onclick={onclick}
                 >
-                    <span class="cube-fill" aria-hidden="true"></span>
                     <span class="cube-text">{self.text(now)}</span>
                 </button>
                 <span class={classes!("cube-depth", block.settled.then_some("good"))}>{depth}</span>
@@ -93,25 +86,24 @@ impl ChainCube<'_> {
 
     fn text(&self, now: i64) -> Html {
         let block = self.block;
-        let rate = html! {
-            <span class="cube-rate">
-                {block.fee_rate.map_or_else(|| "—".to_string(), |rate| format!("~{rate:.0} sat/vB"))}
+        let detail = CubeDetail::for_side(self.side);
+        let votes = html! {
+            <span class="cube-votes">
+                {block.votes.map_or_else(|| "—".to_string(), |votes| format!("{} votes", DisplayFormat::count(votes)))}
             </span>
         };
-        if self.detail == CubeDetail::Least {
-            return rate;
+        if detail == CubeDetail::Least {
+            return votes;
         }
         html! {
             <>
-                {rate}
-                <span class="cube-fees">{format!("{:.3} ₿", ChainBlock::btc(block.fees))}</span>
+                {votes}
+                <span>{format!("{:.0}% full", block.fullness * 100.0)}</span>
                 <span>{format!("{} txs", DisplayFormat::count(block.transactions))}</span>
-                {if self.detail == CubeDetail::All {
+                {if detail == CubeDetail::All {
                     html! {
                         <>
-                            {block.votes.map_or_else(|| html! {}, |votes| html! {
-                                <span>{format!("{} votes", DisplayFormat::count(votes))}</span>
-                            })}
+                            <span>{block.fee_rate.map_or_else(|| "—".to_string(), |rate| format!("~{rate:.0} sat/vB"))}</span>
                             <span class="cube-age">{DisplayFormat::age(now - block.time)}</span>
                         </>
                     }
@@ -125,24 +117,17 @@ impl ChainCube<'_> {
     /// Every figure on the cube, for the hover note when the cube is too small to show them.
     fn summary(&self, now: i64) -> String {
         let block = self.block;
-        let mut parts = vec![
-            format!("block {}", DisplayFormat::count(block.height as usize)),
-            block.fee_rate.map_or_else(|| "no fee rate".to_string(), |rate| format!("~{rate:.1} sat/vB")),
-            format!("{:.3} ₿ fees", ChainBlock::btc(block.fees)),
-            format!("{} txs", DisplayFormat::count(block.transactions)),
-            format!("{:.0}% full", block.fullness * 100.0),
-        ];
+        let mut parts = vec![format!("block {}", DisplayFormat::count(block.height as usize))];
         if let Some(votes) = block.votes {
             parts.push(format!("{} votes", DisplayFormat::count(votes)));
         }
-        parts.push(DisplayFormat::age(now - block.time));
+        parts.extend([
+            format!("{:.0}% full", block.fullness * 100.0),
+            format!("{} txs", DisplayFormat::count(block.transactions)),
+            block.fee_rate.map_or_else(|| "no fee rate".to_string(), |rate| format!("~{rate:.1} sat/vB")),
+            format!("{:.3} ₿ fees", ChainBlock::btc(block.fees)),
+            DisplayFormat::age(now - block.time),
+        ]);
         parts.join(" · ")
-    }
-
-    fn style(&self) -> String {
-        let fill = format!("--fill: {:.1}%", self.block.fullness * 100.0);
-        self.block
-            .fee_hue()
-            .map_or(fill.clone(), |hue| format!("{fill}; --tone: hsl({hue:.0} 58% 38%)"))
     }
 }

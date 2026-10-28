@@ -11,77 +11,124 @@ pub enum CubeDetail {
 
 impl CubeDetail {
     #[must_use]
-    pub const fn css_class(self) -> &'static str {
-        match self {
-            Self::Least => "detail-least",
-            Self::Some => "detail-some",
-            Self::All => "detail-all",
+    pub fn for_side(side: f64) -> Self {
+        match side {
+            side if side >= 104.0 => Self::All,
+            side if side >= 72.0 => Self::Some,
+            _ => Self::Least,
         }
     }
 }
 
-/// The chain of cubes fitted into a box without scrolling: how many blocks fit, in how many rows,
-/// and the cube side in pixels. Cubes grow as large as the box allows, wrapping into more rows
-/// when that makes them bigger; when even the smallest cubes cannot all fit, the oldest blocks
-/// are left out.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// The chain of cubes flowed into a box without scrolling. Each cube's side grows with how full
+/// its block was; the cubes run newest first, left to right, wrapping to a new row when the next
+/// one does not fit, and the whole chain takes the largest scale at which every row fits the
+/// box. When even the smallest scale cannot hold them all, the oldest blocks are left out.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChainLayout {
-    pub cube: f64,
-    pub columns: usize,
-    pub rows: usize,
-    pub shown: usize,
+    sides: Vec<f64>,
+    rows: Vec<Vec<usize>>,
 }
 
 impl ChainLayout {
-    pub const MIN_CUBE: f64 = 44.0;
-    pub const MAX_CUBE: f64 = 128.0;
+    /// The side of an empty block's cube, as a share of a full one's.
+    pub const EMPTY_SHARE: f64 = 0.55;
+    /// The smallest and largest sides of a full block's cube, in pixels.
+    pub const MIN_SCALE: f64 = 56.0;
+    pub const MAX_SCALE: f64 = 136.0;
     /// The 3D top and side faces, as a share of the cube's side.
     pub const DEPTH: f64 = 0.1;
-    /// The gap between columns, which holds the link to the next block.
+    /// The gap between neighbours in a row, which holds the link between them.
     pub const LINK: f64 = 22.0;
-    pub const ROW_GAP: f64 = 6.0;
+    pub const ROW_GAP: f64 = 8.0;
     /// The height label above and the confirmations label below each cube, with their gaps,
-    /// and room for the lift and outline of the picked cube.
+    /// and room for the lift of the picked cube.
     pub const LABELS: f64 = 46.0;
     /// Room each side for the outline of the picked cube.
     pub const OUTLINE: f64 = 6.0;
 
+    /// `fullness` holds each block's weight share, newest first.
     #[must_use]
-    pub fn fit(blocks: usize, width: f64, height: f64) -> Self {
+    pub fn fit(fullness: &[f64], width: f64, height: f64) -> Self {
         let width = width - 2.0 * Self::OUTLINE;
-        (1..=blocks)
+        (1..=fullness.len())
             .rev()
-            .find_map(|shown| Self::best(shown, width, height).filter(|layout| layout.cube >= Self::MIN_CUBE))
-            .unwrap_or(Self { cube: Self::MIN_CUBE, columns: 1, rows: 1, shown: 0 })
+            .find_map(|shown| Self::largest(&fullness[..shown], width, height))
+            .unwrap_or(Self { sides: Vec::new(), rows: Vec::new() })
     }
 
-    /// The row count giving `shown` blocks their largest cubes.
-    fn best(shown: usize, width: f64, height: f64) -> Option<Self> {
-        (1..=shown)
-            .map(|rows| {
-                let columns = shown.div_ceil(rows);
-                let rows = shown.div_ceil(columns);
-                let across = (width - (columns - 1) as f64 * Self::LINK) / (columns as f64 * (1.0 + Self::DEPTH));
-                let down = ((height - (rows - 1) as f64 * Self::ROW_GAP) / rows as f64 - Self::LABELS) / (1.0 + Self::DEPTH);
-                Self { cube: across.min(down).min(Self::MAX_CUBE).floor(), columns, rows, shown }
-            })
-            .max_by(|left, right| left.cube.total_cmp(&right.cube))
-    }
-
-    #[must_use]
-    pub fn detail(&self) -> CubeDetail {
-        match self.cube {
-            cube if cube >= 104.0 => CubeDetail::All,
-            cube if cube >= 72.0 => CubeDetail::Some,
-            _ => CubeDetail::Least,
+    /// The layout at the largest scale that fits, if even the smallest does.
+    fn largest(fullness: &[f64], width: f64, height: f64) -> Option<Self> {
+        if let Some(layout) = Self::flow(fullness, Self::MAX_SCALE, width, height) {
+            return Some(layout);
         }
+        let mut fits = Self::flow(fullness, Self::MIN_SCALE, width, height)?;
+        let (mut low, mut high) = (Self::MIN_SCALE, Self::MAX_SCALE);
+        for _ in 0..24 {
+            let scale = f64::midpoint(low, high);
+            match Self::flow(fullness, scale, width, height) {
+                Some(layout) => (fits, low) = (layout, scale),
+                None => high = scale,
+            }
+        }
+        Some(fits)
     }
 
-    /// Whether the block at `index` (newest first) has a link to its left: every block but the
-    /// first in each row.
+    /// The cubes at `scale` wrapped into rows, if they fit the box.
+    fn flow(fullness: &[f64], scale: f64, width: f64, height: f64) -> Option<Self> {
+        let sides: Vec<f64> = fullness
+            .iter()
+            .map(|full| (scale * (Self::EMPTY_SHARE + (1.0 - Self::EMPTY_SHARE) * full.clamp(0.0, 1.0))).floor())
+            .collect();
+        let mut rows: Vec<Vec<usize>> = Vec::new();
+        let mut used = 0.0;
+        for (index, side) in sides.iter().enumerate() {
+            let slot = Self::slot(*side);
+            if slot > width {
+                return None;
+            }
+            match rows.last_mut() {
+                Some(row) if used + Self::LINK + slot <= width => {
+                    row.push(index);
+                    used += Self::LINK + slot;
+                }
+                _ => {
+                    rows.push(vec![index]);
+                    used = slot;
+                }
+            }
+        }
+        let layout = Self { sides, rows };
+        (layout.height() <= height).then_some(layout)
+    }
+
+    fn slot(side: f64) -> f64 {
+        side * (1.0 + Self::DEPTH)
+    }
+
+    fn height(&self) -> f64 {
+        let rows: f64 = self
+            .rows
+            .iter()
+            .map(|row| row.iter().map(|index| Self::slot(self.sides[*index])).fold(0.0, f64::max) + Self::LABELS)
+            .sum();
+        rows + self.rows.len().saturating_sub(1) as f64 * Self::ROW_GAP
+    }
+
+    /// The blocks shown in each row, by index into the newest-first list.
     #[must_use]
-    pub fn linked(&self, index: usize) -> bool {
-        !index.is_multiple_of(self.columns)
+    pub fn rows(&self) -> &[Vec<usize>] {
+        &self.rows
+    }
+
+    #[must_use]
+    pub fn side(&self, index: usize) -> f64 {
+        self.sides.get(index).copied().unwrap_or(0.0)
+    }
+
+    #[must_use]
+    pub fn shown(&self) -> usize {
+        self.sides.len()
     }
 }
 
@@ -89,57 +136,79 @@ impl ChainLayout {
 mod tests {
     use super::{ChainLayout, CubeDetail};
 
-    #[test]
-    fn a_wide_box_holds_every_block_in_one_row_at_the_largest_size() {
-        let layout = ChainLayout::fit(6, 2_000.0, 300.0);
+    struct LayoutFixture;
 
-        assert_eq!((layout.rows, layout.columns, layout.shown), (1, 6, 6));
-        assert!((layout.cube - ChainLayout::MAX_CUBE).abs() < f64::EPSILON);
-        assert_eq!(layout.detail(), CubeDetail::All);
+    impl LayoutFixture {
+        const FULLNESS: [f64; 8] = [1.0, 0.4, 0.9, 1.0, 0.1, 0.7, 1.0, 0.95];
+
+        fn used(layout: &ChainLayout) -> (f64, f64) {
+            let width = layout
+                .rows()
+                .iter()
+                .map(|row| {
+                    row.iter().map(|index| ChainLayout::slot(layout.side(*index))).sum::<f64>()
+                        + (row.len() - 1) as f64 * ChainLayout::LINK
+                })
+                .fold(0.0, f64::max);
+            (width + 2.0 * ChainLayout::OUTLINE, layout.height())
+        }
     }
 
     #[test]
-    fn a_tall_narrow_box_wraps_into_rows_for_bigger_cubes() {
-        let layout = ChainLayout::fit(6, 300.0, 900.0);
+    fn fuller_blocks_get_bigger_cubes() {
+        let layout = ChainLayout::fit(&LayoutFixture::FULLNESS, 2_400.0, 400.0);
 
-        assert!(layout.rows > 1);
-        assert_eq!(layout.shown, 6);
-        assert!(layout.cube > ChainLayout::fit(6, 300.0, 150.0).cube);
+        assert!(layout.side(0) > layout.side(1));
+        assert!((layout.side(1) / layout.side(0) - 0.73).abs() < 0.01);
+        assert!((layout.side(0) - ChainLayout::MAX_SCALE).abs() < 1.0);
+    }
+
+    #[test]
+    fn the_rows_follow_the_width() {
+        let rows = |width: f64| ChainLayout::fit(&LayoutFixture::FULLNESS, width, 900.0).rows().len();
+
+        assert_eq!(rows(2_400.0), 1);
+        assert!(rows(700.0) > 1);
+        assert!(rows(320.0) > rows(700.0));
+    }
+
+    #[test]
+    fn rows_can_hold_different_numbers_of_blocks() {
+        let layout = ChainLayout::fit(&LayoutFixture::FULLNESS[..5], 560.0, 600.0);
+        let lengths: Vec<usize> = layout.rows().iter().map(Vec::len).collect();
+
+        assert_eq!(lengths.iter().sum::<usize>(), 5);
+        assert!(lengths.windows(2).any(|pair| pair[0] != pair[1]), "{lengths:?}");
     }
 
     #[test]
     fn nothing_overflows_the_box() {
-        for (width, height) in [(320.0, 200.0), (800.0, 180.0), (500.0, 600.0), (1_400.0, 260.0)] {
-            let layout = ChainLayout::fit(8, width, height);
-            let columns = layout.columns as f64;
-            let rows = layout.rows as f64;
-            let used_width = columns * layout.cube * (1.0 + ChainLayout::DEPTH) + (columns - 1.0) * ChainLayout::LINK;
-            let used_height = rows * (layout.cube * (1.0 + ChainLayout::DEPTH) + ChainLayout::LABELS)
-                + (rows - 1.0) * ChainLayout::ROW_GAP;
+        for (width, height) in [(320.0, 220.0), (800.0, 180.0), (500.0, 600.0), (1_400.0, 260.0), (260.0, 900.0)] {
+            let layout = ChainLayout::fit(&LayoutFixture::FULLNESS, width, height);
+            let (used_width, used_height) = LayoutFixture::used(&layout);
 
+            assert!(layout.shown() > 0, "{width}x{height}");
             assert!(used_width <= width && used_height <= height, "{width}x{height}: {layout:?}");
         }
     }
 
     #[test]
     fn a_small_box_drops_the_oldest_blocks_instead_of_shrinking_past_the_minimum() {
-        let layout = ChainLayout::fit(8, 220.0, 110.0);
+        let layout = ChainLayout::fit(&LayoutFixture::FULLNESS, 240.0, 120.0);
 
-        assert!(layout.shown < 8 && layout.shown > 0);
-        assert!(layout.cube >= ChainLayout::MIN_CUBE);
-        assert_eq!(layout.detail(), CubeDetail::Least);
+        assert!(layout.shown() < 8 && layout.shown() > 0);
+        assert!(layout.side(0) >= ChainLayout::MIN_SCALE);
     }
 
     #[test]
     fn an_unmeasured_box_shows_nothing() {
-        assert_eq!(ChainLayout::fit(6, 0.0, 0.0).shown, 0);
+        assert_eq!(ChainLayout::fit(&LayoutFixture::FULLNESS, 0.0, 0.0).shown(), 0);
     }
 
     #[test]
-    fn only_the_first_block_of_each_row_has_no_link() {
-        let layout = ChainLayout { cube: 80.0, columns: 3, rows: 2, shown: 6 };
-        let linked: Vec<bool> = (0..6).map(|index| layout.linked(index)).collect();
-
-        assert_eq!(linked, vec![false, true, true, false, true, true]);
+    fn small_cubes_carry_less_writing() {
+        assert_eq!(CubeDetail::for_side(120.0), CubeDetail::All);
+        assert_eq!(CubeDetail::for_side(80.0), CubeDetail::Some);
+        assert_eq!(CubeDetail::for_side(40.0), CubeDetail::Least);
     }
 }
