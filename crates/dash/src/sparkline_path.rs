@@ -49,6 +49,12 @@ impl SparklinePath {
         }
         Some(points)
     }
+
+    /// The same series as path data, so a style `d` can ease from one shape to the next.
+    #[must_use]
+    pub fn path(&self, history: &[(i64, f64)]) -> Option<String> {
+        self.points(history).map(|points| format!("M{}", points.replace(' ', " L")))
+    }
 }
 
 #[cfg(test)]
@@ -95,6 +101,14 @@ mod tests {
         let points = PointsFixture::coordinates(&path.points(&[(0, 7.0), (10, 7.0)]).expect("points"));
 
         assert!(points.iter().all(|point| (point.1 - 20.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn the_path_moves_to_the_first_point_and_draws_lines_to_the_rest() {
+        let path = SparklinePath::new(100.0, 40.0, 0.0);
+
+        assert_eq!(path.path(&[(0, 1.0), (10, 2.0), (20, 1.0)]).as_deref(), Some("M0.0,40.0 L50.0,0.0 L100.0,40.0"));
+        assert_eq!(path.path(&[(0, 1.0)]), None);
     }
 
     #[test]

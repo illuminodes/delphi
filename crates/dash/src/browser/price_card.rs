@@ -29,13 +29,14 @@ pub fn price_card(props: &PriceCardProps) -> Html {
         .iter()
         .map(|point| (point.stop_time(), point.price()))
         .collect();
-    let spark = SparklinePath::new(SparklinePath::WIDE, 40.0, 2.0).points(&pairs);
+    let spark = SparklinePath::new(SparklinePath::WIDE, 40.0, 2.0).path(&pairs);
+    let price = DisplayFormat::usd(note.price());
     let tag = if live { "Live".to_string() } else { format!("Settled · {}", label.detail()) };
 
     html! {
         <article class={class}>
             <span class="source-tag">{tag}</span>
-            <p class="price">{DisplayFormat::usd(note.price())}</p>
+            <p class="price" key={price.clone()}>{price}</p>
             <ul class="facts">
                 {for PriceFact::list(note, props.spread).into_iter().map(|fact| html! {
                     <li title={fact.hint}>
@@ -44,9 +45,9 @@ pub fn price_card(props: &PriceCardProps) -> Html {
                     </li>
                 })}
             </ul>
-            {spark.map_or_else(Html::default, |points| html! {
+            {spark.map_or_else(Html::default, |path| html! {
                 <svg class="spark" viewBox={format!("0 0 {} 40", SparklinePath::WIDE)} preserveAspectRatio="none" aria-hidden="true">
-                    <polyline points={points} />
+                    <path d={path.clone()} style={format!("d:path('{path}')")} />
                 </svg>
             })}
         </article>
