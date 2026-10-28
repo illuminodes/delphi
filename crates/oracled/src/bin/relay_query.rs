@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::process::ExitCode;
 use std::sync::mpsc;
 use std::thread;
@@ -5,18 +6,21 @@ use std::time::{Duration, Instant};
 
 use delphi_oracled::{KeyStore, RelayConnector};
 use nostro2::{NostrRelayEvent, NostrSubscription};
+use nostro2_signer::nostro2_traits::bech32::Bech32Crypto;
 use nostro2_relay::ReconnectConfig;
 
 struct QueryApp {
     url: String,
     insecure: bool,
     key_file: String,
+    author: Option<String>,
     watch: Duration,
     kind: Option<u32>,
     window: Option<String>,
     since_seconds: Option<u64>,
     limit: u32,
     quiet: bool,
+    full: bool,
 }
 
 impl QueryApp {
@@ -37,6 +41,7 @@ impl QueryApp {
                 .unwrap_or_else(|| "wss://rof.illuminodes.com".to_string()),
             insecure: arguments.iter().any(|argument| argument == "--insecure"),
             key_file: value_of("--key-file").unwrap_or_else(|| "data/oracled/oracled.nsec".to_string()),
+            author: value_of("--author"),
             watch: Duration::from_secs(
                 value_of("--watch-seconds")
                     .and_then(|seconds| seconds.parse().ok())
@@ -47,6 +52,7 @@ impl QueryApp {
             since_seconds: value_of("--since-seconds").and_then(|seconds| seconds.parse().ok()),
             limit: value_of("--limit").and_then(|limit| limit.parse().ok()).unwrap_or(50),
             quiet: arguments.iter().any(|argument| argument == "--quiet"),
+            full: arguments.iter().any(|argument| argument == "--full"),
         }
     }
 
@@ -61,10 +67,7 @@ impl QueryApp {
     }
 
     fn run(&self) -> Result<(), String> {
-        let signer = KeyStore::new(&self.key_file)
-            .load_or_create()
-            .map_err(|error| error.to_string())?;
-        let author = signer.public_key();
+        let author = self.author()?;
         eprintln!("relay {} author {author}", self.url);
         let relay = RelayConnector::new(&self.url, self.insecure).connect(ReconnectConfig::default())?;
         let mut filter = NostrSubscription::new().author(&author).limit(self.limit);
@@ -105,7 +108,7 @@ impl QueryApp {
                     }
                     let head: String = note.content.chars().take(90).collect();
                     let tail: String = note.content.chars().rev().take(110).collect::<Vec<_>>().into_iter().rev().collect();
-                    let preview = if note.content.len() > 200 {
+                    let preview = if note.content.len() > 200 && !self.full {
                         format!("{head} … {tail}")
                     } else {
                         note.content.clone()
@@ -133,6 +136,26 @@ impl QueryApp {
         eprintln!("stored notes: {stored}, live notes during {}s: {live}", self.watch.as_secs());
         relay.close();
         Ok(())
+    }
+}
+
+impl QueryApp {
+    /// The `--author` key (npub or hex), else the key in `--key-file`.
+    fn author(&self) -> Result<String, String> {
+        let Some(author) = &self.author else {
+            let signer = KeyStore::new(&self.key_file)
+                .load_or_create()
+                .map_err(|error| error.to_string())?;
+            return Ok(signer.public_key());
+        };
+        if !author.starts_with("npub1") {
+            return Ok(author.clone());
+        }
+        let (_, bytes) = Bech32Crypto::decode(author).map_err(|error| format!("bad npub: {error:?}"))?;
+        Ok(bytes.iter().fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        }))
     }
 }
 

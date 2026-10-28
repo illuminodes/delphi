@@ -64,7 +64,7 @@ impl LogWatch {
             self.rejected += 1;
         } else if line.starts_with("undelivered ") {
             self.undelivered += 1;
-        } else if line.starts_with("mempool: every peer dropped") {
+        } else if line.starts_with("mempool: ") && line.ends_with(", reconnecting") {
             self.mempool_reconnects += 1;
         } else if line.starts_with("fatal: ") {
             self.fatal = Some(line.to_string());
@@ -87,6 +87,7 @@ mod tests {
             "rejected daily: no samples",
             "undelivered weekly: closed",
             "mempool: every peer dropped, reconnecting",
+            "mempool: no transaction from 8 peers in 120s, reconnecting",
             "mempool: watching 8 peers",
             "fatal: lock data directory",
             "  headers: got 2000 in page, 4000 durable total (height 1..=4000)",
@@ -103,7 +104,7 @@ mod tests {
         assert_eq!(watch.published, 1);
         assert_eq!(watch.rejected, 1);
         assert_eq!(watch.undelivered, 1);
-        assert_eq!(watch.mempool_reconnects, 1);
+        assert_eq!(watch.mempool_reconnects, 2);
         assert_eq!(watch.fatal.as_deref(), Some("fatal: lock data directory"));
         assert_eq!(
             watch.last_headers.as_deref(),
