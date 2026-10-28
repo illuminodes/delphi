@@ -137,10 +137,10 @@ body {
 .price-card.live .source-tag::before { background: transparent; box-shadow: inset 0 0 0 1px var(--tone); animation: pulse 2s ease-in-out infinite; }
 .price-card.settled .price { color: color-mix(in srgb, var(--chain) 25%, var(--text)); }
 @keyframes pulse { 50% { opacity: 0.3; } }
-@media (prefers-reduced-motion: reduce) { .price-card.live .source-tag::before { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .price-card.live .source-tag::before, .spark polyline { animation: none; } }
 .price { margin: 0; font: 500 2.4rem/1.1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; white-space: nowrap; }
 .spark { flex: 1 1 auto; display: block; width: 100%; min-height: 1.5rem; margin-top: 0.2rem; }
-.spark polyline { fill: none; stroke: var(--tone); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.spark polyline { fill: none; stroke: var(--tone); stroke-width: 1.5; vector-effect: non-scaling-stroke; animation: trace 1.1s cubic-bezier(0.3, 0, 0.2, 1) both; }
 .facts { display: flex; flex-wrap: wrap; gap: 0.2rem 1.1rem; margin: 0.35rem 0 0; padding: 0; list-style: none; font: 0.75rem var(--mono); font-variant-numeric: tabular-nums; overflow: hidden; }
 .fact-label { color: var(--muted); margin-right: 0.35rem; font-family: var(--sans); }
 
