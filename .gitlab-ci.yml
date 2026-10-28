@@ -1,4 +1,5 @@
 stages:
+  - deploy
   - soak
 
 variables:
@@ -7,6 +8,37 @@ variables:
   SOAK_SECONDS: "7200"
   SOAK_SAMPLE_SECS: "5"
   SOAK_REPORT_SECS: "60"
+
+# Builds the dashboard with Trunk and deploys dist/ to the delphi-dash Worker,
+# served at delphi.openlabs.lat. Needs CLOUDFLARE_API_TOKEN as a masked CI
+# variable with Workers Scripts edit on the account and Workers Routes and DNS
+# edit on the openlabs.lat zone. cf needs Node 22.23 or newer.
+dash-deploy:
+  stage: deploy
+  tags:
+    - ansible
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "mera"'
+      changes:
+        - crates/dash/**/*
+        - Cargo.lock
+        - .gitlab-ci.yml
+  resource_group: dash-deploy
+  environment:
+    name: dashboard
+    url: https://delphi.openlabs.lat
+  variables:
+    CF_SEND_TELEMETRY: "false"
+  before_script:
+    - export PATH="$HOME/.cargo/bin:$PATH"
+    - node --version
+    - rustup target add wasm32-unknown-unknown
+    - command -v trunk >/dev/null || cargo install --locked trunk
+  script:
+    - cd crates/dash
+    - trunk build --release
+    - npm install --no-audit --no-fund
+    - npx cf deploy --message "$CI_COMMIT_SHORT_SHA $CI_COMMIT_TITLE"
 
 # A dry run of the daemon against mainnet: throwaway key, notes printed
 # instead of published. Starts from an empty data directory, so it covers the

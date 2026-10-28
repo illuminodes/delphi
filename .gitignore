@@ -1,5 +1,9 @@
 /target
 /crates/dash/dist
+/crates/dash/node_modules
+/crates/dash/package-lock.json
+/crates/dash/.cloudflare
+/crates/dash/.wrangler
 *.nsec
 /*.svg
 perf*.data
