@@ -18,6 +18,7 @@ pub struct TileWorkspaceProps {
 /// tile's grip, a handle in its top-right corner, carries it onto another tile's edge (to move
 /// it there) or centre (to swap). The cards name themselves, so the tile adds no title.
 /// The canvas is the viewport, grown so no card falls below its minimum; the viewport scrolls.
+/// On a narrow screen the cards stack and the page scrolls by touch; the grip still reorders them.
 #[function_component(TileWorkspace)]
 pub fn tile_workspace(props: &TileWorkspaceProps) -> Html {
     let state = use_reducer(|| WorkspaceState::restored(props.saved.as_ref()));
@@ -101,7 +102,7 @@ pub fn tile_workspace(props: &TileWorkspaceProps) -> Html {
     html! {
         <div class="tiles-viewport" ref={viewport}>
         <div
-            class={classes!("tiles", gesture_class)}
+            class={classes!("tiles", gesture_class, layout.stacked().then_some("stacked"))}
             style={canvas_style}
             ref={surface}
             onpointermove={on_move}

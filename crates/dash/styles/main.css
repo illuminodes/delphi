@@ -71,6 +71,7 @@ body {
 
 .tiles-viewport { flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; position: relative; }
 .tiles { position: relative; touch-action: none; }
+.tiles.stacked { touch-action: pan-y; }
 .tiles.moving, .tiles.moving * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 .tiles.resizing-row, .tiles.resizing-row * { cursor: col-resize !important; user-select: none; -webkit-user-select: none; }
 .tiles.resizing-column, .tiles.resizing-column * { cursor: row-resize !important; user-select: none; -webkit-user-select: none; }
@@ -138,7 +139,7 @@ body {
 .price-card.settled .price { color: color-mix(in srgb, var(--chain) 25%, var(--text)); }
 @keyframes pulse { 50% { opacity: 0.3; } }
 @media (prefers-reduced-motion: reduce) { .price-card.live .source-tag::before, .spark path, .price-card .price { animation: none; transition: none; } }
-.price { margin: 0; font: 500 2.4rem/1.1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; white-space: nowrap; }
+.price { margin: 0; font: 500 clamp(1.7rem, 8vw, 2.4rem)/1.1 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; white-space: nowrap; }
 .spark { flex: 1 1 auto; display: block; width: 100%; min-height: 1.5rem; margin-top: 0.2rem; }
 .spark path { fill: none; stroke: var(--tone); stroke-width: 1.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; animation: trace 1.1s cubic-bezier(0.3, 0, 0.2, 1) both; transition: d 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
 .price-card .price { animation: price-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both; }
@@ -326,4 +327,23 @@ button.icon svg { width: 1rem; height: 1rem; }
 @media (max-width: 52rem) {
     .tagline { display: none; }
     .vitals { gap: 1rem; }
+}
+
+/* Phones: the cards stack (TileStack::BELOW), so tighten type and spacing to fit the width. */
+@media (max-width: 40rem) {
+    body { font-size: 13px; }
+    .workspace { padding: 0.15rem; }
+    .tile { padding: 0.15rem; }
+    .card { padding: 0.6rem; }
+    .tab-row { gap: 0.5rem; padding: 0.4rem 0.6rem 0; flex-wrap: wrap; }
+    .tab-aside { flex-basis: 100%; margin-left: 0; }
+    .window-tab { padding: 0.25rem 0.5rem; }
+    .tile-grip { width: 1.8rem; height: 1.8rem; top: 0.2rem; right: 0.2rem; }
+    .readout-price { font-size: 1.15rem; }
+    .block-panel { grid-template-columns: 1fr; }
+    .block-figures { grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr)); }
+    .meter-row { grid-template-columns: 3.25rem 1fr 4rem; }
+    .source-facts > div { grid-template-columns: 4.5rem 1fr; gap: 0.5rem; }
+    .cube-votes { font-size: 0.9rem; }
+    .panel { padding: 1rem; }
 }

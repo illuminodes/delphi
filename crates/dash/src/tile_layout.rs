@@ -1,12 +1,14 @@
 use crate::{
-    DividerSpot, DropZone, PanelId, SpiralCard, SpiralCompass, SpiralCut, SpiralNeeds, TileRect, TileSize, WorkspaceArrangement,
+    DividerSpot, DropZone, PanelId, SpiralCard, SpiralCompass, SpiralCut, SpiralNeeds, TileRect, TileSize, TileStack,
+    WorkspaceArrangement,
 };
 
 /// The workspace as a spiral: each card in turn cuts its own share from the area the cards
 /// before it left, and the last card fills what remains. Resizing a card moves only its inner
 /// edge, and every card after it reflows inside the smaller or larger remainder. No card is
 /// drawn below its minimum: shares are bounded so each card and everything inside it fits,
-/// and the canvas grows past the viewport when even that is not possible.
+/// and the canvas grows past the viewport when even that is not possible. On a narrow
+/// viewport the cards stack instead, in the same order, with no edges to drag.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TileLayout {
     cards: Vec<SpiralCard>,
@@ -47,7 +49,16 @@ impl TileLayout {
     /// The pixel size the tiles are laid out on: the viewport, grown to fit every card's minimum.
     #[must_use]
     pub fn canvas(&self) -> TileSize {
+        if self.stacked() {
+            return TileStack::new(&self.cards, self.viewport).canvas();
+        }
         self.canvas_for(&SpiralNeeds::new(&self.cards, &self.cuts()))
+    }
+
+    /// Whether the viewport is narrow enough that the cards stack.
+    #[must_use]
+    pub fn stacked(&self) -> bool {
+        TileStack::applies(self.viewport)
     }
 
     fn canvas_for(&self, needs: &SpiralNeeds) -> TileSize {
@@ -62,11 +73,17 @@ impl TileLayout {
 
     #[must_use]
     pub fn tiles(&self) -> Vec<(PanelId, TileRect)> {
+        if self.stacked() {
+            return TileStack::new(&self.cards, self.viewport).tiles();
+        }
         self.arranged().0
     }
 
     #[must_use]
     pub fn dividers(&self) -> Vec<DividerSpot> {
+        if self.stacked() {
+            return Vec::new();
+        }
         self.arranged().1
     }
 
@@ -271,6 +288,18 @@ mod tests {
             let size = LayoutFixture::pixels(&layout, window);
             assert!(size.width >= 600.0 - 1e-6 && size.height >= 300.0 - 1e-6);
         }
+    }
+
+    #[test]
+    fn a_narrow_viewport_stacks_the_cards_in_order_without_edges() {
+        let mut layout = LayoutFixture::four();
+        layout.set_viewport(TileSize::new(390.0, 800.0));
+
+        assert!(layout.stacked());
+        assert!(layout.dividers().is_empty());
+        let tops: Vec<f64> = layout.tiles().iter().map(|(_, rect)| rect.y).collect();
+        assert!(tops.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!((layout.canvas().width - 390.0).abs() < 1e-9);
     }
 
     #[test]
