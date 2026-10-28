@@ -152,8 +152,13 @@ body {
 
 /* Blockchain */
 
-.blockchain-card { overflow: auto; gap: 0.25rem; }
-.blockchain-card h3 { margin: 0.75rem 0 0.35rem; font-size: 0.66rem; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.blockchain-card { overflow: auto; gap: 0.4rem; }
+.block-line { flex-wrap: nowrap; min-width: 0; }
+.block-line h2 { white-space: nowrap; }
+.block-line .detail { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.block-line .age { margin-left: auto; color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
+.block-hash { font: 0.72rem var(--mono); color: var(--faint); text-decoration: none; white-space: nowrap; }
+.block-hash:hover { color: var(--text); }
 
 .chain { --cube: 7.25rem; --depth: 0.7rem; flex: 0 0 auto; display: flex; align-items: center; overflow-x: auto; padding: 0.25rem 0 0.4rem; scrollbar-width: thin; }
 .chain-slot { flex: 0 0 auto; display: flex; flex-direction: column; gap: 0.35rem; }
@@ -177,16 +182,19 @@ body {
 .cube.pending .cube-fill { background: repeating-linear-gradient(135deg, var(--tone) 0 6px, color-mix(in srgb, var(--tone) 90%, #fff) 6px 12px); }
 @media (prefers-reduced-motion: reduce) { .cube { transition: none; } }
 
-.block-detail { border-top: 1px solid var(--line); padding-top: 0.6rem; }
-.block-hash { display: block; margin: 0.2rem 0 0.4rem; font: 0.7rem var(--mono); color: var(--faint); overflow-wrap: anywhere; text-decoration: none; }
-.block-hash:hover { color: var(--text); }
-
-.split-bar { display: flex; gap: 1px; height: 0.6rem; border-radius: 2px; overflow: hidden; background: var(--surface-2); }
-.split-bar > span { min-width: 2px; background: var(--bar); }
-.split-legend { display: flex; flex-wrap: wrap; gap: 0.2rem 1rem; margin: 0.4rem 0 0; padding: 0; list-style: none; font: 0.72rem var(--mono); font-variant-numeric: tabular-nums; }
-.split-legend li { display: inline-flex; align-items: center; gap: 0.35rem; cursor: help; }
-.split-legend .swatch { width: 0.6rem; height: 0.6rem; border-radius: 2px; background: var(--bar); }
-.split-label { color: var(--muted); font-family: var(--sans); }
+.block-panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0.5rem 1.25rem; padding-top: 0.5rem; border-top: 1px solid var(--line); }
+.block-figures { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr)); gap: 0.4rem 0.75rem; margin: 0; align-content: start; }
+.block-figures > div { cursor: help; min-width: 0; }
+.block-figures dt { color: var(--muted); font-size: 0.62rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.block-figures dd { margin: 0; font: 0.8rem var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.block-meters { display: grid; gap: 0.3rem; margin: 0; padding: 0; list-style: none; align-content: start; }
+.meter-row { display: grid; grid-template-columns: 3.75rem 1fr 4.75rem; align-items: center; gap: 0.5rem; font-size: 0.72rem; cursor: help; }
+.meter-label { color: var(--muted); }
+.meter-bar { display: flex; gap: 1px; height: 0.45rem; border-radius: 2px; overflow: hidden; background: var(--surface-2); }
+.meter-bar > span { flex: none; background: var(--bar, var(--chain)); }
+.meter-value { text-align: right; white-space: nowrap; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.seg-full { --bar: var(--muted); }
+.seg-stage { --bar: color-mix(in srgb, var(--chain) 70%, var(--surface-2)); }
 .seg-subsidy { --bar: var(--chain); }
 .seg-fees { --bar: var(--mempool); }
 .seg-accepted { --bar: var(--chain); }
@@ -200,13 +208,6 @@ body {
 
 /* Filter funnel and mempool */
 
-.filter-funnel { margin-top: 0.25rem; }
-.filter-funnel h3 { margin: 0.75rem 0 0.35rem; font-size: 0.66rem; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
-.funnel-stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
-.funnel-stages li { display: grid; grid-template-columns: 7.5rem 1fr 7rem; align-items: center; gap: 0.6rem; cursor: help; }
-.funnel-track { height: 0.35rem; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
-.funnel-bar { display: block; height: 100%; background: var(--bar, var(--chain)); }
-.funnel-count { text-align: right; white-space: nowrap; font-family: var(--mono); }
 .stage-voting { --bar: var(--chain); }
 .stage-round { --bar: color-mix(in srgb, var(--chain) 55%, var(--mempool)); }
 .stage-sampled { --bar: var(--mempool); }
