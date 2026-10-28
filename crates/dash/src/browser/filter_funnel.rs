@@ -1,5 +1,6 @@
 use yew::prelude::*;
 
+use super::split_bar::SplitBar;
 use crate::{BlockFilter, DisplayFormat};
 
 #[derive(Properties, PartialEq)]
@@ -7,21 +8,20 @@ pub struct FilterFunnelProps {
     pub filter: BlockFilter,
 }
 
-/// Where a block's transactions went on their way into the price: turned away by a filter rule,
-/// accepted, kept by the amount limits, near a round dollar amount, and agreeing with the price.
+/// Where a block's transactions went on their way into the price: the verdict on each, then how
+/// many of the accepted ones' outputs were kept by the amount limits, sat near a round dollar
+/// amount, and agreed with the price.
 #[function_component(FilterFunnel)]
 pub fn filter_funnel(props: &FilterFunnelProps) -> Html {
     let filter = &props.filter;
     if !filter.has_verdicts() {
         return html! { <p class="detail">{"This daemon does not report filter verdicts yet."}</p> };
     }
-    let total = filter.total();
     let mut stages = vec![
-        FunnelStage::new("transactions", total, total, "every transaction in the block"),
         FunnelStage::new(
             "accepted",
             filter.accepted(),
-            total,
+            filter.total(),
             "passed every rule: up to 5 inputs, exactly 2 outputs, no OP_RETURN, small witness, not chained or a double spend",
         ),
         FunnelStage::new(
@@ -50,19 +50,10 @@ pub fn filter_funnel(props: &FilterFunnelProps) -> Html {
 
     html! {
         <section class="filter-funnel">
+            <SplitBar title="Verdict on each transaction" segments={filter.verdicts()} />
             <h3>{"How the oracle read this block"}</h3>
             <ul class="funnel-stages">
                 {for stages.iter().map(FunnelStage::view)}
-            </ul>
-            <h3>{"Turned away"}</h3>
-            <ul class="funnel-rejections">
-                {for filter.rejections().into_iter().map(|(label, count, hint)| html! {
-                    <li title={hint}>
-                        <span class="fact-label">{label}</span>
-                        {DisplayFormat::count(count)}
-                        <span class="detail">{format!(" {:.0}%", BlockFilter::share(count, total) * 100.0)}</span>
-                    </li>
-                })}
             </ul>
             {filter.price.map(|price| html! {
                 <p class="detail">{format!("Measured against the hourly price {}.", DisplayFormat::usd_whole(price))}</p>

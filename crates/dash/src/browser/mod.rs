@@ -19,6 +19,7 @@ pub mod render_pacer;
 pub mod settings_panel;
 pub mod settings_store;
 pub mod source_panel;
+pub mod split_bar;
 pub mod tabbed_card;
 pub mod tile_workspace;
 pub mod workspace_reducer;

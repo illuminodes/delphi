@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::BlockFilter;
+use crate::{BlockFilter, SplitSegment};
 
 /// One block as the daemon read it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -49,6 +49,28 @@ impl ChainBlock {
         (virtual_size > 0 && self.transactions > 1).then(|| self.fees as f64 / virtual_size as f64)
     }
 
+    /// What the miner was paid, split into newly issued coins and fees; empty when neither is known.
+    #[must_use]
+    pub fn reward(&self) -> Vec<SplitSegment> {
+        let whole = self.subsidy + self.fees;
+        if whole == 0 {
+            return Vec::new();
+        }
+        [
+            ("subsidy", "subsidy", self.subsidy, "new coins issued by this block"),
+            ("fees", "fees", self.fees, "what the block's transactions paid the miner"),
+        ]
+        .into_iter()
+        .map(|(key, label, sats, hint)| SplitSegment {
+            key,
+            label,
+            amount: format!("{:.4} ₿", Self::btc(sats)),
+            share: sats as f64 / whole as f64,
+            hint,
+        })
+        .collect()
+    }
+
     #[must_use]
     pub fn btc(sats: u64) -> f64 {
         sats as f64 / Self::SATS_PER_BTC
@@ -92,6 +114,16 @@ mod tests {
     }
 
     #[test]
+    fn the_reward_splits_into_subsidy_and_fees() {
+        let reward = BlockFixture::block().reward();
+        let shares: Vec<f64> = reward.iter().map(|segment| segment.share).collect();
+
+        assert!((shares[0] - 312.5 / 332.5).abs() < 1e-9);
+        assert!((shares[1] - 20.0 / 332.5).abs() < 1e-9);
+        assert_eq!(reward[1].amount, "0.2000 ₿");
+    }
+
+    #[test]
     fn a_block_with_only_a_coinbase_has_no_fee_rate() {
         let mut block = BlockFixture::block();
         block.transactions = 1;
@@ -110,6 +142,7 @@ mod tests {
             serde_json::from_str(r#"{"height":1,"hash":"ab","time":2,"difficulty":null,"transactions":1}"#).expect("block");
 
         assert_eq!(block.weight, 0);
+        assert!(block.reward().is_empty());
         assert!(block.difficulty.is_none());
         assert_eq!(block.short_hash(), "ab");
     }

@@ -161,23 +161,52 @@ body {
 .strip-block.pending { color: var(--muted); border-style: dashed; }
 .strip-height { position: relative; color: var(--text); }
 .strip-depth { position: relative; font-size: 0.62rem; }
-.recent-blocks { width: 100%; margin-top: 0.5rem; border-collapse: collapse; font: 0.72rem var(--mono); font-variant-numeric: tabular-nums; }
-.recent-blocks th { color: var(--muted); font: 500 0.66rem var(--sans); letter-spacing: 0.06em; text-transform: uppercase; text-align: right; padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--line); }
-.recent-blocks td { text-align: right; padding: 0.25rem 0.4rem; white-space: nowrap; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
-.recent-blocks th:first-child, .recent-blocks td:first-child { text-align: left; }
-.recent-blocks td.hash { color: var(--faint); }
+.blockchain-card h3 { margin: 0.75rem 0 0.35rem; font-size: 0.66rem; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.meter-track { display: block; height: 0.35rem; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.meter-bar { display: block; height: 100%; background: var(--bar, var(--chain)); }
+.block-meter { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0.6rem; margin-top: 0.5rem; font: 0.75rem var(--mono); font-variant-numeric: tabular-nums; cursor: help; }
+
+.split-bar { display: flex; gap: 1px; height: 0.6rem; border-radius: 2px; overflow: hidden; background: var(--surface-2); }
+.split-bar > span { min-width: 2px; background: var(--bar); }
+.split-legend { display: flex; flex-wrap: wrap; gap: 0.2rem 1rem; margin: 0.4rem 0 0; padding: 0; list-style: none; font: 0.72rem var(--mono); font-variant-numeric: tabular-nums; }
+.split-legend li { display: inline-flex; align-items: center; gap: 0.35rem; cursor: help; }
+.split-legend .swatch { width: 0.6rem; height: 0.6rem; border-radius: 2px; background: var(--bar); }
+.split-label { color: var(--muted); font-family: var(--sans); }
+.seg-subsidy { --bar: var(--chain); }
+.seg-fees { --bar: var(--mempool); }
+.seg-accepted { --bar: var(--chain); }
+.seg-not_two_outputs { --bar: color-mix(in srgb, var(--bad) 85%, var(--bg)); }
+.seg-too_many_inputs { --bar: color-mix(in srgb, var(--bad) 65%, var(--bg)); }
+.seg-op_return { --bar: color-mix(in srgb, var(--warn) 80%, var(--bg)); }
+.seg-oversized_witness { --bar: color-mix(in srgb, var(--warn) 55%, var(--bg)); }
+.seg-spends_unconfirmed_parent { --bar: color-mix(in srgb, var(--bad) 45%, var(--bg)); }
+.seg-replacement { --bar: color-mix(in srgb, var(--bad) 30%, var(--bg)); }
+.seg-coinbase { --bar: var(--faint); }
+
+.block-list ul { margin: 0; padding: 0; list-style: none; }
+.block-row { display: grid; grid-template-columns: minmax(5.5rem, 1.2fr) repeat(4, minmax(3.5rem, 1fr)); gap: 0.75rem; align-items: center; padding: 0.3rem 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font: 0.72rem var(--mono); font-variant-numeric: tabular-nums; }
+.block-row.head { padding-top: 0; color: var(--muted); font: 500 0.62rem var(--sans); letter-spacing: 0.06em; text-transform: uppercase; border-bottom-color: var(--line); }
+.block-row.head > span:not(:first-child) { text-align: right; }
+.row-height { display: flex; flex-direction: column; line-height: 1.25; }
+.row-height .detail { font-size: 0.64rem; }
+.row-cell { display: grid; gap: 0.2rem; }
+.row-value { text-align: right; }
+.row-cell .meter-track { height: 0.25rem; }
+.row-cell.txs { --bar: var(--faint); }
+.row-cell.full { --bar: var(--muted); }
+.row-cell.fees { --bar: var(--mempool); }
+.row-cell.votes { --bar: var(--chain); }
+.block-meter { --bar: var(--muted); }
 
 /* Filter funnel and mempool */
 
-.filter-funnel { margin-top: 0.5rem; }
+.filter-funnel { margin-top: 0.25rem; }
 .filter-funnel h3 { margin: 0.75rem 0 0.35rem; font-size: 0.66rem; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
 .funnel-stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; font-size: 0.75rem; font-variant-numeric: tabular-nums; }
 .funnel-stages li { display: grid; grid-template-columns: 7.5rem 1fr 7rem; align-items: center; gap: 0.6rem; cursor: help; }
 .funnel-track { height: 0.35rem; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
 .funnel-bar { display: block; height: 100%; background: var(--bar, var(--chain)); }
 .funnel-count { text-align: right; white-space: nowrap; font-family: var(--mono); }
-.funnel-rejections { display: flex; flex-wrap: wrap; gap: 0.2rem 1rem; list-style: none; margin: 0; padding: 0; font: 0.72rem var(--mono); font-variant-numeric: tabular-nums; }
-.funnel-rejections li { cursor: help; }
 .stage-voting { --bar: var(--chain); }
 .stage-round { --bar: color-mix(in srgb, var(--chain) 55%, var(--mempool)); }
 .stage-sampled { --bar: var(--mempool); }

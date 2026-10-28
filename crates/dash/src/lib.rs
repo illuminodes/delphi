@@ -1,6 +1,7 @@
 #[cfg(target_arch = "wasm32")]
 pub mod browser;
 pub mod block_filter;
+pub mod block_scale;
 pub mod block_strip;
 pub mod chain_block;
 pub mod chain_blocks;
@@ -37,6 +38,7 @@ pub mod spiral_compass;
 pub mod spiral_cut;
 pub mod spiral_needs;
 pub mod split_axis;
+pub mod split_segment;
 pub mod tile_gesture;
 pub mod tile_layout;
 pub mod tile_rect;
@@ -49,6 +51,7 @@ pub mod workspace_plan;
 pub mod workspace_state;
 
 pub use block_filter::BlockFilter;
+pub use block_scale::BlockScale;
 pub use block_strip::{BlockStrip, StripBlock};
 pub use chain_block::ChainBlock;
 pub use chain_blocks::ChainBlocks;
@@ -57,6 +60,7 @@ pub use civil_time::CivilTime;
 pub use dash_settings::{DashSettings, SettingsError};
 pub use dash_state::DashState;
 pub use display_format::DisplayFormat;
+pub use split_segment::SplitSegment;
 pub use divider_spot::DividerSpot;
 pub use drop_zone::DropZone;
 pub use feed_filter::FeedFilter;

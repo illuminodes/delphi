@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use crate::{DisplayFormat, SplitSegment};
+
 /// How the oracle's filter treated one block: the verdict on every transaction, how many outputs
 /// the accepted ones carried and kept, and, measured against the hourly price, how many of those
 /// sat near a round dollar amount and how many agreed with the price.
@@ -20,6 +22,8 @@ pub struct BlockFilter {
 
 impl BlockFilter {
     pub const ACCEPTED: &'static str = "accepted";
+    const ACCEPTED_HINT: &'static str =
+        "passed every rule: up to 5 inputs, exactly 2 outputs, no OP_RETURN, small witness, not chained or a double spend";
     const REJECTIONS: [(&'static str, &'static str, &'static str); 7] = [
         ("coinbase", "coinbase", "the miner's reward transaction"),
         ("not_two_outputs", "not 2 outputs", "a payment plus change has exactly two outputs; batches, consolidations and sweeps do not"),
@@ -45,17 +49,23 @@ impl BlockFilter {
         self.verdicts.get(key).copied().unwrap_or(0)
     }
 
-    /// Every rejection rule that turned at least one transaction away, largest first, as
-    /// `(label, count, explanation)`.
+    /// Every verdict given to at least one transaction, as shares of the block: the accepted ones
+    /// first, then each rejection rule, largest first.
     #[must_use]
-    pub fn rejections(&self) -> Vec<(&'static str, usize, &'static str)> {
-        let mut rows: Vec<_> = Self::REJECTIONS
-            .iter()
-            .map(|(key, label, hint)| (*label, self.count(key), *hint))
-            .filter(|(_, count, _)| *count > 0)
-            .collect();
-        rows.sort_by_key(|(_, count, _)| std::cmp::Reverse(*count));
-        rows
+    pub fn verdicts(&self) -> Vec<SplitSegment> {
+        let mut rejected: Vec<(&'static str, &'static str, &'static str)> = Self::REJECTIONS.to_vec();
+        rejected.sort_by_key(|(key, _, _)| std::cmp::Reverse(self.count(key)));
+        std::iter::once((Self::ACCEPTED, Self::ACCEPTED, Self::ACCEPTED_HINT))
+            .chain(rejected)
+            .filter(|(key, _, _)| self.count(key) > 0)
+            .map(|(key, label, hint)| SplitSegment {
+                key,
+                label,
+                amount: DisplayFormat::count(self.count(key)),
+                share: Self::share(self.count(key), self.total()),
+                hint,
+            })
+            .collect()
     }
 
     /// The label and explanation of one rejection rule, by its verdict key.
@@ -94,11 +104,14 @@ mod tests {
     }
 
     #[test]
-    fn rejections_skip_empty_rules_and_list_the_largest_first() {
+    fn verdicts_lead_with_the_accepted_then_skip_empty_rules_largest_first() {
         let filter = FilterFixture::filter();
-        let labels: Vec<&str> = filter.rejections().iter().map(|(label, _, _)| *label).collect();
+        let verdicts = filter.verdicts();
+        let labels: Vec<&str> = verdicts.iter().map(|segment| segment.label).collect();
 
-        assert_eq!(labels, vec!["not 2 outputs", "OP_RETURN", "> 5 inputs", "big witness", "coinbase"]);
+        assert_eq!(labels, vec!["accepted", "not 2 outputs", "OP_RETURN", "> 5 inputs", "big witness", "coinbase"]);
+        assert!((verdicts.iter().map(|segment| segment.share).sum::<f64>() - 1.0).abs() < 1e-9);
+        assert_eq!(verdicts[0].amount, "1,200");
         assert_eq!(filter.accepted(), 1_200);
         assert_eq!(filter.total(), 3_000);
         assert_eq!(filter.inside_band, Some(250));
@@ -115,6 +128,7 @@ mod tests {
         let filter: BlockFilter = serde_json::from_str("{}").expect("filter");
 
         assert!(!filter.has_verdicts());
+        assert!(filter.verdicts().is_empty());
         assert!(filter.near_round_usd.is_none());
         assert!((BlockFilter::share(1, 0)).abs() < f64::EPSILON);
         assert!((BlockFilter::share(1, 4) - 0.25).abs() < f64::EPSILON);
