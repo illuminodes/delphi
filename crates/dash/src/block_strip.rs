@@ -1,6 +1,6 @@
 use crate::{ChainBlock, ChainBlocks};
 
-/// One block in the strip: how deep it is and whether the oracle has settled it.
+/// One block in the chain view: what it held, how deep it is and whether the oracle has settled it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StripBlock {
     pub height: u32,
@@ -9,9 +9,26 @@ pub struct StripBlock {
     pub fee_rate: Option<f64>,
     pub fullness: f64,
     pub time: i64,
+    pub transactions: usize,
+    pub fees: u64,
+    pub votes: Option<usize>,
 }
 
-/// The newest blocks the oracle read, oldest first, so the tip sits at the right edge.
+impl StripBlock {
+    /// Fee rates at or above this many sat/vB get the last colour of the scale.
+    const TOP_RATE: f64 = 300.0;
+
+    /// The colour hue for the block's fee rate on a log scale: teal at 1 sat/vB, through yellow and
+    /// red, to purple at [`Self::TOP_RATE`]. `None` when the block has no fee rate.
+    #[must_use]
+    pub fn fee_hue(&self) -> Option<f64> {
+        let rate = self.fee_rate?;
+        let step = (rate.max(1.0).ln() / Self::TOP_RATE.ln()).clamp(0.0, 1.0);
+        Some((165.0 - step * 225.0).rem_euclid(360.0))
+    }
+}
+
+/// The newest blocks the oracle read, newest first, the way a block explorer lines them up.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockStrip {
     blocks: Vec<StripBlock>,
@@ -33,7 +50,7 @@ impl BlockStrip {
             .iter()
             .map(|block| Self::entry(block, tip, settled))
             .collect();
-        strip.sort_by_key(|block| block.height);
+        strip.sort_by_key(|block| std::cmp::Reverse(block.height));
         Self { blocks: strip }
     }
 
@@ -45,6 +62,9 @@ impl BlockStrip {
             fee_rate: block.fee_rate(),
             fullness: block.fullness().clamp(0.0, 1.0),
             time: block.time,
+            transactions: block.transactions,
+            fees: block.fees,
+            votes: block.filter.inside_band,
         }
     }
 
@@ -90,13 +110,13 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_runs_oldest_to_newest_and_counts_confirmations_from_the_tip() {
-        let strip = BlockStrip::new(&StripFixture::blocks(&[102, 100, 101]), Some(103), None);
+    fn the_strip_runs_newest_to_oldest_and_counts_confirmations_from_the_tip() {
+        let strip = BlockStrip::new(&StripFixture::blocks(&[101, 100, 102]), Some(103), None);
         let heights: Vec<u32> = strip.blocks().iter().map(|block| block.height).collect();
         let depths: Vec<u32> = strip.blocks().iter().map(|block| block.confirmations).collect();
 
-        assert_eq!(heights, vec![100, 101, 102]);
-        assert_eq!(depths, vec![4, 3, 2]);
+        assert_eq!(heights, vec![102, 101, 100]);
+        assert_eq!(depths, vec![2, 3, 4]);
     }
 
     #[test]
@@ -104,7 +124,7 @@ mod tests {
         let strip = BlockStrip::new(&StripFixture::blocks(&[100, 101, 102]), Some(102), Some(100));
         let settled: Vec<bool> = strip.blocks().iter().map(|block| block.settled).collect();
 
-        assert_eq!(settled, vec![true, false, false]);
+        assert_eq!(settled, vec![false, false, true]);
         assert_eq!(strip.pending(), 2);
     }
 
@@ -112,7 +132,8 @@ mod tests {
     fn without_a_status_a_block_settles_at_six_confirmations() {
         let heights: Vec<u32> = (100..=107).collect();
         let strip = BlockStrip::new(&StripFixture::blocks(&heights), None, None);
-        let settled: Vec<u32> = strip.blocks().iter().filter(|block| block.settled).map(|block| block.height).collect();
+        let mut settled: Vec<u32> = strip.blocks().iter().filter(|block| block.settled).map(|block| block.height).collect();
+        settled.sort_unstable();
 
         assert_eq!(settled, vec![100, 101, 102]);
         assert!(strip.blocks().iter().all(|block| block.settled == (block.confirmations >= BlockStrip::SETTLE_DEPTH)));
@@ -122,6 +143,22 @@ mod tests {
     fn a_stale_status_tip_never_hides_a_newer_block() {
         let strip = BlockStrip::new(&StripFixture::blocks(&[100, 101]), Some(99), None);
 
-        assert_eq!(strip.blocks().last().map(|block| block.confirmations), Some(1));
+        assert_eq!(strip.blocks().first().map(|block| block.confirmations), Some(1));
+    }
+
+    #[test]
+    fn the_fee_colour_runs_from_teal_through_red_to_purple() {
+        let strip = BlockStrip::new(&StripFixture::blocks(&[100]), None, None);
+        let mut block = strip.blocks()[0].clone();
+        let hue = |block: &super::StripBlock| block.fee_hue().expect("hue");
+
+        block.fee_rate = Some(0.5);
+        assert!((hue(&block) - 165.0).abs() < 1e-9);
+        block.fee_rate = Some(1_000.0);
+        assert!((hue(&block) - 300.0).abs() < 1e-9);
+        block.fee_rate = Some(20.0);
+        assert!(hue(&block) > 0.0 && hue(&block) < 165.0);
+        block.fee_rate = None;
+        assert!(block.fee_hue().is_none());
     }
 }
