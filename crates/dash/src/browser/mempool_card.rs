@@ -13,6 +13,7 @@ pub struct MempoolCardProps {
 /// The streamed mempool transactions as squares, newest at the top left, each sized by its
 /// dollar value and coloured by how far it got into the price. Hovering a square describes it;
 /// clicking opens it on mempool.space. The legend dims every stage but the one picked.
+/// Before the first transaction, the header and legend show with dashes over a pulsing empty grid.
 #[function_component(MempoolCard)]
 pub fn mempool_card(props: &MempoolCardProps) -> Html {
     let selected = use_state(|| None::<TransactionStage>);
@@ -20,14 +21,7 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
     let area = use_node_ref();
     let (width, height) = use_box_size(&area);
     let stream = &props.stream;
-    if stream.is_empty() {
-        return html! {
-            <div class="card placeholder">
-                {"Waiting for the oracle to stream a mempool transaction…"}
-                <p class="detail">{"Daemons older than the transaction stream, or started with --tx-notes 0, send none."}</p>
-            </div>
-        };
-    }
+    let waiting = stream.is_empty();
     let transactions = stream.recent(None);
     let sides: Vec<u32> = transactions.iter().map(|transaction| MempoolGrid::side_for(transaction.usd_value())).collect();
     let grid = MempoolGrid::pack(&sides, MempoolCardParts::cells(width), MempoolCardParts::cells(height));
@@ -52,7 +46,7 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
             >
                 <span class="swatch" aria-hidden="true"></span>
                 {stage.label()}
-                <span class="legend-count">{DisplayFormat::count(count)}</span>
+                <span class="legend-count">{if waiting { "—".to_string() } else { DisplayFormat::count(count) }}</span>
             </button>
         }
     });
@@ -90,19 +84,32 @@ pub fn mempool_card(props: &MempoolCardProps) -> Html {
     html! {
         <article class="card mempool-card">
             <header>
-                <h2>{format!("{} transactions", DisplayFormat::count(total))}</h2>
-                <span class="detail">
-                    {format!(
-                        "{} entered the model ({:.0}%) · showing newest {}",
-                        DisplayFormat::count(stream.entered_model()),
-                        BlockFilter::share(stream.entered_model(), total) * 100.0,
-                        DisplayFormat::count(grid.tiles().len()),
-                    )}
-                </span>
-                {MempoolCardParts::dropped(props.status.as_ref())}
+                {if waiting {
+                    html! {
+                        <>
+                            <h2>{"— transactions"}</h2>
+                            <span class="detail">{"waiting for the oracle to stream a mempool transaction"}</span>
+                        </>
+                    }
+                } else {
+                    html! {
+                        <>
+                            <h2>{format!("{} transactions", DisplayFormat::count(total))}</h2>
+                            <span class="detail">
+                                {format!(
+                                    "{} entered the model ({:.0}%) · showing newest {}",
+                                    DisplayFormat::count(stream.entered_model()),
+                                    BlockFilter::share(stream.entered_model(), total) * 100.0,
+                                    DisplayFormat::count(grid.tiles().len()),
+                                )}
+                            </span>
+                            {MempoolCardParts::dropped(props.status.as_ref())}
+                        </>
+                    }
+                }}
             </header>
             <nav class="tx-legend">{for legend}</nav>
-            <div class="tx-grid-area" ref={area} onmouseleave={leave}>
+            <div class={classes!("tx-grid-area", waiting.then_some("empty"))} ref={area} onmouseleave={leave} aria-busy={waiting.to_string()}>
                 <div class="tx-grid" style={MempoolCardParts::extent(&grid)}>
                     {for tiles}
                 </div>

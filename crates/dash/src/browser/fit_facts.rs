@@ -4,13 +4,21 @@ use crate::{DisplayFormat, FitNote};
 
 #[derive(Properties, PartialEq)]
 pub struct FitFactsProps {
-    pub fit: FitNote,
+    /// `None` until the window's first fit arrives; the labels show with dashes meanwhile.
+    pub fit: Option<FitNote>,
 }
 
 /// The figures behind one fit, for the row beside its tabs.
 #[function_component(FitFacts)]
 pub fn fit_facts(props: &FitFactsProps) -> Html {
-    let fit = &props.fit;
+    let Some(fit) = &props.fit else {
+        return html! {
+            <>
+                <span class="pending">{"— implied"}</span>
+                <span class="pending">{"rough —"}</span>
+            </>
+        };
+    };
     html! {
         <>
             <span title="outputs whose amounts imply a price">

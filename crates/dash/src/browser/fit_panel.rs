@@ -6,22 +6,28 @@ use crate::{ChartLayout, DisplayFormat, FitGeometry, FitNote, WindowLabel};
 
 #[derive(Properties, PartialEq)]
 pub struct FitPanelProps {
-    pub fit: FitNote,
+    pub window: AttrValue,
+    /// `None` until the window's first fit arrives; the frame shows meanwhile.
+    pub fit: Option<FitNote>,
 }
 
 /// The outputs behind one fit as rising bars, with the score curve drawn in over them.
+/// Before the fit arrives, the baseline and pulsing axis stubs hold its place.
 #[function_component(FitPanel)]
 pub fn fit_panel(props: &FitPanelProps) -> Html {
-    let fit = &props.fit;
-    let label = WindowLabel::of(fit.window());
+    let label = WindowLabel::of(&props.window);
     let hovered = use_state(|| None::<f64>);
     let plot = use_node_ref();
     let (width, height) = use_box_size(&plot);
-    let chart = FitGeometry::new(fit, ChartLayout::for_histogram(width, height));
+    let layout = ChartLayout::for_histogram(width, height);
+    let drawn = props
+        .fit
+        .as_ref()
+        .and_then(|fit| FitGeometry::new(fit, layout).map(|chart| (fit, chart)));
 
-    let body = chart.map_or_else(
-        || html! {},
-        |chart| {
+    let body = drawn.map_or_else(
+        || FitPanelParts::frame(layout, &label.title(&props.window)),
+        |(fit, chart)| {
             let layout = *chart.layout();
             let price_x = chart.x_of(fit.price());
             let rough_x = chart.x_of(fit.rough_price());
@@ -131,5 +137,34 @@ pub fn fit_panel(props: &FitPanelProps) -> Html {
         <article class="card fit-card">
             <div class="plot" ref={plot}>{body}</div>
         </article>
+    }
+}
+
+struct FitPanelParts;
+
+impl FitPanelParts {
+    fn frame(layout: ChartLayout, title: &str) -> Html {
+        let bottom = layout.plot_bottom();
+        html! {
+            <svg
+                class="chart fit-chart empty"
+                viewBox={format!("0 0 {} {}", layout.width, layout.height)}
+                preserveAspectRatio="none"
+                role="img"
+                aria-label={format!("{title} fit, waiting for the oracle")}
+                aria-busy="true"
+            >
+                <line class="grid-line" x1={layout.left.to_string()} x2={(layout.width - layout.right).to_string()}
+                    y1={bottom.to_string()} y2={bottom.to_string()} />
+                <g class="axis-stubs">
+                    {for layout.grid_columns(layout.x_tick_count()).into_iter().map(|x| {
+                        let left = (x - 20.0).clamp(layout.left, layout.width - layout.right - 40.0);
+                        html! {
+                            <rect x={format!("{left:.1}")} y={(layout.height - 11.0).to_string()} width="40" height="6" rx="3" />
+                        }
+                    })}
+                </g>
+            </svg>
+        }
     }
 }

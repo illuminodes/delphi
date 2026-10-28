@@ -169,10 +169,10 @@ body {
 .chart .pointer { animation: appear 0.3s 1s both; }
 .chart.empty { cursor: progress; }
 .chart .axis-stubs rect { fill: var(--line-strong); animation: pulse 1.6s ease-in-out infinite; }
-.readout-price.pending { color: var(--faint); }
 @keyframes trace { from { clip-path: inset(-4px 100% -4px -4px); } to { clip-path: inset(-4px -4px -4px -4px); } }
 @keyframes appear { from { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .chart .trace, .chart .axis-values, .chart .pointer, .chart .axis-stubs rect { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .chart .trace, .chart .axis-values, .chart .pointer, .chart .axis-stubs rect, .tx-grid-area.empty::before { animation: none; } }
+.readout-price.pending, .tab-aside .pending { color: var(--faint); }
 
 /* Fit */
 
@@ -254,6 +254,7 @@ body {
 .legend-count { font: 0.7rem var(--mono); color: var(--faint); }
 .tx-grid-area { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
 .tx-grid { position: relative; }
+.tx-grid-area.empty::before { content: ""; position: absolute; inset: 0; background: conic-gradient(from 90deg at 2px 2px, var(--surface-2) 25%, transparent 0) -2px -2px / 12px 12px; animation: pulse 1.6s ease-in-out infinite; }
 .tx-square {
     position: absolute; left: 0; top: 0; width: var(--size); height: var(--size);
     border-radius: 2px; background: var(--bar); opacity: 0.85; outline: 1px solid transparent; outline-offset: 1px;

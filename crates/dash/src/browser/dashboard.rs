@@ -97,19 +97,10 @@ pub fn dashboard(props: &DashboardProps) -> Html {
         };
         let fit_facts = {
             let fits = fits.clone();
-            Callback::from(move |window: String| {
-                fits.latest(&window).map_or_else(Html::default, |fit| html! { <FitFacts fit={fit.clone()} /> })
-            })
+            Callback::from(move |window: String| html! { <FitFacts fit={fits.latest(&window).cloned()} /> })
         };
-        let fit = Callback::from(move |window: String| {
-            fits.latest(&window).map_or_else(
-                || html! {
-                    <div class="card placeholder">
-                        {format!("Waiting for the {} fit; the oracle repeats it every minute…", WindowLabel::of(&window).title(&window).to_lowercase())}
-                    </div>
-                },
-                |fit| html! { <FitPanel fit={fit.clone()} /> },
-            )
+        let fit = Callback::from(move |window: String| html! {
+            <FitPanel window={window.clone()} fit={fits.latest(&window).cloned()} />
         });
         Callback::from(move |panel: PanelId| match panel {
             PanelId::Source => source.clone(),
