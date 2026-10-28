@@ -49,14 +49,22 @@ impl ColorScheme {
         }
     }
 
-    /// Sets the palette on the page and remembers it for the next visit. `index.html` reads it back
-    /// before the first paint.
+    const FADE_MS: u32 = 400;
+
+    /// Fades the page into this palette and remembers it for the next visit. `index.html` reads it
+    /// back before the first paint. The fade is switched on only while the palette changes, so it
+    /// never slows hover states.
     pub fn choose(self) {
         if let Some(root) = web_sys::window()
             .and_then(|window| window.document())
             .and_then(|document| document.document_element())
         {
+            let _ = root.set_attribute("data-theme-fade", "");
             let _ = root.set_attribute("data-theme", self.name());
+            gloo_timers::callback::Timeout::new(Self::FADE_MS, move || {
+                let _ = root.remove_attribute("data-theme-fade");
+            })
+            .forget();
         }
         if let Some(storage) = Self::storage() {
             let _ = storage.set_item(Self::KEY, self.name());
